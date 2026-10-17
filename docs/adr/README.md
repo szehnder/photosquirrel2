@@ -36,3 +36,7 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0030](0030-release-packaging.md) | Installers built by GitHub Actions with cargo-packager |
 | [0031](0031-secrets-in-os-keychain.md) | API keys in the OS keychain |
 | [0032](0032-x86-64-v2-baseline.md) | x86-64-v2 CPU baseline |
+| [0033](0033-user-separation-of-group-members.md) | Users can split members out of a duplicate group |
+| [0034](0034-quarantined-disposition.md) | A `quarantined` disposition |
+| [0035](0035-burst-protection-in-grouping.md) | Stricter capture-time rule for derivative edges (burst protection) |
+| [0036](0036-previews-for-llm-and-component-budgets.md) | LLM previews and component budgets |

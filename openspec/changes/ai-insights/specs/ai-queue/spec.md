@@ -1,0 +1,75 @@
+# Spec Delta
+
+## Purpose
+
+Runs photo description as a durable background job that the user starts and controls, that survives restarts,
+never repeats work and never sends anything without being started.
+
+## ADDED Requirements
+
+### Requirement: Nothing sent before start
+No photo SHALL be sent to any provider until the user starts the AI queue, and stopping or pausing it SHALL stop new requests.
+
+#### Scenario: Nothing sent before start
+- **WHEN** a corpus is scanned and the application idles with a recording provider configured
+- **THEN** the recording provider receives no request
+
+#### Scenario: Pause stops new requests
+- **WHEN** the queue is paused while running
+- **THEN** no new request starts after in-flight requests finish
+
+### Requirement: Persisted queue order
+The queue SHALL be persisted in the catalog and SHALL process keepers of class photo or likely photo first, then other keepers, in capture-date order; non-keepers SHALL be included only when the user opts in.
+
+#### Scenario: Keepers processed first
+- **WHEN** the queue is started on the scanned small corpus
+- **THEN** every photo and likely-photo keeper is requested before any other item and no non-keeper is requested
+
+### Requirement: Concurrency and rate limits
+The queue SHALL respect a configurable maximum of concurrent requests (default 2) and requests per minute (default unlimited for local, 30 for hosted providers).
+
+#### Scenario: Concurrency limit respected
+- **WHEN** the queue runs with concurrency 2 against a slow recording provider
+- **THEN** no more than 2 requests are ever in flight
+
+### Requirement: Survives restarts
+Queue state SHALL survive application restarts and crashes; on restart the queue SHALL be paused and resume from the first unfinished item.
+
+#### Scenario: Queue survives restart
+- **WHEN** the application is killed after 10 of 50 items are done and restarted
+- **THEN** the queue shows 10 done, is paused, and resuming sends requests only for the 40 remaining items
+
+### Requirement: One result per content
+Results SHALL be stored per content identity, so byte-identical copies are described once, and an item already described by the same provider, model and schema version SHALL NOT be sent again.
+
+#### Scenario: Duplicates analyzed once
+- **WHEN** the queue runs with "include non-keepers" on a group of 3 byte-identical copies
+- **THEN** exactly one request is sent and all 3 copies show the same insight
+
+### Requirement: Provenance stored
+Each result SHALL record provider, model, schema version, request latency and time.
+
+#### Scenario: Result records provenance
+- **WHEN** an insight is stored
+- **THEN** it carries the provider name, model name, schema version 1 and the measured latency
+
+### Requirement: Bounded retries
+A failed item SHALL be retried at most twice with backoff and then marked failed with its error, without stopping the queue.
+
+#### Scenario: Failed item retried twice
+- **WHEN** a recording provider returns a server error for one item every time
+- **THEN** that item is attempted 3 times, marked failed, and other items complete
+
+### Requirement: Queue progress
+The queue SHALL expose a progress snapshot with done, pending, failed, in-flight counts, requests per minute and ETA, available to the application and the CLI.
+
+#### Scenario: Queue progress reported
+- **WHEN** the CLI AI status command runs with `--json` during a queue run
+- **THEN** it prints done, pending, failed and in-flight counts consistent with the catalog
+
+### Requirement: CLI control
+The CLI SHALL list providers, test the configured provider, start and pause the queue, and print results with `--json`.
+
+#### Scenario: CLI starts queue
+- **WHEN** the CLI AI start command runs against a recording local provider on the scanned small corpus
+- **THEN** results are stored and the CLI AI results command lists them as JSON

@@ -1,4 +1,4 @@
-# Linux release packaging image (ADR-0040). Ubuntu 22.04 sets the glibc floor of the packages (2.35): they run
+# Linux release packaging image (ADR-0030). Ubuntu 22.04 sets the glibc floor of the packages (2.35): they run
 # on Ubuntu 22.04+, Debian 12+, Fedora 36+ and similar. Used by `cargo xtask package --docker`, which runs it
 # as the calling user with the repository mounted at /work.
 FROM ubuntu:22.04

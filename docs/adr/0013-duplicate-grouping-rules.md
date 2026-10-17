@@ -1,6 +1,6 @@
 # 0013. Duplicate grouping: same image at any size, never bursts
 
-- Status: accepted
+- Status: accepted (timestamp clause superseded by [0035](0035-burst-protection-in-grouping.md))
 - Date: 2026-10-17
 - Deciders: maintainers
 

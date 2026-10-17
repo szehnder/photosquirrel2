@@ -1,6 +1,6 @@
 name: Release
 
-# Installers for macOS, Windows and Linux (ADR-0040). Pushing a tag `v<workspace version>` builds every platform and
+# Installers for macOS, Windows and Linux (ADR-0030). Pushing a tag `v<workspace version>` builds every platform and
 # publishes a GitHub Release; running the workflow by hand builds the same packages as workflow artifacts only.
 
 on:
