@@ -1,0 +1,13 @@
+[package]
+name = "ps-hash"
+description = "Content identity (BLAKE3) and perceptual hashes with a near-duplicate index (ADR-0011, ADR-0012)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ps-model.workspace = true
+
+[lints]
+workspace = true

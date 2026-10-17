@@ -1,0 +1,13 @@
+[package]
+name = "photosquirrel-cli"
+description = "Headless PhotoSquirrel CLI (ADR-0027)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ps-service.workspace = true
+
+[lints]
+workspace = true

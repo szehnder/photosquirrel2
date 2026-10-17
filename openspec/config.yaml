@@ -1,0 +1,39 @@
+schema: spec-driven
+
+context: |
+  PhotoSquirrel is a native desktop application, written entirely in Rust (GPUI via gpui-kit for UI), that scans
+  hard drives, USB backups and NAS shares full of images and videos, finds the best copy of every photo across
+  duplicates/thumbnails/recompressions, enriches photos with EXIF and optional LLM insights, and exports the
+  deduplicated best copies (copy-only, hash-verified) into a library folder ready for Apple Photos, Google Photos
+  or Lightroom. Safety first: source trees are read-only (ADR-0004). Priorities: (1) non-destructive copy-out,
+  (2) efficient incremental rescans and resume, (3) optional reversible cleanup.
+  Architectural decisions live in docs/adr/ (one decision per file). design.md files MUST cite the ADRs they rely
+  on instead of restating them, and MUST add a new ADR when they make a new architectural decision.
+  Crate layering (ADR-0003): core crates (no UI, no tokio) <- I/O crates <- UI crates (gpui-kit). Never invert.
+  Changes are implemented in the order listed in openspec/ROADMAP.md.
+  Targets Linux (primary dev), macOS and Windows. Scale target: 100k-1M+ files on mixed SSD/HDD/NAS sources.
+  Performance budgets are in perf-budgets.toml (ADR-0026) and are acceptance criteria, not aspirations.
+  The synthetic ground-truth corpus (ADR-0025) is how dedup quality is measured.
+
+rules:
+  proposal:
+    - State explicitly what is out of scope.
+    - List the ADRs the change depends on under Impact.
+  specs:
+    - Scenarios must be verifiable by an automated test or by photosquirrel-cli output; name the test scenario_<capability>_<slug>.
+    - Do not name crates, structs or libraries in specs; behaviour only.
+  design:
+    - Cite ADR numbers for every decision already recorded; propose a new ADR file for any new architectural decision.
+    - Include a "Verification" section listing the commands an agent runs to prove the change works.
+  tasks:
+    - Every task states its verification (test name, command, or observable result).
+    - The last group is always "Verification" and includes `cargo xtask ci` passing and `openspec validate <change> --strict`.
+
+operations:
+  apply:
+    guidance:
+      - Work task-by-task; tick the checkbox only after its verification passes.
+      - Prefer adding a photosquirrel-cli subcommand or test over manual GUI checking; use `cargo xtask screenshot` for visual checks.
+  archive:
+    guidance:
+      - Archive only when `cargo xtask ci` is green and every scenario has a mapped test (`cargo xtask spec-coverage`).

@@ -1,0 +1,13 @@
+[package]
+name = "ps-llm"
+description = "Vision LLM providers and the AI insight schema (ADR-0020, ADR-0021)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ps-model.workspace = true
+
+[lints]
+workspace = true

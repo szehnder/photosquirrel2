@@ -1,0 +1,18 @@
+[package]
+name = "ps-service"
+description = "The facade the UI and CLI use (ADR-0027)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ps-model.workspace = true
+ps-catalog.workspace = true
+ps-scan.workspace = true
+ps-dedup.workspace = true
+ps-llm.workspace = true
+ps-export.workspace = true
+
+[lints]
+workspace = true

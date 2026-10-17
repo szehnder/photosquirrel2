@@ -1,0 +1,16 @@
+[package]
+name = "ps-scan"
+description = "Resumable, incremental, threaded scan pipeline (ADR-0007, 0008, 0009)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ps-model.workspace = true
+ps-media.workspace = true
+ps-hash.workspace = true
+ps-catalog.workspace = true
+
+[lints]
+workspace = true

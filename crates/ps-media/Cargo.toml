@@ -1,0 +1,13 @@
+[package]
+name = "ps-media"
+description = "Format sniffing, metadata (EXIF, QuickTime), decoding, thumbnails and the photo classifier (ADR-0010, 0015, 0017)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ps-model.workspace = true
+
+[lints]
+workspace = true

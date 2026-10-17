@@ -1,0 +1,4 @@
+# Performance budgets (ADR-0026). Absolute values apply on the reference machine (16-core x86-64, NVMe, 30 GB);
+# CI checks relative regressions (>15%) against perf-baseline.json. All budgets are lower-is-better.
+# `change` names the OpenSpec change that adds the measurement; `source` says how `cargo xtask bench --check`
+# measures it (see xtask/src/bench.rs). Budgets are added by the changes that introduce the measured code.

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Categories={{categories}}
+Comment=Find the best copy of every photo across your backups and copy them into a clean library
+Exec={{exec}} {{exec_arg}}
+Icon={{icon}}
+Name={{name}}
+Terminal=false
+Type=Application
+Keywords=photo;duplicate;dedupe;backup;library;exif;images;
+StartupWMClass=photosquirrel

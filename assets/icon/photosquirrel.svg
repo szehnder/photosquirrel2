@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f36"/>
+      <stop offset="1" stop-color="#15171b"/>
+    </linearGradient>
+    <linearGradient id="tail" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb347"/>
+      <stop offset="1" stop-color="#e0751f"/>
+    </linearGradient>
+    <linearGradient id="photo" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fc8ff"/>
+      <stop offset="0.62" stop-color="#4a8fd6"/>
+      <stop offset="0.62" stop-color="#3f7d4e"/>
+      <stop offset="1" stop-color="#2c5a37"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
+  <!-- photo print, slightly rotated -->
+  <g transform="rotate(-8 470 560)">
+    <rect x="250" y="330" width="440" height="440" rx="28" fill="#f4efe6"/>
+    <rect x="282" y="362" width="376" height="300" rx="10" fill="url(#photo)"/>
+    <circle cx="590" cy="430" r="34" fill="#ffe59a"/>
+    <path d="M282 662 L392 540 L470 612 L548 520 L658 662 Z" fill="#2f6b3d"/>
+  </g>
+  <!-- squirrel tail curling around the print -->
+  <path d="M700 860 C900 820 930 560 800 430 C700 330 760 190 880 210
+           C800 120 640 160 620 300 C600 420 720 470 730 590 C740 700 640 760 560 770
+           C620 820 650 850 700 860 Z" fill="url(#tail)"/>
+  <!-- acorn -->
+  <g transform="translate(250 690)">
+    <ellipse cx="80" cy="120" rx="70" ry="86" fill="#c9852f"/>
+    <path d="M0 70 C0 20 160 20 160 70 C160 92 0 92 0 70 Z" fill="#6b4523"/>
+    <rect x="72" y="8" width="16" height="34" rx="8" fill="#6b4523"/>
+  </g>
+</svg>

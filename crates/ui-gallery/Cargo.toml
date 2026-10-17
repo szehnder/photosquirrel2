@@ -1,0 +1,15 @@
+[package]
+name = "ui-gallery"
+description = "Virtualized gallery grid and thumbnail texture cache (ADR-0018)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true
+ui-theme.workspace = true
+ps-model.workspace = true
+
+[lints]
+workspace = true

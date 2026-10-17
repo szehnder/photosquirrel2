@@ -1,0 +1,42 @@
+[package]
+name = "photosquirrel"
+description = "PhotoSquirrel desktop application."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true
+ui-workspace.workspace = true
+
+[lints]
+workspace = true
+
+# Installers (ADR-0030). `cargo xtask package` passes the formats for the host OS; see xtask/src/package.rs.
+[package.metadata.packager]
+productName = "PhotoSquirrel"
+identifier = "io.github.szehnder.photosquirrel"
+publisher = "PhotoSquirrel contributors"
+# The .deb Maintainer field.
+authors = ["PhotoSquirrel contributors <szehnder@users.noreply.github.com>"]
+category = "Photography"
+copyright = "Copyright 2026 PhotoSquirrel contributors. Apache-2.0."
+licenseFile = "../../LICENSE"
+# macOS .icns accepts 1024 px only as a 2x image, named with @2x (icns IconType table).
+icons = ["../../assets/icon/png/32x32.png", "../../assets/icon/png/64x64.png", "../../assets/icon/png/128x128.png", "../../assets/icon/png/256x256.png", "../../assets/icon/png/512x512.png", "../../assets/icon/png/512x512@2x.png"]
+longDescription = "Scan drives, USB backups and NAS shares for photos and videos, find the best copy of every photo across duplicates, thumbnails and recompressions, and copy them into a clean library for Apple Photos, Google Photos or Lightroom. Never modifies your sources."
+binaries = [{ path = "photosquirrel", main = true }, { path = "photosquirrel-cli", main = false }]
+
+[package.metadata.packager.deb]
+# Linked libraries (ldd) plus the Vulkan loader wgpu opens at run time.
+depends = ["libdbus-1-3", "libxcb1", "libxkbcommon0", "libxkbcommon-x11-0", "libvulkan1"]
+section = "graphics"
+# Adds StartupWMClass (matches the window app_id) and search keywords; the AppImage uses it too.
+desktopTemplate = "../../packaging/linux/photosquirrel.desktop"
+
+[package.metadata.packager.macos]
+minimumSystemVersion = "11.0"
+
+[package.metadata.packager.nsis]
+installMode = "currentUser"

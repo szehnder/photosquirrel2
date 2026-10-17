@@ -1,0 +1,118 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+repository = "https://github.com/szehnder/photosquirrel2"
+
+[workspace.dependencies]
+# Internal crates (layering in docs/adr/0004)
+ps-model = { path = "crates/ps-model" }
+ps-media = { path = "crates/ps-media" }
+ps-hash = { path = "crates/ps-hash" }
+ps-dedup = { path = "crates/ps-dedup" }
+ps-fixtures = { path = "crates/ps-fixtures" }
+ps-catalog = { path = "crates/ps-catalog" }
+ps-scan = { path = "crates/ps-scan" }
+ps-llm = { path = "crates/ps-llm" }
+ps-export = { path = "crates/ps-export" }
+ps-service = { path = "crates/ps-service" }
+ui-theme = { path = "crates/ui-theme" }
+ui-gallery = { path = "crates/ui-gallery" }
+ui-workspace = { path = "crates/ui-workspace" }
+
+# UI
+gpui-kit = { version = "0.7.3", default-features = false, features = ["component", "assets"] }
+
+# Concurrency
+crossbeam-channel = "0.5"
+rayon = "1"
+parking_lot = "0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "io-util"] }
+futures = "0.3"
+
+# Media
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp"] }
+zune-jpeg = "0.5"
+jpeg-decoder = { version = "0.3", default-features = false }
+fast_image_resize = "6"
+nom-exif = "3.8"
+imagesize = "0.14"
+rawler = "0.8"
+libheif-rs = { version = "3", default-features = false, features = ["v1_17"] }
+
+# Hashing
+blake3 = "1"
+
+# Data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+thiserror = "2"
+anyhow = "1"
+smallvec = "1"
+rustc-hash = "2"
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "6"
+toml = "0.9"
+quick-xml = "0.41"
+keyring = { version = "3", features = ["linux-native-sync-persistent", "apple-native", "windows-native", "crypto-rust"] }
+
+# Network (LLM providers)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
+url = "2"
+
+# CLI / dev
+clap = { version = "4", features = ["derive", "env"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+log = "0.4"
+ureq = { version = "3", features = ["json"] }
+sha2 = "0.10"
+tempfile = "3"
+insta = { version = "1", features = ["json", "yaml"] }
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+proptest = "1"
+rand = "0.9"
+rand_chacha = "0.9"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "warn"
+type_complexity = "allow"
+too_many_arguments = "allow"
+
+[profile.dev]
+# GPUI and image decoding are very slow unoptimized; optimize deps, keep our crates debuggable.
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+# Hashing and pixel loops are hot; keep them fast in tests too.
+[profile.dev.package.ps-hash]
+opt-level = 3
+[profile.dev.package.ps-media]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.bench]
+inherits = "release"
+
+# Release packages (ADR-0030): stripped, no debug info.
+[profile.dist]
+inherits = "release"
+debug = false
+strip = "symbols"
