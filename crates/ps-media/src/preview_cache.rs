@@ -263,4 +263,3 @@ mod marker_tests {
         PreviewCache::open(&cache_dir, 1024).expect("reopen");
     }
 }
-
