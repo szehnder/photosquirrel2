@@ -6,8 +6,27 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# The recorded-fixture HTTP server (std TcpListener) for tests in this and dependent crates.
+testing = []
+
 [dependencies]
 ps-model.workspace = true
+ps-media.workspace = true
+# tokio only for network I/O (ADR-0009); the runtime is owned by `ps-llm` (see `runtime`).
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
+reqwest.workspace = true
+base64.workspace = true
+url.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+ps-llm = { path = ".", features = ["testing"] }
+ps-fixtures.workspace = true
 
 [lints]
 workspace = true

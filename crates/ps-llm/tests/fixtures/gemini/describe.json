@@ -1,0 +1,190 @@
+{
+  "request": {
+    "absent_headers": [
+      "authorization"
+    ],
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "inline_data": {
+                "data": "<jpeg>",
+                "mime_type": "image/jpeg"
+              }
+            },
+            {
+              "text": "Describe the attached image as one JSON object with exactly these fields:\n\n- \"subject\": one plain sentence of at most 20 words saying what the image shows, for example \"Two children build a sandcastle on a sunny beach.\" No names, no speculation.\n- \"category\": the single best fit, one of:\n  portrait (one or two people are the clear subject, close up or posed), people (people are the main subject: groups, crowds, people at a distance or doing something), pets (dogs, cats and other domestic pets), animals (wild, farm or zoo animals, birds, insects), nature (plants, flowers, trees, close-up nature), landscape (wide scenery: mountains, sea, sky, fields), travel (landmarks, sightseeing, hotels, airports, tourist spots), urban (streets, buildings, architecture, city life), food (meals, dishes, drinks), event (party, wedding, birthday, holiday celebration, concert, ceremony), sports (playing or watching sport), document (paper, receipt, form, whiteboard, sign or page photographed for its text), screenshot (a capture of a computer, phone or TV screen), artwork (painting, drawing, illustration, graphic design, logo, meme, rendered image), object (a single item or product close up), other.\n  When people are clearly visible and important, prefer portrait or people over the setting.\n- \"also\": up to 3 further categories from the same list, most relevant first, not repeating \"category\"; [] when none apply.\n- \"is_photo\": true when the image is a photograph of a real scene taken with a camera or phone; false for screenshots, scanned or photographed documents whose purpose is the text, digital graphics, illustrations, renders, memes and icons.\n- \"people\": counts of the people visible, including partly visible people and people in the background. \"children\" are people who look younger than about 16 (babies, toddlers, kids, young teenagers); \"adults\" are everyone else; when unsure whether someone is a child, count them as an adult. \"total\" = adults + children. Use 0 for all three when there are no people. People in pictures, posters or screens count only when the image is about them.\n- \"pets\": the kinds of animals visible, one lowercase singular common name per kind (\"dog\", \"cat\", \"horse\", \"parrot\"), each kind once; [] when there are no animals.\n- \"tags\": 3 to 10 lowercase search keywords for what is visible: objects, activities, scenery, season, weather, time of day, dominant colours. No names, no duplicates, no words already used as the category.\n- \"setting\": a short phrase starting with \"indoor\" or \"outdoor\", for example \"outdoor beach\" or \"indoor kitchen\"; null when it cannot be told (for example screenshots or graphics).\n- \"confidence\": your overall confidence in this description, from 0.0 (guessing) to 1.0 (certain).\n\nThe JSON Schema of the answer:\n{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"additionalProperties\":false,\"properties\":{\"also\":{\"items\":{\"enum\":[\"portrait\",\"people\",\"pets\",\"animals\",\"nature\",\"landscape\",\"travel\",\"urban\",\"food\",\"event\",\"sports\",\"document\",\"screenshot\",\"artwork\",\"object\",\"other\"],\"type\":\"string\"},\"type\":\"array\"},\"category\":{\"enum\":[\"portrait\",\"people\",\"pets\",\"animals\",\"nature\",\"landscape\",\"travel\",\"urban\",\"food\",\"event\",\"sports\",\"document\",\"screenshot\",\"artwork\",\"object\",\"other\"],\"type\":\"string\"},\"confidence\":{\"type\":\"number\"},\"is_photo\":{\"type\":\"boolean\"},\"people\":{\"additionalProperties\":false,\"properties\":{\"adults\":{\"type\":\"integer\"},\"children\":{\"type\":\"integer\"},\"total\":{\"type\":\"integer\"}},\"required\":[\"total\",\"adults\",\"children\"],\"type\":\"object\"},\"pets\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"setting\":{\"type\":[\"string\",\"null\"]},\"subject\":{\"type\":\"string\"},\"tags\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"}},\"required\":[\"subject\",\"category\",\"also\",\"is_photo\",\"people\",\"pets\",\"tags\",\"setting\",\"confidence\"],\"title\":\"ImageInsight\",\"type\":\"object\"}\n\nAnswer with the JSON object only."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 1024,
+        "responseMimeType": "application/json",
+        "responseSchema": {
+          "properties": {
+            "also": {
+              "items": {
+                "enum": [
+                  "portrait",
+                  "people",
+                  "pets",
+                  "animals",
+                  "nature",
+                  "landscape",
+                  "travel",
+                  "urban",
+                  "food",
+                  "event",
+                  "sports",
+                  "document",
+                  "screenshot",
+                  "artwork",
+                  "object",
+                  "other"
+                ],
+                "type": "STRING"
+              },
+              "type": "ARRAY"
+            },
+            "category": {
+              "enum": [
+                "portrait",
+                "people",
+                "pets",
+                "animals",
+                "nature",
+                "landscape",
+                "travel",
+                "urban",
+                "food",
+                "event",
+                "sports",
+                "document",
+                "screenshot",
+                "artwork",
+                "object",
+                "other"
+              ],
+              "type": "STRING"
+            },
+            "confidence": {
+              "type": "NUMBER"
+            },
+            "is_photo": {
+              "type": "BOOLEAN"
+            },
+            "people": {
+              "properties": {
+                "adults": {
+                  "type": "INTEGER"
+                },
+                "children": {
+                  "type": "INTEGER"
+                },
+                "total": {
+                  "type": "INTEGER"
+                }
+              },
+              "propertyOrdering": [
+                "total",
+                "adults",
+                "children"
+              ],
+              "required": [
+                "total",
+                "adults",
+                "children"
+              ],
+              "type": "OBJECT"
+            },
+            "pets": {
+              "items": {
+                "type": "STRING"
+              },
+              "type": "ARRAY"
+            },
+            "setting": {
+              "nullable": true,
+              "type": "STRING"
+            },
+            "subject": {
+              "type": "STRING"
+            },
+            "tags": {
+              "items": {
+                "type": "STRING"
+              },
+              "type": "ARRAY"
+            }
+          },
+          "propertyOrdering": [
+            "subject",
+            "category",
+            "also",
+            "is_photo",
+            "people",
+            "pets",
+            "tags",
+            "setting",
+            "confidence"
+          ],
+          "required": [
+            "subject",
+            "category",
+            "also",
+            "is_photo",
+            "people",
+            "pets",
+            "tags",
+            "setting",
+            "confidence"
+          ],
+          "type": "OBJECT"
+        },
+        "temperature": 0
+      },
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a careful photo-cataloguing assistant for a private family photo library. You look at exactly one image and describe only what is visible in it. You never guess the identity, name, age in years, ethnicity or location of a person, and you never invent details you cannot see. You answer with a single JSON object that matches the given schema and nothing else: no prose, no explanations, no markdown code fences."
+          }
+        ]
+      }
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-goog-api-key": "test-gemini-key"
+    },
+    "method": "POST",
+    "path": "/v1beta/models/gemini-2.5-flash:generateContent"
+  },
+  "response": {
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "parts": [
+              {
+                "text": "{\"subject\": \"Two adults and a child walk a dog along a sandy beach.\", \"category\": \"pets\", \"also\": [\"people\", \"travel\"], \"is_photo\": true, \"people\": {\"total\": 3, \"adults\": 2, \"children\": 1}, \"pets\": [\"dog\"], \"tags\": [\"beach\", \"dog\", \"walk\", \"sand\", \"summer\"], \"setting\": \"outdoor beach\", \"confidence\": 0.86}"
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "modelVersion": "gemini-2.5-flash",
+      "responseId": "g3TyaKvXBNa0nvgP3Y6h0Ac",
+      "usageMetadata": {
+        "candidatesTokenCount": 88,
+        "promptTokenCount": 1402,
+        "totalTokenCount": 1490
+      }
+    },
+    "status": 200
+  }
+}
