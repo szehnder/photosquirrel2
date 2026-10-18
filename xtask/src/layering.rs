@@ -1,5 +1,6 @@
 //! Enforces ADR-0003: core crates must not (transitively) depend on tokio or gpui-kit;
-//! I/O crates must not depend on gpui-kit.
+//! I/O crates must not depend on gpui-kit. Also enforces ADR-0004 for the scanner: `ps-scan`'s sources
+//! contain no call that could create, write, rename, remove or re-permission a file.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -68,7 +69,7 @@ pub fn check(root: &Path) -> Result<()> {
         .map(|id| (names[id].clone(), id.to_string()))
         .collect();
 
-    let mut violations = Vec::new();
+    let mut violations = read_only_violations(&root.join("crates/ps-scan/src"))?;
     for (name, id) in &members {
         let forbidden: &[&str] = if CORE.contains(&name.as_str()) {
             &["tokio", "gpui-kit"]
@@ -117,4 +118,86 @@ fn closure(start: &str, deps: &HashMap<String, Vec<String>>) -> HashSet<String> 
         }
     }
     seen
+}
+
+/// Calls `ps-scan` must never make (ADR-0004: the scanner opens source files read-only).
+pub const SCAN_FORBIDDEN: &[&str] = &[
+    "OpenOptions::write",
+    ".write(true)",
+    ".append(true)",
+    ".create(true)",
+    ".create_new(true)",
+    ".truncate(true)",
+    "File::create",
+    "File::options",
+    "fs::remove_",
+    "remove_file(",
+    "remove_dir",
+    "fs::rename",
+    "set_permissions",
+    "fs::write",
+    "fs::copy",
+    "fs::hard_link",
+    "set_len(",
+    "set_modified(",
+];
+
+/// Forbidden calls in one source file, as `file:line: call` strings.
+pub fn forbidden_calls(file: &str, text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or("");
+        for f in SCAN_FORBIDDEN {
+            if code.contains(f) {
+                out.push(format!(
+                    "{file}:{}: `{f}` is forbidden in ps-scan (ADR-0004: sources are read-only)",
+                    i + 1
+                ));
+            }
+        }
+    }
+    out
+}
+
+fn read_only_violations(dir: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    if !dir.exists() {
+        return Ok(out);
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d)? {
+            let p = e?.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let text = std::fs::read_to_string(&p)?;
+                out.extend(forbidden_calls(&p.display().to_string(), &text));
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_create_in_scan_sources_is_rejected() {
+        let snippet = "fn f() {\n    let f = std::fs::File::create(\"x\").unwrap();\n}\n";
+        let v = forbidden_calls("crates/ps-scan/src/bad.rs", snippet);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].contains("bad.rs:2") && v[0].contains("File::create"));
+        assert!(forbidden_calls("ok.rs", "OpenOptions::new().read(true).open(p)").is_empty());
+        // Comments are not code.
+        assert!(forbidden_calls("ok.rs", "// never fs::rename here").is_empty());
+    }
+
+    #[test]
+    fn ps_scan_sources_pass() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/ps-scan/src");
+        let v = read_only_violations(&root).expect("scan");
+        assert!(v.is_empty(), "{v:#?}");
+    }
 }

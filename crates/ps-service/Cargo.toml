@@ -22,6 +22,9 @@ keyring.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+ps-llm = { workspace = true, features = ["testing"] }
+serde_json.workspace = true
+ps-fixtures.workspace = true
 
 [lints]
 workspace = true

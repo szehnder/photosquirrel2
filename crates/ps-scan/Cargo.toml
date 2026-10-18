@@ -11,6 +11,19 @@ ps-model.workspace = true
 ps-media.workspace = true
 ps-hash.workspace = true
 ps-catalog.workspace = true
+crossbeam-channel.workspace = true
+rayon.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+ps-fixtures.workspace = true
+tempfile.workspace = true
+rusqlite.workspace = true
 
 [lints]
 workspace = true
