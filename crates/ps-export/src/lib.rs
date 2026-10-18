@@ -1,1 +1,59 @@
-//! Copy-only verified export, ledger and reversible quarantine (ADR-0004, 0022, 0023, 0024).
+//! Copy-only verified export (ADR-0004, ADR-0022, ADR-0023).
+//!
+//! The only crate allowed to create files under user paths, and only inside the chosen library folder:
+//!
+//! - [`input`]: the pure export input (keeper sets with metadata, insights and every copy's source path). The
+//!   service builds it from the catalog and the dedup grouping; tests build it directly.
+//! - [`plan`]: the dry run. Keepers minus the ledger, the dated layout ([`layout`]), collision suffixes,
+//!   adoption of identical files already in the library, RAW+JPEG and Live Photo bundles ([`pairs`]),
+//!   offline sources, the library/source overlap check and the free-space check. Planning only reads.
+//! - [`copy`]: the copy protocol: stream to `<name>.ps-partial` while hashing with BLAKE3, fsync, read back
+//!   and verify against the catalog identity, preserve the mtime, then rename with no-replace semantics
+//!   ([`rename`]) and fsync the directory.
+//! - [`execute`]: runs a confirmed plan with the ledger ([`ledger`]): idempotent and resumable.
+//! - [`xmp`] sidecars, the append-only [`manifest`], [`profile`] defaults.
+//! - [`disposition`]: derived dispositions and completion reports (ADR-0023).
+//!
+//! Safety invariants (tested in `tests/safety.rs`): sources are opened read-only and never changed; nothing is
+//! written outside the library root; no existing library file is ever replaced or modified; the only files
+//! ever removed are this exporter's own `.ps-partial` files inside the library.
+
+pub mod copy;
+pub mod disposition;
+pub mod execute;
+pub mod input;
+pub mod layout;
+pub mod ledger;
+pub mod library;
+pub mod manifest;
+pub mod pairs;
+pub mod plan;
+pub mod profile;
+pub mod rename;
+pub mod xmp;
+
+pub use copy::{CopyConfig, CopyError, CopyHooks, CopyOutcome, NoHooks};
+pub use disposition::{
+    Badge, CompletionReport, CopyCheck, DispositionFacts, FileDisposition, FileFacts, FolderReport,
+    GroupFacts, SourceReport, check_library, derive_dispositions, report,
+};
+pub use execute::{ExecConfig, ExecError, ExportReport, FailedFile, StopReason, execute};
+pub use input::{CopyRef, ExportInput, ExportUnit, KeeperFile, SourceInfo};
+pub use ledger::{Ledger, MemoryLedger};
+pub use library::{Existing, FsLibrary, LibraryProbe, LibraryRoot, PARTIAL_SUFFIX};
+pub use plan::{
+    BundleKind, Plan, PlanBlocker, PlanError, PlanTotals, PlannedAction, PlannedBundle,
+    PlannedFile, Unavailable, plan,
+};
+pub use profile::ProfileSettings;
+pub use rename::RenameMethod;
+
+/// Directory inside the library holding PhotoSquirrel's own files (manifest).
+pub const LIBRARY_META_DIR: &str = ".photosquirrel";
+
+/// Milliseconds since the Unix epoch.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}

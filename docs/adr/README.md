@@ -41,3 +41,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0035](0035-burst-protection-in-grouping.md) | Stricter capture-time rule for derivative edges (burst protection) |
 | [0036](0036-previews-for-llm-and-component-budgets.md) | LLM previews and component budgets |
 | [0037](0037-raw-jpeg-pairs-exempt-from-two-originals-rule.md) | RAW+JPEG pairs are exempt from the two-camera-originals rule |
+| [0038](0038-no-overwrite-rename.md) | No-overwrite atomic rename for export (rustix) |
