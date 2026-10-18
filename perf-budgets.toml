@@ -41,3 +41,18 @@ source = { kind = "test", package = "ps-media", test = "thumbnails", name = "sce
 
 # catalog (ADR-0005, ADR-0018, ADR-0026, ADR-0036). Insert throughput as time per row: 20 us = 50k rows/s, 1M
 # walk rows through the batching writer from two producer threads. ID list: median of 5 runs over 1M items.
+[[budget]]
+name = "catalog-insert"
+metric = "mean"
+max = 20.0
+unit = "us"
+change = "catalog"
+source = { kind = "test", package = "ps-catalog", test = "budgets", name = "scenario_catalog_insert_50k_rows_per_second" }
+
+[[budget]]
+name = "catalog-id-list-1m"
+metric = "median"
+max = 300.0
+unit = "ms"
+change = "catalog"
+source = { kind = "test", package = "ps-catalog", test = "budgets", name = "scenario_catalog_id_list_for_1m_within_300_ms" }

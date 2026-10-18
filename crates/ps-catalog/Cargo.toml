@@ -8,6 +8,18 @@ license.workspace = true
 
 [dependencies]
 ps-model.workspace = true
+rusqlite = { workspace = true, features = ["array"] }
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+directories.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+blake3.workspace = true
 
 [lints]
 workspace = true
