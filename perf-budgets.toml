@@ -2,3 +2,32 @@
 # CI checks relative regressions (>15%) against perf-baseline.json. All budgets are lower-is-better.
 # `change` names the OpenSpec change that adds the measurement; `source` says how `cargo xtask bench --check`
 # measures it (see xtask/src/bench.rs). Budgets are added by the changes that introduce the measured code.
+
+# content-hashing (ADR-0012, ADR-0026). Criterion benches for exploration: `cargo bench -p ps-hash --bench hashing`.
+[[budget]]
+name = "phash-dhash-per-image"
+metric = "median"
+max = 0.3
+unit = "ms"
+change = "content-hashing"
+source = { kind = "test", package = "ps-hash", test = "budgets", name = "scenario_perceptual_hashing_hash_cost_within_budget" }
+
+[[budget]]
+name = "near-dup-lookup-p95"
+metric = "p95"
+max = 1.0
+unit = "ms"
+change = "content-hashing"
+source = { kind = "test", package = "ps-hash", test = "budgets", name = "scenario_perceptual_hashing_lookup_within_budget" }
+
+[[budget]]
+name = "near-dup-index-build"
+metric = "min"
+max = 1000.0
+unit = "ms"
+change = "content-hashing"
+source = { kind = "test", package = "ps-hash", test = "budgets", name = "scenario_perceptual_hashing_index_build_under_one_second" }
+
+# media-analysis (ADR-0010, ADR-0016, ADR-0026, ADR-0036). Derived component budget: 15 worker cores at 150 files/s
+# leave 100 ms per 12 MP JPEG for the analysis decode + grid thumbnail on one core.
+# Criterion benches for exploration: `cargo bench -p ps-media --bench analyze`.

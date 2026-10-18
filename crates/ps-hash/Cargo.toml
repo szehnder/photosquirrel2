@@ -8,6 +8,20 @@ license.workspace = true
 
 [dependencies]
 ps-model.workspace = true
+blake3.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+image.workspace = true
+proptest.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "hashing"
+harness = false
 
 [lints]
 workspace = true
