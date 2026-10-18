@@ -50,7 +50,6 @@ file-system writer. ADR-0027 lists `fixtures` as a CLI subcommand.
 
 - Bursts (ADR-0035): include frames 0.3-2 s apart, same-second frames with different sub-second times, and same-second frames without sub-second times but with maker notes and equal dimensions; all must stay apart.
 
-  change's design.
 - [Encoder output differs across `image` versions] -> determinism is pinned by `Cargo.lock`; the
   same-seed test compares within one build.
 

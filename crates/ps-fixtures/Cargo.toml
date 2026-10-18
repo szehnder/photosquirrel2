@@ -8,6 +8,20 @@ license.workspace = true
 
 [dependencies]
 ps-model.workspace = true
+image = { workspace = true, features = ["jpeg", "gif"] }
+png.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ps-media.workspace = true
+nom-exif.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
