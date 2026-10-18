@@ -6,8 +6,34 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# HEIC/HEIF/AVIF decoding via libheif (ADR-0017). Off by default so the default build needs no system library.
+heic = ["dep:libheif-rs"]
+
 [dependencies]
 ps-model.workspace = true
+image.workspace = true
+zune-jpeg.workspace = true
+jpeg-decoder.workspace = true
+fast_image_resize.workspace = true
+nom-exif.workspace = true
+imagesize.workspace = true
+rawler.workspace = true
+libheif-rs = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+ps-fixtures.workspace = true
+proptest.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+tempfile.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "analyze"
+harness = false
 
 [lints]
 workspace = true
