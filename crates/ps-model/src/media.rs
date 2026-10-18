@@ -255,6 +255,16 @@ pub enum Stage {
 }
 
 impl Stage {
+    /// Every stage, in pipeline order.
+    pub const ALL: [Stage; 6] = [
+        Stage::Discovered,
+        Stage::Probed,
+        Stage::Analyzed,
+        Stage::Thumbed,
+        Stage::Skipped,
+        Stage::Failed,
+    ];
+
     /// No more scan work is needed for this file.
     pub fn is_terminal(self) -> bool {
         matches!(self, Stage::Thumbed | Stage::Skipped)

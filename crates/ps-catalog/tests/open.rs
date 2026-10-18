@@ -177,7 +177,24 @@ fn scenario_catalog_old_catalog_upgraded() {
     );
     assert!(latest_schema_version() > 1);
     cat.close().expect("close");
-    assert_eq!(snapshot(&path), before, "rows unchanged by the upgrade");
+    // Later migrations may add columns (3: `first_seen`); the existing columns are unchanged and the new
+    // ones are NULL for old rows.
+    let width = before[0].len();
+    let after = snapshot(&path);
+    assert!(
+        after
+            .iter()
+            .all(|r| r[width..].iter().all(|v| *v == Value::Null)),
+        "added columns are empty for old rows"
+    );
+    let after: Vec<Vec<Value>> = after
+        .into_iter()
+        .map(|mut r| {
+            r.truncate(width);
+            r
+        })
+        .collect();
+    assert_eq!(after, before, "rows unchanged by the upgrade");
 }
 
 #[test]

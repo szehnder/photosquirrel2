@@ -18,9 +18,11 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
 use parking_lot::Mutex;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
-use ps_model::{RunStatus, ScanRunId, SourceId, SourceStatus, Stage};
+use ps_model::{
+    FileId, PerceptualHash, RelPath, RunStatus, ScanRunId, SourceId, SourceStatus, Stage,
+};
 
 use crate::error::{CatalogError, Result, WriteError, WriteErrors};
 use crate::model::{
@@ -77,6 +79,37 @@ pub enum Command {
     },
     /// Start-up: runs left `running` by a crash become `interrupted` (ADR-0008).
     InterruptRunning,
+    /// Re-link a source to a new root (ADR-0006): new root path and volume facts, status `online`.
+    RelinkSource {
+        source: SourceId,
+        root: Vec<u8>,
+        volume_uuid: Option<String>,
+        device_hint: Option<String>,
+    },
+    /// Fold `inner` into `outer` (ADR-0006): the inner source's files move to `prefix/<their path>` in the
+    /// outer source keeping their ids, stages and results, and the inner source is marked folded. Where the
+    /// outer source already has a row at a folded path, the inner (older) row wins.
+    FoldSource {
+        inner: SourceId,
+        outer: SourceId,
+        prefix: RelPath,
+    },
+    /// Remove a source's catalog records: its files, their error rows, sources folded into it and the
+    /// source row itself. Nothing on disk is touched (ADR-0004).
+    RemoveSource { source: SourceId },
+    /// A file moved within its source (ADR-0007): the row at `from` takes over the path `to`, replacing the
+    /// row just discovered there, and takes that row's stat fingerprint. It keeps its id, first-seen time,
+    /// stage and results, and is no longer missing.
+    MoveFile { from: FileKey, to: FileKey },
+    /// Perceptual hashes recomputed by a hash-version upgrade (ADR-0012).
+    SetHashes(Vec<(FileId, PerceptualHash)>),
+    /// The user's include/exclude decision about a file (`None` clears it). Needs catalog migration 7
+    /// (`user_inclusion`, [`crate::db::GALLERY_MIGRATION`]); without it the command reports an error.
+    SetUserDecision {
+        file: FileId,
+        decision: Option<crate::UserDecision>,
+        reason: Option<String>,
+    },
 }
 
 impl Command {
@@ -91,6 +124,12 @@ impl Command {
             Command::SetSourceStatus { .. } => "set_source_status",
             Command::SetRunStatus { .. } => "set_run_status",
             Command::InterruptRunning => "interrupt_running",
+            Command::RelinkSource { .. } => "relink_source",
+            Command::FoldSource { .. } => "fold_source",
+            Command::RemoveSource { .. } => "remove_source",
+            Command::MoveFile { .. } => "move_file",
+            Command::SetHashes(_) => "set_hashes",
+            Command::SetUserDecision { .. } => "set_user_decision",
         }
     }
 }
@@ -470,7 +509,8 @@ impl WriterThread {
                 self.row(name, None, |c| {
                     c.prepare_cached(
                         "UPDATE scan_run SET status = ?2, stats = coalesce(?3, stats),
-                                ended_at = CASE WHEN ?4 THEN ?5 ELSE ended_at END
+                                ended_at = CASE WHEN ?4 THEN ?5 WHEN ?2 = 'running' THEN NULL
+                                                ELSE ended_at END
                          WHERE id = ?1",
                     )?
                     .execute(params![run.0, status.as_str(), stats, terminal, now_ms()])?;
@@ -491,6 +531,71 @@ impl WriterThread {
                 )?;
                 Ok(())
             }),
+            Command::RelinkSource {
+                source,
+                root,
+                volume_uuid,
+                device_hint,
+            } => self.row(name, None, |c| {
+                let n = c
+                    .prepare_cached(
+                        "UPDATE source SET root_path = ?2, volume_uuid = coalesce(?3, volume_uuid),
+                                device_hint = coalesce(?4, device_hint), status = 'online'
+                         WHERE id = ?1",
+                    )?
+                    .execute(params![source.0, root, volume_uuid, device_hint])?;
+                expect_one(n, "unknown source")
+            }),
+            Command::FoldSource {
+                inner,
+                outer,
+                prefix,
+            } => self.row(name, None, |c| fold_source(c, inner, outer, &prefix)),
+            Command::RemoveSource { source } => {
+                self.row(name, None, |c| remove_source(c, source))
+            }
+            Command::MoveFile { from, to } => {
+                self.row(name, Some(&to), |c| move_file(c, &from, &to))
+            }
+            Command::SetUserDecision {
+                file,
+                decision,
+                reason,
+            } => self.row(name, None, |c| {
+                match decision {
+                    Some(d) => {
+                        c.prepare_cached(
+                            "INSERT INTO user_inclusion (file_id, decision, reason, at)
+                             VALUES (?1, ?2, ?3, ?4)
+                             ON CONFLICT (file_id) DO UPDATE SET
+                                decision = excluded.decision, reason = excluded.reason, at = excluded.at",
+                        )?
+                        .execute(params![file.0, d.as_str(), reason, now_ms()])?;
+                    }
+                    None => {
+                        c.prepare_cached("DELETE FROM user_inclusion WHERE file_id = ?1")?
+                            .execute([file.0])?;
+                    }
+                }
+                Ok(())
+            }),
+            Command::SetHashes(rows) => {
+                for (id, h) in &rows {
+                    self.row(name, None, |c| {
+                        let n = c
+                            .prepare_cached(
+                                "UPDATE file SET phash = ?2, dhash = ?3, hash_version = ?4 WHERE id = ?1",
+                            )?
+                            .execute(params![
+                                id.0,
+                                h.phash as i64,
+                                h.dhash as i64,
+                                i64::from(h.version)
+                            ])?;
+                        expect_one(n, "unknown file")
+                    });
+                }
+            }
         }
     }
 }
@@ -546,8 +651,8 @@ static UPSERT_SQL: LazyLock<String> = LazyLock::new(|| {
     ));
     sets.push("missing_since = NULL".into());
     format!(
-        "INSERT INTO file (source_id, rel_path, name, size, mtime_ns, file_index)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO file (source_id, rel_path, name, size, mtime_ns, file_index, first_seen)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT (source_id, rel_path) DO UPDATE SET {}
          WHERE {changed} OR missing_since IS NOT NULL OR file_index IS NOT excluded.file_index",
         sets.join(",\n")
@@ -578,9 +683,9 @@ const ANALYZED_SQL: &str = "UPDATE file SET stage = 2,
 const INSERT_FULL_SQL: &str = "INSERT INTO file (source_id, rel_path, name, size, mtime_ns, file_index,
         stage, class, reasons, format, media_kind, width, height,
         content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_offset_min,
-        capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags)
+        capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3))
+            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26)
     ON CONFLICT (source_id, rel_path) DO NOTHING";
 
 fn upsert_file(c: &Connection, r: &FileRow) -> rusqlite::Result<()> {
@@ -591,7 +696,8 @@ fn upsert_file(c: &Connection, r: &FileRow) -> rusqlite::Result<()> {
         r.key.path.file_name(),
         r.stat.size as i64,
         r.stat.mtime_ns,
-        file_index
+        file_index,
+        now_ms()
     ];
     match &r.results {
         Results::None => {
@@ -687,6 +793,7 @@ fn insert_full(
         x.camera_model,
         x.has_gps,
         x.metadata,
+        now_ms(),
     ])
 }
 
@@ -748,6 +855,111 @@ fn set_failed(c: &Connection, f: &FileFailure, at: i64) -> rusqlite::Result<()> 
         codes::stage(f.stage),
         f.message,
         at
+    ])?;
+    Ok(())
+}
+
+fn fold_source(
+    c: &Connection,
+    inner: SourceId,
+    outer: SourceId,
+    prefix: &RelPath,
+) -> rusqlite::Result<()> {
+    if inner == outer {
+        return Err(rusqlite::Error::ModuleError(
+            "cannot fold a source into itself".into(),
+        ));
+    }
+    let rows: Vec<(i64, Vec<u8>)> = {
+        let mut stmt = c.prepare("SELECT id, rel_path FROM file WHERE source_id = ?1")?;
+        stmt.query_map([inner.0], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (id, rel) in rows {
+        let rel = RelPath::from_bytes(rel)
+            .ok_or_else(|| rusqlite::Error::ModuleError("invalid stored rel_path".into()))?;
+        let new_path = prefix.join(&rel);
+        // A row the outer source already has at this path is replaced by the inner one (it has history).
+        if let Some(existing) = c
+            .prepare_cached("SELECT id FROM file WHERE source_id = ?1 AND rel_path = ?2")?
+            .query_row(params![outer.0, new_path.as_bytes()], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()?
+        {
+            delete_file_row(c, existing)?;
+        }
+        c.prepare_cached("UPDATE file SET source_id = ?2, rel_path = ?3 WHERE id = ?1")?
+            .execute(params![id, outer.0, new_path.as_bytes()])?;
+    }
+    let n = c.execute(
+        "UPDATE source SET folded_into = ?2 WHERE id = ?1",
+        params![inner.0, outer.0],
+    )?;
+    expect_one(n, "unknown inner source")?;
+    // Sources previously folded into the inner one now belong to the outer one.
+    c.execute(
+        "UPDATE source SET folded_into = ?2 WHERE folded_into = ?1",
+        params![inner.0, outer.0],
+    )?;
+    Ok(())
+}
+
+fn delete_file_row(c: &Connection, id: i64) -> rusqlite::Result<()> {
+    c.prepare_cached("DELETE FROM file_error WHERE file_id = ?1")?
+        .execute([id])?;
+    c.prepare_cached("DELETE FROM file WHERE id = ?1")?
+        .execute([id])?;
+    Ok(())
+}
+
+fn remove_source(c: &Connection, source: SourceId) -> rusqlite::Result<()> {
+    c.execute(
+        "DELETE FROM file_error WHERE file_id IN (SELECT id FROM file WHERE source_id = ?1)",
+        [source.0],
+    )?;
+    c.execute("DELETE FROM file WHERE source_id = ?1", [source.0])?;
+    c.execute("DELETE FROM source WHERE folded_into = ?1", [source.0])?;
+    let n = c.execute("DELETE FROM source WHERE id = ?1", [source.0])?;
+    expect_one(n, "unknown source")
+}
+
+fn move_file(c: &Connection, from: &FileKey, to: &FileKey) -> rusqlite::Result<()> {
+    if from.source != to.source {
+        return Err(rusqlite::Error::ModuleError(
+            "a file can only move within its source".into(),
+        ));
+    }
+    let lookup = |k: &FileKey| -> rusqlite::Result<Option<(i64, i64, i64, Option<i64>)>> {
+        c.prepare_cached(
+            "SELECT id, size, mtime_ns, file_index FROM file WHERE source_id = ?1 AND rel_path = ?2",
+        )?
+        .query_row(params![k.source.0, k.path.as_bytes()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .optional()
+    };
+    let old = lookup(from)?.ok_or_else(|| rusqlite::Error::ModuleError("unknown file".into()))?;
+    let new = lookup(to)?;
+    let (size, mtime, index) = match new {
+        Some((new_id, size, mtime, index)) => {
+            delete_file_row(c, new_id)?;
+            (size, mtime, index)
+        }
+        None => (old.1, old.2, old.3),
+    };
+    c.prepare_cached(
+        "UPDATE file SET rel_path = ?2, name = ?3, size = ?4, mtime_ns = ?5, file_index = ?6,
+                missing_since = NULL, kflags = kflags & 15
+         WHERE id = ?1",
+    )?
+    .execute(params![
+        old.0,
+        to.path.as_bytes(),
+        to.path.file_name(),
+        size,
+        mtime,
+        index
     ])?;
     Ok(())
 }

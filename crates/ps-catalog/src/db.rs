@@ -27,7 +27,32 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
         name: "reserved",
         sql: include_str!("../migrations/0002_reserved.sql"),
     },
+    Migration {
+        version: 3,
+        name: "scanning",
+        sql: include_str!("../migrations/0003_scanning.sql"),
+    },
 ];
+
+/// Migration 6 (export change: `export_library`, `export_ledger`). Not yet in [`CATALOG_MIGRATIONS`]:
+/// migrations 4 (dedup) and 5 (AI) are owned by other changes and must land first, because a catalog
+/// migrated to 6 would never apply 4 and 5. Register it right after them (integration step of the export
+/// change).
+pub const EXPORT_MIGRATION: Migration = Migration {
+    version: 6,
+    name: "export",
+    sql: include_str!("../migrations/0006_export.sql"),
+};
+
+/// Migration 7 (gallery change: `user_inclusion`, camera-filter index). Not yet in [`CATALOG_MIGRATIONS`]
+/// for the same reason as [`EXPORT_MIGRATION`]: 4, 5 and 6 must land first. Until it is registered, the
+/// gallery queries detect the missing table ([`crate::Readers::has_user_decisions`]) and user decisions are
+/// unavailable.
+pub const GALLERY_MIGRATION: Migration = Migration {
+    version: 7,
+    name: "gallery",
+    sql: include_str!("../migrations/0007_gallery.sql"),
+};
 
 /// `thumbs.db` migrations.
 pub const THUMB_MIGRATIONS: &[Migration] = &[Migration {

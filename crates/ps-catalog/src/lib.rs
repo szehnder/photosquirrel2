@@ -14,6 +14,7 @@
 
 pub mod db;
 mod error;
+mod gallery;
 mod model;
 mod read;
 pub mod thumbs;
@@ -23,9 +24,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use error::{CatalogError, Result, WriteError, WriteErrors};
+pub use gallery::{
+    UserDecision, UserDecisionRecord, excluded_classes, is_library, library_classes,
+};
 pub use model::{
-    AnalysisResult, FileFailure, FileKey, FileRecord, FileRow, NewSource, ProbeResult, Results,
-    RunRecord, SourceRecord,
+    AnalysisResult, FileErrorRecord, FileFailure, FileKey, FileRecord, FileRow, NewSource,
+    ProbeResult, Results, RunRecord, SourceRecord,
 };
 pub use read::{PAGE_SIZE, Readers};
 pub use thumbs::{THUMBS_FILE, ThumbStore};

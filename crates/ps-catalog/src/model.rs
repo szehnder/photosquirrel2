@@ -159,6 +159,18 @@ pub struct FileRecord {
     pub has_gps: bool,
     pub attempts: u32,
     pub missing_since_ms: Option<i64>,
+    /// When the file was first catalogued (`None` for rows from before schema version 3).
+    pub first_seen_ms: Option<i64>,
+}
+
+/// One recorded failure of a file (`file_error` row).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileErrorRecord {
+    /// The stage that was being attempted.
+    pub stage: Stage,
+    pub message: String,
+    pub run: Option<ScanRunId>,
+    pub at_ms: i64,
 }
 
 impl FileRecord {

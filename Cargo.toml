@@ -62,6 +62,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 directories = "6"
 toml = "0.9"
 quick-xml = "0.41"
+# No-replace rename (renameat2 RENAME_NOREPLACE / renameatx_np RENAME_EXCL) and statvfs for ps-export.
+rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
 keyring = { version = "3", features = ["linux-native-sync-persistent", "apple-native", "windows-native", "crypto-rust"] }
 
 # Network (LLM providers)

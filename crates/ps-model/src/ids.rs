@@ -37,6 +37,10 @@ id!(
     /// One export run (ADR-0022).
     ExportRunId
 );
+id!(
+    /// A library folder exports are written to (ADR-0022, ADR-0023).
+    ExportLibraryId
+);
 
 /// How a [`ContentId`] was computed (ADR-0011).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

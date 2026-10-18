@@ -20,7 +20,7 @@ use ps_model::{
 
 use crate::db;
 use crate::error::{CatalogError, Result};
-use crate::model::{FileKey, FileRecord, RunRecord, SourceRecord, codes};
+use crate::model::{FileErrorRecord, FileKey, FileRecord, RunRecord, SourceRecord, codes};
 
 /// Largest detail page (ADR-0018).
 pub const PAGE_SIZE: usize = 512;
@@ -43,7 +43,7 @@ impl std::fmt::Debug for Readers {
 
 const FILE_COLUMNS: &str = "id, source_id, rel_path, size, mtime_ns, file_index, stage, class, reasons, format,
     width, height, content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_undated,
-    camera_model, has_gps, attempts, missing_since";
+    camera_model, has_gps, attempts, missing_since, first_seen";
 
 impl Readers {
     pub(crate) fn open(path: &Path, size: usize) -> Result<Readers> {
@@ -83,8 +83,8 @@ impl Readers {
 
     /// Number of files matching `filter`.
     pub fn count(&self, filter: &Filter) -> Result<u64> {
-        let (cond, args) = filter_sql(filter);
         self.with(|c| {
+            let (cond, args) = filter_sql_for(c, filter)?;
             let sql = format!("SELECT count(*) FROM file WHERE 1 {cond}");
             Ok(c.query_row(&sql, params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
         })
@@ -205,6 +205,48 @@ impl Readers {
         })
     }
 
+    /// Thumbed images whose stored perceptual hashes are of another algorithm version (ADR-0012): the
+    /// hash-upgrade job recomputes them from `thumbs.db`. Ordered by id.
+    pub fn stale_hashes(&self, version: u8) -> Result<Vec<(FileId, ContentId)>> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT id, content_id, identity_kind FROM file
+                 WHERE stage = 3 AND content_id IS NOT NULL AND hash_version IS NOT NULL
+                   AND hash_version != ?1
+                 ORDER BY id",
+            )?;
+            let mut rows = stmt.query([i64::from(version)])?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                let d: Vec<u8> = r.get(1)?;
+                let digest: [u8; 32] = d.try_into().map_err(|_| corrupt("content_id"))?;
+                let kind = codes::identity_kind_from(r.get::<_, Option<i64>>(2)?.unwrap_or(0));
+                out.push((FileId(r.get(0)?), ContentId { digest, kind }));
+            }
+            Ok(out)
+        })
+    }
+
+    /// The error rows of a file, oldest first.
+    pub fn file_errors(&self, id: FileId) -> Result<Vec<FileErrorRecord>> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT stage, message, run_id, at FROM file_error WHERE file_id = ?1 ORDER BY id",
+            )?;
+            let mut rows = stmt.query([id.0])?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                out.push(FileErrorRecord {
+                    stage: codes::stage_from(r.get(0)?).ok_or_else(|| corrupt("stage"))?,
+                    message: r.get(1)?,
+                    run: r.get::<_, Option<i64>>(2)?.map(ScanRunId),
+                    at_ms: r.get(3)?,
+                });
+            }
+            Ok(out)
+        })
+    }
+
     pub fn sources(&self) -> Result<Vec<SourceRecord>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
@@ -275,6 +317,18 @@ fn to_sql_err(e: CatalogError) -> rusqlite::Error {
     }
 }
 
+/// [`filter_sql`] for every field but the classes, then the class filter with user decisions and the
+/// gallery predicates ([`crate::gallery::extend_filter_sql`]).
+fn filter_sql_for(c: &Connection, f: &Filter) -> Result<(String, Vec<Value>)> {
+    let base = Filter {
+        classes: None,
+        ..f.clone()
+    };
+    let (mut sql, mut args) = filter_sql(&base);
+    crate::gallery::extend_filter_sql(c, f, &mut sql, &mut args)?;
+    Ok((sql, args))
+}
+
 /// `AND ...` conditions for a filter plus their bound values. Bound parameters only, never interpolated
 /// values.
 fn filter_sql(f: &Filter) -> (String, Vec<Value>) {
@@ -315,7 +369,7 @@ fn filter_sql(f: &Filter) -> (String, Vec<Value>) {
 }
 
 fn id_list(c: &Connection, filter: &Filter, sort: &Sort) -> Result<IdList> {
-    let (cond, args) = filter_sql(filter);
+    let (cond, args) = filter_sql_for(c, filter)?;
     let dir = if sort.descending { "DESC" } else { "ASC" };
     let tail = "kflags";
     let mut out = IdList::default();
@@ -468,5 +522,6 @@ fn file_record(r: &Row<'_>) -> Result<FileRecord> {
         has_gps: r.get(20)?,
         attempts: r.get(21)?,
         missing_since_ms: r.get(22)?,
+        first_seen_ms: r.get(23)?,
     })
 }
