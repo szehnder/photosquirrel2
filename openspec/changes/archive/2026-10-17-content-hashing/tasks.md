@@ -27,6 +27,6 @@
 
 ## 5. Verification
 
-- [ ] 5.1 `cargo xtask ci` is green
-- [ ] 5.2 `cargo xtask spec-coverage` reports every scenario of this change mapped
+- [x] 5.1 `cargo xtask ci` is green
+- [x] 5.2 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 5.3 `openspec validate content-hashing --strict` passes

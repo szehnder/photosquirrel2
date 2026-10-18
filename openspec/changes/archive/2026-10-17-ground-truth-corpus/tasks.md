@@ -29,7 +29,7 @@
 
 ## 6. Verification
 
-- [ ] 6.1 `cargo xtask ci` is green
+- [x] 6.1 `cargo xtask ci` is green
 - [x] 6.2 Gate: `cargo run -p photosquirrel-cli -- fixtures generate --seed 42 --preset small --out <tmp>` writes the corpus and `truth.json`
 - [x] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 6.4 `openspec validate ground-truth-corpus --strict` passes

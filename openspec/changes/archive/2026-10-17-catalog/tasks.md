@@ -25,7 +25,7 @@
 
 ## 5. Verification
 
-- [ ] 5.1 `cargo xtask ci` is green
+- [x] 5.1 `cargo xtask ci` is green
 - [x] 5.2 Gate: `cargo xtask bench --check` passes the two catalog budgets; migration tests pass
 - [x] 5.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 5.4 `openspec validate catalog --strict` passes

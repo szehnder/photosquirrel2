@@ -46,7 +46,7 @@
 
 ## 7. Verification
 
-- [ ] 7.1 `cargo xtask ci` is green
+- [x] 7.1 `cargo xtask ci` is green
 - [x] 7.2 `cargo test -p ps-media --no-default-features` passes (HEIC off)
 - [x] 7.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 7.4 `openspec validate media-analysis --strict` passes
