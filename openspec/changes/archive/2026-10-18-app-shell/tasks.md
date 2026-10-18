@@ -31,7 +31,7 @@
 
 ## 5. Verification
 
-- [ ] 5.1 `cargo xtask ci` is green
+- [x] 5.1 `cargo xtask ci` is green
 - [x] 5.2 Gate: window opens (`cargo xtask screenshot --all-surfaces` reviewed in dark and light), `cargo xtask tokens` passes, settings persist across restart
 - [x] 5.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 5.4 `openspec validate app-shell --strict` passes
