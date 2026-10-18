@@ -9,6 +9,12 @@ license.workspace = true
 [dependencies]
 gpui-kit.workspace = true
 ui-workspace.workspace = true
+ps-model.workspace = true
+ps-service.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+log.workspace = true
+directories.workspace = true
 
 [lints]
 workspace = true

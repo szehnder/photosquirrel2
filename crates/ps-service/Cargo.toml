@@ -13,6 +13,15 @@ ps-scan.workspace = true
 ps-dedup.workspace = true
 ps-llm.workspace = true
 ps-export.workspace = true
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+log.workspace = true
+directories.workspace = true
+keyring.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

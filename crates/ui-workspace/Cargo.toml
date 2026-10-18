@@ -11,6 +11,16 @@ gpui-kit.workspace = true
 ui-theme.workspace = true
 ui-gallery.workspace = true
 ps-service.workspace = true
+ps-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+anyhow.workspace = true
+directories.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

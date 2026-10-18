@@ -274,3 +274,34 @@ focus has settled in a new tab. States that depend on those (debug sessions, the
 assistant card) need `--command-delay SECONDS`. On KDE, `cargo xtask screenshot` activates the Gremliner window
 through a KWin script before `spectacle -a`, but check that the PNG is the app's size (1570×1058 at the default
 window size) when the delay is long; focus can still move.
+
+## gpui-kit 0.7.3 differences (app-shell)
+
+- **`test-support` pulls `gpui-fast` into Cargo.lock.** gpui-kit 0.7.3's `test-support` feature lists weak
+  features (`gpui-fast?/test-support`); Cargo still resolves the optional dependency for the lockfile
+  (rust-lang/cargo#10801). `gpui-fast` pins exact versions that conflicted with our lock (`cocoa =0.26.0`,
+  `unicode-properties`). Fix: lock `cocoa` 0.26.0 and `unicode-properties` 0.1.3 (what a fresh resolve picks).
+  `cargo update -p X --precise` fails one package at a time here because every attempt re-resolves the rest.
+- **`.test_support()` changes the element type** when `test-support` is on: it returns `Observed<Stateful<Div>>`,
+  not `Stateful<Div>`. Helpers that return a styled element must return `AnyElement` (or `impl IntoElement`
+  with explicit `use<..>` captures), never a concrete `Stateful<Div>`.
+- `FluentBuilder` (`.when`, `.when_some`) is not in `gpui_kit::*`: `use gpui_kit::prelude::FluentBuilder as _;`.
+  gpui-kit's `Input` does not implement it; branch on the builder by hand.
+- **The test scheduler rejects wake-ups from foreign threads** ("Detected activity on thread ... Your test is
+  not deterministic"). A foreground task awaiting a `futures::oneshot` filled by a real OS thread (our
+  `ps-service` thread) fails the test. `ui_workspace::service::Reply` is polled on GPUI timers instead
+  (1 ms backing off to 8 ms, only while a call is pending); tests advance the fake clock
+  (`cx.executor().advance_clock(..)`) while waiting.
+- **Resizable splitters without the dock:** `div().on_drag(Marker(side), |m, _, _, cx| cx.new(|_| *m))` on the
+  grip and `.on_drag_move::<Marker>(cx.listener(..))` on the root; `DragMoveEvent::bounds` is the root's bounds,
+  so a panel width is `pos.x - bounds.left()` (or `bounds.right() - pos.x`). `window.drag(from, to, cx)`
+  (TestWindowExt) drives it in tests.
+- **Single-letter shortcuts** bind in `"Shell && !Input"`: `!Input` is evaluated over the whole context path,
+  so they never fire while any text field has focus.
+- **First-frame-only screenshots:** on KDE Wayland agent-launched windows often get just one frame, so state
+  set after it (an async query result, a `--command` dispatched in `on_next_frame`) never reaches the PNG. The
+  shell waits up to 3 ms for an instant catalog answer before its first frame (`Reply::wait_briefly`), and
+  `--command shell::OpenSettings` / `OpenCommandPalette` / view commands are applied while the window is built
+  (`Shell::apply_startup_command`). `img()` with an asset PNG also loads asynchronously (blank in frame one);
+  the brand mark is a tinted vector icon instead.
+- `Hsla::opacity(f)` multiplies alpha; `Rems * f32` works for proportional sizes.

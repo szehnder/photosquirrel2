@@ -6114,8 +6114,18 @@ dependencies = [
 name = "ps-dedup"
 version = "0.1.0"
 dependencies = [
+ "proptest",
+ "ps-fixtures",
  "ps-hash",
+ "ps-media",
  "ps-model",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "rayon",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -6201,10 +6211,21 @@ dependencies = [
 name = "ps-scan"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "crossbeam-channel",
+ "log",
+ "parking_lot",
  "ps-catalog",
+ "ps-fixtures",
  "ps-hash",
  "ps-media",
  "ps-model",
+ "rayon",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

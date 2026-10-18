@@ -13,8 +13,13 @@ const UI_DIRS: &[&str] = &[
 const PATTERNS: &[&str] = &["rgb(", "rgba(", "hsla(", "Hsla {", "px(0x"];
 
 pub fn check(root: &Path) -> Result<()> {
+    check_dirs(root, UI_DIRS)
+}
+
+/// [`check`] over `dirs` (relative to `root`).
+pub fn check_dirs(root: &Path, dirs: &[&str]) -> Result<()> {
     let mut hits = Vec::new();
-    for dir in UI_DIRS {
+    for dir in dirs {
         visit(&root.join(dir), &mut |path, text| {
             let rel = path.strip_prefix(root).unwrap_or(path);
             let in_theme = rel.components().any(|c| c.as_os_str() == "theme")
@@ -86,7 +91,35 @@ fn visit(dir: &Path, f: &mut dyn FnMut(&Path, &str)) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::has_raw_px;
+    use super::{check_dirs, has_raw_px};
+
+    #[test]
+    fn scenario_theming_raw_colour_literal_rejected() {
+        let root = std::env::temp_dir().join(format!("ps-token-check-{}", std::process::id()));
+        let src = root.join("crates/ui-workspace/src");
+        std::fs::create_dir_all(src.join("theme")).unwrap();
+        std::fs::write(
+            src.join("view.rs"),
+            "fn f() {\n    let ok = colors.text;\n    div().bg(rgb(0xff0000));\n}\n",
+        )
+        .unwrap();
+        // Theme modules may hold raw colours.
+        std::fs::write(
+            src.join("theme/palette.rs"),
+            "const A: u32 = rgb(0x101010);\n",
+        )
+        .unwrap();
+        let err = check_dirs(&root, &["crates/ui-workspace/src"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("1 design-token violation"), "{err}");
+        // The report names the file and line (printed to stderr); check it directly too.
+        let text = std::fs::read_to_string(src.join("view.rs")).unwrap();
+        assert_eq!(text.lines().position(|l| l.contains("rgb(")), Some(2));
+        std::fs::write(src.join("view.rs"), "fn f() { div().bg(colors.text); }\n").unwrap();
+        assert!(check_dirs(&root, &["crates/ui-workspace/src"]).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn detects_numeric_px() {
