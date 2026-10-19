@@ -6,7 +6,7 @@
 //! - [`prompt`]: the versioned insight prompt; [`validate`]: parsing an answer as `ImageInsight` v1;
 //!   [`describe::Describer`]: request + validation + one repair round.
 //! - [`preview`]: the 1024 px JPEG that is the only thing ever uploaded (ADR-0036).
-//! - [`http`]: timeouts (connect 5 s, request 120 s), retries with backoff, `retry-after`.
+//! - [`http`]: timeouts (connect 5 s; request 120 s hosted, 300 s local), retries with backoff, `retry-after`.
 //! - [`consent`]: hosted providers need explicit consent naming the provider (ADR-0021).
 //! - [`queue`]: the AI queue engine (concurrency, rate limit, start/pause, progress) over a [`queue::QueueStore`].
 //! - [`runtime`]: the tokio runtime owned by this crate (ADR-0009).

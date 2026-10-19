@@ -48,7 +48,10 @@ impl std::fmt::Debug for ApiKey {
     }
 }
 
-/// Connect and whole-request timeouts. Local vision models are slow, so the request timeout is generous.
+/// Request timeout for local (loopback / private-network) providers.
+pub const LOCAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Connect and whole-request timeouts. Hosted providers default to 120 s; local ones get [`LOCAL_REQUEST_TIMEOUT`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timeouts {
     pub connect: Duration,
@@ -284,6 +287,18 @@ impl ProviderConfig {
             cfg.model = ai.model.trim().to_owned();
         }
         cfg.api_key = api_key;
+        // Local vision models on modest hardware can take minutes per image; don't fail them on a hosted-API
+        // timeout. `PHOTOSQUIRREL_LLM_TIMEOUT_S` overrides either default.
+        if !cfg.is_hosted() {
+            cfg.timeouts.request = LOCAL_REQUEST_TIMEOUT;
+        }
+        if let Some(secs) = std::env::var("PHOTOSQUIRREL_LLM_TIMEOUT_S")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|s| *s > 0)
+        {
+            cfg.timeouts.request = Duration::from_secs(secs);
+        }
         cfg
     }
 
@@ -378,5 +393,18 @@ mod tests {
             format!("{:?}", ApiKey::new("sk-secret")),
             "ApiKey(<redacted>)"
         );
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn local_providers_get_the_long_request_timeout() {
+        let local = ProviderConfig::default_local();
+        assert_eq!(local.timeouts.request, LOCAL_REQUEST_TIMEOUT);
+        let hosted = ProviderConfig::from_preset(preset("openai").expect("openai preset"));
+        assert_eq!(hosted.timeouts.request, Timeouts::default().request);
     }
 }

@@ -2,7 +2,8 @@
 //!
 //! `PHOTOSQUIRREL_LIVE_LLM=1 cargo test -p ps-llm --test live -- --nocapture`
 //! Optional: `PHOTOSQUIRREL_LIVE_LLM_URL` (default `http://localhost:1234/v1`), `PHOTOSQUIRREL_LIVE_LLM_MODEL`
-//! (default: the loaded vision model), `PHOTOSQUIRREL_LIVE_LLM_IMAGES` (default 1).
+//! (default: the loaded vision model), `PHOTOSQUIRREL_LIVE_LLM_IMAGES` (default 1),
+//! `PHOTOSQUIRREL_LIVE_LLM_TIMEOUT_S` (default 600 per request).
 //! Only synthetic `ps-fixtures` scenes are sent, never real photos. Skipped (passes) without the variable.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -34,6 +35,13 @@ fn scenario_llm_providers_live_lm_studio_smoke() {
         return;
     }
     let mut cfg = ProviderConfig::default_local();
+    // This machine runs local models slowly: allow up to 10 minutes per image unless overridden.
+    cfg.timeouts.request = std::time::Duration::from_secs(
+        std::env::var("PHOTOSQUIRREL_LIVE_LLM_TIMEOUT_S")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600),
+    );
     if let Ok(u) = std::env::var("PHOTOSQUIRREL_LIVE_LLM_URL") {
         cfg.base_url = u;
     }
