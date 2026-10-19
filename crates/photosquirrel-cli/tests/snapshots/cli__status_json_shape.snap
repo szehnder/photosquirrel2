@@ -1,0 +1,33 @@
+---
+source: crates/photosquirrel-cli/tests/cli.rs
+expression: shape(&v)
+---
+{
+  "command": "string",
+  "data": {
+    "data_dir": "string",
+    "groups": {
+      "grouped_files": "number",
+      "groups": "number",
+      "reclaimable_bytes": "number",
+      "suggestions": "number"
+    },
+    "live": "null",
+    "runs": [
+      {
+        "elapsed_ms": "number",
+        "ended_at_ms": "number",
+        "errors": "number",
+        "id": "number",
+        "processed": "number",
+        "sources": [
+          "number"
+        ],
+        "started_at_ms": "number",
+        "status": "string"
+      }
+    ],
+    "sources": "number"
+  },
+  "schema_version": "number"
+}

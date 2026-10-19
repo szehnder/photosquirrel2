@@ -11,15 +11,25 @@ name = "photosquirrel-cli"
 path = "src/main.rs"
 
 [dependencies]
-# ps-service joins with the headless-cli change; `fixtures` only needs the corpus generator.
 ps-fixtures.workspace = true
+ps-service.workspace = true
+ps-catalog.workspace = true
+ps-model.workspace = true
+ps-media.workspace = true
+ps-export.workspace = true
+ps-llm.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ctrlc.workspace = true
+log.workspace = true
+env_logger.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+insta.workspace = true
+ps-llm = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true
