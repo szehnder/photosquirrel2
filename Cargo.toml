@@ -73,6 +73,8 @@ url = "2"
 
 # CLI / dev
 clap = { version = "4", features = ["derive", "env"] }
+# Cooperative Ctrl-C in the CLI (headless-cli design: no hand-written signal handler under `unsafe_code = "deny"`).
+ctrlc = "3.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 log = "0.4"
 ureq = { version = "3", features = ["json"] }

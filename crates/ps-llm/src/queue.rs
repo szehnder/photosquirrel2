@@ -100,7 +100,7 @@ pub struct QueueConfig {
 }
 
 /// Default requests per minute for hosted providers (spec "Concurrency and rate limits").
-pub const HOSTED_DEFAULT_RPM: u32 = 30;
+pub const HOSTED_DEFAULT_RPM: u32 = ps_model::settings::HOSTED_DEFAULT_REQUESTS_PER_MINUTE;
 
 impl QueueConfig {
     pub fn local(provider_name: &str) -> Self {
@@ -118,7 +118,7 @@ impl QueueConfig {
         let hosted = provider.is_hosted();
         Self {
             concurrency: ai.max_concurrent_requests.clamp(1, 64) as usize,
-            requests_per_minute: Some(ai.requests_per_minute).filter(|n| *n > 0),
+            requests_per_minute: ai.effective_requests_per_minute().filter(|n| *n > 0),
             provider_name: provider.name.clone(),
             hosted,
             hosted_consent: ai.hosted_consent,

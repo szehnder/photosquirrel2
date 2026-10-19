@@ -10,6 +10,7 @@
 //! - [`progress`]: atomic counters and the recent ring behind progress snapshots (ADR-0019).
 //! - [`Scanner`]: the engine API the service facade wraps (sources, runs, control, snapshots).
 //! - [`upgrade`]: perceptual-hash upgrades from the thumbnail store (ADR-0012).
+//! - [`post`]: the post-scan stage, incremental duplicate regrouping persisted through the catalog writer.
 //!
 //! Threads, not async: one walk thread and one lane (1-16 readers) per source, bounded crossbeam queues, a
 //! rayon pool of cores minus one for CPU work, one persist thread, and the catalog's single writer.
@@ -22,6 +23,7 @@ pub mod lane;
 pub mod memory;
 mod options;
 mod pipeline;
+pub mod post;
 pub mod progress;
 mod report;
 mod scanner;
@@ -34,6 +36,7 @@ pub use error::{Result, ScanError};
 pub use fs::{Instrumentation, SourceFs};
 pub use options::{DeviceClassFn, ScanOptions, default_cpu_threads};
 pub use pipeline::CHUNK;
+pub use post::{GroupEngine, RegroupReport};
 pub use report::{RunSummary, SourceSummary};
 pub use scanner::{AddedSource, Confirmation, Scanner, SourceInfo};
 pub use upgrade::{HashUpgradeReport, upgrade_hashes, upgrade_hashes_current};

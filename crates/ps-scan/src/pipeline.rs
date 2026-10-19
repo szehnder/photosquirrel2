@@ -79,6 +79,8 @@ pub(crate) struct RunCtx {
     pub sources: Vec<RunSource>,
     pub changed_during_scan: AtomicU64,
     pub retries_exhausted: AtomicU64,
+    /// The post-scan regroup engine (shared by every run of the scanner).
+    pub groups: Arc<crate::post::GroupEngine>,
 }
 
 impl RunCtx {
@@ -175,7 +177,20 @@ pub(crate) fn execute(ctx: Arc<RunCtx>) -> RunSummary {
     } else {
         RunStatus::Completed
     };
-    let summary = summarize(&ctx, status, started.elapsed());
+    // 4. Post stage: regroup the new and changed files (a cancelled run regroups when resumed).
+    let grouping = if status == RunStatus::Completed {
+        match ctx.groups.refresh(&ctx.catalog) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                log::error!("scan run {}: regroup: {e}", ctx.run);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut summary = summarize(&ctx, status, started.elapsed());
+    summary.grouping = grouping;
     ctx.submit(Command::SetRunStatus {
         run: ctx.run,
         status,
@@ -226,6 +241,7 @@ fn summarize(ctx: &RunCtx, status: RunStatus, elapsed: Duration) -> RunSummary {
         errors: snap.errors,
         changed_during_scan: ctx.changed_during_scan.load(Ordering::Relaxed),
         retries_exhausted: ctx.retries_exhausted.load(Ordering::Relaxed),
+        grouping: None,
     }
 }
 

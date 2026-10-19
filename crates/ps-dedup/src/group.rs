@@ -2,8 +2,10 @@
 //! separation constraints, the 60 s chain-merge guard, user merges, per-member explanations, similar-shot
 //! suggestions, and incremental regrouping that equals a full regroup.
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
+use std::hash::Hash;
 
 use ps_hash::{NearDupIndex, PERCEPTUAL_HASH_VERSION, Thresholds};
 use ps_model::{ContentId, FileId};
@@ -136,9 +138,17 @@ impl Grouping {
 
 /// Grouping engine over one complete set of inputs: candidate indexes (content identity and the MIH
 /// near-duplicate index) plus constraints. Build once; group fully or incrementally.
+///
+/// A grouper either borrows its inputs ([`Grouper::new`]) or owns them ([`Grouper::owned`]); either way it can
+/// be kept and updated in place ([`Grouper::upsert`], [`Grouper::remove`], [`Grouper::set_constraints`]) so
+/// that a long-lived engine regroups a few new files against a million without rebuilding its indexes
+/// ([`Grouper::regroup_live`]).
 pub struct Grouper<'a> {
-    inputs: &'a [DedupInput],
-    constraints: &'a Constraints,
+    /// Input slots; a removed or replaced input leaves a dead slot (`live[i] == false`) until compaction.
+    inputs: Cow<'a, [DedupInput]>,
+    live: Vec<bool>,
+    dead: usize,
+    constraints: Cow<'a, Constraints>,
     pos: FxHashMap<FileId, usize>,
     exact: FxHashMap<ExactKey, Vec<u32>>,
     exact_of: Vec<Option<ExactKey>>,
@@ -157,6 +167,10 @@ struct Edge {
 impl<'a> Grouper<'a> {
     /// Index `inputs` (file ids must be unique).
     pub fn new(inputs: &'a [DedupInput], constraints: &'a Constraints) -> Self {
+        Self::build(Cow::Borrowed(inputs), Cow::Borrowed(constraints))
+    }
+
+    fn build(inputs: Cow<'a, [DedupInput]>, constraints: Cow<'a, Constraints>) -> Self {
         let mut pos = FxHashMap::default();
         let mut exact: FxHashMap<ExactKey, Vec<u32>> = FxHashMap::default();
         let mut by_content: FxHashMap<ContentId, Vec<u32>> = FxHashMap::default();
@@ -182,12 +196,10 @@ impl<'a> Grouper<'a> {
                 .filter_map(|(i, x)| Some((i as u32, x.hash?))),
         )
         .unwrap_or_else(|_| unreachable!("eligible hashes have the current version"));
-        let mut sep_partners: FxHashMap<ContentId, Vec<ContentId>> = FxHashMap::default();
-        for &(a, b) in &constraints.separations {
-            sep_partners.entry(a).or_default().push(b);
-            sep_partners.entry(b).or_default().push(a);
-        }
+        let sep_partners = sep_partners(&constraints);
         Self {
+            live: vec![true; inputs.len()],
+            dead: 0,
             inputs,
             constraints,
             pos,
@@ -199,13 +211,46 @@ impl<'a> Grouper<'a> {
         }
     }
 
-    pub fn inputs(&self) -> &'a [DedupInput] {
+    /// Number of (live) inputs.
+    pub fn len(&self) -> usize {
+        self.pos.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pos.is_empty()
+    }
+
+    /// The input of file `f`.
+    pub fn input(&self, f: FileId) -> Option<&DedupInput> {
+        self.pos.get(&f).map(|&i| &self.inputs[i])
+    }
+
+    /// Every live input, in slot order.
+    pub fn live_inputs(&self) -> impl Iterator<Item = &DedupInput> {
         self.inputs
+            .iter()
+            .zip(&self.live)
+            .filter(|(_, l)| **l)
+            .map(|(x, _)| x)
+    }
+
+    pub fn constraints(&self) -> &Constraints {
+        &self.constraints
+    }
+
+    /// Files whose content identity is `c`.
+    pub fn files_with_content(&self, c: &ContentId) -> Vec<FileId> {
+        self.by_content
+            .get(c)
+            .map(|v| v.iter().map(|&i| self.inputs[i as usize].file).collect())
+            .unwrap_or_default()
     }
 
     /// Group every input.
     pub fn group_all(&self) -> Grouping {
-        let all: Vec<u32> = (0..self.inputs.len() as u32).collect();
+        let all: Vec<u32> = (0..self.inputs.len() as u32)
+            .filter(|&i| self.live[i as usize])
+            .collect();
         let (groups, suggestions) = self.compute(&all);
         self.finish(groups, suggestions)
     }
@@ -216,48 +261,15 @@ impl<'a> Grouper<'a> {
     pub fn regroup(&self, prev: &Grouping, changed: &[FileId]) -> Grouping {
         let changed: FxHashSet<FileId> = changed.iter().copied().collect();
         let prev_index = prev.index();
-        let mut in_a = vec![false; self.inputs.len()];
-        let mut queue: Vec<u32> = Vec::new();
-        let mut touched_groups: FxHashSet<usize> = FxHashSet::default();
-        let push = |i: u32, in_a: &mut Vec<bool>, q: &mut Vec<u32>| {
-            if !in_a[i as usize] {
-                in_a[i as usize] = true;
-                q.push(i);
-            }
-        };
-        for f in &changed {
-            if let Some(&i) = self.pos.get(f) {
-                push(i as u32, &mut in_a, &mut queue);
-            }
-            if let Some(&g) = prev_index.get(f) {
-                touched_groups.insert(g);
-            }
-        }
-        let mut expanded_groups: FxHashSet<usize> = FxHashSet::default();
-        loop {
-            for &g in &touched_groups {
-                if expanded_groups.insert(g) {
-                    for m in &prev.groups[g].members {
-                        if let Some(&i) = self.pos.get(&m.file) {
-                            push(i as u32, &mut in_a, &mut queue);
-                        }
-                    }
+        let in_a = self.affected(
+            &changed,
+            |f| prev_index.get(&f).copied(),
+            |g, push| {
+                for m in &prev.groups[g].members {
+                    push(m.file);
                 }
-            }
-            if queue.is_empty() {
-                break;
-            }
-            while let Some(i) = queue.pop() {
-                if let Some(&g) = prev_index.get(&self.inputs[i as usize].file)
-                    && !expanded_groups.contains(&g)
-                {
-                    touched_groups.insert(g);
-                }
-                for j in self.raw_links(i) {
-                    push(j, &mut in_a, &mut queue);
-                }
-            }
-        }
+            },
+        );
         let affected: Vec<u32> = (0..self.inputs.len() as u32)
             .filter(|&i| in_a[i as usize])
             .collect();
@@ -274,6 +286,217 @@ impl<'a> Grouper<'a> {
             }
         }
         self.finish(groups, suggestions)
+    }
+
+    /// [`Self::regroup`] against a [`LiveGrouping`] updated in place: only the affected groups and suggestions
+    /// are recomputed, and the returned delta lists exactly what changed (for persistence). Afterwards
+    /// `live.to_grouping(self)` equals [`Self::group_all`].
+    pub fn regroup_live(&self, live: &mut LiveGrouping, changed: &[FileId]) -> GroupingDelta {
+        let changed: FxHashSet<FileId> = changed.iter().copied().collect();
+        let in_a = self.affected(
+            &changed,
+            |f| live.group_of.get(&f).copied(),
+            |k, push| {
+                if let Some(g) = live.groups.get(&k) {
+                    for m in &g.members {
+                        push(m.file);
+                    }
+                }
+            },
+        );
+        let affected: Vec<u32> = (0..self.inputs.len() as u32)
+            .filter(|&i| in_a[i as usize])
+            .collect();
+        let (groups, suggestions) = self.compute(&affected);
+        let mut gone: Vec<FileId> = changed.iter().copied().collect();
+        gone.extend(affected.iter().map(|&i| self.inputs[i as usize].file));
+        let mut old_groups: FxHashMap<FileId, Group> = FxHashMap::default();
+        let mut old_sugg: FxHashMap<(FileId, FileId), Suggestion> = FxHashMap::default();
+        for &f in &gone {
+            if let Some(k) = live.group_of.get(&f).copied()
+                && let Some(g) = live.remove_group(k)
+            {
+                old_groups.insert(k, g);
+            }
+            for s in live.remove_suggestions_of(f) {
+                old_sugg.insert((s.file_a, s.file_b), s);
+            }
+        }
+        let mut delta = GroupingDelta::default();
+        for g in groups {
+            let k = g.members[0].file;
+            if old_groups.remove(&k).as_ref() != Some(&g) {
+                delta.groups.push(g.clone());
+            }
+            live.insert_group(g);
+        }
+        for s in suggestions {
+            let k = (s.file_a, s.file_b);
+            if live.suggestions.contains_key(&k) {
+                continue;
+            }
+            if old_sugg.remove(&k).as_ref() != Some(&s) {
+                delta.suggestions.push(s.clone());
+            }
+            live.insert_suggestion(s);
+        }
+        delta.removed_groups = old_groups.into_keys().collect();
+        delta.removed_groups.sort();
+        delta.removed_suggestions = old_sugg.into_keys().collect();
+        delta.removed_suggestions.sort();
+        delta.groups.sort_by_key(|g| g.members[0].file);
+        delta.suggestions.sort_by_key(|s| (s.file_a, s.file_b));
+        delta
+    }
+
+    /// The closed set of input slots a change can affect: the changed files, every file linked to an affected
+    /// file by any automatic edge or user merge, and every member of a previous group of an affected file.
+    fn affected<K: Copy + Eq + Hash>(
+        &self,
+        changed: &FxHashSet<FileId>,
+        group_of: impl Fn(FileId) -> Option<K>,
+        members: impl Fn(K, &mut dyn FnMut(FileId)),
+    ) -> Vec<bool> {
+        let mut in_a = vec![false; self.inputs.len()];
+        let mut queue: Vec<u32> = Vec::new();
+        let mut touched_groups: FxHashSet<K> = FxHashSet::default();
+        let push = |i: u32, in_a: &mut Vec<bool>, q: &mut Vec<u32>| {
+            if !in_a[i as usize] {
+                in_a[i as usize] = true;
+                q.push(i);
+            }
+        };
+        for f in changed {
+            if let Some(&i) = self.pos.get(f) {
+                push(i as u32, &mut in_a, &mut queue);
+            }
+            if let Some(g) = group_of(*f) {
+                touched_groups.insert(g);
+            }
+        }
+        let mut expanded_groups: FxHashSet<K> = FxHashSet::default();
+        loop {
+            let pending: Vec<K> = touched_groups
+                .iter()
+                .copied()
+                .filter(|g| !expanded_groups.contains(g))
+                .collect();
+            for g in pending {
+                expanded_groups.insert(g);
+                members(g, &mut |f| {
+                    if let Some(&i) = self.pos.get(&f) {
+                        push(i as u32, &mut in_a, &mut queue);
+                    }
+                });
+            }
+            if queue.is_empty() {
+                break;
+            }
+            while let Some(i) = queue.pop() {
+                if let Some(g) = group_of(self.inputs[i as usize].file)
+                    && !expanded_groups.contains(&g)
+                {
+                    touched_groups.insert(g);
+                }
+                for j in self.raw_links(i) {
+                    push(j, &mut in_a, &mut queue);
+                }
+            }
+        }
+        in_a
+    }
+
+    /// Add an input, or replace the input of the same file. Indexes are updated in place (no rebuild).
+    pub fn upsert(&mut self, x: DedupInput) {
+        self.remove(x.file);
+        let i = self.inputs.len();
+        assert!(i < u32::MAX as usize, "too many inputs");
+        let k = x.exact_key();
+        if let Some(k) = k {
+            self.exact.entry(k).or_default().push(i as u32);
+        }
+        if let Some(c) = x.content {
+            self.by_content.entry(c).or_default().push(i as u32);
+        }
+        if derivative_eligible(&x).is_ok()
+            && let Some(h) = x.hash
+        {
+            self.index
+                .insert(i as u32, h)
+                .unwrap_or_else(|_| unreachable!("eligible hashes have the current version"));
+        }
+        self.pos.insert(x.file, i);
+        self.exact_of.push(k);
+        self.live.push(true);
+        self.inputs.to_mut().push(x);
+    }
+
+    /// Remove the input of file `f`; `false` when there was none. Compacts once most slots are dead.
+    pub fn remove(&mut self, f: FileId) -> bool {
+        let Some(i) = self.pos.remove(&f) else {
+            return false;
+        };
+        let slot = i as u32;
+        self.live[i] = false;
+        self.dead += 1;
+        if let Some(k) = self.exact_of[i]
+            && let Some(b) = self.exact.get_mut(&k)
+        {
+            b.retain(|&j| j != slot);
+            if b.is_empty() {
+                self.exact.remove(&k);
+            }
+        }
+        if let Some(c) = self.inputs[i].content
+            && let Some(b) = self.by_content.get_mut(&c)
+        {
+            b.retain(|&j| j != slot);
+            if b.is_empty() {
+                self.by_content.remove(&c);
+            }
+        }
+        if self.dead > 4096 && self.dead > self.pos.len() {
+            self.compact();
+        }
+        true
+    }
+
+    /// Rebuild the indexes over the live inputs only.
+    fn compact(&mut self) {
+        let live: Vec<DedupInput> = self.live_inputs().cloned().collect();
+        let constraints = Cow::Owned(self.constraints.as_ref().clone());
+        let rebuilt = Grouper::build(Cow::Owned(live), constraints);
+        *self = rebuilt;
+    }
+
+    /// Replace the constraints. Returns the files whose grouping may change (every file of a content named by
+    /// a constraint that was added or removed): pass them to [`Self::regroup`] / [`Self::regroup_live`].
+    pub fn set_constraints(&mut self, c: Constraints) -> Vec<FileId> {
+        let old = self.constraints.as_ref();
+        let mut contents: BTreeSet<ContentId> = BTreeSet::new();
+        for (a, b) in old.separations.symmetric_difference(&c.separations) {
+            contents.insert(*a);
+            contents.insert(*b);
+        }
+        for (a, b) in old.merges.symmetric_difference(&c.merges) {
+            contents.insert(*a);
+            contents.insert(*b);
+        }
+        for x in old
+            .keeper_overrides
+            .symmetric_difference(&c.keeper_overrides)
+        {
+            contents.insert(*x);
+        }
+        self.sep_partners = sep_partners(&c);
+        self.constraints = Cow::Owned(c);
+        let mut files: Vec<FileId> = contents
+            .iter()
+            .flat_map(|c| self.files_with_content(c))
+            .collect();
+        files.sort();
+        files.dedup();
+        files
     }
 
     fn finish(&self, mut groups: Vec<Group>, mut suggestions: Vec<Suggestion>) -> Grouping {
@@ -338,7 +561,7 @@ impl<'a> Grouper<'a> {
         };
         for c in cands {
             let j = c.key;
-            if j == i {
+            if j == i || !self.live[j as usize] {
                 continue;
             }
             if self.exact_of[i as usize].is_some()
@@ -804,6 +1027,142 @@ fn connected_parts(part: &[u32], adj: &[Vec<(u32, EdgeKind)>]) -> Vec<Vec<u32>> 
         out.push(comp);
     }
     out
+}
+
+impl Grouper<'static> {
+    /// A grouper owning its inputs and constraints (long-lived engines).
+    pub fn owned(inputs: Vec<DedupInput>, constraints: Constraints) -> Self {
+        Self::build(Cow::Owned(inputs), Cow::Owned(constraints))
+    }
+}
+
+fn sep_partners(c: &Constraints) -> FxHashMap<ContentId, Vec<ContentId>> {
+    let mut m: FxHashMap<ContentId, Vec<ContentId>> = FxHashMap::default();
+    for &(a, b) in &c.separations {
+        m.entry(a).or_default().push(b);
+        m.entry(b).or_default().push(a);
+    }
+    m
+}
+
+/// A grouping kept up to date in place by [`Grouper::regroup_live`]: groups keyed by their first (smallest)
+/// member file id, a file -> group map and the suggestions by pair.
+#[derive(Clone, Debug, Default)]
+pub struct LiveGrouping {
+    groups: FxHashMap<FileId, Group>,
+    group_of: FxHashMap<FileId, FileId>,
+    suggestions: FxHashMap<(FileId, FileId), Suggestion>,
+    partners: FxHashMap<FileId, Vec<FileId>>,
+}
+
+impl LiveGrouping {
+    pub fn from_grouping(g: &Grouping) -> Self {
+        let mut live = LiveGrouping::default();
+        for grp in &g.groups {
+            live.insert_group(grp.clone());
+        }
+        for s in &g.suggestions {
+            live.insert_suggestion(s.clone());
+        }
+        live
+    }
+
+    /// Number of groups.
+    pub fn len(&self) -> usize {
+        self.groups.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    /// The group keyed by its first member.
+    pub fn group(&self, key: FileId) -> Option<&Group> {
+        self.groups.get(&key)
+    }
+
+    pub fn group_of(&self, f: FileId) -> Option<&Group> {
+        self.group_of.get(&f).and_then(|k| self.groups.get(k))
+    }
+
+    pub fn groups(&self) -> impl Iterator<Item = &Group> {
+        self.groups.values()
+    }
+
+    pub fn suggestions(&self) -> impl Iterator<Item = &Suggestion> {
+        self.suggestions.values()
+    }
+
+    /// The equivalent [`Grouping`] (sorted; separations as the grouper reports them).
+    pub fn to_grouping(&self, grouper: &Grouper<'_>) -> Grouping {
+        grouper.finish(
+            self.groups.values().cloned().collect(),
+            self.suggestions.values().cloned().collect(),
+        )
+    }
+
+    fn insert_group(&mut self, g: Group) {
+        let k = g.members[0].file;
+        for m in &g.members {
+            self.group_of.insert(m.file, k);
+        }
+        self.groups.insert(k, g);
+    }
+
+    fn remove_group(&mut self, k: FileId) -> Option<Group> {
+        let g = self.groups.remove(&k)?;
+        for m in &g.members {
+            if self.group_of.get(&m.file) == Some(&k) {
+                self.group_of.remove(&m.file);
+            }
+        }
+        Some(g)
+    }
+
+    fn insert_suggestion(&mut self, s: Suggestion) {
+        self.partners.entry(s.file_a).or_default().push(s.file_b);
+        self.partners.entry(s.file_b).or_default().push(s.file_a);
+        self.suggestions.insert((s.file_a, s.file_b), s);
+    }
+
+    fn remove_suggestions_of(&mut self, f: FileId) -> Vec<Suggestion> {
+        let Some(ps) = self.partners.remove(&f) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for p in ps {
+            let k = if f < p { (f, p) } else { (p, f) };
+            if let Some(s) = self.suggestions.remove(&k) {
+                out.push(s);
+            }
+            if let Some(v) = self.partners.get_mut(&p) {
+                v.retain(|&x| x != f);
+                if v.is_empty() {
+                    self.partners.remove(&p);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// What [`Grouper::regroup_live`] changed: groups to delete (by key), groups to insert or replace, and the same
+/// for suggestions. Groups recomputed unchanged are left out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroupingDelta {
+    pub removed_groups: Vec<FileId>,
+    pub groups: Vec<Group>,
+    pub removed_suggestions: Vec<(FileId, FileId)>,
+    pub suggestions: Vec<Suggestion>,
+}
+
+impl GroupingDelta {
+    pub fn is_empty(&self) -> bool {
+        self.removed_groups.is_empty()
+            && self.groups.is_empty()
+            && self.removed_suggestions.is_empty()
+            && self.suggestions.is_empty()
+    }
 }
 
 /// Group `inputs` under `constraints` (convenience for [`Grouper::group_all`]).

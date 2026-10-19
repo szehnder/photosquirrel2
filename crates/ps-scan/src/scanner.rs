@@ -19,6 +19,7 @@ use crate::error::{Result, ScanError};
 use crate::memory::ByteBudget;
 use crate::options::ScanOptions;
 use crate::pipeline::{RunCtx, RunSource, execute, normalize_root};
+use crate::post::{GroupEngine, RegroupReport};
 use crate::progress::Progress;
 use crate::report::RunSummary;
 use crate::source::{self, Overlap, VolumeInfo};
@@ -111,6 +112,7 @@ pub struct Scanner {
     opts: ScanOptions,
     active: Mutex<Option<Arc<ActiveRun>>>,
     recovered: Vec<ScanRunId>,
+    groups: Arc<GroupEngine>,
 }
 
 impl std::fmt::Debug for Scanner {
@@ -137,13 +139,17 @@ impl Scanner {
         thumbs: Arc<ThumbStore>,
         opts: ScanOptions,
     ) -> Result<Scanner> {
-        let before: Vec<ScanRunId> = catalog
-            .read()
-            .runs()?
-            .into_iter()
-            .filter(|r| r.status == RunStatus::Running)
-            .map(|r| r.id)
-            .collect();
+        let before: Vec<ScanRunId> = if opts.recover_interrupted {
+            catalog
+                .read()
+                .runs()?
+                .into_iter()
+                .filter(|r| r.status == RunStatus::Running)
+                .map(|r| r.id)
+                .collect()
+        } else {
+            Vec::new()
+        };
         if !before.is_empty() {
             catalog.writer().submit(Command::InterruptRunning)?;
             catalog.writer().flush()?;
@@ -154,6 +160,7 @@ impl Scanner {
             opts,
             active: Mutex::new(None),
             recovered: before,
+            groups: Arc::new(GroupEngine::new()),
         })
     }
 
@@ -167,6 +174,17 @@ impl Scanner {
 
     pub fn options(&self) -> &ScanOptions {
         &self.opts
+    }
+
+    /// The post-scan regroup engine.
+    pub fn groups(&self) -> &Arc<GroupEngine> {
+        &self.groups
+    }
+
+    /// Bring the stored duplicate groups up to date now (after constraint changes, source removal or folding,
+    /// hash upgrades). Runs after each completed scan automatically.
+    pub fn regroup(&self) -> Result<RegroupReport> {
+        self.groups.refresh(&self.catalog)
     }
 
     /// Runs found `running` at open and marked `interrupted` (offered for resume).
@@ -273,6 +291,10 @@ impl Scanner {
             })?;
         }
         self.catalog.writer().flush()?;
+        if !fold.is_empty() {
+            // Folded files changed source and path: their grouping inputs changed.
+            self.groups.refresh(&self.catalog)?;
+        }
         Ok(AddedSource {
             source: SourceInfo::from_record(&self.record(id)?),
             folded: fold.into_iter().map(|(id, _)| id).collect(),
@@ -392,6 +414,8 @@ impl Scanner {
             .writer()
             .submit(Command::RemoveSource { source: id })?;
         self.catalog.writer().flush()?;
+        // The removed files leave their groups (nothing on disk changes).
+        self.groups.refresh(&self.catalog)?;
         Ok(())
     }
 
@@ -547,6 +571,7 @@ impl Scanner {
             sources,
             changed_during_scan: AtomicU64::new(0),
             retries_exhausted: AtomicU64::new(0),
+            groups: self.groups.clone(),
         });
         let thread = std::thread::Builder::new()
             .name(format!("ps-scan-run-{run}"))

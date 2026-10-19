@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::{FileId, MediaKind, PhotoClass, SourceId};
 
 /// A gallery item: a catalogued file, as a compact 32-bit id (1M items = 4 MB).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(transparent)]
 pub struct ItemId(pub u32);
 

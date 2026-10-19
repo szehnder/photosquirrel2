@@ -300,9 +300,25 @@ pub struct Ai {
     /// The user agreed to send previews to a hosted provider (ADR-0021). Off by default.
     pub hosted_consent: bool,
     pub max_concurrent_requests: u32,
-    pub requests_per_minute: u32,
+    /// Requests per minute; `None` means the provider default ([`Ai::effective_requests_per_minute`]:
+    /// unlimited for local providers, [`HOSTED_DEFAULT_REQUESTS_PER_MINUTE`] for hosted ones).
+    pub requests_per_minute: Option<u32>,
     /// Keychain account name per provider (the key itself lives in the OS keychain, ADR-0031).
     pub key_accounts: Vec<KeyAccount>,
+}
+
+/// Default requests per minute for hosted providers (spec `ai-queue` "Concurrency and rate limits").
+pub const HOSTED_DEFAULT_REQUESTS_PER_MINUTE: u32 = 30;
+
+impl Ai {
+    /// The rate limit in effect: the configured one, else unlimited (`None`) for local providers and
+    /// [`HOSTED_DEFAULT_REQUESTS_PER_MINUTE`] for hosted ones.
+    pub fn effective_requests_per_minute(&self) -> Option<u32> {
+        self.requests_per_minute.or(self
+            .provider
+            .is_hosted()
+            .then_some(HOSTED_DEFAULT_REQUESTS_PER_MINUTE))
+    }
 }
 
 /// Where a provider's API key is stored: an account name in the OS keychain, never the key.
@@ -321,7 +337,7 @@ impl Default for Ai {
             auto_start_queue: false,
             hosted_consent: false,
             max_concurrent_requests: 2,
-            requests_per_minute: 60,
+            requests_per_minute: None,
             key_accounts: Vec::new(),
         }
     }
@@ -450,10 +466,11 @@ impl Settings {
                 "Concurrent requests must be between 1 and 64.".into(),
             );
         }
-        if self.ai.requests_per_minute == 0 {
+        if self.ai.requests_per_minute == Some(0) {
             err(
                 "ai.requests_per_minute",
-                "Requests per minute must be at least 1.".into(),
+                "Requests per minute must be at least 1 (leave it empty for the provider default)."
+                    .into(),
             );
         }
         errors
@@ -463,6 +480,33 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limit_defaults_follow_the_spec() {
+        // Spec ai-queue "Concurrency and rate limits": unlimited for local, 30/min for hosted providers.
+        let mut ai = Ai::default();
+        assert_eq!(ai.requests_per_minute, None);
+        assert_eq!(ai.effective_requests_per_minute(), None);
+        ai.provider = ProviderId::OpenAiCompatible;
+        assert_eq!(ai.effective_requests_per_minute(), None);
+        for p in [
+            ProviderId::OpenAi,
+            ProviderId::Anthropic,
+            ProviderId::Gemini,
+        ] {
+            ai.provider = p;
+            assert_eq!(ai.effective_requests_per_minute(), Some(30));
+        }
+        ai.requests_per_minute = Some(12);
+        assert_eq!(ai.effective_requests_per_minute(), Some(12));
+        let mut s = Settings::default();
+        s.ai.requests_per_minute = Some(0);
+        assert!(
+            s.validate()
+                .iter()
+                .any(|e| e.key == "ai.requests_per_minute")
+        );
+    }
 
     #[test]
     fn defaults_follow_the_adrs() {

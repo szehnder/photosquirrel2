@@ -11,6 +11,7 @@ ps-model.workspace = true
 ps-media.workspace = true
 ps-hash.workspace = true
 ps-catalog.workspace = true
+ps-dedup.workspace = true
 crossbeam-channel.workspace = true
 rayon.workspace = true
 parking_lot.workspace = true

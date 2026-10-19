@@ -21,6 +21,8 @@ pub use edges::{
     Contradiction, EdgeKind, NoMatch, PairExplanation, PairVerdict, Suggestion, explain_pair,
     pair_verdict,
 };
-pub use group::{Constraints, Group, Grouper, Grouping, Member, MemberReason, group};
+pub use group::{
+    Constraints, Group, Grouper, Grouping, GroupingDelta, LiveGrouping, Member, MemberReason, group,
+};
 pub use input::{DedupInput, DedupMeta};
 pub use rank::{FormatTier, KeeperReason, Ranking, rank};

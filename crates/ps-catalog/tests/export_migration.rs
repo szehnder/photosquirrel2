@@ -1,6 +1,4 @@
-//! Migration 6 (export ledger) applies on top of the current schema. It is not registered in
-//! `CATALOG_MIGRATIONS` until migrations 4 and 5 land (see `db::EXPORT_MIGRATION`), so this test applies it the
-//! way `migrate` will: in one transaction with the `user_version` bump.
+//! Migration 6 (export ledger): a version-5 catalog upgrades through it, and the ledger enforces its keys.
 
 use ps_catalog::{db, latest_schema_version};
 use rusqlite::{Connection, params};
@@ -9,18 +7,15 @@ use rusqlite::{Connection, params};
 fn export_migration_applies_on_latest_schema() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("catalog.db");
-    let latest = latest_schema_version();
-    assert!(latest < db::EXPORT_MIGRATION.version);
-    db::create_catalog_at_version(&path, latest).expect("catalog");
+    assert!(latest_schema_version() >= db::EXPORT_MIGRATION.version);
+    db::create_catalog_at_version(&path, db::EXPORT_MIGRATION.version - 1).expect("catalog");
+    ps_catalog::Catalog::open_file(&path, Default::default())
+        .expect("upgrade")
+        .close()
+        .expect("close");
 
-    let mut conn = Connection::open(&path).expect("open");
+    let conn = Connection::open(&path).expect("open");
     conn.execute_batch("PRAGMA foreign_keys = ON;").expect("fk");
-    let tx = conn.transaction().expect("tx");
-    tx.execute_batch(db::EXPORT_MIGRATION.sql)
-        .expect("migration 6 applies");
-    tx.pragma_update(None, "user_version", db::EXPORT_MIGRATION.version)
-        .expect("version");
-    tx.commit().expect("commit");
 
     conn.execute(
         "INSERT INTO export_library (id, root_path, created_at) VALUES (1, ?1, 0)",
@@ -49,5 +44,5 @@ fn export_migration_applies_on_latest_schema() {
     let v: u32 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .expect("version");
-    assert_eq!(v, 6);
+    assert_eq!(v, latest_schema_version());
 }

@@ -103,3 +103,13 @@ max = 250.0
 unit = "ms"
 change = "scanning"
 source = { kind = "test", package = "ps-scan", test = "budgets", name = "scenario_scan_control_control_latency_within_budget" }
+
+# duplicate-groups (ADR-0013, ADR-0026). The scan's post-stage regroup: 1,000 new files against a grouped catalog of
+# 1M inputs with the long-lived engine (MIH index inserts, only affected groups recomputed). Measured 23 ms.
+[[budget]]
+name = "dedup-regroup-1k-of-1m"
+metric = "max"
+max = 250.0
+unit = "ms"
+change = "duplicate-groups"
+source = { kind = "test", package = "ps-dedup", test = "scale", name = "regroup_1k_of_1m_within_budget" }

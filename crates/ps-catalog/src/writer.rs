@@ -134,8 +134,13 @@ impl Command {
     }
 }
 
+/// A closure run on the writer connection (typed wrappers in [`crate::groups`], [`crate::stores`]).
+type ExecFn = Box<dyn FnOnce(&Connection) -> rusqlite::Result<()> + Send>;
+
 enum Msg {
     Cmd(Command),
+    /// Run atomically (inside a savepoint) and commit; reply when committed.
+    Exec(ExecFn, Sender<Result<()>>),
     Flush(Sender<WriteErrors>),
     AddSource(NewSource, Sender<Result<SourceId>>),
     StartRun(Vec<SourceId>, Sender<Result<ScanRunId>>),
@@ -267,6 +272,26 @@ impl Writer {
         }
     }
 
+    /// Run `f` on the writer connection atomically (a savepoint inside the current batch), commit, and return
+    /// its result. For the typed write helpers of the other catalog modules.
+    pub(crate) fn exec<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let (reply, rx) = bounded(1);
+        let (out_tx, out_rx) = bounded(1);
+        self.send(Msg::Exec(
+            Box::new(move |c| {
+                let v = f(c)?;
+                let _ = out_tx.send(v);
+                Ok(())
+            }),
+            reply,
+        ))?;
+        rx.recv().map_err(|_| CatalogError::WriterClosed)??;
+        out_rx.recv().map_err(|_| CatalogError::WriterClosed)
+    }
+
     /// Add a source and return its id once committed.
     pub fn add_source(&self, source: NewSource) -> Result<SourceId> {
         let (reply, rx) = bounded(1);
@@ -338,6 +363,10 @@ impl WriterThread {
                     self.commit();
                     let _ = ack.send(std::mem::take(&mut self.errors));
                 }
+                Msg::Exec(f, reply) => {
+                    let r = self.exec(f);
+                    let _ = reply.send(r);
+                }
                 Msg::AddSource(s, reply) => {
                     let r = self.immediate(|c| add_source(c, &s));
                     let _ = reply.send(r);
@@ -404,6 +433,24 @@ impl WriterThread {
     fn immediate<T>(&mut self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
         self.begin();
         let r = f(&self.conn);
+        self.rows += 1;
+        self.commit();
+        Ok(r?)
+    }
+
+    /// Run `f` atomically inside a savepoint of the current batch, then commit.
+    fn exec(&mut self, f: ExecFn) -> Result<()> {
+        self.begin();
+        let r = (|| -> rusqlite::Result<()> {
+            self.conn.execute_batch("SAVEPOINT exec")?;
+            match f(&self.conn) {
+                Ok(()) => self.conn.execute_batch("RELEASE exec"),
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK TO exec; RELEASE exec");
+                    Err(e)
+                }
+            }
+        })();
         self.rows += 1;
         self.commit();
         Ok(r?)

@@ -40,6 +40,9 @@ pub struct RunSummary {
     pub changed_during_scan: u64,
     /// Failed files not attempted any more (ADR-0008: at most two retries).
     pub retries_exhausted: u64,
+    /// The post-scan regroup (absent for cancelled runs and runs stored before it existed).
+    #[serde(default)]
+    pub grouping: Option<crate::post::RegroupReport>,
 }
 
 impl RunSummary {

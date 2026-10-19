@@ -15,8 +15,10 @@
 pub mod db;
 mod error;
 mod gallery;
+pub mod groups;
 mod model;
 mod read;
+pub mod stores;
 pub mod thumbs;
 mod writer;
 
@@ -27,11 +29,16 @@ pub use error::{CatalogError, Result, WriteError, WriteErrors};
 pub use gallery::{
     UserDecision, UserDecisionRecord, excluded_classes, is_library, library_classes,
 };
+pub use groups::{
+    ConstraintRows, GroupChanges, GroupOrder, GroupRow, GroupSummary, MemberEdge, MemberRow,
+    SuggestionRow,
+};
 pub use model::{
     AnalysisResult, FileErrorRecord, FileFailure, FileKey, FileRecord, FileRow, NewSource,
     ProbeResult, Results, RunRecord, SourceRecord,
 };
 pub use read::{PAGE_SIZE, Readers};
+pub use stores::{AiCounts, AiItemState, AiQueueRow, AiResultRow, AiRunState, LibraryRecord};
 pub use thumbs::{THUMBS_FILE, ThumbStore};
 pub use writer::{Command, Writer, WriterConfig, WriterStats};
 

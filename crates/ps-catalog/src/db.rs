@@ -32,22 +32,36 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
         name: "scanning",
         sql: include_str!("../migrations/0003_scanning.sql"),
     },
+    GROUPS_MIGRATION,
+    AI_MIGRATION,
+    EXPORT_MIGRATION,
+    GALLERY_MIGRATION,
 ];
 
-/// Migration 6 (export change: `export_library`, `export_ledger`). Not yet in [`CATALOG_MIGRATIONS`]:
-/// migrations 4 (dedup) and 5 (AI) are owned by other changes and must land first, because a catalog
-/// migrated to 6 would never apply 4 and 5. Register it right after them (integration step of the export
-/// change).
+/// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
+/// `dup_separation`, `dup_merge`).
+pub const GROUPS_MIGRATION: Migration = Migration {
+    version: 4,
+    name: "groups",
+    sql: include_str!("../migrations/0004_groups.sql"),
+};
+
+/// Migration 5 (ai-insights change: `ai_queue`, `ai_result`, `ai_correction`, `ai_suggestion`, `ai_run`).
+pub const AI_MIGRATION: Migration = Migration {
+    version: 5,
+    name: "ai_insights",
+    sql: include_str!("../migrations/0005_ai_insights.sql"),
+};
+
+/// Migration 6 (export change: `export_library`, `export_ledger`).
 pub const EXPORT_MIGRATION: Migration = Migration {
     version: 6,
     name: "export",
     sql: include_str!("../migrations/0006_export.sql"),
 };
 
-/// Migration 7 (gallery change: `user_inclusion`, camera-filter index). Not yet in [`CATALOG_MIGRATIONS`]
-/// for the same reason as [`EXPORT_MIGRATION`]: 4, 5 and 6 must land first. Until it is registered, the
-/// gallery queries detect the missing table ([`crate::Readers::has_user_decisions`]) and user decisions are
-/// unavailable.
+/// Migration 7 (gallery change: `user_inclusion`, camera-filter index). The gallery queries still detect a
+/// missing table ([`crate::Readers::has_user_decisions`]) for catalogs opened read-only at an older version.
 pub const GALLERY_MIGRATION: Migration = Migration {
     version: 7,
     name: "gallery",
@@ -93,6 +107,23 @@ pub(crate) fn refuse_newer(path: &Path, migrations: &[Migration]) -> Result<u32>
         });
     }
     Ok(found)
+}
+
+/// The schema version of an existing catalog file, read through a read-only connection (`None` when the file
+/// does not exist). Never creates or migrates anything (doctor, diagnostics).
+pub fn stored_version(path: &Path) -> Result<Option<u32>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    Ok(Some(conn.pragma_query_value(
+        None,
+        "user_version",
+        |r| r.get(0),
+    )?))
 }
 
 /// Open the read-write connection with the writer pragmas (WAL, `synchronous=NORMAL`, ...).

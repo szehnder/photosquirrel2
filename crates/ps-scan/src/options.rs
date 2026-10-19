@@ -37,6 +37,9 @@ pub struct ScanOptions {
     pub chunk_delay: Option<Duration>,
     /// The read-only file layer (instrumented in tests).
     pub fs: SourceFs,
+    /// At open, mark runs left `running` as `interrupted` (crash recovery, ADR-0008). An observer process
+    /// (a CLI status query while another process scans the same catalog) turns this off.
+    pub recover_interrupted: bool,
 }
 
 impl Default for ScanOptions {
@@ -52,6 +55,7 @@ impl Default for ScanOptions {
             read_delay: None,
             chunk_delay: None,
             fs: SourceFs::new(),
+            recover_interrupted: true,
         }
     }
 }

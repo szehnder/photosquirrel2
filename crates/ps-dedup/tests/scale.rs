@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use ps_dedup::{Constraints, DedupInput, DedupMeta, Grouper};
+use ps_dedup::{Constraints, DedupInput, DedupMeta, Grouper, LiveGrouping};
 use ps_hash::PERCEPTUAL_HASH_VERSION;
 use ps_model::{CaptureTime, ContentId, FileId, Format, PerceptualHash, PhotoClass};
 use rand::{Rng, SeedableRng};
@@ -98,14 +98,70 @@ fn group_one_million_inputs() {
         })
         .collect::<Vec<_>>();
     let changed: Vec<FileId> = more.iter().map(|x| x.file).collect();
-    let mut all = inputs;
-    all.extend(more);
+    let mut all = inputs.clone();
+    all.extend(more.iter().cloned());
     let t = Instant::now();
     let grouper = Grouper::new(&all, &cons);
     let inc = grouper.regroup(&g, &changed);
     println!(
-        "measure dedup-regroup-1k-of-1m={:.1} ms",
+        "measure dedup-regroup-1k-of-1m-rebuild={:.1} ms",
         t.elapsed().as_secs_f64() * 1e3
     );
     assert!(inc.groups.len() > g.groups.len());
+
+    // The long-lived engine path (ADR-0026 budget `dedup-regroup-1k-of-1m`): indexes updated in place, only
+    // the affected groups recomputed.
+    let mut owned = Grouper::owned(inputs, cons.clone());
+    let mut live = LiveGrouping::from_grouping(&g);
+    let t = Instant::now();
+    for x in more {
+        owned.upsert(x);
+    }
+    let delta = owned.regroup_live(&mut live, &changed);
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    println!("measure dedup-regroup-1k-of-1m={ms:.1} ms");
+    assert_eq!(live.len(), inc.groups.len());
+    assert!(delta.groups.len() >= 333);
+    assert!(ms < 1000.0, "live regroup took {ms:.1} ms");
+}
+
+/// Budget `dedup-regroup-1k-of-1m` (ADR-0026): the scan's post-stage regroup of 1,000 new files against a
+/// grouped catalog of 1M, with the long-lived engine (indexes updated in place, only affected groups
+/// recomputed). Debug builds use 30k inputs and report without asserting.
+#[test]
+fn regroup_1k_of_1m_within_budget() {
+    let n = if cfg!(debug_assertions) {
+        30_000
+    } else {
+        1_000_000
+    };
+    let inputs = synthetic(n, 7);
+    let cons = Constraints::default();
+    let mut owned = Grouper::owned(inputs, cons);
+    let g = owned.group_all();
+    let mut live = LiveGrouping::from_grouping(&g);
+    let more: Vec<DedupInput> = synthetic(1_000, 8)
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut x)| {
+            x.file = FileId(2_000_000 + i as i64);
+            x.content = x.content.map(|mut c| {
+                c.digest[31] = 0xAA;
+                c
+            });
+            x
+        })
+        .collect();
+    let changed: Vec<FileId> = more.iter().map(|x| x.file).collect();
+    let t = Instant::now();
+    for x in more {
+        owned.upsert(x);
+    }
+    let delta = owned.regroup_live(&mut live, &changed);
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    println!("measure dedup-regroup-1k-of-1m={ms:.3} ms");
+    assert!(delta.groups.len() >= 333);
+    if !cfg!(debug_assertions) {
+        assert!(ms <= 250.0, "regroup took {ms:.1} ms (budget 250 ms)");
+    }
 }

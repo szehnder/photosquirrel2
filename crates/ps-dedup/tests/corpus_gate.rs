@@ -411,3 +411,101 @@ fn medium_corpus_gate() {
     }
     assert!(s.passes_gate(), "{s:?}");
 }
+
+/// The long-lived engine path: one owned grouper updated in place (inserts, replacements, removals, constraint
+/// changes) and a live grouping regrouped by deltas always equals a full regroup of the same inputs.
+#[test]
+fn live_regroup_equals_full_regroup() {
+    let c = common::small();
+    let mut grouper = ps_dedup::Grouper::owned(Vec::new(), Constraints::default());
+    let mut live = ps_dedup::LiveGrouping::default();
+    let mut have: Vec<ps_dedup::DedupInput> = Vec::new();
+    for drive in ["drive-a", "drive-b", "drive-c"] {
+        let added: Vec<_> = c
+            .inputs
+            .iter()
+            .filter(|x| x.path.starts_with(&format!("{drive}/")))
+            .cloned()
+            .collect();
+        let changed: Vec<_> = added.iter().map(|x| x.file).collect();
+        for x in &added {
+            grouper.upsert(x.clone());
+        }
+        have.extend(added);
+        let delta = grouper.regroup_live(&mut live, &changed);
+        assert!(!delta.groups.is_empty() || drive == "drive-a");
+        assert_eq!(
+            live.to_grouping(&grouper),
+            group(&have, &Constraints::default()),
+            "after {drive}"
+        );
+    }
+    // A rescan that changes nothing yields an empty delta.
+    let all: Vec<_> = have.iter().map(|x| x.file).collect();
+    for x in &have {
+        grouper.upsert(x.clone());
+    }
+    assert!(grouper.regroup_live(&mut live, &all).is_empty());
+
+    // Remove every fifth file.
+    let removed: Vec<_> = have.iter().step_by(5).map(|x| x.file).collect();
+    for f in &removed {
+        assert!(grouper.remove(*f));
+    }
+    have.retain(|x| !removed.contains(&x.file));
+    let delta = grouper.regroup_live(&mut live, &removed);
+    assert!(!delta.removed_groups.is_empty());
+    assert_eq!(
+        live.to_grouping(&grouper),
+        group(&have, &Constraints::default())
+    );
+
+    // Constraints: override the runner-up of a group, separate a member, merge two groups.
+    let full = group(&have, &Constraints::default());
+    let by_file: std::collections::BTreeMap<_, _> =
+        have.iter().map(|x| (x.file, x.clone())).collect();
+    let content = |f| by_file[&f].content.unwrap();
+    let mut cons = Constraints::default();
+    let (g0, chosen) =
+        full.groups
+            .iter()
+            .find_map(|g| {
+                let k = content(g.keeper);
+                let pick = g.ranking.iter().copied().find(|&f| {
+                    content(f) != k && by_file[&f].class == ps_model::PhotoClass::Photo
+                })?;
+                Some((g, pick))
+            })
+            .unwrap();
+    cons.override_keeper(content(chosen));
+    let (g1, m) = full
+        .groups
+        .iter()
+        .rev()
+        .find_map(|g| {
+            let k = content(g.keeper);
+            Some((g, g.ranking.iter().copied().find(|&f| content(f) != k)?))
+        })
+        .unwrap();
+    for other in &g1.members {
+        if content(other.file) != content(m) {
+            cons.separate(content(m), content(other.file));
+        }
+    }
+    cons.merge(
+        content(full.groups[0].keeper),
+        content(full.groups[1].keeper),
+    );
+    let changed = grouper.set_constraints(cons.clone());
+    assert!(!changed.is_empty());
+    grouper.regroup_live(&mut live, &changed);
+    let expect = group(&have, &cons);
+    assert_eq!(live.to_grouping(&grouper), expect);
+    let now = expect.group_of(chosen).unwrap();
+    assert_eq!(content(now.keeper), content(chosen), "{:?}", g0.keeper);
+    assert!(
+        now.keeper_reasons
+            .contains(&ps_dedup::KeeperReason::ChosenByYou)
+    );
+    assert!(!expect.group_of(m).is_some_and(|g| g.contains(g1.keeper)));
+}

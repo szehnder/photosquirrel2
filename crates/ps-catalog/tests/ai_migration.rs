@@ -1,19 +1,22 @@
-//! Migration 5 (ai-insights) SQL, checked on top of the latest registered schema. It is registered in
-//! `db::CATALOG_MIGRATIONS` once migration 4 (duplicate groups) lands; until then this test applies it directly.
+//! Migration 5 (ai-insights): a version-4 catalog (before the AI tables) upgrades to the latest schema and the
+//! AI tables enforce their keys and codes.
 #![allow(clippy::unwrap_used)]
-
-const SQL: &str = include_str!("../migrations/0005_ai_insights.sql");
 
 #[test]
 fn ai_insights_migration_applies_on_latest_schema() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("catalog.db");
-    let latest = ps_catalog::latest_schema_version();
-    ps_catalog::db::create_catalog_at_version(&path, latest).unwrap();
-    let mut conn = rusqlite::Connection::open(&path).unwrap();
-    let tx = conn.transaction().unwrap();
-    tx.execute_batch(SQL).unwrap();
-    tx.commit().unwrap();
+    assert_eq!(ps_catalog::db::AI_MIGRATION.version, 5);
+    ps_catalog::db::create_catalog_at_version(&path, 4).unwrap();
+    ps_catalog::Catalog::open_file(&path, Default::default())
+        .unwrap()
+        .close()
+        .unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let v: u32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, ps_catalog::latest_schema_version());
 
     for t in [
         "ai_queue",

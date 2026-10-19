@@ -41,7 +41,7 @@ impl std::fmt::Debug for Readers {
     }
 }
 
-const FILE_COLUMNS: &str = "id, source_id, rel_path, size, mtime_ns, file_index, stage, class, reasons, format,
+pub(crate) const FILE_COLUMNS: &str = "id, source_id, rel_path, size, mtime_ns, file_index, stage, class, reasons, format,
     width, height, content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_undated,
     camera_model, has_gps, attempts, missing_since, first_seen";
 
@@ -464,7 +464,7 @@ fn collect(
     Ok(())
 }
 
-fn file_record(r: &Row<'_>) -> Result<FileRecord> {
+pub(crate) fn file_record(r: &Row<'_>) -> Result<FileRecord> {
     let rel: Vec<u8> = r.get(2)?;
     let path = RelPath::from_bytes(rel).ok_or_else(|| corrupt("rel_path"))?;
     let stage = codes::stage_from(r.get(6)?).ok_or_else(|| corrupt("stage"))?;

@@ -16,14 +16,14 @@
 
 ## 2. Queue
 
-- [ ] 2.1 Migration 5 (ai_queue, ai_result, ai_correction, ai_suggestion); verify migration upgrade test in `ps-catalog` (SQL written as `0005_ai_insights.sql`, tested on the latest schema; registration deferred to integration: needs migration 0004 first)
+- [x] 2.1 Migration 5 (ai_queue, ai_result, ai_correction, ai_suggestion); verify migration upgrade test in `ps-catalog` (registered after migration 0004; `ai_insights_migration_applies_on_latest_schema` upgrades a v4 catalog; store `ps_service::ai::CatalogQueueStore` over `ps_catalog::stores`)
 - [x] 2.2 Queue runner with explicit start and pause; verify `scenario_ai_queue_nothing_sent_before_start` and `scenario_ai_queue_pause_stops_new_requests` (engine `ps_llm::queue`, MemoryStore; catalog-backed store deferred to integration)
-- [ ] 2.3 Ordering and keeper-first priority; verify `scenario_ai_queue_keepers_processed_first` (deferred to integration: needs duplicate-groups keepers; engine orders by priority, see `queue_runs_in_priority_order`)
+- [x] 2.3 Ordering and keeper-first priority; verify `scenario_ai_queue_keepers_processed_first` (`ps_service::ai::enqueue`/`queue_priority` over stored group keepers; test in `ps-service/tests/ai_queue.rs`)
 - [x] 2.4 Concurrency semaphore and token bucket; verify `scenario_ai_queue_concurrency_limit_respected`
-- [ ] 2.5 Restart and crash survival (child-process kill test); verify `scenario_ai_queue_queue_survives_restart` (deferred to integration: needs the catalog-backed store)
+- [x] 2.5 Restart and crash survival (child-process kill test); verify `scenario_ai_queue_queue_survives_restart` (child process killed after 10 of 50; restart shows 10 done, paused, resuming sends 40)
 - [x] 2.6 Per-content results and provenance; verify `scenario_ai_queue_duplicates_analyzed_once` and `scenario_ai_queue_result_records_provenance`
 - [x] 2.7 Retries; verify `scenario_ai_queue_failed_item_retried_twice`
-- [ ] 2.8 Progress snapshot and CLI `ai` commands; verify `scenario_ai_queue_queue_progress_reported` and `scenario_ai_queue_cli_starts_queue` (deferred to integration: progress snapshot done in `AiQueue::progress`; CLI owned by headless-cli)
+- [x] 2.8 Progress snapshot and CLI `ai` commands; verify `scenario_ai_queue_queue_progress_reported` and `scenario_ai_queue_cli_starts_queue` (deferred to integration: progress snapshot done in `AiQueue::progress`; CLI owned by headless-cli) (`ai start|pause|status|results|providers|test` in photosquirrel-cli; `scenario_ai_queue_queue_progress_reported`, `scenario_ai_queue_cli_starts_queue`)
 
 ## 3. Review UI
 
