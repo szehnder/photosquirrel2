@@ -22,7 +22,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 `cargo xtask ci` is green
+- [x] 4.1 `cargo xtask ci` is green
 - [x] 4.2 Gate: a script runs fixtures generate, sources add, scan, groups list and fixtures evaluate with `--json` end to end and every step exits 0 (`gate_script_runs_end_to_end` in `photosquirrel-cli/tests/cli.rs`)
 - [x] 4.3 `cargo xtask spec-coverage` reports every scenario of this change mapped (every `cli` scenario mapped)
 - [x] 4.4 `openspec validate headless-cli --strict` passes

@@ -46,14 +46,14 @@
 
 ## 7. Benchmarks
 
-- [ ] 7.1 Analysis throughput budget; verify `scenario_scanning_analysis_throughput_within_budget`
+- [ ] 7.1 (moved to `performance-budgets`: measured 7.42 ms/file vs 6.67 ms at load 6-8; JPEG decode dominates) Analysis throughput budget; verify `scenario_scanning_analysis_throughput_within_budget`
 - [x] 7.2 No-change rescan budget; verify `scenario_incremental_rescan_no_change_rescan_under_4_s`
 - [x] 7.3 Control latency budget; verify `scenario_scan_control_control_latency_within_budget`
-- [ ] 7.4 Register `scan-analysis-12mp` (max 6.67 ms per file wall time = 150 files/s; budgets are upper bounds), `rescan-nochange-100k` (max 4 s) and `control-latency-p95` (max 250 ms) in `perf-budgets.toml`; verify `cargo xtask bench --check`
+- [ ] 7.4 (moved to `performance-budgets`; the three budgets are registered, rescan and control latency pass) Register `scan-analysis-12mp` (max 6.67 ms per file wall time = 150 files/s; budgets are upper bounds), `rescan-nochange-100k` (max 4 s) and `control-latency-p95` (max 250 ms) in `perf-budgets.toml`; verify `cargo xtask bench --check`
 
 ## 8. Verification
 
-- [ ] 8.1 `cargo xtask ci` is green
+- [x] 8.1 `cargo xtask ci` is green
 - [x] 8.2 Gate: scan, cancel, resume and rescan integration tests pass on the small and medium corpora
 - [x] 8.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 8.4 `openspec validate scanning --strict` passes

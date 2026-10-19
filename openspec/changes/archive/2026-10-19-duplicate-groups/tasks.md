@@ -35,7 +35,7 @@
 
 ## 6. Verification
 
-- [ ] 6.1 `cargo xtask ci` is green
+- [x] 6.1 `cargo xtask ci` is green
 - [x] 6.2 Gate: precision >= 0.995, recall >= 0.97, keeper accuracy >= 0.99 on the medium corpus (`cargo test -p ps-service --test corpus_gate --release`) (medium seed 42 under `target/corpus-medium`: precision 1.0000, recall 1.0000, keeper accuracy 1.0000, 0 must-not-merge violations; 9,776 files scanned in 38.6 s, regroup 299 ms)
 - [x] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped (every duplicate-detection and best-copy scenario mapped)
 - [x] 6.4 `openspec validate duplicate-groups --strict` passes
