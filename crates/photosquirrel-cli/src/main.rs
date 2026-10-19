@@ -2,7 +2,8 @@
 //! human output by default and `--json` everywhere.
 //!
 //! Conventions: exit status 0 on success, 1 on an operational failure (the error chain on standard error), 2 on
-//! a usage error (clap), 130 after an interrupt. `--json` prints one JSON document
+//! a usage error (clap) or when a mutating command finds the catalog owned by another process (the app or
+//! another CLI command; read-only commands then observe it), 130 after an interrupt. `--json` prints one JSON document
 //! `{ "schema_version": 1, "command": ..., "data": ... }` on standard output (`scan` and `ai start` print NDJSON
 //! progress lines and a final summary line). Logs go to standard error (`RUST_LOG`). The data directory is
 //! shared with the app: `--data-dir` or `PHOTOSQUIRREL_DATA_DIR` override it.
@@ -409,6 +410,10 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.is::<control::Interrupted>() => ExitCode::from(control::INTERRUPTED_EXIT),
+        Err(e) if e.is::<cmd::Busy>() => {
+            eprintln!("error: {e}");
+            ExitCode::from(cmd::BUSY_EXIT)
+        }
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::from(1)

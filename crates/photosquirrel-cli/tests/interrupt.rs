@@ -126,3 +126,61 @@ fn scenario_cli_resume_an_interrupted_run() {
         "finished files are not re-read: {second} of {files}"
     );
 }
+
+/// D5: while one process owns the catalog (a scan, here paused so it stays alive), a mutating command in a
+/// second process exits 2 with a clear message and changes nothing, read-only commands observe it, and the
+/// live run is never marked interrupted.
+#[test]
+fn second_process_mutation_refused_while_a_scan_owns_the_catalog() {
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let data = tempfile::tempdir().unwrap();
+    let root = medium_or_small();
+    for d in ["drive-a", "drive-b"] {
+        ok(
+            data.path(),
+            &["sources", "add", root.join(d).to_str().unwrap()],
+        );
+    }
+    let mut child = cli(data.path())
+        .args(["--json", "scan"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap()).lines();
+    loop {
+        let l = out.next().expect("snapshot line").unwrap();
+        let v: Value = serde_json::from_str(&l).unwrap();
+        if v["data"]["processed"].as_u64().unwrap_or(0) > 5 {
+            break;
+        }
+    }
+    // Keep reading the scan's output so it never blocks on a full pipe.
+    let drain = std::thread::spawn(move || out.map(|l| l.unwrap()).collect::<Vec<_>>());
+    ok(data.path(), &["scan", "pause"]);
+
+    let o = cli(data.path())
+        .args(["sources", "add", root.join("drive-c").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("another PhotoSquirrel process"), "{err}");
+
+    let st = json(&ok(data.path(), &["--json", "status"]));
+    assert_eq!(st["data"]["sources"], 2, "the refused add changed nothing");
+    assert_eq!(st["data"]["runs"][0]["status"], "paused");
+    ok(data.path(), &["--json", "groups", "list"]);
+
+    ok(data.path(), &["scan", "cancel"]);
+    assert!(child.wait().unwrap().success());
+    drain.join().unwrap();
+    let st = json(&ok(data.path(), &["--json", "status"]));
+    assert_eq!(st["data"]["runs"][0]["status"], "cancelled");
+    // The owner is gone: mutations work again.
+    ok(
+        data.path(),
+        &["sources", "add", root.join("drive-c").to_str().unwrap()],
+    );
+}

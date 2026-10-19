@@ -195,10 +195,21 @@ fn status_json_snapshot_of_the_small_corpus() {
     insta::assert_json_snapshot!("status_json_shape", shape(&v));
 }
 
-/// The JSON's structure (keys and value types; arrays by their first element), stable across runs.
+/// The JSON's structure (keys and value types; arrays by their first element), stable across runs. Keys are
+/// sorted so the snapshot does not depend on serde_json's `preserve_order` feature (enabled workspace-wide by
+/// other crates' dependencies).
 fn shape(v: &Value) -> Value {
     match v {
-        Value::Object(m) => Value::Object(m.iter().map(|(k, v)| (k.clone(), shape(v))).collect()),
+        Value::Object(m) => {
+            let mut entries: Vec<(&String, &Value)> = m.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), shape(v)))
+                    .collect(),
+            )
+        }
         Value::Array(a) => Value::Array(a.first().map(shape).into_iter().collect()),
         Value::String(_) => "string".into(),
         Value::Number(_) => "number".into(),

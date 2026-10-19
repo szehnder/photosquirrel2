@@ -751,6 +751,68 @@ fn evaluator_counts_splits_and_wrong_keepers() {
     assert_eq!(s.must_not_merge_violations, 0);
 }
 
+/// ADR-0039: an EXIF-free burst thumbnail (`alternate_groups`) may sit with any one candidate frame, but a
+/// result group holding two candidate frames is a violation.
+#[test]
+fn ambiguous_burst_thumbnail_accepted_with_either_frame_never_both() {
+    let t = &small().truth;
+    let (ti, thumb) = t
+        .files
+        .iter()
+        .enumerate()
+        .find(|(_, f)| !f.alternate_groups.is_empty())
+        .expect("an ambiguous burst thumbnail in the small corpus");
+    assert!(thumb.derived_from.is_some());
+    let own = thumb.group.clone();
+    let alt = thumb.alternate_groups[0].clone();
+    let set = t
+        .must_not_merge
+        .iter()
+        .find(|s| s.groups.contains(&own) && s.groups.contains(&alt))
+        .expect("the frames form a must-not-merge set");
+    let base: Vec<ResultGroup> = truth_result(t)
+        .into_iter()
+        .map(|mut r| {
+            r.members.retain(|m| m != &thumb.path);
+            r
+        })
+        .collect();
+    let with = |target: &str, also: Option<&str>| {
+        let mut rs = base.clone();
+        for r in &mut rs {
+            let g = t.file(&r.members[0]).map(|f| f.group.clone());
+            if g.as_deref() == Some(target) {
+                r.members.push(thumb.path.clone());
+                if let Some(o) = also {
+                    let extra: Vec<String> = t
+                        .files
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, f)| f.group == o && *i != ti)
+                        .map(|(_, f)| f.path.clone())
+                        .collect();
+                    r.members.extend(extra);
+                }
+            }
+        }
+        if also.is_some() {
+            let o = also.unwrap_or_default();
+            rs.retain(|r| t.file(&r.members[0]).is_none_or(|f| f.group != o));
+        }
+        Score::evaluate(t, &rs)
+    };
+    // With its own frame or with the sibling frame: perfect either way.
+    for g in [&own, &alt] {
+        let s = with(g, None);
+        assert_eq!((s.precision, s.recall), (1.0, 1.0), "{g}: {s:?}");
+        assert_eq!(s.must_not_merge_violations, 0);
+    }
+    // Both frames in one group with the thumbnail: a violation of the burst set.
+    let s = with(&own, Some(&alt));
+    assert!(s.must_not_merge_violations >= 1, "{s:?}");
+    assert!(s.violations.iter().any(|v| v.set_id == set.id));
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // 5. Presets
 

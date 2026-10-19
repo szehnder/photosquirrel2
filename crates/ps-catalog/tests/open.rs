@@ -41,7 +41,13 @@ fn scenario_catalog_catalog_created_in_data_directory() {
     // Only catalog files in the data directory; the source tree and the temp root are untouched.
     for f in listing(&data) {
         assert!(
-            ["catalog.db", "catalog.db-wal", "catalog.db-shm"].contains(&f.as_str()),
+            [
+                "catalog.db",
+                "catalog.db-wal",
+                "catalog.db-shm",
+                ps_catalog::LOCK_FILE
+            ]
+            .contains(&f.as_str()),
             "unexpected file {f} in data dir"
         );
     }

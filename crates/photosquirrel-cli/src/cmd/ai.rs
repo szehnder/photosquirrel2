@@ -212,7 +212,7 @@ pub fn pause(ctx: &Ctx) -> Result<()> {
 
 pub fn status(ctx: &Ctx) -> Result<()> {
     let data = ctx.data_dir()?;
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let mut st = ai::status(svc.engine().catalog())?;
     if let Some(live) = control::live::<AiStatus>(&data, Job::Ai) {
         st.state = live.state;
@@ -241,7 +241,7 @@ pub fn status(ctx: &Ctx) -> Result<()> {
 }
 
 pub fn results(ctx: &Ctx, limit: u64) -> Result<()> {
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let r = ai::results(svc.engine().catalog(), limit)?;
     emit(ctx.json, "ai results", &r, |r| {
         if r.is_empty() {

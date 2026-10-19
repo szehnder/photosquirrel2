@@ -44,7 +44,14 @@ pub fn dng(spec: &ExifSpec<'_>, preview_jpeg: &[u8], width: u32, height: u32) ->
         .short(0x0103, 7)
         .short(0x0106, 6)
         .ascii(0x010F, m.make)
-        .ascii(0x0110, m.model)
+        // Like rawler's normalized names (D1): the RAW's model without the make ("EOS 5D Mark III"), while
+        // the JPEG twin says "Canon EOS 5D Mark III". Pairing must normalize.
+        .ascii(
+            0x0110,
+            m.model
+                .strip_prefix(m.make)
+                .map_or(m.model, str::trim_start),
+        )
         .short(0x0112, spec.orientation)
         .short(0x0115, 3)
         .long(0x0116, height)

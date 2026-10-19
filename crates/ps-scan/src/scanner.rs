@@ -133,13 +133,28 @@ impl Scanner {
         Scanner::with_catalog(catalog, thumbs, opts)
     }
 
+    /// Open the catalog in `data_dir` for read-only use: as an observer (listing, status and reports work,
+    /// writes fail with `CatalogError::ReadOnly`, no run is marked interrupted, the owner lock is never
+    /// taken), or as the owner only when the catalog must first be created or migrated
+    /// (`Catalog::open_reader`). Only the owner, which holds the catalog's exclusive lock, ever recovers runs.
+    pub fn open_or_observe(data_dir: &Path, opts: ScanOptions) -> Result<Scanner> {
+        let catalog = Arc::new(Catalog::open_reader(
+            data_dir,
+            ps_catalog::OpenOptions::default(),
+        )?);
+        let thumbs = Arc::new(ThumbStore::open(data_dir)?);
+        Scanner::with_catalog(catalog, thumbs, opts)
+    }
+
     /// Use an already open catalog and store (one engine per catalog).
     pub fn with_catalog(
         catalog: Arc<Catalog>,
         thumbs: Arc<ThumbStore>,
         opts: ScanOptions,
     ) -> Result<Scanner> {
-        let before: Vec<ScanRunId> = if opts.recover_interrupted {
+        // Only the owner (the process holding the catalog's exclusive lock, ADR-0005) marks runs left
+        // `running` as interrupted: an observer may be looking at another process's live run.
+        let before: Vec<ScanRunId> = if opts.recover_interrupted && !catalog.is_observer() {
             catalog
                 .read()
                 .runs()?

@@ -17,7 +17,7 @@ struct ListOut {
 }
 
 pub fn list(ctx: &Ctx, order: GroupOrder, offset: u64, limit: u64) -> Result<()> {
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let g = svc.groups();
     let out = ListOut {
         totals: g.totals()?,
@@ -95,7 +95,7 @@ fn print_detail(d: &GroupDetail) {
 }
 
 pub fn show(ctx: &Ctx, group: i64) -> Result<()> {
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let d = svc.groups().show(FileId(group))?;
     emit(ctx.json, "groups show", &d, print_detail)
 }
@@ -134,7 +134,7 @@ pub fn merge(ctx: &Ctx, a: i64, b: i64) -> Result<()> {
 }
 
 pub fn suggestions(ctx: &Ctx, file: Option<i64>, limit: u64) -> Result<()> {
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let s = svc.groups().suggestions(file.map(FileId), limit)?;
     emit(ctx.json, "groups suggestions", &s, |s| {
         if s.is_empty() {
@@ -157,7 +157,7 @@ struct ExplainOut {
 }
 
 pub fn explain(ctx: &Ctx, a: i64, b: i64) -> Result<()> {
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let out = ExplainOut {
         a: FileId(a),
         b: FileId(b),

@@ -12,8 +12,8 @@ use crate::truth::{BurstVariant, MustNotMerge, MustNotMergeKind};
 pub const DRIVES: [&str; 3] = ["drive-a", "drive-b", "drive-c"];
 
 /// Which derivatives a shot may get. Must-not-merge members only get derivatives that keep their capture
-/// metadata, so the truth stays decidable under ADR-0013/0035 (a metadata-free copy of one burst frame is
-/// genuinely ambiguous).
+/// metadata, plus (bursts) at most one metadata-free thumbnail of one frame: that one is genuinely ambiguous,
+/// so the truth lists the sibling frames as its `alternate_groups` (ADR-0039).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Policy {
     Full,
@@ -151,6 +151,8 @@ pub struct Plan {
     pub bodies: Vec<Body>,
     pub tasks: Vec<Task>,
     pub must_not_merge: Vec<MustNotMerge>,
+    /// Path -> the other truth groups the file may be grouped with (ambiguous burst thumbnails).
+    pub alternate_groups: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -388,6 +390,7 @@ struct Planner {
     next_junk: usize,
     tasks: Vec<Task>,
     mnm: Vec<MustNotMerge>,
+    alternates: std::collections::BTreeMap<String, Vec<String>>,
     twelve_left: usize,
     wa_counter: u32,
 }
@@ -421,6 +424,7 @@ pub fn plan_with(seed: u64, preset: Preset, params: Params) -> Plan {
         next_junk: 0,
         tasks: Vec::new(),
         mnm: Vec::new(),
+        alternates: std::collections::BTreeMap::new(),
         wa_counter: 1,
     };
     p.build();
@@ -428,6 +432,7 @@ pub fn plan_with(seed: u64, preset: Preset, params: Params) -> Plan {
         bodies,
         tasks,
         mut mnm,
+        alternates,
         ..
     } = p;
     mnm.sort_by(|a, b| a.id.cmp(&b.id));
@@ -437,6 +442,7 @@ pub fn plan_with(seed: u64, preset: Preset, params: Params) -> Plan {
         bodies,
         tasks,
         must_not_merge: mnm,
+        alternate_groups: alternates,
     }
 }
 
@@ -1267,6 +1273,33 @@ impl Planner {
                 shot.mtime = first.utc() + 1;
             }
             self.plan_derivs(&mut shot, ev, policy);
+            // ADR-0039: sometimes the last frame also gets a metadata-free (EXIF-stripped) thumbnail that
+            // hash-matches its siblings too; the truth accepts it with any frame, never with two.
+            if f + 1 == frames && self.rng.random_bool(0.6) {
+                let (stem, _) = Self::file_name(&shot.path);
+                let stem = stem.to_string();
+                let title = self.events[ev].title.clone();
+                let long = if self.rng.random_bool(0.5) { 1024 } else { 384 };
+                let quality = self.rng.random_range(75..=88);
+                let path = self.paths.claim(
+                    &format!("drive-c/Shared Albums/{title}"),
+                    &format!("{stem}.jpg"),
+                );
+                let mtime = shot.mtime + self.rng.random_range(3_600..86_400 * 400);
+                shot.derivs.push(Deriv {
+                    kind: DerivKind::Resized {
+                        long,
+                        quality,
+                        keep_exif: false,
+                    },
+                    path: path.clone(),
+                    mtime,
+                    from: From::Original,
+                });
+                let mut alts = groups.clone();
+                alts.sort();
+                self.alternates.insert(path, alts);
+            }
             groups.push(shot.group.clone());
             originals.push(shot.path.clone());
             self.push_shot(shot);

@@ -85,7 +85,7 @@ pub fn evaluate(
     let bytes =
         std::fs::read(&truth_path).with_context(|| format!("reading {}", truth_path.display()))?;
     let t = Truth::from_json(&bytes).context("parsing the truth file")?;
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let known = |p: &str| t.file(p).is_some();
     let fix = |p: String| -> String {
         if known(&p) {

@@ -29,6 +29,16 @@ pub enum CatalogError {
     #[error("the catalog writer has stopped")]
     WriterClosed,
 
+    #[error(
+        "another PhotoSquirrel process (the app or a CLI command) is using the catalog in {}; \
+         close it or wait for it to finish, then try again",
+        .path.display()
+    )]
+    Locked { path: PathBuf },
+
+    #[error("the catalog is open read-only because another PhotoSquirrel process owns it")]
+    ReadOnly,
+
     #[error("{} catalog write error(s); first: {}", .0.total, .0.first())]
     Write(WriteErrors),
 

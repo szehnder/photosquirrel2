@@ -10,9 +10,14 @@
 //!    hash it again: the bytes on disk must equal the bytes streamed. Then compare with the catalog identity:
 //!    a full identity must equal the streamed hash; a sampled identity (ADR-0011) is recomputed from the
 //!    partial and must match, and the streamed full hash is returned for the ledger.
-//! 7. Rename into place with [`rename_no_replace`] and fsync the folder.
+//! 7. Rename into place with [`rename_no_replace`] and fsync the folder. The file is in place and verified at
+//!    this point: a failed folder fsync is logged as a warning, not a failed copy (ADR-0040).
+//! 8. Post-rename verification (ADR-0038, ADR-0040): re-stat and re-hash the final file once. A mismatch means
+//!    something else wrote that name (only possible through the check-then-rename fallback); the file is
+//!    kept, never deleted, and the outcome is marked [`CopyOutcome::suspect`].
 //!
-//! Any failure removes the partial file (only that file) and reports; nothing appears at the target path.
+//! Any failure before the rename removes the partial file (only that file) and reports; nothing appears at
+//! the target path.
 //! [`CopyHooks`] lets tests inject faults (corrupted bytes, disk full, a kill before the rename).
 
 use std::fs::{File, FileTimes, OpenOptions};
@@ -51,6 +56,12 @@ pub trait CopyHooks: Sync {
     }
     /// Called after verification, just before the rename.
     fn before_rename(&self, _file: FileId, _partial: &Path) {}
+    /// Called right after the rename, before the folder fsync and the post-rename verification.
+    fn after_rename(&self, _file: FileId, _target: &Path) {}
+    /// Fsync the target's folder after the rename (tests inject failures).
+    fn sync_folder(&self, _file: FileId, dir: &Path) -> io::Result<()> {
+        sync_dir(dir)
+    }
 }
 
 /// No faults.
@@ -130,6 +141,9 @@ pub struct CopyOutcome {
     pub full_hash: [u8; 32],
     pub bytes: u64,
     pub rename: RenameMethod,
+    /// The post-rename verification found other bytes at the target (their BLAKE3 and size). The file is
+    /// kept; the export is not counted as done (ADR-0040).
+    pub suspect: Option<([u8; 32], u64)>,
 }
 
 /// Removes the partial file unless disarmed (error paths and panics; not a killed process, which the next
@@ -295,13 +309,43 @@ pub fn copy_verified(
     let method = rename_no_replace(&partial, &target, cfg.allow_check_then_rename)
         .map_err(CopyError::io("rename", &target))?;
     guard.armed = false;
-    if let Some(dir) = target.parent() {
-        sync_dir(dir).map_err(CopyError::io("fsync folder", dir))?;
+    hooks.after_rename(req.file, &target);
+    // From here on the file is in place: nothing below may turn it into a failed copy (which a later export
+    // would copy again as " (2)"), and nothing ever removes it.
+    if let Some(dir) = target.parent()
+        && let Err(e) = hooks.sync_folder(req.file, dir)
+    {
+        log::warn!(
+            "{} is in place and verified, but fsync of its folder failed: {e}",
+            target.display()
+        );
     }
+    let suspect = match File::open(&target).and_then(full_hash_of) {
+        Ok((h, n)) if h == streamed && n == copied => None,
+        Ok((h, n)) => {
+            log::error!(
+                "{} changed right after it was renamed into place (expected {} bytes {}, found {n} bytes \
+                 {}); keeping it and marking it suspect",
+                target.display(),
+                copied,
+                hex(&streamed),
+                hex(&h)
+            );
+            Some((h, n))
+        }
+        Err(e) => {
+            log::error!(
+                "{} could not be re-read after the rename ({e}); marking it suspect",
+                target.display()
+            );
+            Some(([0; 32], 0))
+        }
+    };
     Ok(CopyOutcome {
         full_hash: streamed,
         bytes: copied,
         rename: method,
+        suspect,
     })
 }
 
@@ -344,8 +388,13 @@ pub fn write_new_file(
     let method = rename_no_replace(&partial, &target, cfg.allow_check_then_rename)
         .map_err(CopyError::io("rename", &target))?;
     guard.armed = false;
-    if let Some(dir) = target.parent() {
-        sync_dir(dir).map_err(CopyError::io("fsync folder", dir))?;
+    if let Some(dir) = target.parent()
+        && let Err(e) = sync_dir(dir)
+    {
+        log::warn!(
+            "{} is in place, but fsync of its folder failed: {e}",
+            target.display()
+        );
     }
     Ok(method)
 }

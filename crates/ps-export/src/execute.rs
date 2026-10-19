@@ -20,7 +20,9 @@ use parking_lot_free::Mutex;
 use ps_model::{ContentId, ContentIdKind, FileId, LedgerEntry, LedgerState, RelPath};
 use serde::Serialize;
 
-use crate::copy::{CopyConfig, CopyError, CopyHooks, CopyRequest, copy_verified, write_new_file};
+use crate::copy::{
+    CopyConfig, CopyError, CopyHooks, CopyOutcome, CopyRequest, copy_verified, write_new_file,
+};
 use crate::input::ExportInput;
 use crate::ledger::Ledger;
 use crate::library::{LibraryRoot, full_hash_of, partial_of};
@@ -83,6 +85,9 @@ pub enum StopReason {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ExportReport {
     pub copied: u64,
+    /// Files renamed into place whose post-rename verification failed (ADR-0040): kept in the library,
+    /// ledger `suspect`, not counted as exported.
+    pub suspect: Vec<FailedFile>,
     pub adopted: u64,
     pub bytes_copied: u64,
     pub sidecars: u64,
@@ -283,6 +288,24 @@ impl Ctx<'_> {
                         mtime_ns: f.mtime_ns,
                     };
                     match copy_verified(&self.lib, &req, &self.cfg.copy, self.hooks) {
+                        Ok(CopyOutcome {
+                            suspect: Some((found, n)),
+                            ..
+                        }) => {
+                            self.record(&self.entry(f, LedgerState::Suspect, Some(found)));
+                            let msg = format!(
+                                "the file at this library path changed right after it was copied \
+                                 ({n} bytes, BLAKE3 {}); it was kept and marked suspect, and the photo \
+                                 will be copied again under a free name",
+                                ContentId::full(found).to_hex()
+                            );
+                            log::error!("export of {}: {msg}", f.target);
+                            self.shared.lock().report.suspect.push(FailedFile {
+                                file: Some(f.file),
+                                target: f.target.clone(),
+                                error: msg,
+                            });
+                        }
                         Ok(o) => {
                             self.finish(f, o.full_hash, false, b.sidecar.as_ref());
                             let mut s = self.shared.lock();

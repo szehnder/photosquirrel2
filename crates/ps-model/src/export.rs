@@ -47,6 +47,10 @@ pub enum LedgerState {
     Done,
     /// The copy was aborted (hash mismatch, read error, disk full); nothing is at the target path.
     Failed,
+    /// Renamed into place, but the file at the target path no longer matched the verified copy when it was
+    /// re-hashed after the rename (ADR-0040): something else wrote that name. The file is kept, never
+    /// deleted; the content counts as not exported and is copied again under a free name.
+    Suspect,
 }
 
 impl LedgerState {
@@ -55,6 +59,7 @@ impl LedgerState {
             LedgerState::InProgress => 0,
             LedgerState::Done => 1,
             LedgerState::Failed => 2,
+            LedgerState::Suspect => 3,
         }
     }
 
@@ -63,6 +68,7 @@ impl LedgerState {
             0 => LedgerState::InProgress,
             1 => LedgerState::Done,
             2 => LedgerState::Failed,
+            3 => LedgerState::Suspect,
             _ => return None,
         })
     }
@@ -131,6 +137,7 @@ mod tests {
             LedgerState::InProgress,
             LedgerState::Done,
             LedgerState::Failed,
+            LedgerState::Suspect,
         ] {
             assert_eq!(LedgerState::from_code(s.code()), Some(s));
         }

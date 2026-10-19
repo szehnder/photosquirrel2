@@ -263,7 +263,9 @@ pub fn plan(
             LedgerState::InProgress => {
                 in_progress.insert(collision_key(&e.library_rel_path));
             }
-            LedgerState::Failed => {}
+            // A suspect file stays where it is; its name is taken (the probe sees it), its content is not
+            // exported there.
+            LedgerState::Failed | LedgerState::Suspect => {}
         }
     }
     let mut p = Planner {
@@ -315,12 +317,15 @@ pub fn plan(
             continue;
         }
 
-        // Keepers whose content is already in the library (ledger row and the copy still there).
+        // Keepers whose content is already in the library: a ledger row and the copy still there with the
+        // same bytes (size and content hash; a same-size file with other bytes is a collision, D7).
         let mut todo = Vec::new();
         for (u, f) in &all {
             let mut found = None;
             for e in done.get(&f.content).into_iter().flatten() {
-                if probe.existing(&e.library_rel_path)? == (Existing::File { size: e.size }) {
+                if probe.existing(&e.library_rel_path)? == (Existing::File { size: e.size })
+                    && probe.identical(&e.library_rel_path, &f.content, e.size)?
+                {
                     found = Some(e.library_rel_path.clone());
                     break;
                 }

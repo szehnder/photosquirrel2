@@ -76,7 +76,7 @@ pub fn add(ctx: &Ctx, path: &Path) -> Result<()> {
 }
 
 pub fn list(ctx: &Ctx) -> Result<()> {
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let rows: Vec<SourceRow> = svc
         .refresh_sources()?
         .iter()

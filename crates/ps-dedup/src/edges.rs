@@ -226,6 +226,29 @@ fn norm(s: &Option<String>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// The comparable camera model: lower-case, whitespace collapsed, and a leading make word stripped, so that
+/// "Canon EOS 70D" (EXIF) and "EOS 70D" (rawler's normalized RAW model) compare equal, as do
+/// "NIKON CORPORATION" / "NIKON D750" and "Nikon" / "D750". `None` without a model.
+pub fn camera_model_key(make: Option<&str>, model: Option<&str>) -> Option<String> {
+    let words = |s: &str| -> Vec<String> {
+        s.split_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+    };
+    let mut m = words(model?);
+    if let Some(first) = make.map(words).and_then(|w| w.into_iter().next())
+        && m.len() > 1
+        && m[0] == first
+    {
+        m.remove(0);
+    }
+    (!m.is_empty()).then(|| m.join(" "))
+}
+
+fn model_key(m: &crate::input::DedupMeta) -> Option<String> {
+    camera_model_key(m.camera_make.as_deref(), m.camera_model.as_deref())
+}
+
 /// Exact edge: identical content identity; sampled identities also need equal size, duration and
 /// dimensions (ADR-0011).
 pub fn exact_verdict(a: &DedupInput, b: &DedupInput) -> Option<Result<EdgeKind, NoMatch>> {
@@ -284,7 +307,7 @@ pub fn raw_jpeg_companions(a: &DedupInput, b: &DedupInput, strict: bool) -> bool
     if raw.folder() != other.folder() || !raw.stem().eq_ignore_ascii_case(other.stem()) {
         return false;
     }
-    let (ma, mb) = (norm(&raw.meta.camera_model), norm(&other.meta.camera_model));
+    let (ma, mb) = (model_key(&raw.meta), model_key(&other.meta));
     if ma.is_none() || ma != mb {
         return false;
     }
@@ -328,7 +351,7 @@ pub fn metadata_contradiction(a: &DedupInput, b: &DedupInput) -> Option<Contradi
             b: mb.camera_serial.clone().unwrap_or_default(),
         });
     }
-    let (mda, mdb) = (norm(&ma.camera_model), norm(&mb.camera_model));
+    let (mda, mdb) = (model_key(ma), model_key(mb));
     if let (Some(x), Some(y)) = (&mda, &mdb)
         && x != y
     {
@@ -585,6 +608,65 @@ mod tests {
         m.all_tags
             .push(("Exif".into(), "SubSecTimeOriginal".into(), "0".into()));
         assert!(DedupMeta::from_media(&m, false).subsec_present);
+    }
+
+    /// D1: a Canon CR2 read through rawler reports "EOS 70D" while its JPEG says "Canon EOS 70D"; both have
+    /// SubSecTimeOriginal 99 (990 ms). They are one capture pair and an edge, not a model contradiction.
+    #[test]
+    fn raw_jpeg_pair_matches_normalized_camera_model() {
+        let mut jpg = img(1, "DCIM/IMG_2180.JPG");
+        jpg.meta.camera_make = Some("Canon".into());
+        jpg.meta.camera_model = Some("Canon EOS 70D".into());
+        jpg.meta.capture_time.as_mut().unwrap().millis = 990;
+        jpg.meta.subsec_present = true;
+        let mut raw = jpg.clone();
+        raw.file = FileId(2);
+        raw.content = Some(ContentId::full([2; 32]));
+        raw.path = "DCIM/IMG_2180.CR2".into();
+        raw.format = Format::Raw(RawFormat::Cr2);
+        raw.meta.camera_model = Some("EOS 70D".into());
+        raw.meta.camera_make = Some("CANON".into());
+        assert!(raw_jpeg_companions(&raw, &jpg, true));
+        assert_eq!(metadata_contradiction(&raw, &jpg), None);
+        assert!(matches!(pair_verdict(&raw, &jpg), PairVerdict::Edge { .. }));
+        // A different model is still a contradiction after normalization.
+        raw.meta.camera_model = Some("EOS 80D".into());
+        assert!(matches!(
+            metadata_contradiction(&raw, &jpg),
+            Some(Contradiction::CameraModel { .. })
+        ));
+    }
+
+    #[test]
+    fn camera_model_keys_strip_the_make() {
+        let k = |make: &str, model: &str| camera_model_key(Some(make), Some(model));
+        assert_eq!(k("Canon", "Canon EOS 70D"), k("Canon", "EOS 70D"));
+        assert_eq!(k("NIKON CORPORATION", "NIKON D750"), k("Nikon", "D750"));
+        assert_eq!(k("Apple", "iPhone 12"), Some("iphone 12".into()));
+        assert_ne!(k("Canon", "EOS 70D"), k("Canon", "EOS 7D"));
+        assert_eq!(
+            camera_model_key(None, Some("  EOS  70D ")),
+            Some("eos 70d".into())
+        );
+        assert_eq!(camera_model_key(Some("Canon"), None), None);
+    }
+
+    /// The sub-second is "present" only when the tag parses and the capture time carries that value.
+    #[test]
+    fn subsec_presence_is_consistent_with_the_parsed_value() {
+        let mut m = MediaMetadata {
+            capture_time: Some(CaptureTime::from_parts(2020, 1, 1, 12, 0, 0)),
+            ..Default::default()
+        };
+        m.all_tags
+            .push(("Exif".into(), "0x9291".into(), "99".into()));
+        // The tag says 990 ms but the capture time was not given it: not a usable sub-second.
+        assert!(!DedupMeta::from_media(&m, false).subsec_present);
+        m.capture_time.as_mut().unwrap().millis = 990;
+        assert!(DedupMeta::from_media(&m, false).subsec_present);
+        m.all_tags[0].2 = "  ".into();
+        m.capture_time.as_mut().unwrap().millis = 0;
+        assert!(!DedupMeta::from_media(&m, false).subsec_present);
     }
 
     #[test]

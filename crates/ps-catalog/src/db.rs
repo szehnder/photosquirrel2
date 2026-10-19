@@ -36,6 +36,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     AI_MIGRATION,
     EXPORT_MIGRATION,
     GALLERY_MIGRATION,
+    LEDGER_SUSPECT_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -66,6 +67,13 @@ pub const GALLERY_MIGRATION: Migration = Migration {
     version: 7,
     name: "gallery",
     sql: include_str!("../migrations/0007_gallery.sql"),
+};
+
+/// Migration 8 (ADR-0040: export ledger state 3 `suspect`).
+pub const LEDGER_SUSPECT_MIGRATION: Migration = Migration {
+    version: 8,
+    name: "ledger_suspect",
+    sql: include_str!("../migrations/0008_ledger_suspect.sql"),
 };
 
 /// `thumbs.db` migrations.
@@ -162,11 +170,12 @@ pub(crate) fn open_reader(path: &Path) -> Result<Connection> {
     )?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute_batch(
-        // Readers map up to 4 GiB (address space, not memory): a 1M-file catalog is ~1 GB and the ID-list
-        // index pages must not go through the small page cache.
+        // Readers map up to 256 MiB (D8): enough for the hot ID-list index pages of a 1M-file catalog, while
+        // the rest goes through the page cache. A 4 GiB map made the app show ~1.9 GB of file-backed RSS at
+        // 1M files, which users read as a memory hog; the 1M ID-list budget holds either way.
         "PRAGMA query_only = 1;
          PRAGMA temp_store = MEMORY;
-         PRAGMA mmap_size = 4294967296;
+         PRAGMA mmap_size = 268435456;
          PRAGMA cache_size = -16384;",
     )?;
     conn.set_prepared_statement_cache_capacity(32);

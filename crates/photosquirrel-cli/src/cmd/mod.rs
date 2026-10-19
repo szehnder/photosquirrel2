@@ -10,14 +10,12 @@ pub mod groups;
 pub mod scan;
 pub mod sources;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use ps_model::settings::Settings;
-use ps_service::scan::{ScanOptions, ScanService};
+use ps_service::scan::{ScanError, ScanOptions, ScanService};
 use ps_service::settings::SettingsStore;
-
-use crate::control::{self, Job};
 
 /// What every command gets: the (lazily resolved) data folder and the output mode.
 pub struct Ctx {
@@ -62,20 +60,44 @@ impl Ctx {
         })
     }
 
-    /// The service over the catalog in the data folder. While another process scans this catalog, open as an
-    /// observer (its running run is not marked interrupted).
+    /// The service over the catalog in the data folder, as its owner (exclusive lock, ADR-0005). Mutating
+    /// commands use this; while another process (the app or another CLI command) owns the catalog it fails
+    /// with [`Busy`] (exit status 2).
     pub fn service(&self) -> Result<ScanService> {
         let data = self.data_dir()?;
-        let mut opts = self.scan_options()?;
-        opts.recover_interrupted = !control::is_live(&data, Job::Scan);
-        open(&data, opts)
+        let opts = self.scan_options()?;
+        match ScanService::open(&data, opts) {
+            Err(ScanError::Catalog(e @ ps_catalog::CatalogError::Locked { .. })) => {
+                Err(Busy(e.to_string()).into())
+            }
+            r => r.with_context(|| format!("opening the catalog in {}", data.display())),
+        }
+    }
+
+    /// The service for read-only commands: a read-only observer that never takes the owner lock (a scan or
+    /// the app starting meanwhile must not fail), the owner only to create or migrate the catalog.
+    pub fn reader(&self) -> Result<ScanService> {
+        let data = self.data_dir()?;
+        let opts = self.scan_options()?;
+        ScanService::open_or_observe(&data, opts)
+            .with_context(|| format!("opening the catalog in {}", data.display()))
     }
 }
 
-fn open(data: &Path, opts: ScanOptions) -> Result<ScanService> {
-    ScanService::open(data, opts)
-        .with_context(|| format!("opening the catalog in {}", data.display()))
+/// Another process owns the catalog: a mutating command cannot run now (exit status 2).
+#[derive(Debug)]
+pub struct Busy(pub String);
+
+impl std::fmt::Display for Busy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
+
+impl std::error::Error for Busy {}
+
+/// Exit status of [`Busy`].
+pub const BUSY_EXIT: u8 = 2;
 
 /// Print a table: columns padded to their widest cell.
 pub fn table(header: &[&str], rows: &[Vec<String>]) {

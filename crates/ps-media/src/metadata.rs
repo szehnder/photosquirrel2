@@ -410,8 +410,52 @@ fn raw_fallback(bytes: &[u8], m: &mut Metadata, dates: &mut ExifDates) -> bool {
         .and_then(parse_exif_datetime);
     dates.create = e.create_date.as_deref().and_then(parse_exif_datetime);
     if let Some(t) = crate::tiff::Tiff::parse(bytes) {
-        // nom-exif cannot read this container; list the TIFF/EXIF tags with our own walker.
+        // nom-exif cannot read this container; list the TIFF/EXIF tags with our own walker. The RAW's own
+        // IFD0 Make/Model win over rawler's normalized names ("EOS 70D" for "Canon EOS 70D") so that the RAW
+        // and its JPEG twin agree, and SubSecTimeOriginal/OffsetTimeOriginal apply as they do for JPEGs.
         let (ifds, _) = t.walk();
+        let mut subsec = None;
+        let mut offset = None;
+        for ifd in &ifds {
+            let text = |en: &crate::tiff::Entry| {
+                t.ascii(en)
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+            };
+            for en in &ifd.entries {
+                match (ifd.kind, en.tag) {
+                    (crate::tiff::IfdKind::Chain(0), 0x010F) => {
+                        if let Some(v) = text(en) {
+                            f.camera_make = Some(v);
+                        }
+                    }
+                    (crate::tiff::IfdKind::Chain(0), 0x0110) => {
+                        if let Some(v) = text(en) {
+                            f.camera_model = Some(v);
+                        }
+                    }
+                    (crate::tiff::IfdKind::Exif, 0x9003) if dates.original.is_none() => {
+                        dates.original = text(en).as_deref().and_then(parse_exif_datetime);
+                    }
+                    (crate::tiff::IfdKind::Exif, 0x9291) => {
+                        subsec = text(en).as_deref().and_then(parse_subsec);
+                    }
+                    (crate::tiff::IfdKind::Exif, 0x9011) => {
+                        offset = text(en).as_deref().and_then(parse_offset);
+                    }
+                    (crate::tiff::IfdKind::Exif, 0xA431) if f.camera_serial.is_none() => {
+                        f.camera_serial = text(en);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(o) = dates.original.as_mut() {
+            o.millis = subsec.unwrap_or(0);
+            if o.offset_minutes.is_none() {
+                o.offset_minutes = offset;
+            }
+        }
         for ifd in &ifds {
             let group = match ifd.kind {
                 crate::tiff::IfdKind::Chain(i) => format!("IFD{i}"),
@@ -455,4 +499,33 @@ fn raw_fallback(bytes: &[u8], m: &mut Metadata, dates: &mut ExifDates) -> bool {
         push_tag(f, "RAW", "DateTimeOriginal", e.date_time_original.clone());
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ps_fixtures::media::{ExifSpec, exif_tiff};
+
+    /// A Canon CR2 that nom-exif cannot read: the RAW path must take Make/Model from the RAW's own IFD0
+    /// (rawler normalizes "Canon EOS 70D" to "EOS 70D") and apply SubSecTimeOriginal, like the JPEG twin.
+    #[test]
+    fn raw_fallback_reads_make_model_and_subsec_from_raw_ifds() {
+        let spec = ExifSpec {
+            make: Some("Canon".into()),
+            model: Some("Canon EOS 70D".into()),
+            date_time_original: Some("2000:01:01 00:01:11".into()),
+            sub_sec_original: Some("99".into()),
+            body_serial: Some("021021000941".into()),
+            ..Default::default()
+        };
+        let bytes = exif_tiff(&spec);
+        let mut m = Metadata::default();
+        let mut dates = ExifDates::default();
+        assert!(raw_fallback(&bytes, &mut m, &mut dates));
+        assert_eq!(m.fields.camera_make.as_deref(), Some("Canon"));
+        assert_eq!(m.fields.camera_model.as_deref(), Some("Canon EOS 70D"));
+        assert_eq!(m.fields.camera_serial.as_deref(), Some("021021000941"));
+        let t = dates.original.expect("DateTimeOriginal");
+        assert_eq!(t.millis, 990);
+    }
 }

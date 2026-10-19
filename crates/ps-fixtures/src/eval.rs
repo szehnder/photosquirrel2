@@ -87,8 +87,38 @@ impl Score {
             rgroups.push(m);
         }
 
+        // Effective truth group of every file: an ambiguous derivative (`alternate_groups`) counts in the
+        // candidate group its result group holds most of, its own group on ties or when ungrouped.
+        let mut eff: Vec<&str> = truth.files.iter().map(|f| f.group.as_str()).collect();
+        for (i, f) in truth.files.iter().enumerate() {
+            if f.alternate_groups.is_empty() {
+                continue;
+            }
+            let Some(&rg) = assigned.get(&i) else {
+                continue;
+            };
+            let count = |g: &str| {
+                rgroups[rg]
+                    .iter()
+                    .filter(|&&j| j != i && truth.files[j].group == g)
+                    .count()
+            };
+            let mut best = (count(&f.group), f.group.as_str());
+            for g in &f.alternate_groups {
+                let c = count(g);
+                if c > best.0 {
+                    best = (c, g.as_str());
+                }
+            }
+            eff[i] = best.1;
+        }
+        let group_of = |i: usize| eff[i];
+
         // Pairwise precision / recall.
-        let tgroups = truth.groups();
+        let mut tgroups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for i in 0..truth.files.len() {
+            tgroups.entry(group_of(i)).or_default().push(i);
+        }
         let true_pairs: u64 = tgroups
             .values()
             .map(|m| pairs(m.iter().filter(|&&i| eligible(i)).count() as u64))
@@ -100,7 +130,7 @@ impl Score {
             result_pairs += pairs(el.len() as u64);
             let mut by_truth: BTreeMap<&str, u64> = BTreeMap::new();
             for i in el {
-                *by_truth.entry(truth.files[i].group.as_str()).or_default() += 1;
+                *by_truth.entry(group_of(i)).or_default() += 1;
             }
             correct += by_truth.values().map(|&n| pairs(n)).sum::<u64>();
         }
@@ -169,7 +199,7 @@ impl Score {
             for (ri, m) in rgroups.iter().enumerate() {
                 let hit: BTreeSet<&str> = m
                     .iter()
-                    .map(|&i| truth.files[i].group.as_str())
+                    .map(|&i| group_of(i))
                     .filter(|g| set_groups.contains(g))
                     .collect();
                 if hit.len() >= 2 {

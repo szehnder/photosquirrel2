@@ -169,6 +169,9 @@ pub struct WriterStats {
 struct Shared {
     stats: Arc<Stats>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// An observer's writer: another process owns the catalog, every write fails with
+    /// [`CatalogError::ReadOnly`].
+    read_only: bool,
 }
 
 impl Drop for Shared {
@@ -226,11 +229,33 @@ impl Writer {
             shared: Arc::new(Shared {
                 stats,
                 thread: Mutex::new(Some(thread)),
+                read_only: false,
             }),
         })
     }
 
+    /// A writer that refuses every write (observer catalogs, ADR-0005 single writer).
+    pub(crate) fn read_only() -> Writer {
+        let (tx, _rx) = bounded(1);
+        Writer {
+            tx,
+            shared: Arc::new(Shared {
+                stats: Arc::new(Stats::default()),
+                thread: Mutex::new(None),
+                read_only: true,
+            }),
+        }
+    }
+
+    /// This writer refuses writes (the catalog is open as an observer).
+    pub fn is_read_only(&self) -> bool {
+        self.shared.read_only
+    }
+
     fn send(&self, m: Msg) -> Result<()> {
+        if self.shared.read_only {
+            return Err(CatalogError::ReadOnly);
+        }
         self.tx.send(m).map_err(|_| CatalogError::WriterClosed)
     }
 
@@ -317,6 +342,9 @@ impl Writer {
 
     /// Commit, stop the thread and wait for it. Other clones get [`CatalogError::WriterClosed`] afterwards.
     pub(crate) fn shutdown(&self) -> Result<()> {
+        if self.shared.read_only {
+            return Ok(());
+        }
         let flushed = self.flush();
         let _ = self.tx.send(Msg::Shutdown);
         if let Some(t) = self.shared.thread.lock().take() {

@@ -137,6 +137,7 @@ impl Out<'_> {
                 mtime,
                 content: blake3::hash(bytes).to_hex().to_string(),
                 derived_from: m.derived_from.map(str::to_string),
+                alternate_groups: Vec::new(),
             },
             tier: m.tier,
             completeness: m.completeness,
@@ -271,6 +272,11 @@ pub fn render_plan(plan: &Plan, writer: &dyn CorpusWriter) -> Result<Truth, Gene
         .collect::<Result<_, GenerateError>>()?;
     let mut files: Vec<TruthFile> = per_task.into_iter().flatten().map(|r| r.file).collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    for f in &mut files {
+        if let Some(alts) = plan.alternate_groups.get(&f.path) {
+            f.alternate_groups.clone_from(alts);
+        }
+    }
     Ok(Truth {
         truth_version: TRUTH_VERSION,
         generator: format!("ps-fixtures {}", env!("CARGO_PKG_VERSION")),

@@ -83,7 +83,7 @@ fn print_totals(o: &DryRunOut<'_>) {
 
 /// `export dry-run`: the plan; writes nothing.
 pub fn dry_run(ctx: &Ctx, library: &Path, settings: ProfileSettings) -> Result<()> {
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let (plan, _) = svc.exports().plan(library, settings)?;
     let out = plan_out(&plan);
     emit(ctx.json, "export dry-run", &out, |o| {
@@ -107,6 +107,7 @@ struct RunOut<'a> {
     bytes_copied: u64,
     sidecars: u64,
     failed: &'a [ps_export::FailedFile],
+    suspect: &'a [ps_export::FailedFile],
     stopped: Option<String>,
     elapsed_ms: u64,
     cancelled: bool,
@@ -144,6 +145,7 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
         bytes_copied: report.bytes_copied,
         sidecars: report.sidecars,
         failed: &report.failed,
+        suspect: &report.suspect,
         stopped: report.stopped.as_ref().map(|s| format!("{s:?}")),
         elapsed_ms: report.elapsed.as_millis() as u64,
         cancelled: interrupted,
@@ -162,6 +164,12 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
         for f in o.failed {
             println!("  failed: {f:?}");
         }
+        for f in o.suspect {
+            eprintln!(
+                "WARNING: suspect library file {}: {} (kept; check it, then re-run export)",
+                f.target, f.error
+            );
+        }
         if let Some(s) = &o.stopped {
             println!("stopped: {s}; re-run to resume");
         }
@@ -169,8 +177,12 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
     if interrupted {
         return Err(Interrupted.into());
     }
-    if !report.failed.is_empty() {
-        anyhow::bail!("{} files failed to export", report.failed.len());
+    if !report.failed.is_empty() || !report.suspect.is_empty() {
+        anyhow::bail!(
+            "{} files failed to export, {} library files are suspect",
+            report.failed.len(),
+            report.suspect.len()
+        );
     }
     Ok(())
 }
@@ -229,7 +241,7 @@ fn report_out(
     only: &[i64],
     folders: bool,
 ) -> Result<ReportOut> {
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let c = svc.exports().completion(library, verify)?;
     let roots: std::collections::HashMap<SourceId, PathBuf> =
         svc.sources()?.into_iter().map(|s| (s.id, s.root)).collect();

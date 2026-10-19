@@ -12,7 +12,10 @@ use ps_model::{ContentId, FileId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
-use crate::edges::{EdgeKind, PairVerdict, Suggestion, derivative_eligible, derivative_verdict};
+use crate::edges::{
+    Contradiction, EdgeKind, PairVerdict, Suggestion, derivative_eligible, derivative_verdict,
+    metadata_contradiction, raw_jpeg_companions,
+};
 use crate::input::{DedupInput, ExactKey};
 use crate::rank::{KeeperReason, rank};
 use crate::unionfind::UnionFind;
@@ -651,15 +654,48 @@ impl<'a> Grouper<'a> {
             }
         }
 
-        // Union-find: exact copies first, then derivative edges strongest first, never joining a separated
-        // pair (ADR-0033 cannot-link).
+        // RAW+JPEG capture pairs by content (ADR-0037): the two-camera-originals contradiction never applies
+        // between the contents of a capture pair, wherever copies of either half live.
+        let mut capture_pairs: FxHashSet<(ContentId, ContentId)> = FxHashSet::default();
+        for e in &edges {
+            let (x, y) = (
+                &self.inputs[nodes[e.a as usize] as usize],
+                &self.inputs[nodes[e.b as usize] as usize],
+            );
+            if let (Some(cx), Some(cy)) = (x.content, y.content)
+                && raw_jpeg_companions(x, y, true)
+            {
+                capture_pairs.insert(ordered(cx, cy));
+            }
+        }
+        // Does putting `x` and `y` in one group contradict their metadata (ADR-0039)?
+        let conflict = |x: &DedupInput, y: &DedupInput| match metadata_contradiction(x, y) {
+            None => false,
+            Some(Contradiction::TwoCameraOriginals { .. }) => !matches!(
+                (x.content, y.content),
+                (Some(cx), Some(cy)) if capture_pairs.contains(&ordered(cx, cy))
+            ),
+            Some(_) => true,
+        };
+
+        // Union-find, Kruskal-style: exact copies first, then derivative edges strongest first. A union is
+        // refused when it would join a separated pair (ADR-0033) or put two members with contradicting metadata
+        // into one group (ADR-0039: burst frames, different cameras, two camera originals), so a metadata-free
+        // copy joins its strongest compatible partner only.
         let mut uf = UnionFind::new(n);
         let mut cons: FxHashMap<usize, Vec<ContentId>> = FxHashMap::default();
+        // Per component: the members that carry metadata a contradiction can come from (one per content with
+        // identical metadata).
+        let mut reps: FxHashMap<usize, Vec<u32>> = FxHashMap::default();
         for (l, &g) in nodes.iter().enumerate() {
             if let Some(c) = self.sep_list(g) {
                 cons.insert(l, vec![c]);
             }
+            if constraining(&self.inputs[g as usize]) {
+                reps.insert(l, vec![l as u32]);
+            }
         }
+        let inp = |l: u32| &self.inputs[nodes[l as usize] as usize];
         let mut join = |uf: &mut UnionFind, a: u32, b: u32| {
             let (ra, rb) = (uf.find(a as usize), uf.find(b as usize));
             if ra == rb {
@@ -670,13 +706,41 @@ impl<'a> Grouper<'a> {
             {
                 return;
             }
+            let mut merged_reps = Vec::new();
+            if let (Some(xa), Some(xb)) = (reps.get(&ra), reps.get(&rb)) {
+                merged_reps.extend_from_slice(xa);
+                for &y in xb {
+                    let (iy, mut dup) = (inp(y), false);
+                    for &x in xa {
+                        let ix = inp(x);
+                        if ix.content.is_some() && ix.content == iy.content && ix.meta == iy.meta {
+                            dup = true;
+                        } else if conflict(ix, iy) {
+                            return;
+                        }
+                    }
+                    if !dup {
+                        merged_reps.push(y);
+                    }
+                }
+            }
             let la = cons.remove(&ra).unwrap_or_default();
             let lb = cons.remove(&rb).unwrap_or_default();
+            let (pa, pb) = (reps.remove(&ra), reps.remove(&rb));
             if let Some(r) = uf.union(ra, rb) {
                 let mut l = la;
                 l.extend(lb);
                 if !l.is_empty() {
                     cons.insert(r, l);
+                }
+                match (pa, pb) {
+                    (Some(_), Some(_)) => {
+                        reps.insert(r, merged_reps);
+                    }
+                    (Some(p), None) | (None, Some(p)) => {
+                        reps.insert(r, p);
+                    }
+                    (None, None) => {}
                 }
             }
         };
@@ -1034,6 +1098,11 @@ impl Grouper<'static> {
     pub fn owned(inputs: Vec<DedupInput>, constraints: Constraints) -> Self {
         Self::build(Cow::Owned(inputs), Cow::Owned(constraints))
     }
+}
+
+/// The input carries metadata a contradiction can come from (capture time, camera serial or model).
+fn constraining(x: &DedupInput) -> bool {
+    x.meta.capture_time.is_some() || x.meta.camera_serial.is_some() || x.meta.camera_model.is_some()
 }
 
 fn sep_partners(c: &Constraints) -> FxHashMap<ContentId, Vec<ContentId>> {

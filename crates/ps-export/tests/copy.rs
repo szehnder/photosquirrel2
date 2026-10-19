@@ -613,3 +613,109 @@ fn measure_export_throughput() {
         );
     }
 }
+
+/// Library files that are not sidecars.
+fn photos_under(dir: &Path) -> usize {
+    files_under(dir)
+        .iter()
+        .filter(|p| p.extension().is_none_or(|e| e != "xmp"))
+        .count()
+}
+
+/// The folder fsync after the rename fails.
+struct FolderSyncFails;
+
+impl CopyHooks for FolderSyncFails {
+    fn sync_folder(&self, _file: FileId, _dir: &Path) -> io::Result<()> {
+        Err(io::Error::other("injected folder fsync failure"))
+    }
+}
+
+/// D6: the file is renamed into place and verified when the folder fsync fails; that is a warning, not a
+/// failed file, so the next export does not copy it again as " (2)".
+#[test]
+fn folder_fsync_failure_after_rename_still_records_done() {
+    let mut s = Sources::new("dirsync", 1);
+    let f = s.add(0, "DCIM/IMG_7.JPG", &bytes(70, 40_000), 0, day(2015, 5, 5));
+    let input = s.input(vec![unit(vec![f.clone()])]);
+    let lib = s.library();
+    let mut ledger = MemoryLedger::new();
+    let r = run(
+        &input,
+        &lib,
+        &mut ledger,
+        &ExecConfig::default(),
+        &FolderSyncFails,
+    );
+    assert_eq!(r.copied, 1);
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    let row = rel("2015/2015-05-05/IMG_7.JPG");
+    assert_eq!(ledger.get(&row).expect("row").state, LedgerState::Done);
+    let again = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    assert_eq!((again.copied, again.adopted), (0, 0));
+    assert_eq!(photos_under(&lib.join("2015")), 1, "no \" (2)\" copy");
+}
+
+/// Something replaces the final file right after the rename (the check-then-rename race of ADR-0038).
+struct ReplacedAfterRename;
+
+impl CopyHooks for ReplacedAfterRename {
+    fn after_rename(&self, _file: FileId, target: &Path) {
+        fs::write(target, b"someone else's bytes").expect("replace");
+    }
+}
+
+/// D6: the post-rename verification (ADR-0038/ADR-0040) finds the final file differs: it is kept (never
+/// deleted), its ledger row is `suspect`, and the report lists it.
+#[test]
+fn file_differing_after_rename_is_kept_and_marked_suspect() {
+    let mut s = Sources::new("suspect", 1);
+    let f = s.add(0, "DCIM/IMG_8.JPG", &bytes(80, 30_000), 0, day(2016, 6, 6));
+    let input = s.input(vec![unit(vec![f.clone()])]);
+    let lib = s.library();
+    let mut ledger = MemoryLedger::new();
+    let r = run(
+        &input,
+        &lib,
+        &mut ledger,
+        &ExecConfig::default(),
+        &ReplacedAfterRename,
+    );
+    let path = rel("2016/2016-06-06/IMG_8.JPG");
+    assert_eq!(r.copied, 0);
+    assert_eq!(r.suspect.len(), 1, "{r:?}");
+    assert_eq!(r.suspect[0].target, path);
+    assert_eq!(ledger.get(&path).expect("row").state, LedgerState::Suspect);
+    assert_eq!(
+        fs::read(lib.join("2016/2016-06-06/IMG_8.JPG")).expect("kept"),
+        b"someone else's bytes"
+    );
+    // The next export makes a verified copy beside it and leaves the suspect file alone.
+    let again = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    assert_eq!(again.copied, 1);
+    assert_eq!(photos_under(&lib.join("2016")), 2);
+}
+
+/// D7: a ledger row says "done" and a same-size file is at its path, but its bytes are different: it is not
+/// taken as already exported; the keeper is copied again under a free name, and that file is left as it is.
+#[test]
+fn same_size_different_bytes_is_not_already_exported() {
+    let mut s = Sources::new("samesize", 1);
+    let f = s.add(0, "DCIM/IMG_9.JPG", &bytes(90, 25_000), 0, day(2017, 7, 7));
+    let input = s.input(vec![unit(vec![f.clone()])]);
+    let lib = s.library();
+    let mut ledger = MemoryLedger::new();
+    let r = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    assert_eq!(r.copied, 1);
+    let out = lib.join("2017/2017-07-07/IMG_9.JPG");
+    let other = bytes(91, 25_000);
+    fs::write(&out, &other).expect("replace with same-size bytes");
+    let again = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    assert_eq!((again.copied, again.adopted), (1, 0), "{again:?}");
+    assert_eq!(fs::read(&out).expect("untouched"), other);
+    let by_hash = library_by_hash(&lib);
+    assert!(
+        by_hash.contains_key(&f.content.digest),
+        "a verified copy exists"
+    );
+}

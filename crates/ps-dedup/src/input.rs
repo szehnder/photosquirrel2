@@ -37,11 +37,16 @@ pub struct DedupMeta {
 impl DedupMeta {
     /// Build from extracted metadata. `camera_original` is `ps_model::Metadata::likely_camera_original`.
     /// Sub-second presence is read from the tag list (`SubSecTimeOriginal`), since `CaptureTime::millis` uses
-    /// 0 for "unknown"; a non-zero `millis` also counts as present.
+    /// 0 for "unknown": it counts as present only when the tag parses and the capture time carries exactly that
+    /// value (so a tag the extractor did not apply never turns "unknown" into "0 ms"). A non-zero `millis`
+    /// also counts as present.
     pub fn from_media(m: &MediaMetadata, camera_original: bool) -> Self {
-        let subsec_tag = m.all_tags.iter().any(|(_, name, _)| {
-            let n = name.to_ascii_lowercase();
-            n == "subsectimeoriginal" || n == "0x9291"
+        let subsec_tag = m.capture_time.is_some_and(|c| {
+            m.all_tags.iter().any(|(_, name, value)| {
+                let n = name.to_ascii_lowercase();
+                (n == "subsectimeoriginal" || n == "0x9291")
+                    && parse_subsec_millis(value) == Some(c.millis)
+            })
         });
         Self {
             width: m.width,
@@ -155,4 +160,21 @@ impl DedupInput {
 pub struct ExactKey {
     pub content: ContentId,
     pub sampled_facts: Option<(u64, Option<u64>, Option<u32>, Option<u32>)>,
+}
+
+/// `SubSecTimeOriginal` as milliseconds ("5" = 500 ms, "99" = 990 ms, "1234" = 123 ms); `None` without digits.
+/// Mirrors the extractor's parser.
+fn parse_subsec_millis(s: &str) -> Option<u16> {
+    let digits: String = s
+        .trim()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .take(3)
+        .collect();
+    let v: u16 = digits.parse().ok()?;
+    Some(match digits.len() {
+        1 => v * 100,
+        2 => v * 10,
+        _ => v,
+    })
 }

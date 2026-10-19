@@ -42,3 +42,6 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0036](0036-previews-for-llm-and-component-budgets.md) | LLM previews and component budgets |
 | [0037](0037-raw-jpeg-pairs-exempt-from-two-originals-rule.md) | RAW+JPEG pairs are exempt from the two-camera-originals rule |
 | [0038](0038-no-overwrite-rename.md) | No-overwrite atomic rename for export (rustix) |
+| [0039](0039-contradictions-are-group-level-cannot-link-constraints.md) | Contradictions are group-level cannot-link constraints |
+| [0040](0040-post-rename-verification-and-suspect-ledger-entries.md) | Post-rename verification and `suspect` ledger entries |
+| [0041](0041-exclusive-catalog-owner-lock.md) | One owner process per catalog: an exclusive OS lock |

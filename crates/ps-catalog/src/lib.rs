@@ -83,13 +83,45 @@ impl Default for OpenOptions {
     }
 }
 
+/// File next to the catalog that the owning process holds an exclusive OS lock on (ADR-0005: one writer
+/// process per catalog).
+pub const LOCK_FILE: &str = "catalog.db.lock";
+
 /// An open catalog: the writer handle and the reader pool.
+///
+/// The process that opens a catalog with [`Catalog::open`] owns it: it holds an exclusive OS file lock on
+/// [`LOCK_FILE`] until the catalog is dropped, and a second process (the app or a CLI command) gets
+/// [`CatalogError::Locked`]. [`Catalog::open_observer`] opens readers only, without the lock, for read-only
+/// commands while another process owns the catalog.
 #[derive(Debug)]
 pub struct Catalog {
     path: PathBuf,
     // Declared before `readers` so the writer commits and stops before the readers close.
     writer: Writer,
     readers: Arc<Readers>,
+    // Released last, after the writer has committed and stopped.
+    _lock: Option<std::fs::File>,
+}
+
+/// Take the exclusive owner lock for the catalog at `path`.
+fn lock_catalog(path: &Path) -> Result<std::fs::File> {
+    let lock_path = path.with_file_name(LOCK_FILE);
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(db::io_err(&lock_path))?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => Err(CatalogError::Locked {
+            path: path.parent().unwrap_or(path).to_path_buf(),
+        }),
+        Err(std::fs::TryLockError::Error(e)) => Err(CatalogError::Io {
+            path: lock_path,
+            source: e,
+        }),
+    }
 }
 
 impl Catalog {
@@ -108,10 +140,12 @@ impl Catalog {
         Catalog::open_file(&db::catalog_path(data_dir), opts)
     }
 
-    /// Open a catalog at an explicit file path.
+    /// Open a catalog at an explicit file path, as its owner (exclusive lock; [`CatalogError::Locked`] while
+    /// another process owns it).
     pub fn open_file(path: &Path, opts: OpenOptions) -> Result<Catalog> {
         // Refuse before anything opens the file for writing, so a newer catalog stays byte-identical.
         db::refuse_newer(path, db::CATALOG_MIGRATIONS)?;
+        let lock = lock_catalog(path)?;
         let mut conn = db::open_writer(path)?;
         db::migrate(&mut conn, path, db::CATALOG_MIGRATIONS, None)?;
         let readers = Arc::new(Readers::open(path, opts.readers)?);
@@ -120,7 +154,48 @@ impl Catalog {
             path: path.to_path_buf(),
             writer,
             readers,
+            _lock: Some(lock),
         })
+    }
+
+    /// Open the catalog in `data_dir` as an observer: readers only, no lock, every write fails with
+    /// [`CatalogError::ReadOnly`]. For read-only commands while another process owns the catalog.
+    pub fn open_observer(data_dir: &Path, readers: usize) -> Result<Catalog> {
+        let path = db::catalog_path(data_dir);
+        db::refuse_newer(&path, db::CATALOG_MIGRATIONS)?;
+        Ok(Catalog {
+            readers: Arc::new(Readers::open(&path, readers)?),
+            path,
+            writer: Writer::read_only(),
+            _lock: None,
+        })
+    }
+
+    /// Open as the owner, or as an observer when another process owns the catalog.
+    pub fn open_or_observe(data_dir: &Path, opts: OpenOptions) -> Result<Catalog> {
+        match Catalog::open_with(data_dir, opts) {
+            Err(CatalogError::Locked { .. }) => Catalog::open_observer(data_dir, opts.readers),
+            other => other,
+        }
+    }
+
+    /// Open for read-only use without ever holding the owner lock while someone else could need it: an
+    /// observer when the catalog exists at this build's schema version, else (a new or older catalog that
+    /// must be created or migrated first) [`Catalog::open_or_observe`]. Read-only commands use this so that
+    /// they never make a starting scan or app fail with [`CatalogError::Locked`].
+    pub fn open_reader(data_dir: &Path, opts: OpenOptions) -> Result<Catalog> {
+        let path = db::catalog_path(data_dir);
+        if db::stored_version(&path)? == Some(latest_schema_version())
+            && let Ok(c) = Catalog::open_observer(data_dir, opts.readers)
+        {
+            return Ok(c);
+        }
+        Catalog::open_or_observe(data_dir, opts)
+    }
+
+    /// Opened by [`Catalog::open_observer`]: writes fail.
+    pub fn is_observer(&self) -> bool {
+        self.writer.is_read_only()
     }
 
     pub fn path(&self) -> &Path {

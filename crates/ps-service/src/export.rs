@@ -242,6 +242,27 @@ impl<'a> Exports<'a> {
             .export_library(path_to_bytes(&root), None)?)
     }
 
+    /// The ledger rows of the library at `root` for read-only uses (dry runs, reports): the registered
+    /// library's rows; an unregistered library is registered when this process owns the catalog, and has no
+    /// rows when it only observes it (another process owns it, ADR-0041).
+    fn ledger_for_read(&self, root: &Path) -> Result<Vec<LedgerEntry>> {
+        let root = Self::normalized(root)?;
+        let key = path_to_bytes(&root);
+        let known = self
+            .catalog()
+            .read()
+            .export_libraries()?
+            .into_iter()
+            .find(|l| l.root == key)
+            .map(|l| l.id);
+        let id = match known {
+            Some(id) => id,
+            None if self.catalog().is_observer() => return Ok(Vec::new()),
+            None => self.library_id(&root)?,
+        };
+        Ok(self.catalog().read().ledger(id)?)
+    }
+
     /// The most recently registered library, if any.
     pub fn last_library(&self) -> Result<Option<PathBuf>> {
         Ok(self
@@ -255,8 +276,7 @@ impl<'a> Exports<'a> {
     /// The dry run: what an export to `library` would copy. Reads only (the library folder need not exist).
     pub fn plan(&self, library: &Path, settings: ProfileSettings) -> Result<(Plan, ExportInput)> {
         let input = self.input()?;
-        let id = self.library_id(library)?;
-        let ledger = self.catalog().read().ledger(id)?;
+        let ledger = self.ledger_for_read(library)?;
         let root = Self::normalized(library)?;
         let plan = ps_export::plan(&input, &ledger, &root, &FsLibrary::new(&root), settings)?;
         Ok((plan, input))
@@ -289,7 +309,7 @@ impl<'a> Exports<'a> {
         HashMap<ps_model::RelPath, ps_export::CopyCheck>,
     )> {
         let root = Self::normalized(library)?;
-        let id = self.library_id(&root)?;
+        let ledger = self.ledger_for_read(&root)?;
         let r = self.catalog().read();
         let excluded: HashSet<FileId> = r.user_excluded_files()?.into_iter().collect();
         let mut files = Vec::new();
@@ -314,7 +334,6 @@ impl<'a> Exports<'a> {
                 keeper_set,
             })
             .collect();
-        let ledger = r.ledger(id)?;
         let checks = ps_export::check_library(&root, &ledger, verify);
         let d = ps_export::derive_dispositions(&DispositionFacts {
             files: &files,

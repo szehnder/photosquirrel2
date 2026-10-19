@@ -37,8 +37,8 @@ pub struct ScanOptions {
     pub chunk_delay: Option<Duration>,
     /// The read-only file layer (instrumented in tests).
     pub fs: SourceFs,
-    /// At open, mark runs left `running` as `interrupted` (crash recovery, ADR-0008). An observer process
-    /// (a CLI status query while another process scans the same catalog) turns this off.
+    /// At open, mark runs left `running` as `interrupted` (crash recovery, ADR-0008). Only the catalog's owner
+    /// (the process holding its exclusive lock) ever does; an observer never does, whatever this says.
     pub recover_interrupted: bool,
 }
 

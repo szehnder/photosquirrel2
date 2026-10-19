@@ -33,16 +33,68 @@ fn export_migration_applies_on_latest_schema() {
     insert(b"2011/2011-08-14/IMG_0042.JPG", 1, "lightroom").expect("row");
     // One row per library path.
     assert!(insert(b"2011/2011-08-14/IMG_0042.JPG", 1, "lightroom").is_err());
-    // Codes are checked.
-    assert!(insert(b"a.jpg", 3, "lightroom").is_err());
+    // Codes are checked (3 `suspect` since migration 8).
+    insert(b"s.jpg", 3, "lightroom").expect("suspect row");
+    assert!(insert(b"a.jpg", 4, "lightroom").is_err());
     assert!(insert(b"b.jpg", 1, "flickr").is_err());
     // file_id has no foreign key: file 42 does not exist and the row stands.
     let n: i64 = conn
         .query_row("SELECT count(*) FROM export_ledger", [], |r| r.get(0))
         .expect("count");
-    assert_eq!(n, 1);
+    assert_eq!(n, 2);
     let v: u32 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .expect("version");
     assert_eq!(v, latest_schema_version());
+}
+
+/// Migration 8 (ADR-0040) rebuilds the ledger for state 3 and keeps every existing row and its indexes.
+#[test]
+fn ledger_suspect_migration_keeps_rows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("catalog.db");
+    db::create_catalog_at_version(&path, db::LEDGER_SUSPECT_MIGRATION.version - 1)
+        .expect("catalog");
+    {
+        let conn = Connection::open(&path).expect("open");
+        conn.execute(
+            "INSERT INTO export_library (id, root_path, created_at) VALUES (1, ?1, 0)",
+            params![b"/lib".to_vec()],
+        )
+        .expect("library");
+        conn.execute(
+            "INSERT INTO export_ledger (library_id, content_id, identity_kind, full_hash, file_id,
+                 library_rel_path, size, state, profile, at)
+             VALUES (1, ?1, 0, ?1, 42, ?2, 10, 1, 'apple', 5)",
+            params![vec![7u8; 32], b"x.jpg".to_vec()],
+        )
+        .expect("row");
+        assert!(
+            conn.execute("UPDATE export_ledger SET state = 3", [])
+                .is_err(),
+            "version 7 refuses state 3"
+        );
+    }
+    ps_catalog::Catalog::open_file(&path, Default::default())
+        .expect("upgrade")
+        .close()
+        .expect("close");
+    let conn = Connection::open(&path).expect("open");
+    let (state, at): (i64, i64) = conn
+        .query_row("SELECT state, at FROM export_ledger", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("row kept");
+    assert_eq!((state, at), (1, 5));
+    conn.execute("UPDATE export_ledger SET state = 3", [])
+        .expect("suspect allowed");
+    let idx: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'export_ledger'
+             AND name IN ('export_ledger_by_content', 'export_ledger_by_file')",
+            [],
+            |r| r.get(0),
+        )
+        .expect("indexes");
+    assert_eq!(idx, 2);
 }

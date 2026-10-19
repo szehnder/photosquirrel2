@@ -39,6 +39,21 @@ impl ScanService {
         })
     }
 
+    /// Open the catalog in `data_dir` read-only, as an observer that never takes the owner lock (so it never
+    /// makes the app or a starting scan fail), unless the catalog must first be created or migrated. For
+    /// read-only commands (status, reports, listing groups, export dry-runs); writes through an observer fail
+    /// with `CatalogError::ReadOnly`.
+    pub fn open_or_observe(data_dir: &Path, options: ScanOptions) -> Result<ScanService> {
+        Ok(ScanService {
+            engine: ps_scan::Scanner::open_or_observe(data_dir, options)?,
+        })
+    }
+
+    /// The catalog is open read-only (another process owns it).
+    pub fn is_observer(&self) -> bool {
+        self.engine.catalog().is_observer()
+    }
+
     /// Open the catalog in the default data directory (`PHOTOSQUIRREL_DATA_DIR` or the per-user one).
     pub fn open_default(options: ScanOptions) -> Result<ScanService> {
         ScanService::open(&ps_catalog::data_dir()?, options)

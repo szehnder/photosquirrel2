@@ -68,8 +68,10 @@ impl Prompt {
     /// The ImageInsight v1 prompt.
     pub fn insight_v1() -> Prompt {
         let schema: Value = serde_json::from_str(INSIGHT_JSON_SCHEMA).unwrap_or(Value::Null);
-        // Compact schema in the prompt: fewer tokens for small local models.
-        let compact = serde_json::to_string(&schema).unwrap_or_default();
+        // Compact schema in the prompt: fewer tokens for small local models. Keys are sorted so that the prompt
+        // text (part of the result's provenance) does not depend on serde_json's `preserve_order` feature,
+        // which other workspace crates enable through feature unification.
+        let compact = serde_json::to_string(&sorted_keys(&schema)).unwrap_or_default();
         Prompt {
             version: PROMPT_VERSION,
             schema_version: INSIGHT_SCHEMA_VERSION,
@@ -83,6 +85,24 @@ impl Prompt {
 impl Default for Prompt {
     fn default() -> Self {
         Self::insight_v1()
+    }
+}
+
+/// `v` with every object's keys in sorted order (a stable rendering under any serde_json feature set).
+fn sorted_keys(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut entries: Vec<(&String, &Value)> = m.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), sorted_keys(v)))
+                    .collect(),
+            )
+        }
+        Value::Array(a) => Value::Array(a.iter().map(sorted_keys).collect()),
+        other => other.clone(),
     }
 }
 
@@ -108,5 +128,31 @@ mod tests {
             assert!(p.user.contains(c.as_str()), "{c:?} explained");
         }
         assert!(repair_message("missing field `category`").contains("missing field `category`"));
+    }
+
+    /// D4: the schema text in the prompt is key-sorted whatever serde_json's feature set.
+    #[test]
+    fn prompt_schema_text_has_sorted_keys() {
+        let p = Prompt::insight_v1();
+        let start = p.user.find("\n{").expect("schema in the prompt") + 1;
+        let end = p.user.rfind("}\n").expect("schema end") + 1;
+        let text = &p.user[start..end];
+        fn check(v: &Value) {
+            if let Value::Object(m) = v {
+                let keys: Vec<&String> = m.keys().collect();
+                let mut sorted = keys.clone();
+                sorted.sort();
+                assert_eq!(keys, sorted);
+                m.values().for_each(check);
+            }
+            if let Value::Array(a) = v {
+                a.iter().for_each(check);
+            }
+        }
+        // Parse preserving the text's own order only when the feature is on; either way the text must equal the
+        // canonical sorted rendering.
+        let v: Value = serde_json::from_str(text).expect("schema JSON");
+        assert_eq!(text, serde_json::to_string(&sorted_keys(&v)).unwrap());
+        check(&sorted_keys(&v));
     }
 }

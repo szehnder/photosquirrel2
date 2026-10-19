@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use proptest::prelude::*;
 use ps_dedup::{
     Constraints, Contradiction, DedupInput, DedupMeta, EdgeKind, Grouper, KeeperReason,
-    MemberReason, PairVerdict, group, pair_verdict, rank,
+    LiveGrouping, MemberReason, PairVerdict, group, pair_verdict, rank,
 };
 use ps_hash::PERCEPTUAL_HASH_VERSION;
 use ps_model::{
@@ -288,6 +288,100 @@ fn scenario_duplicate_detection_separated_member_stays_apart() {
     assert_eq!(g.separations, vec![pair]);
 }
 
+/// D3 / ADR-0039: two burst frames (same second, different sub-seconds) and an EXIF-free thumbnail of one of
+/// them that hash-matches both. Pairwise each thumbnail edge is fine, but the group would hold two frames of one
+/// burst; the thumbnail joins its strongest partner only and the frames stay apart.
+#[test]
+fn burst_frames_never_merge_through_a_metadata_free_thumbnail() {
+    let mut a = camera_jpeg(1, "DCIM/IMG_1.JPG", 0);
+    a.meta.capture_time.as_mut().unwrap().millis = 340;
+    a.meta.subsec_present = true;
+    let mut c = camera_jpeg(3, "DCIM/IMG_2.JPG", 0);
+    c.meta.capture_time.as_mut().unwrap().millis = 680;
+    c.meta.subsec_present = true;
+    c.hash = Some(hash(4, 0));
+    c.meta.width = Some(3999);
+    // The thumbnail of A: one bit from A, three from C (both within the derivative thresholds).
+    let b = export(&a, 2, "Web/IMG_1_small.jpg", 1024, 768, 1, 0);
+    assert!(matches!(pair_verdict(&a, &b), PairVerdict::Edge { .. }));
+    assert!(matches!(pair_verdict(&b, &c), PairVerdict::Edge { .. }));
+    for inputs in [
+        vec![a.clone(), b.clone(), c.clone()],
+        vec![c.clone(), b.clone(), a.clone()],
+    ] {
+        let g = group(&inputs, &Constraints::default());
+        assert!(!same_group(&g, FileId(1), FileId(3)), "{g:?}");
+        assert!(same_group(&g, FileId(1), FileId(2)), "{g:?}");
+        assert_eq!(g.suggestions.len(), 1);
+        assert!(matches!(
+            g.suggestions[0].reason,
+            Contradiction::SubSecond { .. }
+        ));
+    }
+    // Incremental: adding C later, or the thumbnail last, gives the same result.
+    let full = group(&[a.clone(), b.clone(), c.clone()], &Constraints::default());
+    let all = [a.clone(), b.clone(), c.clone()];
+    for split in 0..3 {
+        let first = Grouper::new(&all[..split], &Constraints::default()).group_all();
+        let changed: Vec<FileId> = all[split..].iter().map(|x| x.file).collect();
+        let inc = Grouper::new(&all, &Constraints::default()).regroup(&first, &changed);
+        assert_eq!(inc, full);
+    }
+}
+
+/// D3: different cameras and two camera originals are group-level constraints too.
+#[test]
+fn different_cameras_never_merge_through_a_metadata_free_copy() {
+    let a = camera_jpeg(1, "a/IMG_1.JPG", 0);
+    let mut c = camera_jpeg(3, "b/IMG_1.JPG", 0);
+    c.meta.camera_serial = Some("9999999999".into());
+    c.hash = Some(hash(3, 0));
+    let b = export(&a, 2, "Web/x.jpg", 1024, 768, 1, 0);
+    let g = group(&[a, b, c], &Constraints::default());
+    assert!(!same_group(&g, FileId(1), FileId(3)), "{g:?}");
+    assert!(same_group(&g, FileId(1), FileId(2)), "{g:?}");
+}
+
+/// D2: a file that ends up in no group must not shape another group. Before the fix, an added file bridged
+/// through metadata-free members tripped the 60 s chain guard and split a group it never joined, so removing it
+/// again (an ungrouped file: no previous group to recompute) left the split in place.
+#[test]
+fn removing_an_ungrouped_file_restores_the_previous_grouping() {
+    let spec: [(u32, u32, i64, bool, u64); 6] = [
+        (0, 5, 0, false, 1),
+        (0, 4, 0, false, 1),
+        (0, 0, 1, true, 0),
+        (0, 1, 0, false, 5),
+        (0, 0, 0, true, 5),
+        (1, 0, 2, true, 2),
+    ];
+    let inputs: Vec<DedupInput> = spec
+        .iter()
+        .enumerate()
+        .map(|(i, &(p, d, t, timed, c))| {
+            let id = i as i64 + 1;
+            let mut x = camera_jpeg(id, &format!("f/{id}.jpg"), t * 40);
+            x.hash = Some(hash(p, d));
+            x.meta.width = Some(4000 + (id as u32 % 2));
+            x.meta.has_maker_notes = false;
+            x.content = Some(content(c));
+            if !timed {
+                x.meta.capture_time = None;
+            }
+            x
+        })
+        .collect();
+    let cons = Constraints::default();
+    let full = Grouper::new(&inputs, &cons).group_all();
+    let first = Grouper::new(&inputs[..5], &cons).group_all();
+    let changed = [FileId(6)];
+    assert_eq!(Grouper::new(&inputs, &cons).regroup(&first, &changed), full);
+    assert_eq!(
+        Grouper::new(&inputs[..5], &cons).regroup(&full, &changed),
+        first
+    );
+}
+
 #[test]
 fn user_merge_joins_groups_unless_separated() {
     let a = camera_jpeg(1, "a/1.jpg", 0);
@@ -552,5 +646,68 @@ proptest! {
         // Removing the added files again restores the first grouping.
         let back = Grouper::new(&inputs[..split], &cons).regroup(&full, &changed);
         prop_assert_eq!(&back, &first);
+    }
+
+    /// The in-place engine (upsert / remove / regroup_live) on inputs with burst sub-seconds, serials, and
+    /// metadata-free thumbnails equals a full regroup, both ways (D2, D3).
+    #[test]
+    fn in_place_regroup_equals_full_regroup_with_bursts(
+        spec in prop::collection::vec(
+            (0u32..8, 0u32..8, 0i64..2, 0u8..4, 0u16..3, 0u8..3, 0u64..8),
+            2..40,
+        ),
+        split in 0usize..40,
+    ) {
+        let inputs: Vec<DedupInput> = spec.iter().enumerate().map(|(i, &(p, d, t, kind, ms, serial, c))| {
+            let id = i as i64 + 1;
+            let mut x = camera_jpeg(id, &format!("f/{id}.jpg"), t);
+            x.hash = Some(hash(p, d));
+            x.content = Some(content(c * 100 + id as u64 % 3));
+            x.meta.width = Some(4000 + (id as u32 % 2));
+            x.meta.camera_serial = Some(format!("S{serial}"));
+            match kind {
+                0 => {
+                    // A metadata-free thumbnail.
+                    x = export(&x, id, &format!("w/{id}.jpg"), 1024, 768, p, d);
+                }
+                1 => {
+                    x.meta.capture_time.as_mut().unwrap().millis = ms * 250;
+                    x.meta.subsec_present = true;
+                }
+                2 => x.meta.has_maker_notes = false,
+                _ => {}
+            }
+            x
+        }).collect();
+        let cons = Constraints::default();
+        let split = split % inputs.len();
+        let full = Grouper::new(&inputs, &cons).group_all();
+        let first = Grouper::new(&inputs[..split], &cons).group_all();
+        let changed: Vec<FileId> = inputs[split..].iter().map(|x| x.file).collect();
+        let mut g = Grouper::owned(inputs[..split].to_vec(), cons.clone());
+        let mut live = LiveGrouping::from_grouping(&first);
+        for x in &inputs[split..] {
+            g.upsert(x.clone());
+        }
+        g.regroup_live(&mut live, &changed);
+        prop_assert_eq!(&live.to_grouping(&g), &full);
+        for f in &changed {
+            g.remove(*f);
+        }
+        g.regroup_live(&mut live, &changed);
+        prop_assert_eq!(&live.to_grouping(&g), &first);
+        // Never two members of one group with contradicting metadata.
+        for grp in &full.groups {
+            for (i, a) in grp.members.iter().enumerate() {
+                for b in &grp.members[i + 1..] {
+                    let (xa, xb) = (&inputs[a.file.0 as usize - 1], &inputs[b.file.0 as usize - 1]);
+                    let v = pair_verdict(xa, xb);
+                    prop_assert!(
+                        !matches!(v, PairVerdict::Suggestion { .. }),
+                        "{:?} and {:?} grouped despite {:?}", a.file, b.file, v
+                    );
+                }
+            }
+        }
     }
 }

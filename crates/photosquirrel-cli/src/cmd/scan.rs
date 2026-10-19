@@ -288,7 +288,7 @@ struct StatusOut {
 /// `status` / `scan status`.
 pub fn status(ctx: &Ctx) -> Result<()> {
     let data = ctx.data_dir()?;
-    let svc = ctx.service()?;
+    let svc = ctx.reader()?;
     let runs: Vec<RunRow> = svc
         .runs()?
         .into_iter()

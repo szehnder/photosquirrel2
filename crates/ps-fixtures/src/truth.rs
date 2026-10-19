@@ -118,6 +118,14 @@ pub struct TruthFile {
     /// Path of the file this one was made from, for derivatives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived_from: Option<String>,
+    /// Other truth groups this file may legitimately be grouped with instead of `group` (sorted). Set for a
+    /// metadata-free derivative (no EXIF) of one burst frame that hash-matches its sibling frames too: nothing
+    /// in the file says which frame it came from, so grouping it with any one of the candidate frames is
+    /// correct, as long as the frames themselves stay apart (ADR-0039). Scoring places such a file in the
+    /// candidate group its result group holds most of (`group` on ties) before counting pairs, keepers and
+    /// must-not-merge violations; a result group joining two candidate frames is still a violation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternate_groups: Vec<String>,
 }
 
 /// Kinds of must-not-merge sets.
