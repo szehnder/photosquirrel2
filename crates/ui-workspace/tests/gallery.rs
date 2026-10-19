@@ -29,7 +29,9 @@ struct Template {
 fn template() -> &'static Template {
     static T: OnceLock<Template> = OnceLock::new();
     T.get_or_init(|| {
-        let root = std::env::temp_dir().join(format!("ps-gallery-template-{}", std::process::id()));
+        // Under cargo's target tmp dir (not the RAM-backed /tmp) at a stable path, so runs reuse one copy
+        // instead of leaking a corpus per process; rebuilt from scratch each run for determinism.
+        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ps-gallery-template");
         let _ = std::fs::remove_dir_all(&root);
         let corpus = root.join("corpus");
         let dir = root.join("data");

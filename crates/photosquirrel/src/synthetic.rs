@@ -32,9 +32,17 @@ fn digest(i: u64) -> [u8; 32] {
     d
 }
 
-/// The cache folder for an N-item catalog.
+/// The cache folder for an N-item catalog: the user cache dir (on disk), not `/tmp`, which is often RAM-backed
+/// and too small for a 1M-item catalog (~1.2 GB).
 pub fn cache_dir(items: u64) -> PathBuf {
-    std::env::temp_dir().join(format!("photosquirrel-synthetic-{items}"))
+    let base = std::env::var_os("PHOTOSQUIRREL_SYNTHETIC_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            directories::ProjectDirs::from("io.github", "szehnder", "photosquirrel")
+                .map(|d| d.cache_dir().join("synthetic"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    base.join(format!("photosquirrel-synthetic-{items}"))
 }
 
 fn row(source: ps_model::SourceId, i: u64) -> Option<FileRow> {

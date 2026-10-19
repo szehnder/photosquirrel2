@@ -58,6 +58,12 @@ measured; for M1, the ground-truth corpus gate (ADR-0025: precision >= 0.995, re
 - Prefer verifying through `photosquirrel-cli` (ADR-0027) and headless `#[gpui_kit::test]` UI tests. GUI launches
   pop windows on the developer's desktop; use `cargo xtask screenshot` for visual checks.
 
+## Machine resources
+The dev machine has 30 GB RAM, a 16 GB RAM-backed `/tmp` and a shared disk. GPUI builds are large (20-70 GB per
+target dir). At most two agents compile at once, each with `CARGO_BUILD_JOBS=4` and `--test-threads=4`. Tests and
+tools write corpora and temp data under `target/` (or a `tempfile` dir that is removed on drop), never leaving
+directories in `/tmp`. Delete per-agent target dirs once their work is committed.
+
 ## Useful commands
 ```
 cargo xtask doctor                         # prerequisites (libheif, ffmpeg, LM Studio are optional)
