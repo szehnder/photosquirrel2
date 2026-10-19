@@ -79,9 +79,11 @@ fn latest_resumable(svc: &ScanService) -> Result<ScanRunId> {
 pub fn start(ctx: &Ctx, sources: &[i64], resume: bool, run: Option<i64>) -> Result<()> {
     let data = ctx.data_dir()?;
     if control::is_live(&data, Job::Scan) {
-        bail!(
-            "a scan is already running in another terminal (see `photosquirrel-cli scan status`)"
-        );
+        // Another process owns the catalog: exit 2 like every other refused mutation (ADR-0041).
+        return Err(super::Busy(
+            "a scan is already running in another terminal (see `photosquirrel-cli scan status`)".into(),
+        )
+        .into());
     }
     let svc = ctx.service()?;
     let ids: Vec<SourceId> = sources.iter().map(|s| SourceId(*s)).collect();

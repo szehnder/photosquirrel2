@@ -29,6 +29,8 @@ jobs:
           node-version: "22"
       - name: Install OpenSpec
         run: npm install -g @fission-ai/openspec@1.14.1
+      - name: Cargo.lock matches the manifests
+        run: cargo metadata --locked --format-version 1 > /dev/null
       - name: cargo xtask ci
         run: cargo xtask ci
 
@@ -81,6 +83,6 @@ jobs:
         with:
           toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
+      - run: cargo build --workspace --locked
       # Engine crates are platform-sensitive (paths, file ids, fsync, renames); UI tests run on Linux.
       - run: cargo test -p ps-model -p ps-media -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service
