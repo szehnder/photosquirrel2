@@ -113,3 +113,24 @@ max = 250.0
 unit = "ms"
 change = "duplicate-groups"
 source = { kind = "test", package = "ps-dedup", test = "scale", name = "regroup_1k_of_1m_within_budget" }
+
+# gallery (ADR-0018, ADR-0026). Render benchmark: the release app flings a synthetic 1,000,000-item list with
+# warm textures (3,000 distinct thumbnails decoded and uploaded first) and prints `frame interval ms: p50=..
+# p95=..`; the window must be visible and focused (Wayland sends no frames otherwise). First gallery frame:
+# launch to the first frame with gallery cells on a synthetic 1M catalog (built once into the temp folder).
+# `cargo test --release -p ui-gallery --test render_cost` measures the headless CPU cost of the same frames.
+[[budget]]
+name = "gallery-scroll-p95"
+metric = "p95"
+max = 8.3
+unit = "ms"
+change = "gallery"
+source = { kind = "app", args = ["--render-bench", "10"], runs = 1, render_p95 = true }
+
+[[budget]]
+name = "first-gallery-frame"
+metric = "median"
+max = 600.0
+unit = "ms"
+change = "gallery"
+source = { kind = "app", args = ["--synthetic-catalog", "1000000", "--measure-first-gallery-frame"], runs = 5 }

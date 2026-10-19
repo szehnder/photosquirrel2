@@ -8,8 +8,10 @@
 // Release builds on Windows are GUI-subsystem programs (no console window).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod bench;
 mod gpu;
 mod measure;
+mod synthetic;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,8 +22,9 @@ use gpui_kit::*;
 use ps_model::settings::ThemeSetting;
 use ps_service::settings::SettingsStore;
 use ui_workspace::assets::AppAssets;
+use ui_workspace::library_backend::CatalogBackend;
 use ui_workspace::persist::UiStateFile;
-use ui_workspace::service::EmptyBackend;
+use ui_workspace::service::{EmptyBackend, LibraryBackend};
 use ui_workspace::{Shell, ShellConfig};
 
 #[derive(Parser, Debug, Clone)]
@@ -51,6 +54,20 @@ struct Args {
     /// Stay idle this many seconds (default 5), print resident memory (`measure idle-rss=.. MB`), then quit.
     #[arg(long, value_name = "SECONDS", num_args = 0..=1, default_missing_value = "5")]
     measure_idle_memory: Option<f32>,
+    /// Print the time from launch to the first gallery frame with cells (`measure first-gallery-frame=..`),
+    /// then quit.
+    #[arg(long)]
+    measure_first_gallery_frame: bool,
+    /// Run on a synthetic catalog of this many items (built once into a temp folder and reused).
+    #[arg(long, value_name = "ITEMS")]
+    synthetic_catalog: Option<u64>,
+    /// Fling the grid through a synthetic 1M-item list with warm textures for this many seconds (default 10)
+    /// and print frame-interval percentiles (`frame interval ms: p50=.. p95=..`), then quit.
+    #[arg(long, value_name = "SECONDS", num_args = 0..=1, default_missing_value = "10")]
+    render_bench: Option<f32>,
+    /// Select this Library item (list index) at start-up (scripted screenshots of the inspector and loupe).
+    #[arg(long, value_name = "INDEX", hide = true)]
+    gallery_select: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -90,8 +107,17 @@ fn main() {
     measure::mark_start();
     // Before any thread starts (it sets environment variables for the GPU loaders).
     gpu::select_drivers();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .format_timestamp_millis()
+        .init();
     let args = Args::parse();
+    if let Some(items) = args.synthetic_catalog {
+        std::process::exit(synthetic::rerun_on(items));
+    }
+    if let Some(secs) = args.render_bench {
+        bench::run(secs);
+        return;
+    }
     let data_dir = data_dir(&args);
     let settings = SettingsStore::resolve(args.config_dir.as_deref(), args.data_dir.as_deref());
     let saved_window = data_dir
@@ -101,6 +127,20 @@ fn main() {
         .and_then(|s| s.window);
     measure::checkpoint("flags and layout read");
 
+    let has_catalog = data_dir
+        .as_deref()
+        .is_some_and(|d| d.join(ps_catalog::CATALOG_FILE).exists());
+    let backend: Arc<dyn LibraryBackend> = match &data_dir {
+        Some(dir) => {
+            let backend = Arc::new(CatalogBackend::new(dir));
+            if has_catalog {
+                // Open the catalog and run the first queries while the window is created.
+                backend.warm(ui_workspace::views::library::default_query());
+            }
+            backend
+        }
+        None => Arc::new(EmptyBackend),
+    };
     gpui_kit::application()
         .with_assets(AppAssets)
         .run(move |cx| {
@@ -111,11 +151,19 @@ fn main() {
                     settings,
                     theme_override: args.theme.map(Into::into),
                     data_dir,
-                    backend: Arc::new(EmptyBackend),
+                    backend: backend.clone(),
                 },
                 cx,
             );
             ui_workspace::motion::watch_os_preference(cx);
+            // An existing library: the first frame may wait (bounded) for the gallery to be ready.
+            if has_catalog {
+                ui_workspace::startup::StartupGrace::begin(
+                    cx,
+                    ui_workspace::startup::LIBRARY_GRACE,
+                    args.gallery_select,
+                );
+            }
             measure::checkpoint("shell initialised");
             open_main_window(&args, saved_window, cx);
 
@@ -138,6 +186,31 @@ fn main() {
                         println!("idle network sockets: {}", sockets.len());
                     }
                     cx.update(|cx| cx.quit());
+                })
+                .detach();
+            }
+            if args.measure_first_gallery_frame {
+                cx.spawn(async move |cx| {
+                    loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(1))
+                            .await;
+                        let at = cx.update(|cx| {
+                            cx.try_global::<ui_workspace::views::library::LibraryHub>()
+                                .and_then(|h| h.model.clone())
+                                .and_then(|m| m.read(cx).first_cells_frame)
+                        });
+                        if let Some(at) = at {
+                            measure::report("first-gallery-frame", measure::ms_at(at), "ms");
+                            cx.update(|cx| cx.quit());
+                            break;
+                        }
+                        if measure::since_start_ms() > 30_000.0 {
+                            log::error!("no gallery frame within 30 s");
+                            cx.update(|cx| cx.quit());
+                            break;
+                        }
+                    }
                 })
                 .detach();
             }
@@ -203,6 +276,7 @@ fn open_main_window(
         // Actions route through the rendered element tree, so they wait for the first frame.
         window.on_next_frame(move |window, cx| {
             log::info!("first frame rendered");
+            ui_workspace::startup::StartupGrace::end(cx);
             if measure_startup {
                 measure::report("cold-start", measure::since_start_ms(), "ms");
                 cx.quit();

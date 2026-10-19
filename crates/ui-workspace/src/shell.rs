@@ -196,6 +196,11 @@ impl Shell {
         self.toast.as_ref()
     }
 
+    /// The live activity sample (a scan running), if any.
+    pub fn activity_snapshot(&self) -> Option<&ActivitySnapshot> {
+        self.activity.as_ref()
+    }
+
     pub fn frames_drawn(&self) -> u64 {
         self.frames
     }
@@ -237,7 +242,10 @@ impl Shell {
             .call(|b| b.summary().map_err(|e| format!("{e:#}")));
         let interrupted = self.service.call(|b| b.interrupted_run().ok().flatten());
         let first = self.summary.is_loading() && self.frames == 0;
-        let early = first.then(|| summary.wait_briefly(START_GRACE)).flatten();
+        let grace = crate::startup::StartupGrace::remaining(cx)
+            .unwrap_or(START_GRACE)
+            .max(START_GRACE);
+        let early = first.then(|| summary.wait_briefly(grace)).flatten();
         if let Some(early) = &early {
             self.summary = match early {
                 Ok(s) => Loadable::Ready(s.clone()),
@@ -251,6 +259,7 @@ impl Shell {
                 None => summary.wait(executor.clone()).await,
             };
             let _ = this.update(cx, |this, cx| {
+                log::info!("catalog summary arrived: {summary:?}");
                 this.summary = match summary {
                     Ok(Ok(s)) => Loadable::Ready(s),
                     Ok(Err(e)) => Loadable::Failed(e),
@@ -424,6 +433,9 @@ impl Shell {
             self.layout.active_view = view;
             if view == ViewId::Library {
                 self.layout.library_mode = LibraryMode::Grid;
+                if let Some(hook) = ViewRegistry::library_mode_hook(cx) {
+                    window.defer(cx, move |window, cx| hook(LibraryMode::Grid, window, cx));
+                }
             }
             self.schedule_save(window, cx);
             cx.notify();
@@ -441,6 +453,9 @@ impl Shell {
             self.layout.library_mode = mode;
             self.schedule_save(window, cx);
             cx.notify();
+            if let Some(hook) = ViewRegistry::library_mode_hook(cx) {
+                window.defer(cx, move |window, cx| hook(mode, window, cx));
+            }
         }
     }
 
@@ -647,6 +662,7 @@ impl Shell {
         ViewContext {
             service: self.service.clone(),
             library_mode: self.layout.library_mode,
+            default_inspector: self.inspector_default.clone(),
         }
     }
 
@@ -678,6 +694,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> AnyView {
+        let (active, summary) = (self.layout.active_view, self.summary.clone());
+        self.inspector_default
+            .update(cx, |i, cx| i.set_context(active, summary, cx));
         if let Some(factory) = ViewRegistry::inspector_factory(cx) {
             if let Some(view) = &self.inspector_custom {
                 return view.clone();
@@ -702,6 +721,7 @@ impl Focusable for Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         self.frames += 1;
+        log::debug!("shell frame {}", self.frames);
         let colors = *ui_theme::colors(cx);
         let title_bar = crate::chrome::title_bar(self, window, cx);
         let body = crate::chrome::body(self, window, cx);

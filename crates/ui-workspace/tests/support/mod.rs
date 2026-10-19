@@ -28,6 +28,8 @@ pub struct FakeBackend {
     pub summary_delay: Mutex<Duration>,
     pub resumed: Mutex<Vec<ScanRunId>>,
     pub rescans: AtomicU32,
+    /// The gallery's data (an empty library when `None`).
+    pub gallery: Option<Arc<dyn ui_gallery::source::GallerySource>>,
 }
 
 impl FakeBackend {
@@ -71,6 +73,11 @@ impl LibraryBackend for FakeBackend {
     }
     fn activity(&self) -> Option<ActivitySnapshot> {
         None
+    }
+    fn gallery(self: Arc<Self>) -> Arc<dyn ui_gallery::source::GallerySource> {
+        self.gallery
+            .clone()
+            .unwrap_or_else(|| Arc::new(ui_gallery::source::EmptySource))
     }
 }
 

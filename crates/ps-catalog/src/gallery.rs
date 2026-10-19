@@ -120,15 +120,40 @@ impl Readers {
         })
     }
 
+    /// Stored duplicate groups (ADR-0013) as stacks: every grouped file with its group's keeper and the
+    /// group's member count. Empty until a regroup has run.
+    pub fn group_stacks(&self) -> Result<Vec<(FileId, FileId, u32)>> {
+        self.with(|c| {
+            if !table_exists(c, "dup_member")? {
+                return Ok(Vec::new());
+            }
+            let mut stmt = c.prepare_cached(
+                "SELECT m.file_id, g.keeper_file_id, g.member_count FROM dup_member m
+                 JOIN dup_group g ON g.id = m.group_id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    FileId(r.get(0)?),
+                    FileId(r.get(1)?),
+                    r.get::<_, i64>(2)? as u32,
+                ))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     /// Exact-duplicate sets among present files: files sharing a content identity (ADR-0011), each set
     /// ordered by id. The gallery shows each set as one stack until duplicate groups are stored.
+    ///
+    /// The inner scan is index-only over `file_by_content` (~0.2 s for 1M files); filtering missing files
+    /// there would cost a table lookup per row (~10 s cold), so presence is checked on the few candidates.
     pub fn exact_duplicates(&self) -> Result<Vec<Vec<FileId>>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
                 "SELECT id, content_id FROM file
                  WHERE kflags < 16 AND content_id IN (
                      SELECT content_id FROM file INDEXED BY file_by_content
-                     WHERE content_id IS NOT NULL AND kflags < 16
+                     WHERE content_id IS NOT NULL
                      GROUP BY content_id HAVING count(*) > 1)
                  ORDER BY content_id, id",
             )?;
@@ -147,6 +172,7 @@ impl Readers {
                     last = Some(digest);
                 }
             }
+            out.retain(|set| set.len() > 1);
             Ok(out)
         })
     }

@@ -75,3 +75,62 @@ fn scenario_app_shell_idle_memory_within_250_mb() {
         "idle resident memory {mb:.1} MB exceeds 250 MB"
     );
 }
+
+/// Run the app with `args` (no data directory) and return its stdout.
+fn run_app(args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_photosquirrel"))
+        .args(args)
+        .output()
+        .expect("launch photosquirrel");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn scenario_gallery_1m_scroll_p95_within_8_3_ms() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let stdout = run_app(&["--render-bench", "10"]);
+    let p95: f64 = stdout
+        .lines()
+        .find(|l| l.contains("frame interval ms"))
+        .and_then(|l| {
+            l.split("p95=")
+                .nth(1)?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+        .unwrap_or_else(|| panic!("no frame interval line in: {stdout}"));
+    println!("measure gallery-scroll-p95={p95:.2} ms");
+    assert!(p95 <= 8.3, "frame-interval p95 {p95:.2} ms exceeds 8.3 ms");
+}
+
+#[test]
+fn scenario_gallery_first_gallery_frame_within_600_ms() {
+    if !gui_tests_enabled() {
+        return;
+    }
+    let mut runs: Vec<f64> = (0..5)
+        .map(|_| {
+            let stdout = run_app(&[
+                "--synthetic-catalog",
+                "1000000",
+                "--measure-first-gallery-frame",
+            ]);
+            stdout
+                .lines()
+                .find_map(|l| l.strip_prefix("measure first-gallery-frame="))
+                .and_then(|v| v.split_whitespace().next()?.parse().ok())
+                .unwrap_or_else(|| panic!("no first-gallery-frame line in: {stdout}"))
+        })
+        .collect();
+    runs.sort_by(f64::total_cmp);
+    let median = runs[runs.len() / 2];
+    println!("measure first-gallery-frame={median:.1} ms (runs {runs:?})");
+    assert!(
+        median <= 600.0,
+        "first gallery frame {median:.1} ms exceeds 600 ms"
+    );
+}

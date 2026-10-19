@@ -305,3 +305,35 @@ window size) when the delay is long; focus can still move.
   (`Shell::apply_startup_command`). `img()` with an asset PNG also loads asynchronously (blank in frame one);
   the brand mark is a tinted vector icon instead.
 - `Hsla::opacity(f)` multiplies alpha; `Rems * f32` works for proportional sizes.
+
+## Gallery grid (gallery change)
+- **Fade-in without element opacity.** `Window::with_element_opacity` is `pub(crate)`, so a custom element
+  cannot fade a `paint_image`. Paint the image, then a cover quad of the placeholder colour with alpha
+  `1 - t` in a *later* `paint_layer` (inside one layer quads draw before polychrome sprites whatever the
+  insertion order, so the cover must be in its own layer).
+- `RenderImage::new(vec![image::Frame::new(RgbaImage)])` builds a texture (the buffer is read as BGRA;
+  zune-jpeg 0.5 decodes straight to `ColorSpace::BGRA`). A `Vec<Frame>` converts into the `SmallVec` it
+  wants. The atlas upload happens on the first `paint_image` of that id, so cap first paints per frame to
+  bound upload spikes; `drop_image` needs a `Window`, so evicted images are queued and released at the next
+  paint.
+- **f32 is not enough for a million rows.** 1M items at 96 px is ~7 M px of content; keep the scroll offset
+  and row tops in `f64` and convert to viewport-relative `Pixels` per cell.
+- A `canvas(prepaint, paint)` inside a `div` with `on_mouse_down`/`on_scroll_wheel`/`on_action` listeners is
+  enough for a virtualized grid; paint inside `entity.update(cx, |this, cx| this.paint(bounds, window, cx))`
+  and never `cx.notify()` from paint (it repaints forever); use `window.request_animation_frame()` while
+  animating.
+- Background results (decodes, pages) must be cached negatively too: a thumbnail that is absent must not be
+  re-requested every frame, or paint -> request -> notify -> paint never parks (headless tests hang).
+- `simulate_click` at a point outside the window's viewport silently hits nothing; `layout` math may still
+  map it to an item. Make test cells small enough that both endpoints are on screen.
+- `ScrollDelta::pixel_delta(line_height)`: GPUI's own scroll containers add `delta.y` to a negative
+  offset, so a downward scroll is a negative `delta.y`.
+- gpui-kit 0.7.3 `InputState::value()` takes no `cx`; `Input::small()` needs `use gpui_kit::component::Sizable`.
+  `uniform_list(..).track_scroll(&handle)` takes a reference.
+- **Start-up grace instead of a loading flash** (`ui_workspace::startup`): with an existing library the first
+  frame waits (at most 1.2 s, only before frame one) for the warmed catalog summary, the ID list, page 0 and
+  the visible thumbnails, so frame one already is the gallery. This is also what makes scripted screenshots
+  possible on KDE Wayland, where agent-launched windows get only one or two frames. Primed textures are
+  marked as already shown, or the fade-in cover would be frozen into the screenshot.
+- SQLite `mmap_size` makes touched catalog pages count in `VmRSS` (as `RssShmem` when the catalog is on
+  tmpfs): a 1M catalog shows ~2 GB resident after a few index scans although the process allocates ~110 MB.

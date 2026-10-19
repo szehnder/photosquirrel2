@@ -18,8 +18,10 @@
 
 pub mod actions;
 pub mod assets;
+pub mod gallery_inspector;
 pub mod inspector;
 pub mod keymap;
+pub mod library_backend;
 pub mod motion;
 pub mod net;
 pub mod onboarding;
@@ -29,6 +31,7 @@ pub mod service;
 pub mod settings;
 pub mod settings_window;
 pub mod shell;
+pub mod startup;
 pub mod views;
 pub mod widgets;
 
@@ -75,6 +78,8 @@ impl ShellConfig {
 /// App-wide shell state the window reads when it is built.
 pub struct ShellGlobals {
     pub service: ServiceHandle,
+    /// The gallery's data source (from [`LibraryBackend::gallery`]).
+    pub gallery: Arc<dyn ui_gallery::source::GallerySource>,
     pub data_dir: Option<PathBuf>,
 }
 
@@ -86,7 +91,11 @@ pub fn init(config: ShellConfig, cx: &mut App) {
     keymap::bind_default_keys(cx);
     register_commands(cx);
     AppSettings::init(config.settings, config.theme_override, cx);
+    ui_gallery::init(cx);
+    crate::views::library::register(cx);
+    let gallery = config.backend.clone().gallery();
     cx.set_global(ShellGlobals {
+        gallery,
         service: ServiceHandle::spawn(config.backend),
         data_dir: config.data_dir,
     });

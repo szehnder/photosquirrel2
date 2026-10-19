@@ -12,6 +12,9 @@ ui-theme.workspace = true
 ui-gallery.workspace = true
 ps-service.workspace = true
 ps-model.workspace = true
+ps-catalog.workspace = true
+ps-media.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
@@ -21,6 +24,9 @@ directories.workspace = true
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+rusqlite.workspace = true
+ps-fixtures.workspace = true
+image.workspace = true
 
 [lints]
 workspace = true

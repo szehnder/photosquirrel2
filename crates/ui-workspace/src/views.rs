@@ -10,6 +10,8 @@
 //! });
 //! ```
 
+pub mod library;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -167,16 +169,20 @@ pub enum LibraryMode {
 pub struct ViewContext {
     pub service: ServiceHandle,
     pub library_mode: LibraryMode,
+    /// The shell's default inspector (a custom inspector shows it when it has nothing selected).
+    pub default_inspector: Entity<crate::inspector::InspectorView>,
 }
 
 pub type ViewFactory = Rc<dyn Fn(&ViewContext, &mut Window, &mut App) -> AnyView>;
 pub type InspectorFactory = Rc<dyn Fn(&ViewContext, ViewId, &mut Window, &mut App) -> AnyView>;
+pub type LibraryModeHook = Rc<dyn Fn(LibraryMode, &mut Window, &mut App)>;
 
 /// Factories for the central views and the inspector.
 #[derive(Default)]
 pub struct ViewRegistry {
     views: HashMap<ViewId, ViewFactory>,
     inspector: Option<InspectorFactory>,
+    library_mode: Option<LibraryModeHook>,
 }
 
 impl Global for ViewRegistry {}
@@ -199,6 +205,18 @@ impl ViewRegistry {
         factory: impl Fn(&ViewContext, ViewId, &mut Window, &mut App) -> AnyView + 'static,
     ) {
         cx.default_global::<ViewRegistry>().inspector = Some(Rc::new(factory));
+    }
+
+    /// Called when the shell switches the Library between grid and loupe (G, E, Esc, the palette).
+    pub fn on_library_mode(
+        cx: &mut App,
+        hook: impl Fn(LibraryMode, &mut Window, &mut App) + 'static,
+    ) {
+        cx.default_global::<ViewRegistry>().library_mode = Some(Rc::new(hook));
+    }
+
+    pub(crate) fn library_mode_hook(cx: &App) -> Option<LibraryModeHook> {
+        cx.try_global::<ViewRegistry>()?.library_mode.clone()
     }
 
     pub fn is_registered(cx: &App, id: ViewId) -> bool {

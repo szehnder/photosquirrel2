@@ -72,6 +72,11 @@ pub trait LibraryBackend: Send + Sync + 'static {
     fn add_source(&self, path: PathBuf) -> anyhow::Result<()>;
     /// The current activity snapshot, `None` when idle. Sampled at most every 100 ms while active.
     fn activity(&self) -> Option<ActivitySnapshot>;
+    /// The gallery's data (ID lists, details, thumbnails, previews). Called once per window, then used
+    /// from background tasks.
+    fn gallery(self: Arc<Self>) -> Arc<dyn ui_gallery::source::GallerySource> {
+        Arc::new(ui_gallery::source::EmptySource)
+    }
 }
 
 /// An empty library with no engine behind it (until the catalog facade lands).

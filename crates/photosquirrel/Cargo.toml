@@ -9,6 +9,11 @@ license.workspace = true
 [dependencies]
 gpui-kit.workspace = true
 ui-workspace.workspace = true
+ui-gallery.workspace = true
+ui-theme.workspace = true
+ps-catalog.workspace = true
+ps-media.workspace = true
+anyhow.workspace = true
 ps-model.workspace = true
 ps-service.workspace = true
 clap.workspace = true

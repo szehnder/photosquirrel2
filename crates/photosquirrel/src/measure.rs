@@ -18,6 +18,13 @@ pub fn since_start_ms() -> f64 {
         .map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0)
 }
 
+/// Milliseconds from [`mark_start`] to `at`.
+pub fn ms_at(at: Instant) -> f64 {
+    MAIN_START.get().map_or(0.0, |t| {
+        at.saturating_duration_since(*t).as_secs_f64() * 1000.0
+    })
+}
+
 /// Log a start-up checkpoint (`RUST_LOG=photosquirrel=debug`).
 pub fn checkpoint(what: &str) {
     log::debug!("startup: {what} at {:.1} ms", since_start_ms());
