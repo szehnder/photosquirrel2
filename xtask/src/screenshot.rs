@@ -49,6 +49,29 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &[],
     },
+    Surface {
+        name: "duplicates",
+        caption: "Duplicates: a group, its keeper and why",
+        seeded: true,
+        args: &["--command", "shell::ShowDuplicates"],
+    },
+    Surface {
+        name: "ai-review",
+        caption: "AI Review with recorded demo insights",
+        seeded: true,
+        args: &[
+            "--demo-ai-insights",
+            "24",
+            "--command",
+            "shell::ShowAiReview",
+        ],
+    },
+    Surface {
+        name: "sources",
+        caption: "Sources and the scan dashboard (simulated run)",
+        seeded: true,
+        args: &["--demo-scan", "running", "--command", "shell::ShowSources"],
+    },
 ];
 
 pub fn run(root: &Path, opts: Options) -> Result<()> {
