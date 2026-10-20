@@ -61,6 +61,16 @@ pub struct DashboardModel<'a> {
     pub textures: Vec<(usize, Option<std::sync::Arc<RenderImage>>)>,
 }
 
+/// Whether the dashboard shows a Resume button (a paused, cancelled or interrupted run), which is then the
+/// page's one primary action.
+pub fn offers_resume(m: &ScanMonitor) -> bool {
+    let stopped = |s: RunStatus| matches!(s, RunStatus::Cancelled | RunStatus::Interrupted);
+    match m.snapshot.as_ref() {
+        None => m.overview.as_ref().is_some_and(|o| stopped(o.status)),
+        Some(s) => s.status == RunStatus::Paused || stopped(s.status),
+    }
+}
+
 pub fn render(m: &DashboardModel<'_>, cx: &App) -> Option<AnyElement> {
     let Some(snap) = m.monitor.snapshot.as_ref() else {
         // No live run in this session: the last run's summary (with Resume for an interrupted or cancelled
@@ -344,7 +354,7 @@ fn summary_card(
                 .flex_wrap()
                 .gap(Tokens::space(6.0))
                 .child(kit::stat("summary-processed", "files processed", format_count(o.processed), cx))
-                .child(kit::stat("summary-photos", "photos", format_count(o.photos), cx))
+                .child(kit::stat("summary-photos", "photos in catalog", format_count(o.photos), cx))
                 .child(kit::stat("summary-videos", "videos", format_count(o.videos), cx))
                 .child(kit::stat(
                     "summary-groups",
@@ -684,7 +694,7 @@ fn recent_card(
                 div()
                     .text_size(Tokens::text_xs())
                     .text_color(colors.text_faint)
-                    .child(format!("the last {n} photos found")),
+                    .child("newest first"),
             ),
         )
         .child(

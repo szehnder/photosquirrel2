@@ -277,7 +277,7 @@ impl SourcesView {
             kit::button(
                 format!("source-remove-{}", id.0),
                 "Remove source…",
-                Some(IconName::Unlink),
+                Some(IconName::X),
                 Tone::Ghost,
                 (!active)
                     .then(|| kit::on(cx.listener(move |this, _, _, cx| this.ask_remove(id, cx))))
@@ -491,7 +491,7 @@ impl Render for SourcesView {
                 .map(|(i, k)| (i, s.texture(k)))
                 .collect::<Vec<_>>()
         });
-        let (active, pending, rows, dashboard) = {
+        let (active, pending, rows, dashboard, offers_resume) = {
             let m = monitor.read(cx);
             let rows = m.sources.clone();
             let names: HashMap<SourceId, String> = rows
@@ -509,17 +509,21 @@ impl Render for SourcesView {
                 m.pending,
                 rows,
                 scan_dashboard::render(&model, cx),
+                scan_dashboard::offers_resume(m),
             )
         };
         let selected: HashSet<SourceId> = self.selected(cx).into_iter().collect();
         let can_start = !active && !selected.is_empty() && pending.is_none();
         let start_label = if active {
-            "Scan running".to_owned()
+            "Scanning…".to_owned()
         } else if selected.len() == 1 {
             "Scan 1 source".to_owned()
         } else {
             format!("Scan {} sources", selected.len())
         };
+        // While a run is live the start control is unavailable and says what is happening (an activity glyph, not
+        // a dimmed play button; Pause and Cancel are on the run card). While the dashboard offers Resume, that is
+        // the page's one primary action and starting a new scan is secondary.
         let header_actions = vec![
             kit::button(
                 "source-add",
@@ -532,8 +536,16 @@ impl Render for SourcesView {
             kit::button(
                 "scan-start",
                 start_label,
-                Some(IconName::Play),
-                Tone::Primary,
+                Some(if active {
+                    IconName::Activity
+                } else {
+                    IconName::Play
+                }),
+                if active || offers_resume {
+                    Tone::Secondary
+                } else {
+                    Tone::Primary
+                },
                 can_start
                     .then(|| kit::on(cx.listener(|this, _, _, cx| this.start(cx))))
                     .flatten(),

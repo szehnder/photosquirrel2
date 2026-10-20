@@ -332,10 +332,16 @@ impl ExportView {
                         "plan-files",
                         "files to copy",
                         format_count(plan.files),
-                        Some(format!(
-                            "{} already in place, adopted",
-                            format_count(plan.adopted)
-                        )),
+                        // The Export button counts both, so the sum is shown here.
+                        Some(if plan.adopted > 0 {
+                            format!(
+                                "+ {} in place = {} to export",
+                                format_count(plan.adopted),
+                                format_count(plan.files + plan.adopted)
+                            )
+                        } else {
+                            "none already in place".to_owned()
+                        }),
                     ))
                     .child(tile(
                         "plan-bytes",
