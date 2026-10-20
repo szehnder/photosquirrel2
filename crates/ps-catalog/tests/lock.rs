@@ -113,3 +113,20 @@ fn lock_owner_child() {
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
 }
+
+/// An owner that goes away a moment after the next open starts (a crashed or killed app still exiting): the
+/// open waits briefly and becomes the owner instead of reporting the catalog as busy.
+#[test]
+fn open_waits_briefly_for_an_owner_that_is_going_away() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let a = Catalog::open(tmp.path()).expect("first");
+    let closer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        drop(a);
+    });
+    let started = std::time::Instant::now();
+    let b = Catalog::open(tmp.path()).expect("owner once the first is gone");
+    assert!(!b.is_observer());
+    assert!(started.elapsed() < ps_catalog::LOCK_RETRY + std::time::Duration::from_millis(200));
+    closer.join().expect("closer");
+}

@@ -112,17 +112,32 @@ fn lock_catalog(path: &Path) -> Result<std::fs::File> {
         .write(true)
         .open(&lock_path)
         .map_err(db::io_err(&lock_path))?;
-    match f.try_lock() {
-        Ok(()) => Ok(f),
-        Err(std::fs::TryLockError::WouldBlock) => Err(CatalogError::Locked {
-            path: path.parent().unwrap_or(path).to_path_buf(),
-        }),
-        Err(std::fs::TryLockError::Error(e)) => Err(CatalogError::Io {
-            path: lock_path,
-            source: e,
-        }),
+    // A previous owner that just crashed or was killed may still be exiting (its descriptors close a moment
+    // after the kill): retry briefly before reporting the catalog as owned by another process.
+    let deadline = std::time::Instant::now() + LOCK_RETRY;
+    loop {
+        match f.try_lock() {
+            Ok(()) => return Ok(f),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(CatalogError::Locked {
+                    path: path.parent().unwrap_or(path).to_path_buf(),
+                });
+            }
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(CatalogError::Io {
+                    path: lock_path,
+                    source: e,
+                });
+            }
+        }
     }
 }
+
+/// How long opening waits for the owner lock of a catalog whose owner is going away.
+pub const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Catalog {
     /// Open (creating and migrating) `catalog.db` in `data_dir`.
