@@ -356,7 +356,7 @@ impl Render for ReportsView {
                             .aria_label(SharedString::from(if data.verified {
                                 "verified by hash"
                             } else {
-                                "checked for presence and size"
+                                "checked for presence, size and time"
                             }))
                             .child(if data.verified {
                                 kit::chip(
@@ -366,7 +366,7 @@ impl Render for ReportsView {
                                 )
                             } else {
                                 kit::chip(
-                                    "Copies checked for presence and size",
+                                    "Copies checked for presence, size and time",
                                     colors.text_muted,
                                     colors.raised,
                                 )

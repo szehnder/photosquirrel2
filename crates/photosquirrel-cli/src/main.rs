@@ -215,6 +215,10 @@ struct ExportTarget {
     /// its recorded size and modification time is trusted without reading it.
     #[arg(long)]
     verify: bool,
+    /// Copy again, beside the changed file, keepers whose library copy another application changed since the
+    /// export. By default such copies are reported and left alone.
+    #[arg(long)]
+    recopy_modified: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -405,6 +409,7 @@ fn settings(t: &ExportTarget) -> ps_export::ProfileSettings {
         s.sidecars = false;
     }
     s.with_verify(t.verify)
+        .with_recopy_modified(t.recopy_modified)
 }
 
 fn main() -> ExitCode {

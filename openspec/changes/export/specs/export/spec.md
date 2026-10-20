@@ -114,7 +114,7 @@ Each export SHALL append one JSON line per exported file to `<library>/.photosqu
 - **THEN** the manifest gains exactly 10 lines, each parseable and listing every copy's source path
 
 ### Requirement: Idempotent and resumable
-The export ledger SHALL record each completed copy with its size and modification time; re-running an export to the same library SHALL copy only keepers not yet exported, and an interrupted export SHALL resume, removing stale partial files of its own. Planning SHALL trust a ledger-recorded copy that still has its recorded size and modification time without reading it, re-hashing only copies whose time changed, or every copy when the user asks to verify.
+The export ledger SHALL record each completed copy with its size and modification time; re-running an export to the same library SHALL copy only keepers not yet exported, and an interrupted export SHALL resume, removing stale partial files of its own. A ledger-recorded copy still at its path whose bytes another application changed SHALL be reported as changed in the library and SHALL NOT be copied again unless the user asks. Planning SHALL trust a ledger-recorded copy that still has its recorded size and modification time without reading it, re-hashing only copies whose time changed, or every copy when the user asks to verify.
 
 #### Scenario: Re-export copies only new
 - **WHEN** the small corpus is exported, a new drive is scanned and the export is run again
@@ -123,6 +123,10 @@ The export ledger SHALL record each completed copy with its size and modificatio
 #### Scenario: Interrupted export resumes
 - **WHEN** an export is killed mid-copy and run again
 - **THEN** the stale `.ps-partial` file is removed, every keeper ends up exported exactly once and no file is duplicated
+
+#### Scenario: Library copy changed by another app is not copied again
+- **WHEN** another application rewrites an exported library copy, changing its size, and the export runs again
+- **THEN** the plan lists that copy as changed in the library, nothing is copied and no suffixed duplicate appears; only when the user asks to copy it again is a fresh copy made beside it
 
 #### Scenario: Re-plan reads no file contents
 - **WHEN** every keeper has been exported and the export is planned again

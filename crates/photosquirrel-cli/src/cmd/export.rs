@@ -36,6 +36,8 @@ struct DryRunOut<'a> {
     blocked: Option<String>,
     files: Vec<PlannedFileOut>,
     unavailable: &'a [ps_export::Unavailable],
+    /// Library copies changed by another application since the export (not copied again, ADR-0046).
+    modified: &'a [ps_export::ModifiedInLibrary],
 }
 
 fn plan_out(plan: &Plan) -> DryRunOut<'_> {
@@ -59,6 +61,7 @@ fn plan_out(plan: &Plan) -> DryRunOut<'_> {
             })
             .collect(),
         unavailable: &plan.unavailable,
+        modified: &plan.modified,
     }
 }
 
@@ -85,6 +88,20 @@ fn print_totals(o: &DryRunOut<'_>) {
             o.library.display(),
             bytes(free)
         );
+    }
+    if !o.modified.is_empty() {
+        println!(
+            "{} library copies were changed by another app since the export and are left alone \
+             (add --recopy-modified to copy them again beside the changed files):",
+            o.modified.len()
+        );
+        for m in o.modified.iter().take(20) {
+            println!(
+                "  {}: {}",
+                m.library_rel_path,
+                ps_export::copy_check_text(m.check)
+            );
+        }
     }
     if let Some(b) = &o.blocked {
         println!("blocked: {b}");
@@ -333,7 +350,7 @@ fn print_report(o: &ReportOut) {
         }
     }
     for (p, k) in &o.mismatches {
-        println!("library copy {p}: {k:?}");
+        println!("library copy {p}: {}", ps_export::copy_check_text(*k));
     }
 }
 

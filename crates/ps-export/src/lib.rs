@@ -38,15 +38,15 @@ pub use copy::{CopyConfig, CopyError, CopyHooks, CopyOutcome, NoHooks};
 pub use date::{DateFacts, DateOrigin, DateSource, FilingDate};
 pub use disposition::{
     Badge, CompletionReport, CopyCheck, DispositionFacts, FileDisposition, FileFacts, FolderReport,
-    GroupFacts, SourceReport, check_library, derive_dispositions, report,
+    GroupFacts, SourceReport, check_library, copy_check_text, derive_dispositions, report,
 };
 pub use execute::{ExecConfig, ExecError, ExportReport, FailedFile, StopReason, execute};
 pub use input::{CopyRef, ExportInput, ExportUnit, KeeperFile, SourceInfo};
 pub use ledger::{Ledger, MemoryLedger};
 pub use library::{Existing, FsLibrary, LibraryProbe, LibraryRoot, PARTIAL_SUFFIX};
 pub use plan::{
-    BundleKind, DateTotals, Plan, PlanBlocker, PlanError, PlanTotals, PlannedAction, PlannedBundle,
-    PlannedFile, Unavailable, plan,
+    AlreadyExported, BundleKind, DateTotals, ModifiedInLibrary, Plan, PlanBlocker, PlanError,
+    PlanTotals, PlannedAction, PlannedBundle, PlannedFile, Unavailable, plan,
 };
 pub use profile::ProfileSettings;
 pub use rename::RenameMethod;

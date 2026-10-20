@@ -747,8 +747,9 @@ fn file_differing_after_rename_is_kept_and_marked_suspect() {
     assert_eq!(photos_under(&lib.join("2016")), 2);
 }
 
-/// D7: a ledger row says "done" and a same-size file is at its path, but its bytes are different: it is not
-/// taken as already exported; the keeper is copied again under a free name, and that file is left as it is.
+/// D7 with ADR-0046: a ledger row says "done" and a same-size file with other bytes is at its path. It is not
+/// taken as exported, and not copied again either: it is reported as changed in the library. Only when the
+/// user asks is a fresh verified copy made under a free name; the changed file is left as it is.
 #[test]
 fn same_size_different_bytes_is_not_already_exported() {
     let mut s = Sources::new("samesize", 1);
@@ -761,12 +762,63 @@ fn same_size_different_bytes_is_not_already_exported() {
     let out = lib.join("2017/2017-07-07/IMG_9.JPG");
     let other = bytes(91, 25_000);
     fs::write(&out, &other).expect("replace with same-size bytes");
+    let rows = ledger.entries().expect("rows");
+    let p = plan(&input, &rows, &lib, &FsLibrary::new(&lib), google()).expect("plan");
+    assert_eq!((p.totals.already_exported, p.totals.modified), (0, 1));
+    assert_eq!(p.modified[0].check, ps_export::CopyCheck::HashMismatch);
     let again = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
-    assert_eq!((again.copied, again.adopted), (1, 0), "{again:?}");
+    assert_eq!((again.copied, again.adopted), (0, 0), "{again:?}");
+
+    let p = plan(
+        &input,
+        &rows,
+        &lib,
+        &FsLibrary::new(&lib),
+        google().with_recopy_modified(true),
+    )
+    .expect("plan");
+    let recopy = execute(
+        &p,
+        &input,
+        &mut ledger,
+        &ExecConfig::default(),
+        &NoHooks,
+        &AtomicBool::new(false),
+    )
+    .expect("export");
+    assert_eq!(recopy.copied, 1);
     assert_eq!(fs::read(&out).expect("untouched"), other);
     let by_hash = library_by_hash(&lib);
     assert!(
         by_hash.contains_key(&f.content.digest),
         "a verified copy exists"
     );
+}
+
+/// ADR-0046: a library copy rewritten by another application (Lightroom or Photos saving metadata into it, so
+/// its size changed) is still the export of that photo at its recorded path: re-exporting reports it as
+/// changed in the library and copies nothing, so no "IMG (2).JPG" appears.
+#[test]
+fn scenario_export_library_copy_changed_by_another_app_is_not_copied_again() {
+    let mut s = Sources::new("appwrote", 1);
+    let f = s.add(0, "DCIM/IMG_5.JPG", &bytes(95, 20_000), 0, day(2017, 8, 8));
+    let input = s.input(vec![unit(vec![f])]);
+    let lib = s.library();
+    let mut ledger = MemoryLedger::new();
+    run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    let out = lib.join("2017/2017-08-08/IMG_5.JPG");
+    let mut edited = fs::read(&out).expect("copy");
+    edited.extend_from_slice(b"<xmp keywords written by a photo app>");
+    fs::write(&out, &edited).expect("another app writes metadata");
+    let rows = ledger.entries().expect("rows");
+    let p = plan(&input, &rows, &lib, &FsLibrary::new(&lib), google()).expect("plan");
+    assert_eq!((p.totals.files, p.totals.modified), (0, 1));
+    assert!(matches!(
+        p.modified[0].check,
+        ps_export::CopyCheck::SizeMismatch { .. }
+    ));
+    let again = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    assert_eq!((again.copied, again.adopted), (0, 0));
+    assert_eq!(photos_under(&lib.join("2017")), 1, "no \" (2)\" copy");
+    assert_eq!(fs::read(&out).expect("left alone"), edited);
 }

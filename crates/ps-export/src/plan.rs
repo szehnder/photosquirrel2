@@ -96,6 +96,17 @@ pub struct AlreadyExported {
     pub full_hash: Option<[u8; 32]>,
 }
 
+/// A keeper whose library copy is still at its recorded path but was changed since it was exported (another
+/// application wrote into it, for example a photo app saving metadata). Reported; not copied again unless the
+/// user asks (ADR-0046).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ModifiedInLibrary {
+    pub unit: usize,
+    pub file: FileId,
+    pub library_rel_path: RelPath,
+    pub check: CopyCheck,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct PlanTotals {
     /// Files to copy.
@@ -109,6 +120,8 @@ pub struct PlanTotals {
     pub sidecars: u64,
     pub unavailable: u64,
     pub already_exported: u64,
+    /// Keepers whose library copy was changed by another application (not copied again, ADR-0046).
+    pub modified: u64,
     /// Planned files by where their filing date came from.
     pub dates: DateTotals,
 }
@@ -192,6 +205,8 @@ pub struct Plan {
     pub bundles: Vec<PlannedBundle>,
     pub unavailable: Vec<Unavailable>,
     pub already_exported: Vec<AlreadyExported>,
+    /// Library copies changed by another application since they were exported (ADR-0046).
+    pub modified: Vec<ModifiedInLibrary>,
     pub totals: PlanTotals,
     pub free_bytes: Option<u64>,
     pub required_bytes: u64,
@@ -374,6 +389,7 @@ pub fn plan(
         bundles: Vec::new(),
         unavailable: Vec::new(),
         already_exported: Vec::new(),
+        modified: Vec::new(),
         totals: PlanTotals::default(),
         free_bytes: None,
         required_bytes: 0,
@@ -405,17 +421,38 @@ pub fn plan(
 
         // Keepers whose content is already in the library: a `done` ledger row whose copy is still there. The
         // row is trusted on the copy's size and recorded modification time; only a copy whose time changed
-        // (or every copy, with `verify_library`) is re-hashed (ADR-0044). A same-size file with other bytes is
-        // not this content (D7).
+        // (or every copy, with `verify_library`) is re-hashed (ADR-0044). A copy still at its recorded path
+        // whose bytes changed (another app wrote into it) is "changed in the library": reported, never copied
+        // again unless the user asks (`recopy_modified`, ADR-0046).
         let mut todo = Vec::new();
         let mut already = Vec::new();
         for (u, f) in &all {
             let mut found = None;
+            let mut changed = None;
             for e in done.get(&f.content).into_iter().flatten() {
-                if check_copy(probe, e, settings.verify_library)? == CopyCheck::Ok {
-                    found = Some(*e);
-                    break;
+                match check_copy(probe, e, settings.verify_library)? {
+                    CopyCheck::Ok => {
+                        found = Some(*e);
+                        break;
+                    }
+                    CopyCheck::Missing => {}
+                    c @ (CopyCheck::SizeMismatch { .. } | CopyCheck::HashMismatch) => {
+                        changed.get_or_insert((*e, c));
+                    }
                 }
+            }
+            if found.is_none()
+                && !settings.recopy_modified
+                && let Some((e, check)) = changed
+            {
+                p.reserved.insert(collision_key(&e.library_rel_path));
+                out.modified.push(ModifiedInLibrary {
+                    unit: *u,
+                    file: f.file,
+                    library_rel_path: e.library_rel_path.clone(),
+                    check,
+                });
+                continue;
             }
             match found {
                 Some(e) => {
@@ -442,6 +479,10 @@ pub fn plan(
             BundleKind::Single
         };
         if todo.is_empty() {
+            if already.is_empty() {
+                // Every file is a changed library copy: nothing to write.
+                continue;
+            }
             // Every file is in the library. With sidecars on and none of ours present, write the missing
             // sidecar next to the primary copy if that name is free (ADR-0045); a name taken by anything else
             // (a sidecar from before ledger rows, the user's own file) is left alone.
@@ -579,6 +620,7 @@ pub fn plan(
 
     out.totals.unavailable = out.unavailable.len() as u64;
     out.totals.already_exported = out.already_exported.len() as u64;
+    out.totals.modified = out.modified.len() as u64;
     out.required_bytes = if out.totals.files + out.totals.sidecars == 0 {
         0
     } else {

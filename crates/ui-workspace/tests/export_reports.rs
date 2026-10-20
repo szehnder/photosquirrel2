@@ -283,11 +283,17 @@ fn verify_lists_an_altered_library_copy(cx: &mut TestAppContext) {
         .and_then(|x| x.library_path.clone())
         .unwrap()
         .under(&library);
-    // Same size, different bytes (a test-owned temp library): only a re-hash notices.
+    // Same size and modification time, different bytes (a test-owned temp library): only a re-hash notices.
+    let mtime = std::fs::metadata(&copy).unwrap().modified().unwrap();
     let mut bytes = std::fs::read(&copy).unwrap();
     let mid = bytes.len() / 2;
     bytes[mid] ^= 0xff;
     std::fs::write(&copy, bytes).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&copy)
+        .and_then(|f| f.set_modified(mtime))
+        .unwrap();
 
     init_app(cx, backend.clone(), None);
     let (shell, mut cx) = open(cx);
@@ -297,11 +303,11 @@ fn verify_lists_an_altered_library_copy(cx: &mut TestAppContext) {
     assert_eq!(
         label("report-badge-all", &mut cx).as_deref(),
         Some("100% accounted for"),
-        "a size check does not notice"
+        "a size and time check does not notice"
     );
     assert_eq!(
         label("report-check-mode", &mut cx).as_deref(),
-        Some("checked for presence and size")
+        Some("checked for presence, size and time")
     );
     click("report-verify", &mut cx);
     wait(&mut cx, "the verified report", |cx| {
@@ -313,7 +319,7 @@ fn verify_lists_an_altered_library_copy(cx: &mut TestAppContext) {
     );
     let row = label("report-mismatch-0", &mut cx).unwrap();
     assert!(
-        row.ends_with("contents changed since it was copied"),
+        row.ends_with("contents changed in the library since it was exported"),
         "{row}"
     );
     let badge = label("report-badge-all", &mut cx).unwrap();

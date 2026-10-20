@@ -61,6 +61,8 @@ pub struct PlanPreview {
     /// Offline sources holding unavailable keepers, with their counts.
     pub unavailable_sources: Vec<(String, u64)>,
     pub already_exported: u64,
+    /// Library copies changed by another app since the export: reported, not copied again (ADR-0046).
+    pub modified: u64,
     pub free_bytes: Option<u64>,
     pub required_bytes: u64,
     /// Why the export cannot start (insufficient space), if it cannot.
@@ -347,6 +349,7 @@ impl ScanBackend for CatalogBackend {
             unavailable: plan.totals.unavailable,
             unavailable_sources,
             already_exported: plan.totals.already_exported,
+            modified: plan.totals.modified,
             free_bytes: plan.free_bytes,
             required_bytes: plan.required_bytes,
             blocker: plan.blocker().map(|b| b.to_string()),
@@ -472,15 +475,7 @@ impl ScanBackend for CatalogBackend {
 
 /// What is wrong with a library copy.
 pub fn copy_check_label(c: ps_service::export_progress::CopyCheck) -> String {
-    use ps_service::export_progress::CopyCheck;
-    match c {
-        CopyCheck::Ok => "ok".into(),
-        CopyCheck::Missing => "missing from the library".into(),
-        CopyCheck::SizeMismatch { expected, found } => {
-            format!("size changed ({expected} bytes recorded, {found} found)")
-        }
-        CopyCheck::HashMismatch => "contents changed since it was copied".into(),
-    }
+    ps_service::export_progress::copy_check_text(c)
 }
 
 // ---- the simulated engine ---------------------------------------------------------------------------------
@@ -789,6 +784,7 @@ impl ScanBackend for DemoBackend {
             unavailable: 96,
             unavailable_sources: vec![("USB · Backup 2014".into(), 96)],
             already_exported: 3_051,
+            modified: 0,
             free_bytes: free,
             required_bytes: required,
             blocker: free.filter(|f| *f < required).map(|f| {

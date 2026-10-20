@@ -19,7 +19,7 @@ use crate::scan::ScanService;
 /// Export types the UI names (so UI crates need only the facade, ADR-0027).
 pub use ps_export::{
     Badge, CompletionReport, CopyCheck, DateTotals, ExecConfig, ExportReport, FileDisposition,
-    Plan, PlanBlocker, ProfileSettings, StopReason,
+    Plan, PlanBlocker, ProfileSettings, StopReason, copy_check_text,
 };
 
 /// Atomic counters of a running export.

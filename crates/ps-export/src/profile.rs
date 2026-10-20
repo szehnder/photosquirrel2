@@ -15,6 +15,10 @@ pub struct ProfileSettings {
     /// recorded size and modification time is trusted without reading it (ADR-0044).
     #[serde(default)]
     pub verify_library: bool,
+    /// Copy again (beside the changed file, under a free name) keepers whose library copy another application
+    /// changed since the export. Off: they are reported and left alone (ADR-0046).
+    #[serde(default)]
+    pub recopy_modified: bool,
 }
 
 impl ProfileSettings {
@@ -27,24 +31,32 @@ impl ProfileSettings {
                 sidecars: true,
                 live_pairs_together: true,
                 verify_library: false,
+                recopy_modified: false,
             },
             ExportProfile::GooglePhotos => Self {
                 profile,
                 sidecars: false,
                 live_pairs_together: false,
                 verify_library: false,
+                recopy_modified: false,
             },
             ExportProfile::Lightroom => Self {
                 profile,
                 sidecars: true,
                 live_pairs_together: false,
                 verify_library: false,
+                recopy_modified: false,
             },
         }
     }
 
     pub fn with_sidecars(mut self, on: bool) -> Self {
         self.sidecars = on;
+        self
+    }
+
+    pub fn with_recopy_modified(mut self, on: bool) -> Self {
+        self.recopy_modified = on;
         self
     }
 

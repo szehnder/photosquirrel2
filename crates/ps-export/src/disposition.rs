@@ -63,6 +63,18 @@ pub enum CopyCheck {
     HashMismatch,
 }
 
+/// What is wrong with a library copy, in a few words.
+pub fn copy_check_text(c: CopyCheck) -> String {
+    match c {
+        CopyCheck::Ok => "ok".into(),
+        CopyCheck::Missing => "missing from the library".into(),
+        CopyCheck::SizeMismatch { expected, found } => format!(
+            "changed in the library, probably by another app ({expected} bytes when exported, {found} now)"
+        ),
+        CopyCheck::HashMismatch => "contents changed in the library since it was exported".into(),
+    }
+}
+
 /// Inputs of [`derive_dispositions`].
 #[derive(Clone, Copy, Debug)]
 pub struct DispositionFacts<'a> {
