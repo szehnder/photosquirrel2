@@ -187,13 +187,7 @@ pub struct InsightStore {
 impl InsightStore {
     pub fn open(data_dir: &Path) -> InsightStore {
         let path = data_dir.join(INSIGHTS_FILE);
-        let state = match std::fs::read(&path) {
-            Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
-                log::warn!("{} is damaged ({e}); starting afresh", path.display());
-                StoreState::default()
-            }),
-            Err(_) => StoreState::default(),
-        };
+        let state = crate::json_store::load(&path);
         InsightStore {
             path: Some(path),
             state: Mutex::new(state),
@@ -219,14 +213,7 @@ impl InsightStore {
             st.revision += 1;
             st.version = 1;
             if let Some(path) = &self.path {
-                let tmp = path.with_extension("json.tmp");
-                let r = path
-                    .parent()
-                    .map_or(Ok(()), std::fs::create_dir_all)
-                    .and_then(|()| {
-                        std::fs::write(&tmp, serde_json::to_vec_pretty(&*st).unwrap_or_default())
-                    })
-                    .and_then(|()| std::fs::rename(&tmp, path));
+                let r = crate::json_store::save(path, &*st);
                 if let Err(e) = r {
                     log::error!("could not save {}: {e}", path.display());
                 }
@@ -736,5 +723,36 @@ mod tests {
         assert_eq!(s.kind, "exclude_screenshot");
         assert_eq!(s.exclusion_reason(), "screenshot (AI suggestion)");
         assert!(suggestion_for(&demo_insight(0)).is_none());
+    }
+
+    #[test]
+    fn store_persists_and_keeps_a_damaged_file_aside() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        std::fs::write(tmp.path().join(INSIGHTS_FILE), b"\x00garbage").unwrap();
+        let s = InsightStore::open(tmp.path());
+        assert!(s.corrections().is_empty());
+        s.correct(
+            "ab",
+            Correction {
+                category: Some(SceneCategory::Pets),
+                ..Correction::default()
+            },
+        );
+        let names: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("ai-review.json.damaged-")),
+            "{names:?}"
+        );
+        assert!(!names.iter().any(|n| n.ends_with(".tmp")), "{names:?}");
+        let again = InsightStore::open(tmp.path());
+        assert_eq!(
+            again.correction("ab").and_then(|c| c.category),
+            Some(SceneCategory::Pets)
+        );
     }
 }

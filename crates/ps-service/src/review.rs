@@ -59,19 +59,10 @@ pub struct ReviewStore {
 }
 
 impl ReviewStore {
-    /// The store in `data_dir` (empty when there is none yet; a damaged file is logged and replaced).
+    /// The store in `data_dir` (empty when there is none yet; a damaged file is moved aside and logged).
     pub fn open(data_dir: &Path) -> ReviewStore {
         let path = data_dir.join(REVIEW_FILE);
-        let state = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                log::warn!(
-                    "{} is damaged ({e}); starting a new review state",
-                    path.display()
-                );
-                ReviewState::default()
-            }),
-            Err(_) => ReviewState::default(),
-        };
+        let state = crate::json_store::load(&path);
         ReviewStore {
             path: Some(path),
             state: Mutex::new(state),
@@ -120,12 +111,7 @@ impl ReviewStore {
 }
 
 fn write_atomically(path: &Path, st: &ReviewState) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(st).unwrap_or_default())?;
-    std::fs::rename(&tmp, path)
+    crate::json_store::save(path, st)
 }
 
 fn now_ms() -> i64 {
@@ -844,5 +830,25 @@ mod tests {
         s.with(|st| st.reviewed.insert("k".into(), 1), true);
         let again = ReviewStore::open(tmp.path());
         assert!(again.is_reviewed("k"));
+    }
+
+    #[test]
+    fn damaged_review_state_is_kept_aside() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        std::fs::write(tmp.path().join(REVIEW_FILE), b"{\"reviewed\": [").unwrap();
+        let s = ReviewStore::open(tmp.path());
+        assert!(!s.is_reviewed("k"));
+        s.with(|st| st.reviewed.insert("k".into(), 1), true);
+        let names: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("review-state.json.damaged-")),
+            "{names:?}"
+        );
+        assert!(ReviewStore::open(tmp.path()).is_reviewed("k"));
     }
 }

@@ -16,6 +16,7 @@ pub mod export;
 pub mod export_progress;
 pub mod groups;
 pub mod insights;
+pub mod json_store;
 pub mod library;
 pub mod review;
 pub mod scan;
