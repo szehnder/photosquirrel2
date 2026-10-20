@@ -424,6 +424,34 @@ impl Readers {
         })
     }
 
+    /// The newest result of every content, as `(digest, insight JSON)`, in content order: one pass over the
+    /// table's primary key (gallery insight filters, `ps_service::library`).
+    pub fn ai_latest_insights(&self, mut f: impl FnMut([u8; 32], &str)) -> Result<()> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT content_id, insight, at FROM ai_result ORDER BY content_id, at DESC",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut last: Option<[u8; 32]> = None;
+            while let Some(r) = rows.next()? {
+                let rusqlite::types::ValueRef::Blob(d) = r.get_ref(0)? else {
+                    continue;
+                };
+                let Ok(digest) = <[u8; 32]>::try_from(d) else {
+                    continue;
+                };
+                if last == Some(digest) {
+                    continue;
+                }
+                last = Some(digest);
+                if let rusqlite::types::ValueRef::Text(t) = r.get_ref(1)? {
+                    f(digest, std::str::from_utf8(t).unwrap_or_default());
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// The newest result of a content.
     pub fn ai_result_for(&self, content: &ContentId) -> Result<Option<AiResultRow>> {
         self.with(|c| {

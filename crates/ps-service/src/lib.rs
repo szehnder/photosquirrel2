@@ -9,12 +9,14 @@
 //! - [`ai`]: AI provider configuration, keys and consent (change `ai-insights`).
 //! - [`review`]: duplicate review list, member cards, review state, suggestion dismissal (`duplicate-review`).
 //! - [`insights`]: AI review: effective insights, corrections, filters, advisory suggestions (`ai-insights`).
+//! - [`library`]: the gallery's ID lists, pages, thumbnails, previews and inspector detail (`gallery`).
 
 pub mod ai;
 pub mod export;
 pub mod export_progress;
 pub mod groups;
 pub mod insights;
+pub mod library;
 pub mod review;
 pub mod scan;
 pub mod scans;

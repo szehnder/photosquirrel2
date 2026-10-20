@@ -8,10 +8,10 @@ use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::{Icon, button::Button, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use ps_model::{Filter, MediaKind, Sort, SortField};
+use ps_model::{Disposition, Filter, MediaKind, SceneCategory, Sort, SortField};
 use ui_gallery::loupe::LoupeEvent;
 use ui_gallery::model::GalleryEvent;
-use ui_gallery::source::{ExcludedRow, GalleryQuery};
+use ui_gallery::source::{ExcludedRow, GalleryQuery, InsightCriteria};
 use ui_gallery::{GalleryGrid, GalleryModel, LoupeView};
 use ui_theme::Tokens;
 
@@ -45,8 +45,8 @@ impl LibraryHub {
         }
         let source = cx.global::<ShellGlobals>().gallery.clone();
         let deadline = crate::startup::StartupGrace::deadline(cx);
+        let query = StartupFilters::get(cx).query();
         let model = cx.new(|cx| {
-            let query = default_query();
             let mut m = GalleryModel::new(source, query.clone());
             // The default cells are small enough for half-size (192 px) textures: a quarter of the upload.
             let primed = deadline.is_some_and(|d| m.prime(d, 60, 1, cx));
@@ -73,11 +73,31 @@ impl LibraryHub {
     }
 }
 
+/// Filters the Library starts with (`--gallery-filter`, scripted screenshots of the filter bar); none by
+/// default.
+#[derive(Clone, Debug, Default)]
+pub struct StartupFilters(pub FilterBar);
+
+impl Global for StartupFilters {}
+
+impl StartupFilters {
+    pub fn set(cx: &mut App, filters: FilterBar) {
+        cx.set_global(StartupFilters(filters));
+    }
+
+    pub fn get(cx: &App) -> FilterBar {
+        cx.try_global::<StartupFilters>()
+            .map(|f| f.0.clone())
+            .unwrap_or_default()
+    }
+}
+
 pub fn default_query() -> GalleryQuery {
     GalleryQuery {
         filter: library_filter(),
         sort: Sort::default(),
         stacks: true,
+        ..GalleryQuery::default()
     }
 }
 
@@ -122,9 +142,96 @@ pub struct FilterBar {
     pub camera: Option<String>,
     pub gps: Option<bool>,
     pub stacks_off: bool,
+    /// AI insight filters (effective insight: the user's corrections win).
+    pub insight: InsightCriteria,
+    /// Completion-report dispositions (any of them; empty: no disposition filter).
+    pub dispositions: Vec<Disposition>,
 }
 
 impl FilterBar {
+    /// Parse a comma-separated filter spec (`--gallery-filter`): `children`, `pets`, `people`,
+    /// `category=<name>`, a disposition (`exported`, `covered`, `excluded`, `pending`, `unreadable`,
+    /// `missing`), `photos`, `videos`, `no-stacks`. Unknown words are an error.
+    pub fn parse(spec: &str) -> Result<FilterBar, String> {
+        let mut f = FilterBar::default();
+        for word in spec.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+            match word {
+                "children" => f.insight.children = true,
+                "pets" => f.insight.pets = true,
+                "people" => f.insight.people = true,
+                "photos" => f.kind = Some(MediaKind::Image),
+                "videos" => f.kind = Some(MediaKind::Video),
+                "no-stacks" => f.stacks_off = true,
+                w => {
+                    if let Some(name) = w.strip_prefix("category=") {
+                        let c = SceneCategory::ALL
+                            .into_iter()
+                            .find(|c| {
+                                crate::views::ai_review::category_label(*c)
+                                    .eq_ignore_ascii_case(name)
+                            })
+                            .ok_or_else(|| format!("unknown category {name}"))?;
+                        f.insight.category = Some(c);
+                    } else if let Some(d) = Disposition::ALL.into_iter().find(|d| d.as_str() == w) {
+                        f = f.toggle_disposition(d);
+                    } else {
+                        return Err(format!("unknown gallery filter {w}"));
+                    }
+                }
+            }
+        }
+        Ok(f)
+    }
+
+    /// With `d` added to the disposition filter, or removed when it is in it.
+    pub fn toggle_disposition(mut self, d: Disposition) -> FilterBar {
+        if let Some(i) = self.dispositions.iter().position(|x| *x == d) {
+            self.dispositions.remove(i);
+        } else {
+            self.dispositions.push(d);
+            self.dispositions.sort();
+        }
+        self
+    }
+
+    /// The AI and export-status filters in force, each with the bar it leaves when removed.
+    pub fn active_extras(&self) -> Vec<(String, String, FilterBar)> {
+        let mut out = Vec::new();
+        let i = &self.insight;
+        for (on, id, label, clear) in [
+            (i.children, "children", "Contains children", 0),
+            (i.pets, "pets", "Contains pets", 1),
+            (i.people, "people", "Contains people", 2),
+        ] {
+            if on {
+                let mut next = self.clone();
+                match clear {
+                    0 => next.insight.children = false,
+                    1 => next.insight.pets = false,
+                    _ => next.insight.people = false,
+                }
+                out.push((id.to_owned(), label.to_owned(), next));
+            }
+        }
+        if let Some(c) = i.category {
+            let mut next = self.clone();
+            next.insight.category = None;
+            out.push((
+                "category".to_owned(),
+                format!("Category: {}", crate::views::ai_review::category_label(c)),
+                next,
+            ));
+        }
+        for d in &self.dispositions {
+            out.push((
+                d.as_str().to_owned(),
+                format!("Status: {}", crate::views::kit::disposition_label(*d)),
+                self.clone().toggle_disposition(*d),
+            ));
+        }
+        out
+    }
+
     pub fn query(&self) -> GalleryQuery {
         GalleryQuery {
             filter: Filter {
@@ -135,6 +242,8 @@ impl FilterBar {
             },
             sort: self.sort,
             stacks: !self.stacks_off,
+            insight: self.insight.clone(),
+            dispositions: self.dispositions.clone(),
         }
     }
 }
@@ -177,7 +286,7 @@ impl LibraryView {
             grid,
             loupe,
             mode: LibraryMode::Grid,
-            filters: FilterBar::default(),
+            filters: StartupFilters::get(cx),
             cameras: Vec::new(),
             live_task: None,
             _subscriptions: subs,
@@ -416,6 +525,106 @@ impl LibraryView {
                     menu
                 })
         };
+        let ai_menu = {
+            let weak = weak.clone();
+            let f = f.clone();
+            let n = f
+                .active_extras()
+                .iter()
+                .filter(|(id, _, _)| {
+                    matches!(id.as_str(), "children" | "pets" | "people" | "category")
+                })
+                .count();
+            Button::new("library-ai")
+                .label(match n {
+                    0 => "AI insight".to_owned(),
+                    n => format!("AI insight ({n})"),
+                })
+                .icon(Icon::new(IconName::Sparkles))
+                .compact()
+                .dropdown_caret(true)
+                .dropdown_menu(move |menu, _, _| {
+                    let mut menu = menu.label("Contains");
+                    let toggles: [(&'static str, fn(&mut InsightCriteria) -> &mut bool); 3] = [
+                        ("Children", |c| &mut c.children),
+                        ("Pets", |c| &mut c.pets),
+                        ("People", |c| &mut c.people),
+                    ];
+                    for (label, field) in toggles {
+                        let weak = weak.clone();
+                        let mut next = f.clone();
+                        let on = *field(&mut next.insight);
+                        *field(&mut next.insight) = !on;
+                        menu = menu.item(PopupMenuItem::new(label).checked(on).on_click(
+                            move |_, _, cx| {
+                                let next = next.clone();
+                                let _ = weak.update(cx, |v, cx| v.set_filters(next, cx));
+                            },
+                        ));
+                    }
+                    menu = menu.separator().label("Category");
+                    let any = std::iter::once(None).chain(SceneCategory::ALL.into_iter().map(Some));
+                    for c in any {
+                        let weak = weak.clone();
+                        let mut next = f.clone();
+                        next.insight.category = c;
+                        let label =
+                            c.map_or("Any category", crate::views::ai_review::category_label);
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(f.insight.category == c)
+                                .on_click(move |_, _, cx| {
+                                    let next = next.clone();
+                                    let _ = weak.update(cx, |v, cx| v.set_filters(next, cx));
+                                }),
+                        );
+                    }
+                    menu
+                })
+        };
+        let status_menu = {
+            let weak = weak.clone();
+            let f = f.clone();
+            Button::new("library-status")
+                .label(match f.dispositions.as_slice() {
+                    [] => "Export status".to_owned(),
+                    [d] => crate::views::kit::disposition_label(*d).to_owned(),
+                    many => format!("Export status ({})", many.len()),
+                })
+                .icon(Icon::new(IconName::FolderOutput))
+                .compact()
+                .dropdown_caret(true)
+                .dropdown_menu(move |menu, _, _| {
+                    let mut menu = menu;
+                    {
+                        let weak = weak.clone();
+                        let mut next = f.clone();
+                        next.dispositions.clear();
+                        menu = menu.item(
+                            PopupMenuItem::new("Any status")
+                                .checked(f.dispositions.is_empty())
+                                .on_click(move |_, _, cx| {
+                                    let next = next.clone();
+                                    let _ = weak.update(cx, |v, cx| v.set_filters(next, cx));
+                                }),
+                        );
+                    }
+                    menu = menu.separator();
+                    for d in Disposition::ALL {
+                        let weak = weak.clone();
+                        let next = f.clone().toggle_disposition(d);
+                        menu = menu.item(
+                            PopupMenuItem::new(crate::views::kit::disposition_label(d))
+                                .checked(f.dispositions.contains(&d))
+                                .on_click(move |_, _, cx| {
+                                    let next = next.clone();
+                                    let _ = weak.update(cx, |v, cx| v.set_filters(next, cx));
+                                }),
+                        );
+                    }
+                    menu
+                })
+        };
         let chip = |id: &'static str, label: &'static str, on: bool, next: FilterBar| {
             let weak = weak.clone();
             div()
@@ -521,9 +730,110 @@ impl LibraryView {
                 !f.stacks_off,
                 with(&|n| n.stacks_off = !n.stacks_off),
             ))
+            .child(
+                div()
+                    .w(Tokens::BORDER)
+                    .h(Tokens::size(18.0))
+                    .mx(Tokens::space(1.5))
+                    .bg(colors.border),
+            )
+            .child(ai_menu)
+            .child(status_menu)
             .child(div().flex_1())
             .child(sort_menu)
             .into_any_element()
+    }
+}
+
+impl LibraryView {
+    /// The AI and export-status filters in force, as removable chips under the toolbar.
+    fn active_filters(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
+        let extras = self.filters.active_extras();
+        if extras.is_empty() {
+            return None;
+        }
+        let colors = *ui_theme::colors(cx);
+        let weak = cx.weak_entity();
+        let mut row = h_flex()
+            .id("library-active-filters")
+            .test_support()
+            .flex_none()
+            .h(Tokens::size(36.0))
+            .px(Tokens::space(4.0))
+            .gap(Tokens::space(1.5))
+            .items_center()
+            .bg(colors.background)
+            .border_b_1()
+            .border_color(colors.border)
+            .child(
+                div()
+                    .mr(Tokens::space(1.0))
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text_faint)
+                    .child("Filtered by"),
+            );
+        for (id, label, next) in extras {
+            let weak = weak.clone();
+            let label = SharedString::from(label);
+            row = row.child(
+                h_flex()
+                    .id(SharedString::from(format!("library-active-{id}")))
+                    .test_support()
+                    .role(Role::Button)
+                    .aria_label(SharedString::from(format!("Remove {label}")))
+                    .h(Tokens::size(24.0))
+                    .pl(Tokens::space(2.5))
+                    .pr(Tokens::space(1.5))
+                    .gap(Tokens::space(1.0))
+                    .items_center()
+                    .rounded(Tokens::RADIUS_LG)
+                    .border_1()
+                    .border_color(colors.accent)
+                    .bg(colors.accent_soft)
+                    .text_color(colors.accent_text)
+                    .text_size(Tokens::text_xs())
+                    .cursor_pointer()
+                    .hover(|d| d.opacity(0.85))
+                    .on_click(move |_, _, cx| {
+                        let next = next.clone();
+                        let _ = weak.update(cx, |v, cx| v.set_filters(next, cx));
+                    })
+                    .child(label)
+                    .child(Icon::new(IconName::X).size(Tokens::icon_sm())),
+            );
+        }
+        let clear = {
+            let mut next = self.filters.clone();
+            next.insight = InsightCriteria::default();
+            next.dispositions.clear();
+            next
+        };
+        row = row.child(
+            div()
+                .id("library-clear-filters")
+                .test_support()
+                .role(Role::Button)
+                .aria_label("Clear AI and status filters")
+                .ml(Tokens::space(1.0))
+                .text_size(Tokens::text_xs())
+                .text_color(colors.text_muted)
+                .cursor_pointer()
+                .hover(|d| d.text_color(colors.text))
+                .on_click(move |_, _, cx| {
+                    let clear = clear.clone();
+                    let _ = weak.update(cx, |v, cx| v.set_filters(clear, cx));
+                })
+                .child("Clear"),
+        );
+        if self.filters.insight != InsightCriteria::default() {
+            row = row.child(div().flex_1()).child(
+                div()
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text_faint)
+                    .child("AI filters use your corrections; they are suggestions, not decisions"),
+            );
+        }
+        Some(row.into_any_element())
     }
 }
 
@@ -547,7 +857,8 @@ impl Render for LibraryView {
             .size_full()
             .bg(colors.gallery)
             .when(self.mode == LibraryMode::Grid, |d| {
-                d.child(self.toolbar(cx))
+                let active = self.active_filters(cx);
+                d.child(self.toolbar(cx)).children(active)
             })
             .child(div().flex_1().min_h_0().child(body))
     }
@@ -736,7 +1047,9 @@ impl Render for ExcludedView {
                                         .text_color(colors.text_faint)
                                         .overflow_hidden()
                                         .text_ellipsis()
-                                        .child(r.path.clone()),
+                                        .child(crate::views::kit::display_path(
+                                            std::path::Path::new(&r.path),
+                                        )),
                                 ),
                         )
                         .child(

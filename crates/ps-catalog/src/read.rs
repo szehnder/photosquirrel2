@@ -13,9 +13,9 @@ use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use ps_model::{
-    ContentId, FileId, Filter, Format, IdList, ItemId, Metadata, PerceptualHash, PhotoClass,
-    RelPath, RunStatus, ScanRunId, Sort, SortField, SortKey, SourceId, SourceStatus, Stage,
-    StatFingerprint,
+    ContentId, FileId, Filter, Format, IdList, ItemId, ItemSet, Metadata, PerceptualHash,
+    PhotoClass, RelPath, RunStatus, ScanRunId, Sort, SortField, SortKey, SourceId, SourceStatus,
+    Stage, StatFingerprint,
 };
 
 use crate::db;
@@ -78,7 +78,14 @@ impl Readers {
     /// are non-decreasing along the list: for descending sorts the primary is bitwise inverted. Capture-date
     /// sorts put undated items last (primary [`SortKey::UNDATED`]) in both directions.
     pub fn id_list(&self, filter: &Filter, sort: &Sort) -> Result<IdList> {
-        self.with(|c| id_list(c, filter, sort))
+        self.with(|c| id_list(c, filter, sort, None))
+    }
+
+    /// [`Readers::id_list`] restricted to the items in `within`: the same index scan, skipping rows outside
+    /// the set while stepping (no second pass). For filters on data the catalog cannot express in SQL
+    /// (effective AI insights, export dispositions; `ps_service::library`).
+    pub fn id_list_within(&self, filter: &Filter, sort: &Sort, within: &ItemSet) -> Result<IdList> {
+        self.with(|c| id_list(c, filter, sort, Some(within)))
     }
 
     /// Number of files matching `filter`.
@@ -186,6 +193,28 @@ impl Readers {
                 c.prepare_cached("SELECT id FROM file WHERE content_id = ?1 ORDER BY id")?;
             let rows = stmt.query_map([&id.digest[..]], |r| Ok(FileId(r.get(0)?)))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Every file with a content identity, as `(file, digest)`: one index-only pass over `file_by_content`
+    /// (any state; the ID list query applies presence).
+    pub fn for_each_content(&self, mut f: impl FnMut(FileId, &[u8; 32])) -> Result<()> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT id, content_id FROM file INDEXED BY file_by_content WHERE content_id IS NOT NULL",
+            )?;
+            let mut rows = stmt.query([])?;
+            while let Some(r) = rows.next()? {
+                let ValueRef::Integer(id) = r.get_ref(0)? else {
+                    continue;
+                };
+                if let ValueRef::Blob(d) = r.get_ref(1)?
+                    && let Ok(d) = <&[u8; 32]>::try_from(d)
+                {
+                    f(FileId(id), d);
+                }
+            }
+            Ok(())
         })
     }
 
@@ -368,7 +397,12 @@ fn filter_sql(f: &Filter) -> (String, Vec<Value>) {
     (sql, args)
 }
 
-fn id_list(c: &Connection, filter: &Filter, sort: &Sort) -> Result<IdList> {
+fn id_list(
+    c: &Connection,
+    filter: &Filter,
+    sort: &Sort,
+    within: Option<&ItemSet>,
+) -> Result<IdList> {
     let (cond, args) = filter_sql_for(c, filter)?;
     let dir = if sort.descending { "DESC" } else { "ASC" };
     let tail = "kflags";
@@ -382,7 +416,10 @@ fn id_list(c: &Connection, filter: &Filter, sort: &Sort) -> Result<IdList> {
         ));
     }
     // max(id) is a rowid lookup and an upper bound of the row count: one allocation for the common case.
-    let estimate = n.unwrap_or(0).clamp(0, 1 << 24) as usize;
+    let estimate = match within {
+        Some(w) => w.len(),
+        None => n.unwrap_or(0).clamp(0, 1 << 24) as usize,
+    };
     out.ids.reserve(estimate);
     out.keys.reserve(estimate);
     let invert = |p: u64| if sort.descending { !p } else { p };
@@ -392,7 +429,7 @@ fn id_list(c: &Connection, filter: &Filter, sort: &Sort) -> Result<IdList> {
                 "SELECT id, capture_ts, {tail} FROM file INDEXED BY file_by_capture
                  WHERE capture_ts IS NOT NULL {cond} ORDER BY capture_ts {dir}, id {dir}"
             );
-            collect(c, &dated, &args, &mut out, |v| {
+            collect(c, &dated, &args, within, &mut out, |v| {
                 let ValueRef::Integer(ts) = v else {
                     return Err(corrupt("capture_ts"));
                 };
@@ -402,14 +439,16 @@ fn id_list(c: &Connection, filter: &Filter, sort: &Sort) -> Result<IdList> {
                 "SELECT id, NULL, {tail} FROM file INDEXED BY file_by_capture
                  WHERE capture_ts IS NULL {cond} ORDER BY id {dir}"
             );
-            collect(c, &undated, &args, &mut out, |_| Ok(SortKey::UNDATED))?;
+            collect(c, &undated, &args, within, &mut out, |_| {
+                Ok(SortKey::UNDATED)
+            })?;
         }
         SortField::FileSize => {
             let sql = format!(
                 "SELECT id, size, {tail} FROM file INDEXED BY file_by_size
                  WHERE 1 {cond} ORDER BY size {dir}, id {dir}"
             );
-            collect(c, &sql, &args, &mut out, |v| match v {
+            collect(c, &sql, &args, within, &mut out, |v| match v {
                 ValueRef::Integer(s) => Ok(invert(s as u64)),
                 _ => Err(corrupt("size")),
             })?;
@@ -419,7 +458,7 @@ fn id_list(c: &Connection, filter: &Filter, sort: &Sort) -> Result<IdList> {
                 "SELECT id, name, {tail} FROM file INDEXED BY file_by_name
                  WHERE 1 {cond} ORDER BY name {dir}, id {dir}"
             );
-            collect(c, &sql, &args, &mut out, |v| match v {
+            collect(c, &sql, &args, within, &mut out, |v| match v {
                 ValueRef::Blob(b) | ValueRef::Text(b) => Ok(invert(SortKey::bytes_primary(b))),
                 _ => Err(corrupt("name")),
             })?;
@@ -433,6 +472,7 @@ fn collect(
     c: &Connection,
     sql: &str,
     args: &[Value],
+    within: Option<&ItemSet>,
     out: &mut IdList,
     primary: impl Fn(ValueRef<'_>) -> Result<u64>,
 ) -> Result<()> {
@@ -443,6 +483,9 @@ fn collect(
             return Err(corrupt("id"));
         };
         let id = ItemId(id as u32);
+        if within.is_some_and(|w| !w.contains(id)) {
+            continue;
+        }
         let p = primary(r.get_ref(1)?)?;
         let ValueRef::Integer(k) = r.get_ref(2)? else {
             return Err(corrupt("kflags"));

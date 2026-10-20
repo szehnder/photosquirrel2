@@ -2,7 +2,7 @@
 
 ## 1. Data plumbing
 
-- [ ] 1.1 `ps-service::library` (ID list, detail pages, preview, thumbnails) and the synthetic 1M catalog generator in `ps-fixtures`; verify `cargo test -p ps-service library` returns 1M IDs and 512-item pages
+- [x] 1.1 `ps-service::library` (ID list, detail pages, preview, thumbnails) and the synthetic 1M catalog generator in `ps-fixtures`; verify `cargo test -p ps-service library` returns 1M IDs and 512-item pages (`ps_service::library::Library`, with the data types in `ps_model::library`; `ui-workspace::library_backend::CatalogBackend` is now a thin `GallerySource` adapter over it; `tests/library.rs`: `library_id_list_and_512_item_pages` on a 1,500-item synthetic catalog, ignored `library_queries_over_1m`: 1M IDs in 211 ms, a 512-item page in 2.7 ms, release; deviation: the generator lives in `ps_service::library::synthetic`, not `ps-fixtures`, because it writes through `ps-catalog` and encodes thumbnails with `ps-media`, and a core crate must not depend on the catalog, ADR-0003)
 - [x] 1.2 Catalog migration 3 (filter indexes, `user_inclusion`); verify migration upgrade test in `ps-catalog`
 
 ## 2. Grid

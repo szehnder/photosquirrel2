@@ -47,7 +47,6 @@ pub trait ReviewSource: Send + Sync + 'static {
 pub struct CatalogReview {
     backend: Arc<CatalogBackend>,
     review: std::sync::OnceLock<ReviewStore>,
-    insights: std::sync::OnceLock<InsightStore>,
     ai: Mutex<Option<(String, ps_service::ai::AiService)>>,
 }
 
@@ -56,7 +55,6 @@ impl CatalogReview {
         Self {
             backend,
             review: std::sync::OnceLock::new(),
-            insights: std::sync::OnceLock::new(),
             ai: Mutex::new(None),
         }
     }
@@ -66,9 +64,9 @@ impl CatalogReview {
         Ok(self.review.get_or_init(|| ReviewStore::for_service(scan)))
     }
 
+    /// The library's store, so corrections made here are what the gallery's inspector and filters see.
     fn istore(&self) -> anyhow::Result<&InsightStore> {
-        let cat = self.backend.catalog()?;
-        Ok(self.insights.get_or_init(|| InsightStore::for_catalog(cat)))
+        self.backend.insight_store()
     }
 }
 

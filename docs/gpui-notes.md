@@ -368,3 +368,15 @@ window size) when the delay is long; focus can still move.
   with `views::scan::install_primed`, which loads sources, the first snapshot, the recent-finds thumbnails
   (`ThumbStrip::prime_blocking`, real thumbnails of the `--data-dir` catalog) and the Export plan and Reports
   data before frame one. `cargo xtask screenshot` now finds the binaries under `CARGO_TARGET_DIR`.
+
+## Gallery filter bar and inspector AI section (ai-insights, export)
+- `Button::selected(..)` comes from the `Selectable` trait, which gpui-kit 0.7.3 does not re-export under an
+  obvious path (`gpui_base::Selectable` through `gpui_component`'s private `component_traits`). The Library's
+  AI and export-status menus show their state in the label ("AI insight (2)", "Pending") and in a removable
+  chip row under the toolbar instead.
+- Headless clicks on an inspector row must wait until the row is *entirely* inside the scroll container:
+  `ElementSnapshot::visible()` is true for a partly clipped element, and `window.click` aims at its centre,
+  which can lie outside the clip and hit nothing (`reveal_in_inspector` in `tests/gallery.rs` checks the
+  bounds against `inspector-scroll`).
+- Scripted screenshots of a filtered Library: `photosquirrel --gallery-filter children,pending` (hidden) sets
+  the start-up filters before the warm-up, so the filtered list is ready in frame one.

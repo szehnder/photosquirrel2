@@ -8,6 +8,7 @@ mod disposition;
 mod export;
 mod ids;
 mod insight;
+pub mod library;
 pub mod limits;
 mod media;
 mod metadata;

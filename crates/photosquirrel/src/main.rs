@@ -72,6 +72,10 @@ struct Args {
     /// before the window opens: screenshots and demos of AI Review without a live model.
     #[arg(long, value_name = "COUNT", hide = true)]
     demo_ai_insights: Option<usize>,
+    /// Start the Library with these filters, comma-separated (`children`, `pets`, `people`,
+    /// `category=travel`, `pending`, `exported`, ...): scripted screenshots of the filter bar.
+    #[arg(long, value_name = "SPEC", hide = true)]
+    gallery_filter: Option<String>,
     /// Drive the Sources, Export and Reports views from a simulated scan engine in this state (`running`,
     /// `paused`, `interrupted`, `complete`) instead of the catalog: screenshots of the scan dashboard. The
     /// recent finds use the catalog's thumbnails when there is one.
@@ -104,6 +108,17 @@ impl Global for DeferredCommands {}
 /// Window geometry in logical pixels.
 const DEFAULT_WINDOW: [f32; 2] = [1440.0, 900.0];
 const MIN_WINDOW: [f32; 2] = [960.0, 600.0];
+
+/// The Library's filters at start-up (`--gallery-filter`; none by default).
+fn startup_filters(args: &Args) -> ui_workspace::views::library::FilterBar {
+    match args.gallery_filter.as_deref() {
+        Some(spec) => ui_workspace::views::library::FilterBar::parse(spec).unwrap_or_else(|e| {
+            log::error!("--gallery-filter: {e}");
+            Default::default()
+        }),
+        None => Default::default(),
+    }
+}
 
 fn data_dir(args: &Args) -> Option<PathBuf> {
     args.data_dir.clone().or_else(|| {
@@ -153,7 +168,7 @@ fn main() {
                 }
                 if has_catalog {
                     // Open the catalog and run the first queries while the window is created.
-                    backend.warm(ui_workspace::views::library::default_query());
+                    backend.warm(startup_filters(&args).query());
                 }
                 backend
             }
@@ -184,6 +199,7 @@ fn main() {
                 ));
                 ui_workspace::views::scan::install_primed(scans, thumbs, cx);
             }
+            ui_workspace::views::library::StartupFilters::set(cx, startup_filters(&args));
             // An existing library: the first frame may wait (bounded) for the gallery to be ready.
             if has_catalog {
                 ui_workspace::startup::StartupGrace::begin(

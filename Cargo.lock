@@ -6328,6 +6328,7 @@ dependencies = [
 name = "ps-service"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "directories",
  "keyring",
  "log",

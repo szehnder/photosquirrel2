@@ -21,6 +21,8 @@ use ps_service::scans::{FakeScanService, RunError, RunOverview};
 
 use crate::library_backend::CatalogBackend;
 
+pub use ps_service::library::{disposition_reason, reason_label};
+
 /// One source in the Sources list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceRow {
@@ -187,15 +189,6 @@ pub fn source_name(root: &Path) -> String {
     root.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| root.display().to_string())
-}
-
-pub fn reason_label(r: ExclusionReason) -> &'static str {
-    match r {
-        ExclusionReason::Junk => "junk",
-        ExclusionReason::Graphic => "graphics",
-        ExclusionReason::CacheCopy => "cache copies",
-        ExclusionReason::UserExcluded => "excluded by you",
-    }
 }
 
 fn profile_settings(profile: ExportProfile) -> ProfileSettings {
@@ -485,25 +478,6 @@ pub fn copy_check_label(c: ps_service::export_progress::CopyCheck) -> String {
             format!("size changed ({expected} bytes recorded, {found} found)")
         }
         CopyCheck::HashMismatch => "contents changed since it was copied".into(),
-    }
-}
-
-/// One line on why a file has its disposition.
-pub fn disposition_reason(
-    d: Disposition,
-    reason: Option<ExclusionReason>,
-    library_path: Option<&ps_model::RelPath>,
-) -> String {
-    match (d, reason, library_path) {
-        (Disposition::Excluded, Some(r), _) => format!("excluded: {}", reason_label(r)),
-        (Disposition::Exported, _, Some(p)) => format!("copied to {p}"),
-        (Disposition::Covered, _, Some(p)) => format!("its best copy is {p}"),
-        (Disposition::Exported, _, None) => "copied to the library and verified".into(),
-        (Disposition::Covered, _, None) => "a better copy is in the library".into(),
-        (Disposition::Pending, _, _) => "not in the library yet".into(),
-        (Disposition::Unreadable, _, _) => "could not be read after retries".into(),
-        (Disposition::Missing, _, _) => "gone from the source since the last scan".into(),
-        (d, _, _) => d.as_str().into(),
     }
 }
 

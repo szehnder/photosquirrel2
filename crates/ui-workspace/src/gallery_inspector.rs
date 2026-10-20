@@ -421,6 +421,218 @@ impl GalleryInspector {
         .detach();
     }
 
+    /// The AI section (spec `ai-review`, "Insight details shown"): the effective insight (the user's
+    /// corrections win, the AI's value stays visible beside them), confidence and provenance, marked as a
+    /// suggestion. A photo without an insight says so; nothing here waits on anything.
+    fn ai_section(&self, d: &ItemDetail, cx: &mut Context<'_, Self>) -> AnyElement {
+        use crate::views::ai_review::category_label;
+        let colors = *ui_theme::colors(cx);
+        let header = h_flex()
+            .pt(Tokens::space(4.0))
+            .pb(Tokens::space(1.0))
+            .px(Tokens::space(1.0))
+            .gap(Tokens::space(2.0))
+            .items_center()
+            .child(eyebrow("AI insight", cx));
+        let Some(i) = &d.insight else {
+            let note = if d.video {
+                "Videos are not analysed by the AI."
+            } else {
+                "Not analysed yet. Start the AI queue in AI Review to describe this photo."
+            };
+            return v_flex()
+                .w_full()
+                .child(header)
+                .child(
+                    div()
+                        .id("inspector-ai-none")
+                        .test_support()
+                        .aria_label(note)
+                        .px(Tokens::space(1.0))
+                        .text_size(Tokens::text_sm())
+                        .text_color(colors.text_faint)
+                        .child(note),
+                )
+                .into_any_element();
+        };
+        let e = &i.effective;
+        let corrected = |f: &str| i.corrected.iter().any(|c| c == f);
+        // "Travel · yours (AI: landscape)" for a corrected value.
+        let mark = |value: String, field: &str, ai: String, changed: bool| match (
+            corrected(field),
+            changed,
+        ) {
+            (true, true) => format!("{value} · yours (AI: {ai})"),
+            (true, false) => format!("{value} · yours"),
+            _ => value,
+        };
+        let list = |v: &[String]| (!v.is_empty()).then(|| v.join(", "));
+        let category = mark(
+            category_label(e.category).to_owned(),
+            "category",
+            category_label(i.ai.category).to_owned(),
+            e.category != i.ai.category,
+        );
+        let also = (!e.also.is_empty()).then(|| {
+            e.also
+                .iter()
+                .map(|c| category_label(*c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+        let none = || "none".to_owned();
+        let pets = list(&e.pets).map(|p| {
+            mark(
+                p,
+                "pets",
+                list(&i.ai.pets).unwrap_or_else(none),
+                e.pets != i.ai.pets,
+            )
+        });
+        let tags = list(&e.tags).map(|t| {
+            mark(
+                t,
+                "tags",
+                list(&i.ai.tags).unwrap_or_else(none),
+                e.tags != i.ai.tags,
+            )
+        });
+        let suggestion_chip = crate::views::review_kit::chip(
+            "Suggestion",
+            colors.accent_text,
+            colors.accent_soft,
+            cx,
+        );
+        let header = header.child(
+            div()
+                .id("inspector-ai-suggestion")
+                .test_support()
+                .aria_label("Suggestion")
+                .child(suggestion_chip),
+        );
+        let header = if i.demo {
+            header.child(crate::views::review_kit::chip(
+                "Demo data",
+                colors.warning,
+                ui_theme::Colors::tint(colors.warning, 0.12),
+                cx,
+            ))
+        } else {
+            header
+        };
+        let text = ValueStyle::Text;
+        let mono = ValueStyle::Mono;
+        v_flex()
+            .id("inspector-ai")
+            .test_support()
+            .w_full()
+            .gap(Tokens::space(0.5))
+            .child(header)
+            .child(
+                div()
+                    .id("inspector-ai-subject")
+                    .test_support()
+                    .aria_label(SharedString::from(e.subject.clone()))
+                    .px(Tokens::space(1.0))
+                    .pb(Tokens::space(1.0))
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text)
+                    .child(if corrected("subject") {
+                        format!("{} (yours)", e.subject)
+                    } else {
+                        e.subject.clone()
+                    }),
+            )
+            .child(row("inspector-ai-category", "Category", Some(category), text, cx))
+            .child(row("inspector-ai-also", "Also", also, text, cx))
+            .child(row(
+                "inspector-ai-adults",
+                "Adults",
+                Some(mark(
+                    e.people.adults.to_string(),
+                    "people",
+                    i.ai.people.adults.to_string(),
+                    e.people.adults != i.ai.people.adults,
+                )),
+                mono,
+                cx,
+            ))
+            .child(row(
+                "inspector-ai-children",
+                "Children",
+                Some(mark(
+                    e.people.children.to_string(),
+                    "people",
+                    i.ai.people.children.to_string(),
+                    e.people.children != i.ai.people.children,
+                )),
+                mono,
+                cx,
+            ))
+            .child(row("inspector-ai-pets", "Pets", pets, text, cx))
+            .child(row("inspector-ai-tags", "Tags", tags, text, cx))
+            .child(row(
+                "inspector-ai-setting",
+                "Setting",
+                e.setting.clone(),
+                text,
+                cx,
+            ))
+            .child(row(
+                "inspector-ai-confidence",
+                "Confidence",
+                Some(format!("{:.0} %", e.confidence * 100.0)),
+                mono,
+                cx,
+            ))
+            .child({
+                let provenance = format!(
+                    "{} · {} · {}",
+                    i.provider,
+                    i.model,
+                    crate::views::review_kit::date_of(i.at_ms)
+                );
+                h_flex()
+                    .id("inspector-ai-provenance")
+                    .test_support()
+                    .aria_label(SharedString::from(provenance.clone()))
+                    .w_full()
+                    .items_start()
+                    .gap(Tokens::space(3.0))
+                    .py(Tokens::space(0.75))
+                    .px(Tokens::space(1.0))
+                    .child(
+                        div()
+                            .w(Tokens::size(92.0))
+                            .flex_none()
+                            .text_size(Tokens::text_sm())
+                            .text_color(colors.text_muted)
+                            .child("From"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(Tokens::text_sm())
+                            .text_color(colors.text)
+                            .child(provenance),
+                    )
+            })
+            .child(
+                div()
+                    .id("inspector-ai-note")
+                    .px(Tokens::space(1.0))
+                    .pt(Tokens::space(1.0))
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text_faint)
+                    .child(
+                        "A suggestion only: the AI never changes groups, keepers or what is exported. \
+                         Correct it in AI Review; your corrections win.",
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn active_view(window: &Window, cx: &App) -> ViewId {
         Shell::for_window(window, cx).map_or(ViewId::Library, |s| s.read(cx).active_view())
     }
@@ -493,15 +705,41 @@ fn row(
     style: ValueStyle,
     cx: &mut Context<'_, GalleryInspector>,
 ) -> AnyElement {
+    let copy = value.clone();
+    row_copying(id, label, value, copy, style, cx)
+}
+
+/// A path row: shown with the home folder as `~`, copied (and named for assistive technology) in full.
+fn path_row(
+    id: impl Into<SharedString>,
+    label: &'static str,
+    path: Option<String>,
+    cx: &mut Context<'_, GalleryInspector>,
+) -> AnyElement {
+    let shown = path
+        .as_deref()
+        .map(|p| crate::views::kit::display_path(Path::new(p)));
+    row_copying(id, label, shown, path, ValueStyle::Mono, cx)
+}
+
+/// A row showing `value` that copies `copy` on click.
+fn row_copying(
+    id: impl Into<SharedString>,
+    label: &'static str,
+    value: Option<String>,
+    copy: Option<String>,
+    style: ValueStyle,
+    cx: &mut Context<'_, GalleryInspector>,
+) -> AnyElement {
     let colors = *ui_theme::colors(cx);
     let id: SharedString = id.into();
     let present = value.is_some();
     let value: SharedString = value.unwrap_or_else(|| ABSENT.to_owned()).into();
-    let copy = value.clone();
+    let copy: SharedString = copy.map_or_else(|| value.clone(), SharedString::from);
     h_flex()
         .id(ElementId::Name(id))
         .test_support()
-        .aria_label(value.clone())
+        .aria_label(copy.clone())
         .w_full()
         .items_start()
         .gap(Tokens::space(3.0))
@@ -741,6 +979,8 @@ impl Render for GalleryInspector {
                 );
                 let mono = ValueStyle::Mono;
                 let text = ValueStyle::Text;
+                // AI insight (ai-insights change): what is in the photo, advisory; corrections win.
+                body = body.child(self.ai_section(&d, cx));
                 body = body
                     .child(section("File", cx))
                     .child(row(
@@ -750,13 +990,7 @@ impl Render for GalleryInspector {
                         text,
                         cx,
                     ))
-                    .child(row(
-                        "inspector-path",
-                        "Path",
-                        Some(d.path.clone()),
-                        mono,
-                        cx,
-                    ))
+                    .child(path_row("inspector-path", "Path", Some(d.path.clone()), cx))
                     .child(row(
                         "inspector-source",
                         "Source",
@@ -893,11 +1127,10 @@ impl Render for GalleryInspector {
                             text,
                             cx,
                         ))
-                        .child(row(
+                        .child(path_row(
                             "inspector-library-path",
                             "Library copy",
                             x.library_path.clone(),
-                            mono,
                             cx,
                         ));
                 }
@@ -1042,7 +1275,7 @@ impl Render for GalleryInspector {
                                     .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
                                     .text_size(Tokens::text_2xs())
                                     .text_color(colors.text_muted)
-                                    .child(c.path.clone()),
+                                    .child(crate::views::kit::display_path(Path::new(&c.path))),
                             )
                             .child(
                                 div()

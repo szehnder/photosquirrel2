@@ -235,6 +235,11 @@ impl InsightStore {
         out
     }
 
+    /// Every stored correction, by content (hex).
+    pub fn corrections(&self) -> BTreeMap<String, Correction> {
+        self.with(|s| s.corrections.clone(), false)
+    }
+
     pub fn correction(&self, content: &str) -> Option<Correction> {
         self.with(|s| s.corrections.get(content).cloned(), false)
     }

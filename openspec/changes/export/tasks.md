@@ -3,7 +3,7 @@
 ## 1. Schema and model
 
 - [x] 1.1 Migration 6 (export_library, export_ledger) and plan/ledger types in `ps-model`; verify migration upgrade test in `ps-catalog` (registered after 0004/0005; `export_migration_applies_on_latest_schema` upgrades a v5 catalog; ledger `ps_service::export::CatalogLedger`)
-- [ ] 1.2 Apple ContentIdentifier extraction in `ps-media::metadata`; verify a unit test on a fixture HEIC/MOV pair
+- [x] 1.2 Apple ContentIdentifier extraction in `ps-media::metadata`; verify a unit test on a fixture HEIC/MOV pair (`ps_media::apple`: maker note tag 0x0011, XMP `…:ContentIdentifier`, QuickTime `com.apple.quicktime.content.identifier`; `media_metadata.rs` `live_photo_still_and_video_share_the_apple_content_identifier` on a generated iPhone JPEG still and MOV (deviation: a JPEG still, the fixtures have no HEIC writer; HEIC goes through the same EXIF maker-note path) and `content_identifier_from_xmp`; wired into `Exports::input` so `ps_export::pairs` matches Live Photos by identifier)
 
 ## 2. Planner
 
@@ -40,7 +40,7 @@
 
 - [x] 6.1 Export view (plan review, profile, confirm, progress); verify screenshot review and a headless UI test that confirming starts the export (`ui-workspace/tests/export_reports.rs`: `confirming_the_export_starts_it`, `insufficient_space_blocks_the_export_button`; `docs/screenshots/export-dark.png`)
 - [x] 6.2 Reports view with drill-down; verify `scenario_completion_report_drill_into_pending_files` (deviation: the drill-down lists the files, with their reasons, inside the Reports view rather than in the gallery, which cannot show reasons and has no disposition filter yet; also Verify copies with the suspect-copy list, `verify_lists_an_altered_library_copy`; `docs/screenshots/reports-dark.png`)
-- [ ] 6.3 Disposition in inspector and gallery filter; verify `scenario_completion_report_inspector_shows_disposition` (inspector done and verified: Export section with disposition, reason and library copy, from a per-library disposition cache in `CatalogBackend`; the gallery disposition filter is still open: it needs a disposition-aware id list in the catalog query path)
+- [x] 6.3 Disposition in inspector and gallery filter; verify `scenario_completion_report_inspector_shows_disposition` (inspector: Export section with disposition, reason and library copy; gallery: "Export status" menu (any of exported, covered, excluded, pending, unreadable, missing), a disposition-aware ID list via `Readers::id_list_within` with the cached dispositions of `ps_service::library` (before any export every file is derived against an empty ledger, so the Library is pending); a disposition filter widens the class and missing-file filters so excluded and missing files can be listed: `gallery_filter_by_export_disposition` (UI) and `disposition_filter_lists_exactly_the_files_with_that_disposition` (ps-service); 1M bench: 1.95 s for the first query (derives every disposition), then 168 ms)
 - [x] 6.4 CLI `export` and `report`; verify `scenario_export_cli_dry_run_prints_plan` and `scenario_completion_report_cli_report_matches_ui` (`export dry-run|run|check` and `report` in photosquirrel-cli)
 
 ## 7. Verification

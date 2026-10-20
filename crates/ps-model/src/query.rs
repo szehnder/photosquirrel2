@@ -202,6 +202,67 @@ impl IdList {
     }
 }
 
+/// A set of item ids as a bitset (1M items = 125 KB): the restriction an ID list query applies for filters
+/// the catalog cannot express in SQL (AI insights with user corrections, export dispositions).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemSet {
+    words: Vec<u64>,
+    len: usize,
+}
+
+impl ItemSet {
+    pub fn new() -> ItemSet {
+        ItemSet::default()
+    }
+
+    pub fn insert(&mut self, id: ItemId) {
+        let (w, b) = ((id.0 / 64) as usize, id.0 % 64);
+        if w >= self.words.len() {
+            self.words.resize(w + 1, 0);
+        }
+        let bit = 1u64 << b;
+        if self.words[w] & bit == 0 {
+            self.words[w] |= bit;
+            self.len += 1;
+        }
+    }
+
+    pub fn contains(&self, id: ItemId) -> bool {
+        let (w, b) = ((id.0 / 64) as usize, id.0 % 64);
+        self.words.get(w).is_some_and(|x| x & (1u64 << b) != 0)
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Items in both sets.
+    pub fn intersect(&self, other: &ItemSet) -> ItemSet {
+        let words: Vec<u64> = self
+            .words
+            .iter()
+            .zip(&other.words)
+            .map(|(a, b)| a & b)
+            .collect();
+        let len = words.iter().map(|w| w.count_ones() as usize).sum();
+        ItemSet { words, len }
+    }
+}
+
+impl FromIterator<ItemId> for ItemSet {
+    fn from_iter<T: IntoIterator<Item = ItemId>>(iter: T) -> Self {
+        let mut s = ItemSet::new();
+        for id in iter {
+            s.insert(id);
+        }
+        s
+    }
+}
+
 impl PhotoClass {
     /// Stable one-byte storage code (catalog columns and [`SortKey`]). Never reuse a code.
     pub fn code(self) -> u8 {
@@ -263,6 +324,17 @@ mod tests {
             assert_eq!(PhotoClass::from_code(c.code()), Some(c));
         }
         assert_eq!(PhotoClass::from_code(SortKey::CLASS_NONE), None);
+    }
+
+    #[test]
+    fn item_set_insert_contains_intersect() {
+        let a: ItemSet = [1, 64, 200, 200].into_iter().map(ItemId).collect();
+        assert_eq!(a.len(), 3);
+        assert!(a.contains(ItemId(64)) && !a.contains(ItemId(65)) && !a.contains(ItemId(9_999)));
+        let b: ItemSet = [64, 300].into_iter().map(ItemId).collect();
+        let both = a.intersect(&b);
+        assert_eq!(both.len(), 1);
+        assert!(both.contains(ItemId(64)));
     }
 
     #[test]

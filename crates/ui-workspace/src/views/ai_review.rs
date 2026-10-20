@@ -1370,7 +1370,7 @@ impl AiReviewView {
                     .text_color(colors.text_faint)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(i.path.clone()),
+                    .child(crate::views::kit::display_path(std::path::Path::new(&i.path))),
             )
             .children(self.notice.clone().map(|n| {
                 div()

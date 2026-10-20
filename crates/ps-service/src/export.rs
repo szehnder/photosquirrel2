@@ -161,7 +161,10 @@ impl<'a> Exports<'a> {
                 format: rec.format,
                 capture: capture_of(meta.as_ref()),
                 undated: rec.capture_undated || capture_of(meta.as_ref()).is_none(),
-                content_identifier: None,
+                // Live Photo pairing (`ps_export::pairs`): the Apple ContentIdentifier from the metadata.
+                content_identifier: meta
+                    .as_ref()
+                    .and_then(|m| m.fields.content_identifier.clone()),
             })
         };
         let copy_ref = |id: FileId| -> Option<CopyRef> {
@@ -310,6 +313,22 @@ impl<'a> Exports<'a> {
     )> {
         let root = Self::normalized(library)?;
         let ledger = self.ledger_for_read(&root)?;
+        let checks = ps_export::check_library(&root, &ledger, verify);
+        let (files, d) = self.derive(&ledger, &checks)?;
+        Ok((files, d, checks))
+    }
+
+    /// Dispositions before any export (no library yet): nothing is exported or covered, so every keeper and
+    /// candidate is pending. The gallery's disposition filter uses this until a library exists.
+    pub fn dispositions_without_library(&self) -> Result<(Vec<FileFacts>, Vec<FileDisposition>)> {
+        self.derive(&[], &HashMap::new())
+    }
+
+    fn derive(
+        &self,
+        ledger: &[LedgerEntry],
+        checks: &HashMap<ps_model::RelPath, ps_export::CopyCheck>,
+    ) -> Result<(Vec<FileFacts>, Vec<FileDisposition>)> {
         let r = self.catalog().read();
         let excluded: HashSet<FileId> = r.user_excluded_files()?.into_iter().collect();
         let mut files = Vec::new();
@@ -334,14 +353,13 @@ impl<'a> Exports<'a> {
                 keeper_set,
             })
             .collect();
-        let checks = ps_export::check_library(&root, &ledger, verify);
         let d = ps_export::derive_dispositions(&DispositionFacts {
             files: &files,
             groups: &groups,
-            ledger: &ledger,
-            checks: &checks,
+            ledger,
+            checks,
         });
-        Ok((files, d, checks))
+        Ok((files, d))
     }
 
     /// The completion report (per source and folder) for `library`, or the last library used.

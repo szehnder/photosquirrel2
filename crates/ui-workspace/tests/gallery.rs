@@ -154,13 +154,19 @@ fn file_id(backend: &CatalogBackend, rel: &str) -> ItemId {
     ItemId::try_from(rec.id).unwrap()
 }
 
-/// Scroll the inspector until `id` is on screen.
+/// Scroll the inspector until `id` is entirely on screen (so a click at its centre lands on it).
 fn reveal_in_inspector(id: &str, cx: &mut VisualTestContext) {
     let sid = SharedString::from(id.to_owned());
     for _ in 0..40 {
         let visible = cx.update(|window, cx| {
             window.render_frame(cx);
-            window.try_find(sid.clone()).is_some_and(|s| s.visible())
+            let inside = window.try_find("inspector-scroll").map(|s| s.bounds());
+            window.try_find(sid.clone()).is_some_and(|s| {
+                s.visible()
+                    && inside.is_some_and(|b| {
+                        s.bounds().top() >= b.top() && s.bounds().bottom() <= b.bottom()
+                    })
+            })
         });
         if visible {
             return;
@@ -817,5 +823,347 @@ fn scenario_completion_report_inspector_shows_disposition(cx: &mut TestAppContex
     assert_eq!(
         label_of("inspector-library-path", &mut cx),
         Some(keeper_copy)
+    );
+}
+
+// ---- AI section and AI / export-status filters (ai-insights 3.2 and 3.3, export 6.3) ----------------------
+
+fn people_insight(
+    category: ps_model::SceneCategory,
+    adults: u32,
+    children: u32,
+) -> ps_model::ImageInsight {
+    ps_model::ImageInsight {
+        subject: format!("{adults} adults and {children} children"),
+        category,
+        also: Vec::new(),
+        is_photo: true,
+        people: ps_model::PeopleEstimate {
+            total: adults + children,
+            adults,
+            children,
+        },
+        pets: Vec::new(),
+        tags: vec!["family".into()],
+        setting: Some("outdoor park".into()),
+        confidence: 0.87,
+    }
+}
+
+/// Store a result the way the AI queue does.
+fn record_insight(backend: &CatalogBackend, id: ItemId, i: &ps_model::ImageInsight) -> String {
+    let cat = backend.catalog().unwrap();
+    let content = cat
+        .read()
+        .file_by_id(FileId::from(id))
+        .unwrap()
+        .unwrap()
+        .identity
+        .unwrap();
+    cat.writer()
+        .ai_complete(ps_catalog::AiResultRow {
+            content,
+            provider: "recorder".into(),
+            model: "fixture-vision".into(),
+            schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
+            prompt_version: 1,
+            insight: serde_json::to_string(i).unwrap(),
+            latency_ms: 900,
+            requests: 1,
+            at_ms: 1_700_000_000_000,
+        })
+        .unwrap();
+    cat.writer().flush().unwrap();
+    content.to_hex()
+}
+
+/// Library image items without duplicates (one file per content), in list order.
+fn single_photos(
+    backend: &CatalogBackend,
+    lib: &Entity<LibraryView>,
+    cx: &mut VisualTestContext,
+) -> Vec<ItemId> {
+    let ids: Vec<ItemId> = cx.update(|_, cx| lib.read(cx).model().read(cx).index.ids.to_vec());
+    let r = backend.catalog().unwrap().read();
+    let mut out = Vec::new();
+    for chunk in ids.chunks(512) {
+        for rec in r.details(chunk).unwrap() {
+            if rec.media_kind() == Some(ps_model::MediaKind::Image)
+                && let Some(c) = rec.identity
+                && r.files_with_content(&c).unwrap().len() == 1
+            {
+                out.push(ItemId::try_from(rec.id).unwrap());
+            }
+        }
+    }
+    out
+}
+
+fn no_stacks(lib: &Entity<LibraryView>, cx: &mut VisualTestContext) {
+    lib.update(cx, |v, cx| {
+        v.set_filters(
+            FilterBar {
+                stacks_off: true,
+                ..FilterBar::default()
+            },
+            cx,
+        )
+    });
+    wait_list(lib, cx);
+}
+
+#[gpui_kit::test]
+fn gallery_inspector_ai_section_shows_the_insight_as_a_suggestion(cx: &mut TestAppContext) {
+    let (_tmp, dir) = catalog_copy(false);
+    let (backend, _shell, mut cx) = open_app(cx, &dir);
+    let lib = library(&mut cx);
+    wait_list(&lib, &mut cx);
+    no_stacks(&lib, &mut cx);
+    let id = single_photos(&backend, &lib, &mut cx)[0];
+    let content = record_insight(
+        &backend,
+        id,
+        &people_insight(ps_model::SceneCategory::People, 3, 2),
+    );
+    let insp = select(&lib, id, &mut cx);
+    let d = cx.update(|_, cx| insp.read(cx).detail().cloned().unwrap());
+    let i = d.insight.clone().expect("the AI section has an insight");
+    assert_eq!(
+        (i.provider.as_str(), i.model.as_str()),
+        ("recorder", "fixture-vision")
+    );
+    reveal_in_inspector("inspector-ai-provenance", &mut cx);
+    assert!(
+        exists("inspector-ai-suggestion", &mut cx),
+        "marked as a suggestion"
+    );
+    assert_eq!(
+        label_of("inspector-ai-category", &mut cx).as_deref(),
+        Some("People")
+    );
+    assert_eq!(
+        label_of("inspector-ai-adults", &mut cx).as_deref(),
+        Some("3")
+    );
+    assert_eq!(
+        label_of("inspector-ai-children", &mut cx).as_deref(),
+        Some("2")
+    );
+    assert_eq!(
+        label_of("inspector-ai-confidence", &mut cx).as_deref(),
+        Some("87 %")
+    );
+    let prov = label_of("inspector-ai-provenance", &mut cx).unwrap();
+    assert!(prov.starts_with("recorder · fixture-vision"), "{prov}");
+    assert!(!exists("inspector-ai-none", &mut cx));
+
+    // The user's correction wins in the inspector; the AI's value stays visible beside it.
+    backend.insight_store().unwrap().correct(
+        &content,
+        ps_service::insights::Correction {
+            category: Some(ps_model::SceneCategory::Travel),
+            ..Default::default()
+        },
+    );
+    // Reselect to reload the detail.
+    let model = cx.update(|_, cx| lib.read(cx).model().clone());
+    model.update(&mut cx, |m, cx| {
+        m.selection.clear();
+        m.selection_changed(cx);
+    });
+    cx.run_until_parked();
+    let insp = select(&lib, id, &mut cx);
+    let d = cx.update(|_, cx| insp.read(cx).detail().cloned().unwrap());
+    let i = d.insight.unwrap();
+    assert_eq!(i.effective.category, ps_model::SceneCategory::Travel);
+    assert_eq!(i.ai.category, ps_model::SceneCategory::People);
+    reveal_in_inspector("inspector-ai-category", &mut cx);
+    assert_eq!(
+        label_of("inspector-ai-category", &mut cx).as_deref(),
+        Some("Travel · yours (AI: People)")
+    );
+}
+
+#[gpui_kit::test]
+fn gallery_inspector_without_an_insight_says_so(cx: &mut TestAppContext) {
+    let (_tmp, dir) = catalog_copy(false);
+    let (backend, _shell, mut cx) = open_app(cx, &dir);
+    let lib = library(&mut cx);
+    wait_list(&lib, &mut cx);
+    no_stacks(&lib, &mut cx);
+    let id = single_photos(&backend, &lib, &mut cx)[0];
+    let insp = select(&lib, id, &mut cx);
+    let d = cx.update(|_, cx| insp.read(cx).detail().cloned().unwrap());
+    assert!(d.insight.is_none());
+    reveal_in_inspector("inspector-ai-none", &mut cx);
+    let note = label_of("inspector-ai-none", &mut cx).unwrap();
+    assert!(note.starts_with("Not analysed yet"), "{note}");
+    assert!(!exists("inspector-ai-provenance", &mut cx));
+}
+
+#[gpui_kit::test]
+fn gallery_filter_contains_children_uses_the_effective_insight(cx: &mut TestAppContext) {
+    let (_tmp, dir) = catalog_copy(false);
+    let (backend, _shell, mut cx) = open_app(cx, &dir);
+    let lib = library(&mut cx);
+    wait_list(&lib, &mut cx);
+    no_stacks(&lib, &mut cx);
+    let photos = single_photos(&backend, &lib, &mut cx);
+    assert!(photos.len() >= 6);
+    // Children in photos 0, 2 and 4; adults only in 1, 3 and 5.
+    let mut contents = Vec::new();
+    for (k, id) in photos[..6].iter().enumerate() {
+        let kids = if k % 2 == 0 { 1 + k as u32 } else { 0 };
+        contents.push(record_insight(
+            &backend,
+            *id,
+            &people_insight(ps_model::SceneCategory::People, 1, kids),
+        ));
+    }
+    let children = FilterBar {
+        stacks_off: true,
+        insight: ui_gallery::source::InsightCriteria {
+            children: true,
+            ..Default::default()
+        },
+        ..FilterBar::default()
+    };
+    lib.update(&mut cx, |v, cx| v.set_filters(children.clone(), cx));
+    wait_list(&lib, &mut cx);
+    let shown = |cx: &mut VisualTestContext| {
+        let mut ids: Vec<ItemId> =
+            cx.update(|_, cx| lib.read(cx).model().read(cx).index.ids.to_vec());
+        ids.sort();
+        ids
+    };
+    let mut want = vec![photos[0], photos[2], photos[4]];
+    want.sort();
+    assert_eq!(shown(&mut cx), want);
+    assert!(
+        exists("library-active-children", &mut cx),
+        "the filter shows as a removable chip"
+    );
+    assert_eq!(
+        label_of("library-count", &mut cx).as_deref(),
+        Some("3 items")
+    );
+
+    // A correction wins: photo 0 has no children after all, photo 1 has two.
+    let store = backend.insight_store().unwrap();
+    let people = |children| ps_service::insights::Correction {
+        people: Some(ps_model::PeopleEstimate {
+            total: 1 + children,
+            adults: 1,
+            children,
+        }),
+        ..Default::default()
+    };
+    store.correct(&contents[0], people(0));
+    store.correct(&contents[1], people(2));
+    lib.update(&mut cx, |v, cx| {
+        v.set_filters(FilterBar::default(), cx);
+    });
+    wait_list(&lib, &mut cx);
+    lib.update(&mut cx, |v, cx| v.set_filters(children.clone(), cx));
+    wait_list(&lib, &mut cx);
+    let mut want = vec![photos[1], photos[2], photos[4]];
+    want.sort();
+    assert_eq!(shown(&mut cx), want);
+
+    // Combined with other gallery filters (AND): children and a category nobody has.
+    let mut none = children.clone();
+    none.insight.category = Some(ps_model::SceneCategory::Food);
+    lib.update(&mut cx, |v, cx| v.set_filters(none, cx));
+    wait_list(&lib, &mut cx);
+    assert!(shown(&mut cx).is_empty());
+    assert!(exists("library-empty", &mut cx));
+    // Clearing the AI filters brings the whole Library back.
+    click("library-clear-filters", &mut cx);
+    wait_list(&lib, &mut cx);
+    assert!(shown(&mut cx).len() > 6);
+}
+
+#[gpui_kit::test]
+fn gallery_filter_by_export_disposition(cx: &mut TestAppContext) {
+    use ui_workspace::scan_backend::ScanBackend as _;
+    let (tmp, dir) = catalog_copy(false);
+    let library_root = tmp.path().join("library");
+    let (backend, _shell, mut cx) = open_app(cx, &dir);
+    let lib = library(&mut cx);
+    wait_list(&lib, &mut cx);
+    // Before any export every Library photo is pending, and nothing is exported.
+    let by = |d: Vec<ps_model::Disposition>, cx: &mut VisualTestContext| {
+        lib.update(cx, |v, cx| {
+            v.set_filters(
+                FilterBar {
+                    stacks_off: true,
+                    dispositions: d,
+                    ..FilterBar::default()
+                },
+                cx,
+            )
+        });
+        wait_list(&lib, cx);
+        let mut ids: Vec<ItemId> =
+            cx.update(|_, cx| lib.read(cx).model().read(cx).index.ids.to_vec());
+        ids.sort();
+        ids
+    };
+    assert!(by(vec![ps_model::Disposition::Exported], &mut cx).is_empty());
+    assert!(!by(vec![ps_model::Disposition::Pending], &mut cx).is_empty());
+    let out = backend
+        .export_run(
+            &library_root,
+            ps_model::ExportProfile::ApplePhotos,
+            &std::sync::atomic::AtomicBool::new(false),
+            &ps_service::export_progress::ExportProgress::new(),
+        )
+        .unwrap();
+    assert!(out.copied > 0 && out.failed.is_empty(), "{out:?}");
+    let ex = backend.scan().unwrap().exports();
+    let root = ex.last_library().unwrap().unwrap();
+    let (files, d, _) = ex.dispositions(&root, false).unwrap();
+    for wanted in [
+        ps_model::Disposition::Exported,
+        ps_model::Disposition::Covered,
+        ps_model::Disposition::Excluded,
+        ps_model::Disposition::Pending,
+    ] {
+        let mut expected: Vec<ItemId> = files
+            .iter()
+            .zip(&d)
+            .filter(|(_, x)| x.disposition == wanted)
+            .filter_map(|(f, _)| ItemId::try_from(f.file).ok())
+            .collect();
+        expected.sort();
+        assert_eq!(by(vec![wanted], &mut cx), expected, "{wanted:?}");
+    }
+    assert!(!by(vec![ps_model::Disposition::Covered], &mut cx).is_empty());
+    assert!(exists("library-active-covered", &mut cx));
+    // Removing the chip removes the filter.
+    click("library-active-covered", &mut cx);
+    wait_list(&lib, &mut cx);
+    let f = cx.update(|_, cx| lib.read(cx).filters.clone());
+    assert!(f.dispositions.is_empty());
+}
+
+#[test]
+fn gallery_filter_spec_parses() {
+    let f = FilterBar::parse("children, pets,category=travel,pending,covered").unwrap();
+    assert!(f.insight.children && f.insight.pets && !f.insight.people);
+    assert_eq!(f.insight.category, Some(ps_model::SceneCategory::Travel));
+    assert_eq!(
+        f.dispositions,
+        vec![
+            ps_model::Disposition::Covered,
+            ps_model::Disposition::Pending
+        ]
+    );
+    assert_eq!(f.active_extras().len(), 5);
+    assert!(FilterBar::parse("sunsets").is_err());
+    assert_eq!(FilterBar::parse("").unwrap(), FilterBar::default());
+    assert_eq!(
+        FilterBar::default().query(),
+        ui_workspace::views::library::default_query()
     );
 }
