@@ -12,7 +12,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use ps_model::settings::{ExportProfile, MotionSetting, ProviderId, Settings, ThemeSetting};
+use ps_model::settings::{ExportProfile, MotionSetting, Settings, ThemeSetting};
 use ui_theme::Tokens;
 
 use crate::assets::IconName;
@@ -116,13 +116,6 @@ fn parse_u64(text: &str) -> Result<u64, String> {
 
 const THEMES: &[&str] = &["Graphite dark", "Graphite light", "Match system"];
 const MOTIONS: &[&str] = &["Match system", "Reduce", "Full"];
-const PROVIDERS: &[&str] = &[
-    "LM Studio",
-    "OpenAI-compatible",
-    "OpenAI",
-    "Anthropic",
-    "Gemini",
-];
 const PROFILES: &[&str] = &["Apple Photos", "Google Photos", "Lightroom"];
 
 fn index_of<T: PartialEq + Copy>(all: &[T], v: T) -> usize {
@@ -312,53 +305,6 @@ pub fn definitions() -> Vec<SettingDef> {
             },
         },
         SettingDef {
-            key: "ai.provider",
-            section: Ai,
-            name: "Provider",
-            description: "Local providers keep every photo on this machine.",
-            control: Control::Choice {
-                options: PROVIDERS,
-                get: |s| index_of(&ProviderId::ALL, s.ai.provider),
-                set: |s, i| {
-                    let p = ProviderId::ALL[i];
-                    if s.ai.provider != p {
-                        s.ai.provider = p;
-                        s.ai.base_url = p.default_base_url().to_owned();
-                    }
-                },
-            },
-        },
-        SettingDef {
-            key: "ai.base_url",
-            section: Ai,
-            name: "Server address",
-            description: "Where the provider listens.",
-            control: Control::Field {
-                get: |s| s.ai.base_url.clone(),
-                parse: |t, s| {
-                    s.ai.base_url = t.trim().to_owned();
-                    Ok(())
-                },
-                unit: None,
-                placeholder: "http://localhost:1234/v1",
-            },
-        },
-        SettingDef {
-            key: "ai.model",
-            section: Ai,
-            name: "Model",
-            description: "Empty uses the model the server has loaded.",
-            control: Control::Field {
-                get: |s| s.ai.model.clone(),
-                parse: |t, s| {
-                    s.ai.model = t.trim().to_owned();
-                    Ok(())
-                },
-                unit: None,
-                placeholder: "loaded model",
-            },
-        },
-        SettingDef {
             key: "ai.auto_start_queue",
             section: Ai,
             name: "Start the AI queue after scans",
@@ -366,16 +312,6 @@ pub fn definitions() -> Vec<SettingDef> {
             control: Control::Toggle {
                 get: |s| s.ai.auto_start_queue,
                 set: |s, v| s.ai.auto_start_queue = v,
-            },
-        },
-        SettingDef {
-            key: "ai.hosted_consent",
-            section: Ai,
-            name: "Allow hosted providers",
-            description: "Lets previews be sent to OpenAI, Anthropic or Google when you choose one.",
-            control: Control::Toggle {
-                get: |s| s.ai.hosted_consent,
-                set: |s, v| s.ai.hosted_consent = v,
             },
         },
         SettingDef {
@@ -392,6 +328,34 @@ pub fn definitions() -> Vec<SettingDef> {
                 },
                 unit: None,
                 placeholder: "2",
+            },
+        },
+        SettingDef {
+            key: "ai.request_timeout_s",
+            section: Ai,
+            name: "Request timeout",
+            description: "How long one photo may take. Local vision models on a laptop can need a minute or more; \
+                          empty uses 300 s for local providers and 120 s for hosted ones.",
+            control: Control::Field {
+                get: |s| {
+                    s.ai.request_timeout_s
+                        .map(|t| t.to_string())
+                        .unwrap_or_default()
+                },
+                parse: |t, s| {
+                    let t = t.trim();
+                    s.ai.request_timeout_s = if t.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            u32::try_from(parse_u64(t)?)
+                                .map_err(|_| "That number is too large.".to_owned())?,
+                        )
+                    };
+                    Ok(())
+                },
+                unit: Some("s"),
+                placeholder: "300",
             },
         },
         SettingDef {
@@ -438,6 +402,8 @@ pub struct SettingsWindow {
     fields: HashMap<&'static str, Entity<InputState>>,
     errors: HashMap<&'static str, String>,
     focus: FocusHandle,
+    /// Provider, address, key, model, consent and connection test (`crate::settings_ai`).
+    ai_panel: Entity<crate::settings_ai::AiSettingsPanel>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -481,11 +447,16 @@ impl SettingsWindow {
         subscriptions.push(cx.observe_global::<AppSettings>(|_, cx| cx.notify()));
         Self {
             defs,
-            section: Section::General,
+            // Dev-only: scripted screenshots open a section directly (agents' windows get one frame).
+            section: std::env::var("PHOTOSQUIRREL_SETTINGS_SECTION")
+                .ok()
+                .and_then(|k| Section::ALL.into_iter().find(|s| s.key() == k))
+                .unwrap_or(Section::General),
             search,
             fields,
             errors: HashMap::new(),
             focus: cx.focus_handle(),
+            ai_panel: cx.new(|cx| crate::settings_ai::AiSettingsPanel::new(window, cx)),
             _subscriptions: subscriptions,
         }
     }
@@ -758,6 +729,9 @@ impl Render for SettingsWindow {
                 );
             }
         } else {
+            if self.section == Section::Ai {
+                body = body.child(self.ai_panel.clone());
+            }
             for def in &visible {
                 body = body.child(self.render_item(def, cx));
             }

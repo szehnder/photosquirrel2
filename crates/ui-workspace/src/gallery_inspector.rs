@@ -878,6 +878,29 @@ impl Render for GalleryInspector {
                         text,
                         cx,
                     ));
+                // Completion report (export change): where this file stands against the library.
+                if let Some(x) = &d.disposition {
+                    body = body
+                        .child(section("Export", cx))
+                        .child(row(
+                            "inspector-disposition",
+                            "Disposition",
+                            Some(format!(
+                                "{} · {}",
+                                crate::views::kit::disposition_label(x.disposition),
+                                x.reason
+                            )),
+                            text,
+                            cx,
+                        ))
+                        .child(row(
+                            "inspector-library-path",
+                            "Library copy",
+                            x.library_path.clone(),
+                            mono,
+                            cx,
+                        ));
+                }
                 // Decision.
                 let library = matches!(
                     d.class,

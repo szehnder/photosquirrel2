@@ -10,7 +10,16 @@
 //! });
 //! ```
 
+pub mod ai_review;
+pub mod duplicates;
+pub mod export;
+pub mod kit;
 pub mod library;
+pub mod reports;
+pub mod review_kit;
+pub mod scan;
+pub mod scan_dashboard;
+pub mod sources;
 
 use std::collections::HashMap;
 use std::rc::Rc;

@@ -131,6 +131,18 @@ pub struct ItemDetail {
     /// Every metadata tag: (group, name, value).
     pub tags: Vec<(String, String, String)>,
     pub video: bool,
+    /// Where the file stands against the last export library (completion report); `None` before any export.
+    pub disposition: Option<DispositionDetail>,
+}
+
+/// An item's completion-report disposition, as the inspector shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DispositionDetail {
+    pub disposition: ps_model::Disposition,
+    /// Why, in a few words ("excluded: junk", "not in the library yet").
+    pub reason: String,
+    /// Absolute path of the library copy: this file's (exported) or its keeper's (covered).
+    pub library_path: Option<String>,
 }
 
 /// One row of the Excluded view.

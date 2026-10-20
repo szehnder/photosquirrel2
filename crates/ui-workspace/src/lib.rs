@@ -27,8 +27,11 @@ pub mod net;
 pub mod onboarding;
 pub mod palette;
 pub mod persist;
+pub mod review_source;
+pub mod scan_backend;
 pub mod service;
 pub mod settings;
+pub mod settings_ai;
 pub mod settings_window;
 pub mod shell;
 pub mod startup;
@@ -93,7 +96,14 @@ pub fn init(config: ShellConfig, cx: &mut App) {
     AppSettings::init(config.settings, config.theme_override, cx);
     ui_gallery::init(cx);
     crate::views::library::register(cx);
+    crate::views::scan::register(cx);
+    cx.set_global(review_source::ReviewGlobal(config.backend.clone().review()));
+    crate::views::duplicates::register(cx);
+    crate::views::ai_review::register(cx);
     let gallery = config.backend.clone().gallery();
+    if let Some(scans) = config.backend.clone().scans() {
+        crate::views::scan::install(scans, gallery.clone(), cx);
+    }
     cx.set_global(ShellGlobals {
         gallery,
         service: ServiceHandle::spawn(config.backend),

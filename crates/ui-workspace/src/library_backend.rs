@@ -51,6 +51,15 @@ pub struct CatalogBackend {
     warm: Mutex<Option<Arc<Warm>>>,
     previews: Mutex<Option<PreviewCache>>,
     sources: Mutex<Option<Arc<HashMap<SourceId, SourceInfo>>>>,
+    /// Dispositions against the last export library, computed on the first inspector request and dropped when
+    /// an export or scan changes them ([`CatalogBackend::forget_dispositions`]).
+    dispositions: Mutex<Option<Arc<Dispositions>>>,
+}
+
+/// Every file's disposition against one library.
+struct Dispositions {
+    library: PathBuf,
+    by_file: HashMap<FileId, ps_service::export_progress::FileDisposition>,
 }
 
 impl std::fmt::Debug for CatalogBackend {
@@ -86,7 +95,15 @@ impl CatalogBackend {
             warm: Mutex::new(None),
             previews: Mutex::new(None),
             sources: Mutex::new(None),
+            dispositions: Mutex::new(None),
         }
+    }
+
+    /// A backend over an already opened engine (tests with custom scan options, such as a slow device).
+    pub fn with_service(data_dir: &Path, service: ScanService) -> Self {
+        let b = Self::new(data_dir);
+        let _ = b.engine.set(Ok(service));
+        b
     }
 
     /// Open now (tests and the CLI), reporting a failure.
@@ -228,6 +245,46 @@ impl CatalogBackend {
         // Used once: later queries see fresh data.
         *self.warm.lock() = None;
         Some(r.map_err(anyhow::Error::msg))
+    }
+
+    /// Re-read sources on the next query (after one was added, re-linked or removed).
+    pub(crate) fn forget_sources(&self) {
+        *self.sources.lock() = None;
+        self.forget_dispositions();
+    }
+
+    /// Re-derive dispositions on the next inspector request (after an export or a scan).
+    pub(crate) fn forget_dispositions(&self) {
+        *self.dispositions.lock() = None;
+    }
+
+    /// The disposition of `file` against the last export library (`None` before any export).
+    pub fn disposition_of(&self, file: FileId) -> anyhow::Result<Option<DispositionDetail>> {
+        let cached = self.dispositions.lock().clone();
+        let d = match cached {
+            Some(d) => d,
+            None => {
+                let ex = self.scan()?.exports();
+                let Some(library) = ex.last_library()? else {
+                    return Ok(None);
+                };
+                let (files, d, _) = ex.dispositions(&library, false)?;
+                let d = Arc::new(Dispositions {
+                    by_file: files.iter().map(|f| f.file).zip(d).collect(),
+                    library,
+                });
+                *self.dispositions.lock() = Some(d.clone());
+                d
+            }
+        };
+        Ok(d.by_file.get(&file).map(|x| DispositionDetail {
+            disposition: x.disposition,
+            reason: crate::scan_backend::disposition_reason(x.disposition, x.reason, None),
+            library_path: x
+                .library_path
+                .as_ref()
+                .map(|p| p.under(&d.library).display().to_string()),
+        }))
     }
 
     pub fn scan(&self) -> anyhow::Result<&ScanService> {
@@ -404,6 +461,14 @@ impl LibraryBackend for CatalogBackend {
 
     fn gallery(self: Arc<Self>) -> Arc<dyn GallerySource> {
         self
+    }
+
+    fn scans(self: Arc<Self>) -> Option<crate::scan_backend::SharedScanBackend> {
+        Some(self)
+    }
+
+    fn review(self: Arc<Self>) -> Option<Arc<dyn crate::review_source::ReviewSource>> {
+        Some(Arc::new(crate::review_source::CatalogReview::new(self)))
     }
 }
 
@@ -649,6 +714,10 @@ impl GallerySource for CatalogBackend {
             copies,
             tags: f.all_tags.clone(),
             video: r.media_kind() == Some(MediaKind::Video),
+            disposition: self.disposition_of(r.id).unwrap_or_else(|e| {
+                log::warn!("disposition of {:?}: {e:#}", r.id);
+                None
+            }),
         }))
     }
 

@@ -431,6 +431,11 @@ impl Shell {
     pub fn show_view(&mut self, view: ViewId, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.layout.active_view != view {
             self.layout.active_view = view;
+            // The old view may hold focus and is no longer rendered: take it back so shell keys keep working.
+            // Views that want focus (the grid, Duplicates) take it again once shown.
+            if !self.focus.is_focused(window) {
+                window.focus(&self.focus, cx);
+            }
             if view == ViewId::Library {
                 self.layout.library_mode = LibraryMode::Grid;
                 if let Some(hook) = ViewRegistry::library_mode_hook(cx) {

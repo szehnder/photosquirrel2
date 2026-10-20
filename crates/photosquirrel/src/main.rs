@@ -68,6 +68,15 @@ struct Args {
     /// Select this Library item (list index) at start-up (scripted screenshots of the inspector and loupe).
     #[arg(long, value_name = "INDEX", hide = true)]
     gallery_select: Option<usize>,
+    /// Store this many recorded demo AI insights (provider "demo (recorded fixtures)", shown as demo data)
+    /// before the window opens: screenshots and demos of AI Review without a live model.
+    #[arg(long, value_name = "COUNT", hide = true)]
+    demo_ai_insights: Option<usize>,
+    /// Drive the Sources, Export and Reports views from a simulated scan engine in this state (`running`,
+    /// `paused`, `interrupted`, `complete`) instead of the catalog: screenshots of the scan dashboard. The
+    /// recent finds use the catalog's thumbnails when there is one.
+    #[arg(long, value_name = "MODE", hide = true)]
+    demo_scan: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -130,17 +139,26 @@ fn main() {
     let has_catalog = data_dir
         .as_deref()
         .is_some_and(|d| d.join(ps_catalog::CATALOG_FILE).exists());
-    let backend: Arc<dyn LibraryBackend> = match &data_dir {
-        Some(dir) => {
-            let backend = Arc::new(CatalogBackend::new(dir));
-            if has_catalog {
-                // Open the catalog and run the first queries while the window is created.
-                backend.warm(ui_workspace::views::library::default_query());
+    let backend: Arc<dyn LibraryBackend> =
+        match &data_dir {
+            Some(dir) => {
+                let backend = Arc::new(CatalogBackend::new(dir));
+                if let Some(n) = args.demo_ai_insights {
+                    match backend.catalog().map_err(|e| e.to_string()).and_then(|c| {
+                        ps_service::insights::seed_demo(c, n).map_err(|e| e.to_string())
+                    }) {
+                        Ok(n) => log::info!("stored {n} demo AI insights"),
+                        Err(e) => log::error!("demo AI insights: {e}"),
+                    }
+                }
+                if has_catalog {
+                    // Open the catalog and run the first queries while the window is created.
+                    backend.warm(ui_workspace::views::library::default_query());
+                }
+                backend
             }
-            backend
-        }
-        None => Arc::new(EmptyBackend),
-    };
+            None => Arc::new(EmptyBackend),
+        };
     gpui_kit::application()
         .with_assets(AppAssets)
         .run(move |cx| {
@@ -156,6 +174,16 @@ fn main() {
                 cx,
             );
             ui_workspace::motion::watch_os_preference(cx);
+            if let Some(mode) = args.demo_scan.as_deref() {
+                let scans = Arc::new(ui_workspace::scan_backend::DemoBackend::screenshot(
+                    mode,
+                    ui_workspace::views::export::default_library(),
+                ));
+                let thumbs = Arc::new(ui_workspace::scan_backend::DemoThumbs::over(
+                    backend.clone().gallery(),
+                ));
+                ui_workspace::views::scan::install_primed(scans, thumbs, cx);
+            }
             // An existing library: the first frame may wait (bounded) for the gallery to be ready.
             if has_catalog {
                 ui_workspace::startup::StartupGrace::begin(

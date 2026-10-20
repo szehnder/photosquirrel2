@@ -1,0 +1,802 @@
+//! The Reports view (change `export`, task 6.2): "is this drive 100% accounted for?". Per source and per
+//! folder: files and bytes per disposition (ADR-0023), excluded files by reason, the badge, and a drill-down
+//! that lists the files behind any count with the reason for each.
+
+use std::path::PathBuf;
+
+use gpui_kit::component::{Icon, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use ps_model::{CompletionCounts, Disposition, SourceId};
+use ui_theme::{Colors, Tokens};
+
+use crate::actions::ShowExport;
+use crate::assets::IconName;
+use crate::inspector::format_count;
+use crate::scan_backend::{DrillQuery, DrillRow, ReportData, SharedScanBackend, reason_label};
+use crate::service::Loadable;
+use crate::views::kit::{self, Tone, disposition_color, disposition_label};
+use crate::views::scan::ScanHub;
+
+/// Rows listed by a drill-down.
+pub const DRILL_LIMIT: usize = 2_000;
+
+/// "100% accounted for" or what is outstanding (ADR-0023, same rule as `ps_export::Badge`).
+pub fn badge_label(c: &CompletionCounts) -> String {
+    let pending = c.files_of(Disposition::Pending);
+    let unreadable = c.files_of(Disposition::Unreadable);
+    match (pending, unreadable) {
+        (0, 0) => "100% accounted for".into(),
+        (p, 0) => format!("{} pending", format_count(p)),
+        (p, u) => format!(
+            "{} pending, {} unreadable",
+            format_count(p),
+            format_count(u)
+        ),
+    }
+}
+
+pub struct ReportsView {
+    backend: Option<SharedScanBackend>,
+    pub data: Loadable<Option<ReportData>>,
+    pub expanded: Option<SourceId>,
+    pub drill: Option<(DrillQuery, Loadable<Vec<DrillRow>>)>,
+    /// A verify (re-hash every library copy) is running.
+    pub verifying: bool,
+    task: Option<Task<()>>,
+    drill_task: Option<Task<()>>,
+}
+
+impl ReportsView {
+    pub fn new(cx: &mut Context<'_, Self>) -> Self {
+        let backend = ScanHub::monitor(cx).map(|m| m.read(cx).backend().clone());
+        let mut this = Self {
+            backend,
+            data: Loadable::Loading,
+            expanded: None,
+            drill: None,
+            verifying: false,
+            task: None,
+            drill_task: None,
+        };
+        match this.backend.clone() {
+            // The instant simulated engine of scripted screenshots: the report is in frame one.
+            Some(b) if ScanHub::synchronous(cx) => {
+                this.data = match b.report(None, false) {
+                    Ok(d) => {
+                        this.expanded = d.as_ref().and_then(|d| d.sources.first()).map(|s| s.id);
+                        Loadable::Ready(d)
+                    }
+                    Err(e) => Loadable::Failed(format!("{e:#}")),
+                };
+            }
+            _ => this.refresh(cx),
+        }
+        this
+    }
+
+    pub fn refresh(&mut self, cx: &mut Context<'_, Self>) {
+        self.load(false, cx);
+    }
+
+    /// Re-hash every library copy: a changed or missing copy turns its files back to pending.
+    pub fn verify(&mut self, cx: &mut Context<'_, Self>) {
+        self.load(true, cx);
+    }
+
+    fn load(&mut self, verify: bool, cx: &mut Context<'_, Self>) {
+        let Some(b) = self.backend.clone() else {
+            return;
+        };
+        let lib = self.library();
+        self.verifying = verify;
+        let reply = cx.background_spawn(async move { b.report(lib.as_deref(), verify) });
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let r = reply.await;
+            let _ = this.update(cx, |this, cx| {
+                this.verifying = false;
+                this.data = match r {
+                    Ok(d) => {
+                        if this.expanded.is_none() {
+                            this.expanded =
+                                d.as_ref().and_then(|d| d.sources.first()).map(|s| s.id);
+                        }
+                        Loadable::Ready(d)
+                    }
+                    Err(e) => Loadable::Failed(format!("{e:#}")),
+                };
+                cx.notify();
+            });
+        }));
+    }
+
+    fn library(&self) -> Option<PathBuf> {
+        self.data
+            .ready()
+            .and_then(|d| d.as_ref())
+            .map(|d| d.library.clone())
+    }
+
+    /// List the files behind a count.
+    pub fn drill(&mut self, q: DrillQuery, cx: &mut Context<'_, Self>) {
+        let (Some(b), Some(lib)) = (self.backend.clone(), self.library()) else {
+            return;
+        };
+        self.drill = Some((q.clone(), Loadable::Loading));
+        let query = q.clone();
+        let reply = cx.background_spawn(async move { b.drill(&lib, &query, DRILL_LIMIT) });
+        self.drill_task = Some(cx.spawn(async move |this, cx| {
+            let rows = reply.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.drill.as_ref().is_some_and(|(cur, _)| *cur == q) {
+                    this.drill = Some((
+                        q,
+                        match rows {
+                            Ok(r) => Loadable::Ready(r),
+                            Err(e) => Loadable::Failed(format!("{e:#}")),
+                        },
+                    ));
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn toggle(&mut self, id: SourceId, cx: &mut Context<'_, Self>) {
+        self.expanded = if self.expanded == Some(id) {
+            None
+        } else {
+            Some(id)
+        };
+        cx.notify();
+    }
+}
+
+/// A stacked bar of the six dispositions with 2 px surface gaps (dataviz spacers).
+fn stacked(c: &CompletionCounts, colors: &Colors) -> Div {
+    let total = c.total_files().max(1) as f32;
+    h_flex()
+        .w_full()
+        .h(Tokens::size(8.0))
+        .gap(Tokens::OUTLINE)
+        .children(Disposition::ALL.into_iter().filter_map(|d| {
+            let n = c.files_of(d);
+            (n > 0).then(|| {
+                div()
+                    .h_full()
+                    .flex_basis(relative(0.0))
+                    .flex_grow(n as f32 / total)
+                    .rounded(Tokens::RADIUS_SM)
+                    .bg(disposition_color(d, colors))
+            })
+        }))
+}
+
+fn badge(c: &CompletionCounts, id: String, colors: &Colors) -> AnyElement {
+    let ok = c.fully_accounted();
+    let label = badge_label(c);
+    h_flex()
+        .id(SharedString::from(id))
+        .test_support()
+        .aria_label(SharedString::from(label.clone()))
+        .flex_none()
+        .gap(Tokens::space(1.0))
+        .px(Tokens::space(2.0))
+        .h(Tokens::size(22.0))
+        .items_center()
+        .rounded_full()
+        .bg(Colors::tint(
+            if ok { colors.success } else { colors.warning },
+            0.14,
+        ))
+        .text_color(if ok { colors.success } else { colors.warning })
+        .text_size(Tokens::text_xs())
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(
+            Icon::new(if ok {
+                IconName::BadgeCheck
+            } else {
+                IconName::TriangleAlert
+            })
+            .size(Tokens::icon_sm()),
+        )
+        .child(label)
+        .into_any_element()
+}
+
+impl Render for ReportsView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        if self.backend.is_none() {
+            return kit::unavailable("view-reports", "Reports", cx);
+        }
+        let colors = *ui_theme::colors(cx);
+        let has_report = matches!(self.data, Loadable::Ready(Some(_)));
+        let verify = kit::button(
+            "report-verify",
+            if self.verifying {
+                "Verifying…"
+            } else {
+                "Verify copies"
+            },
+            Some(IconName::ShieldCheck),
+            Tone::Secondary,
+            (has_report && !self.verifying)
+                .then(|| kit::on(cx.listener(|this, _, _, cx| this.verify(cx))))
+                .flatten(),
+            cx,
+        );
+        let refresh = kit::button(
+            "report-refresh",
+            "Refresh",
+            Some(IconName::RefreshCw),
+            Tone::Secondary,
+            (!self.verifying)
+                .then(|| kit::on(cx.listener(|this, _, _, cx| this.refresh(cx))))
+                .flatten(),
+            cx,
+        );
+        let page = kit::page("view-reports", cx).child(kit::header(
+            "Reports",
+            "Every file on every source, accounted for: exported, covered by an exported copy, excluded, or still pending.",
+            vec![verify, refresh],
+            cx,
+        ));
+        let data = match self.data.clone() {
+            Loadable::Loading => {
+                return page
+                    .child(
+                        div()
+                            .text_color(colors.text_muted)
+                            .child("Deriving dispositions…"),
+                    )
+                    .into_any_element();
+            }
+            Loadable::Failed(e) => {
+                return page
+                    .child(
+                        div()
+                            .id("report-error")
+                            .test_support()
+                            .text_color(colors.danger)
+                            .child(e),
+                    )
+                    .into_any_element();
+            }
+            Loadable::Ready(None) => {
+                return page
+                    .child(
+                        kit::card(cx)
+                            .id("report-empty")
+                            .test_support()
+                            .child(
+                                div()
+                                    .text_color(colors.text)
+                                    .child("No export yet. Reports compare every source with your library after the first export."),
+                            )
+                            .child(kit::button(
+                                "report-go-export",
+                                "Go to Export",
+                                Some(IconName::FolderOutput),
+                                Tone::Primary,
+                                kit::on(|_, w, cx| w.dispatch_action(Box::new(ShowExport), cx)),
+                                cx,
+                            )),
+                    )
+                    .into_any_element();
+            }
+            Loadable::Ready(Some(d)) => d,
+        };
+
+        let legend = h_flex().flex_wrap().gap(Tokens::space(4.0)).children(
+            Disposition::ALL.into_iter().map(|d| {
+                h_flex()
+                    .id(SharedString::from(format!("report-total-{}", d.as_str())))
+                    .test_support()
+                    .aria_label(SharedString::from(format!(
+                        "{} {}",
+                        disposition_label(d),
+                        data.totals.files_of(d)
+                    )))
+                    .gap(Tokens::space(1.5))
+                    .items_center()
+                    .child(
+                        div()
+                            .size(Tokens::dot_size())
+                            .rounded_full()
+                            .bg(disposition_color(d, &colors)),
+                    )
+                    .child(
+                        div()
+                            .text_size(Tokens::text_sm())
+                            .text_color(colors.text)
+                            .child(format_count(data.totals.files_of(d))),
+                    )
+                    .child(
+                        div()
+                            .text_size(Tokens::text_xs())
+                            .text_color(colors.text_muted)
+                            .child(format!(
+                                "{} · {}",
+                                disposition_label(d).to_lowercase(),
+                                kit::format_bytes(data.totals.bytes[d as usize])
+                            )),
+                    )
+            }),
+        );
+        let overview = kit::card(cx)
+            .child(
+                kit::card_title("All sources", cx)
+                    .child(div().flex_1())
+                    .child(badge(&data.totals, "report-badge-all".into(), &colors)),
+            )
+            .child(stacked(&data.totals, &colors))
+            .child(legend)
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap(Tokens::space(2.0))
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                            .text_size(Tokens::text_mono())
+                            .text_color(colors.text_faint)
+                            .child(format!("Library: {}", data.library.display())),
+                    )
+                    .child(
+                        div()
+                            .id("report-check-mode")
+                            .test_support()
+                            .aria_label(SharedString::from(if data.verified {
+                                "verified by hash"
+                            } else {
+                                "checked for presence and size"
+                            }))
+                            .child(if data.verified {
+                                kit::chip(
+                                    "Copies verified by hash",
+                                    colors.success,
+                                    Colors::tint(colors.success, 0.14),
+                                )
+                            } else {
+                                kit::chip(
+                                    "Copies checked for presence and size",
+                                    colors.text_muted,
+                                    colors.raised,
+                                )
+                            }),
+                    ),
+            )
+            .when(data.mismatches > 0, |d| {
+                d.child(
+                    v_flex()
+                        .id("report-mismatches")
+                        .test_support()
+                        .aria_label(SharedString::from(format!(
+                            "{} suspect library copies",
+                            data.mismatches
+                        )))
+                        .w_full()
+                        .gap(Tokens::space(1.0))
+                        .p(Tokens::space(3.0))
+                        .rounded(Tokens::RADIUS_MD)
+                        .bg(Colors::tint(colors.warning, 0.08))
+                        .border_1()
+                        .border_color(Colors::tint(colors.warning, 0.3))
+                        .child(
+                            h_flex()
+                                .gap(Tokens::space(1.5))
+                                .items_center()
+                                .text_size(Tokens::text_sm())
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(colors.warning)
+                                .child(Icon::new(IconName::TriangleAlert).size(Tokens::icon_sm()))
+                                .child(format!(
+                                    "{} library copies are missing or changed; their files count as pending again. Export again to replace them.",
+                                    format_count(data.mismatches)
+                                )),
+                        )
+                        .children(data.mismatch_rows.iter().take(8).enumerate().map(
+                            |(i, (path, why))| {
+                                h_flex()
+                                    .id(SharedString::from(format!("report-mismatch-{i}")))
+                                    .test_support()
+                                    .aria_label(SharedString::from(format!("{path} — {why}")))
+                                    .w_full()
+                                    .gap(Tokens::space(3.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                                            .text_size(Tokens::text_mono())
+                                            .text_color(colors.text)
+                                            .child(kit::middle_ellipsis(path, 80)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(Tokens::text_sm())
+                                            .text_color(colors.text_muted)
+                                            .child(why.clone()),
+                                    )
+                            },
+                        )),
+                )
+            });
+
+        let mut sources = Vec::new();
+        for s in &data.sources {
+            let open = self.expanded == Some(s.id);
+            let sid = s.id;
+            let excluded = s
+                .excluded
+                .iter()
+                .map(|(r, n, _)| format!("{} {}", format_count(*n), reason_label(*r)))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let mut card = kit::card(cx)
+                .id(SharedString::from(format!("report-source-{}", s.id.0)))
+                .test_support()
+                .child(
+                    h_flex()
+                        .id(SharedString::from(format!("report-source-head-{}", s.id.0)))
+                        .w_full()
+                        .gap(Tokens::space(2.0))
+                        .items_center()
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle(sid, cx)))
+                        .child(
+                            Icon::new(if open {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .size(Tokens::icon_sm())
+                            .text_color(colors.text_muted),
+                        )
+                        .child(
+                            Icon::new(IconName::HardDrive)
+                                .size(Tokens::icon_sm())
+                                .text_color(colors.text_muted),
+                        )
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(colors.text)
+                                .child(s.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(Tokens::text_xs())
+                                .text_color(colors.text_muted)
+                                .child(format!(
+                                    "{} files · {}",
+                                    format_count(s.counts.total_files()),
+                                    kit::format_bytes(s.counts.bytes.iter().sum())
+                                )),
+                        )
+                        .child(div().flex_1())
+                        .child(badge(
+                            &s.counts,
+                            format!("report-badge-{}", s.id.0),
+                            &colors,
+                        )),
+                )
+                .child(stacked(&s.counts, &colors))
+                .child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap(Tokens::space(2.0))
+                        .children(Disposition::ALL.into_iter().map(|d| {
+                            let q = DrillQuery {
+                                source: sid,
+                                folder: None,
+                                disposition: d,
+                            };
+                            count_chip(
+                                format!("report-count-{}-{}", sid.0, d.as_str()),
+                                d,
+                                s.counts.files_of(d),
+                                &colors,
+                                cx.listener(move |this, _, _, cx| this.drill(q.clone(), cx)),
+                            )
+                        }))
+                        .when(!excluded.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .id(SharedString::from(format!("report-excluded-{}", sid.0)))
+                                    .test_support()
+                                    .aria_label(SharedString::from(excluded.clone()))
+                                    .text_size(Tokens::text_xs())
+                                    .text_color(colors.text_faint)
+                                    .child(format!("Excluded: {excluded}")),
+                            )
+                        }),
+                );
+            if open {
+                card = card.child(folder_table(s.id, &s.folders, &colors, cx));
+            }
+            sources.push(card.into_any_element());
+        }
+
+        let drill = self.drill.clone().map(|(q, rows)| {
+            let name = data
+                .sources
+                .iter()
+                .find(|s| s.id == q.source)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            let scope = match &q.folder {
+                None => name,
+                Some(None) => format!("{name} / (root)"),
+                Some(Some(f)) => format!("{name} / {f}"),
+            };
+            let body: AnyElement = match rows {
+                Loadable::Loading => div()
+                    .text_color(colors.text_muted)
+                    .child("Listing files…")
+                    .into_any_element(),
+                Loadable::Failed(e) => div().text_color(colors.danger).child(e).into_any_element(),
+                Loadable::Ready(rows) if rows.is_empty() => div()
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text_faint)
+                    .child("No files.")
+                    .into_any_element(),
+                Loadable::Ready(rows) => v_flex()
+                    .id("drill-list")
+                    .w_full()
+                    .max_h(Tokens::size(320.0))
+                    .overflow_y_scroll()
+                    .children(rows.into_iter().enumerate().map(|(i, r)| {
+                        h_flex()
+                            .id(SharedString::from(format!("drill-row-{i}")))
+                            .test_support()
+                            .aria_label(SharedString::from(format!("{} — {}", r.path, r.reason)))
+                            .w_full()
+                            .gap(Tokens::space(3.0))
+                            .py(Tokens::space(1.0))
+                            .border_b_1()
+                            .border_color(colors.border)
+                            .child(
+                                div()
+                                    .w(Tokens::size(200.0))
+                                    .flex_none()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .text_color(colors.text)
+                                    .child(r.name),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                                    .text_size(Tokens::text_mono())
+                                    .text_color(colors.text_faint)
+                                    .child(kit::middle_ellipsis(&r.path, 72)),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(Tokens::text_sm())
+                                    .text_color(colors.text_muted)
+                                    .child(r.reason),
+                            )
+                    }))
+                    .into_any_element(),
+            };
+            kit::card(cx)
+                .id("report-drill")
+                .test_support()
+                .aria_label(SharedString::from(format!(
+                    "{} files of {scope}",
+                    disposition_label(q.disposition)
+                )))
+                .child(
+                    kit::card_title(
+                        format!("{} · {scope}", disposition_label(q.disposition)),
+                        cx,
+                    )
+                    .child(div().flex_1())
+                    .child(kit::button(
+                        "drill-close",
+                        "Close",
+                        Some(IconName::X),
+                        Tone::Ghost,
+                        kit::on(cx.listener(|this, _, _, cx| {
+                            this.drill = None;
+                            cx.notify();
+                        })),
+                        cx,
+                    )),
+                )
+                .child(body)
+        });
+
+        page.child(overview)
+            .children(drill)
+            .children(sources)
+            .into_any_element()
+    }
+}
+
+fn count_chip(
+    id: String,
+    d: Disposition,
+    n: u64,
+    colors: &Colors,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    h_flex()
+        .id(SharedString::from(id))
+        .test_support()
+        .role(Role::Button)
+        .aria_label(SharedString::from(format!(
+            "{} {}",
+            disposition_label(d),
+            n
+        )))
+        .gap(Tokens::space(1.0))
+        .px(Tokens::space(2.0))
+        .h(Tokens::size(22.0))
+        .items_center()
+        .rounded(Tokens::RADIUS_SM)
+        .bg(colors.raised)
+        .text_size(Tokens::text_xs())
+        .text_color(colors.text_muted)
+        .when(n > 0, |el| {
+            el.cursor_pointer()
+                .hover(|el| el.bg(colors.hover))
+                .on_click(on_click)
+        })
+        .child(
+            div()
+                .size(Tokens::dot_size())
+                .rounded_full()
+                .bg(disposition_color(d, colors)),
+        )
+        .child(div().text_color(colors.text).child(format_count(n)))
+        .child(disposition_label(d).to_lowercase())
+        .into_any_element()
+}
+
+fn folder_table(
+    source: SourceId,
+    folders: &[crate::scan_backend::FolderRow],
+    colors: &Colors,
+    cx: &mut Context<'_, ReportsView>,
+) -> AnyElement {
+    let head = |t: &'static str| {
+        div()
+            .w(Tokens::size(76.0))
+            .flex_none()
+            .text_right()
+            .text_size(Tokens::text_2xs())
+            .text_color(colors.text_faint)
+            .child(t.to_uppercase())
+    };
+    let mut table = v_flex()
+        .id(SharedString::from(format!("report-folders-{}", source.0)))
+        .test_support()
+        .w_full()
+        .child(
+            h_flex()
+                .w_full()
+                .gap(Tokens::space(2.0))
+                .py(Tokens::space(1.0))
+                .border_b_1()
+                .border_color(colors.border)
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(Tokens::text_2xs())
+                        .text_color(colors.text_faint)
+                        .child("FOLDER"),
+                )
+                .children(Disposition::ALL.map(|d| head(disposition_label(d))))
+                .child(div().w(Tokens::size(150.0)).flex_none()),
+        );
+    for (i, f) in folders.iter().enumerate() {
+        let folder = f.folder.clone();
+        let mut row = h_flex()
+            .id(SharedString::from(format!(
+                "report-folder-{}-{i}",
+                source.0
+            )))
+            .test_support()
+            .aria_label(SharedString::from(
+                folder.clone().unwrap_or_else(|| "(root)".into()),
+            ))
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .py(Tokens::space(1.0))
+            .items_center()
+            .border_b_1()
+            .border_color(colors.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                    .text_size(Tokens::text_mono())
+                    .text_color(colors.text)
+                    .child(folder.clone().unwrap_or_else(|| "(source root)".into())),
+            );
+        for d in Disposition::ALL {
+            let n = f.counts.files_of(d);
+            let q = DrillQuery {
+                source,
+                folder: Some(folder.clone()),
+                disposition: d,
+            };
+            let alert = n > 0 && matches!(d, Disposition::Pending | Disposition::Unreadable);
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "report-cell-{}-{i}-{}",
+                        source.0,
+                        d.as_str()
+                    )))
+                    .test_support()
+                    .aria_label(SharedString::from(format!(
+                        "{} {}",
+                        disposition_label(d),
+                        n
+                    )))
+                    .w(Tokens::size(76.0))
+                    .flex_none()
+                    .text_right()
+                    .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                    .text_size(Tokens::text_mono())
+                    .text_color(if n == 0 {
+                        colors.text_faint
+                    } else if alert {
+                        colors.warning
+                    } else {
+                        colors.text
+                    })
+                    .when(n > 0, |el| {
+                        el.cursor_pointer()
+                            .hover(|el| el.text_color(colors.accent_text))
+                            .on_click(cx.listener(move |this, _, _, cx| this.drill(q.clone(), cx)))
+                    })
+                    .child(if n == 0 {
+                        "·".to_owned()
+                    } else {
+                        format_count(n)
+                    }),
+            );
+        }
+        row = row.child(
+            div()
+                .w(Tokens::size(150.0))
+                .flex_none()
+                .flex()
+                .justify_end()
+                .child(badge(
+                    &f.counts,
+                    format!("report-folder-badge-{}-{i}", source.0),
+                    colors,
+                )),
+        );
+        table = table.child(row);
+    }
+    table.into_any_element()
+}

@@ -27,13 +27,13 @@
 
 ## 3. Review UI
 
-- [ ] 3.1 AI Review view with live updates; verify `scenario_ai_review_results_appear_live` (deferred to UI integration)
-- [ ] 3.2 Inspector AI section; verify `scenario_ai_review_insight_details_shown` (deferred to UI integration)
-- [ ] 3.3 Insight filters in gallery and review view; verify `scenario_ai_review_filter_contains_children` (deferred to UI integration)
-- [ ] 3.4 Advisory boundary test and suggestions; verify `scenario_ai_review_ai_never_changes_keeper` and `scenario_ai_review_non_photo_verdict_is_a_suggestion` (deferred to UI integration)
-- [ ] 3.5 Bulk accept/reject; verify `scenario_ai_review_accept_exclusion_suggestion` (deferred to UI integration)
-- [ ] 3.6 User corrections and effective insight; verify `scenario_ai_review_user_correction_wins` (deferred to UI integration)
-- [ ] 3.7 Provider settings section, consent dialog and key entry; verify screenshot review via `cargo xtask screenshot --all-surfaces` (deferred to UI integration)
+- [x] 3.1 AI Review view with live updates; verify `scenario_ai_review_results_appear_live` (`ui-workspace::views::ai_review`, 500 ms stamp poll)
+- [ ] 3.2 Inspector AI section; verify `scenario_ai_review_insight_details_shown` (details shown in the AI Review detail pane and the scenario passes there; the gallery inspector's AI section is still to do)
+- [ ] 3.3 Insight filters in gallery and review view; verify `scenario_ai_review_filter_contains_children` (review view done and the scenario passes; gallery filter bar still to do)
+- [x] 3.4 Advisory boundary test and suggestions; verify `scenario_ai_review_ai_never_changes_keeper` and `scenario_ai_review_non_photo_verdict_is_a_suggestion`
+- [x] 3.5 Bulk accept/reject; verify `scenario_ai_review_accept_exclusion_suggestion`
+- [x] 3.6 User corrections and effective insight; verify `scenario_ai_review_user_correction_wins` (corrections in an interim `ai-review.json` keyed by content until the catalog exposes `ai_correction` writes)
+- [x] 3.7 Provider settings section, consent dialog and key entry; verify screenshot review via `cargo xtask screenshot --all-surfaces` (`settings_ai.rs`, `tests/ai_settings.rs`, `docs/screenshots/ai-settings-dark.png`; request timeout row added)
 
 ## 4. Live smoke
 

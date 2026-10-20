@@ -568,7 +568,17 @@ pub(crate) fn status_bar(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyEleme
             .text_color(colors.text_muted)
     };
     let reduce = cx.reduce_motion();
+    // scan-dashboard: the live run's progress and ETA, clickable to open the dashboard.
+    if shell.activity.is_some() {
+        crate::views::scan::ScanHub::wake(cx);
+    }
+    let scan_line = crate::views::scan::ScanHub::status_line(cx);
     let (activity_label, active) = match (&shell.activity, shell.summary()) {
+        _ if scan_line.is_some() => {
+            let line = scan_line.clone().unwrap_or_default();
+            let paused = line.starts_with("Scan paused");
+            (line, !paused)
+        }
         (Some(a), _) => {
             let progress = match a.total {
                 Some(t) if t > 0 => format!(
@@ -629,6 +639,10 @@ pub(crate) fn status_bar(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyEleme
                 .id("status-activity")
                 .test_support()
                 .aria_label(SharedString::from(activity_label.clone()))
+                .when(scan_line.is_some(), |d| {
+                    d.cursor_pointer()
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(ShowSources), cx))
+                })
                 .child(dot)
                 .child(div().text_color(colors.text).child(activity_label)),
         )

@@ -38,14 +38,14 @@
 
 ## 6. UI and CLI
 
-- [ ] 6.1 Export view (plan review, profile, confirm, progress); verify screenshot review and a headless UI test that confirming starts the export
-- [ ] 6.2 Reports view with drill-down; verify `scenario_completion_report_drill_into_pending_files`
-- [ ] 6.3 Disposition in inspector and gallery filter; verify `scenario_completion_report_inspector_shows_disposition`
+- [x] 6.1 Export view (plan review, profile, confirm, progress); verify screenshot review and a headless UI test that confirming starts the export (`ui-workspace/tests/export_reports.rs`: `confirming_the_export_starts_it`, `insufficient_space_blocks_the_export_button`; `docs/screenshots/export-dark.png`)
+- [x] 6.2 Reports view with drill-down; verify `scenario_completion_report_drill_into_pending_files` (deviation: the drill-down lists the files, with their reasons, inside the Reports view rather than in the gallery, which cannot show reasons and has no disposition filter yet; also Verify copies with the suspect-copy list, `verify_lists_an_altered_library_copy`; `docs/screenshots/reports-dark.png`)
+- [ ] 6.3 Disposition in inspector and gallery filter; verify `scenario_completion_report_inspector_shows_disposition` (inspector done and verified: Export section with disposition, reason and library copy, from a per-library disposition cache in `CatalogBackend`; the gallery disposition filter is still open: it needs a disposition-aware id list in the catalog query path)
 - [x] 6.4 CLI `export` and `report`; verify `scenario_export_cli_dry_run_prints_plan` and `scenario_completion_report_cli_report_matches_ui` (`export dry-run|run|check` and `report` in photosquirrel-cli)
 
 ## 7. Verification
 
-- [ ] 7.1 `cargo xtask ci` is green
+- [x] 7.1 `cargo xtask ci` is green
 - [x] 7.2 Gate: export the small corpus to a temp library, re-export copies nothing, `report --verify` shows every drive 100% accounted for (small corpus via `photosquirrel-cli export run` then `report --verify`: all three drives 100% accounted for, re-export copies 0; also `export_small_corpus_reexport_copies_nothing_and_every_drive_is_accounted_for` in ps-service)
-- [ ] 7.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
-- [ ] 7.4 `openspec validate export --strict` passes
+- [x] 7.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
+- [x] 7.4 `openspec validate export --strict` passes

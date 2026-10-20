@@ -77,6 +77,15 @@ pub trait LibraryBackend: Send + Sync + 'static {
     fn gallery(self: Arc<Self>) -> Arc<dyn ui_gallery::source::GallerySource> {
         Arc::new(ui_gallery::source::EmptySource)
     }
+    /// Scan control, export and reports for the Sources, Export and Reports views (`None`: those views
+    /// explain that the engine is unavailable).
+    fn scans(self: Arc<Self>) -> Option<crate::scan_backend::SharedScanBackend> {
+        None
+    }
+    /// Duplicate review and AI review data (`None`: those views show an empty state).
+    fn review(self: Arc<Self>) -> Option<Arc<dyn crate::review_source::ReviewSource>> {
+        None
+    }
 }
 
 /// An empty library with no engine behind it (until the catalog facade lands).

@@ -53,6 +53,31 @@ icon_assets!(
         X,
         Plus,
         ChevronRight,
+        // scan-dashboard / export
+        Link,
+        Trash,
+        BadgeCheck,
+        WifiOff,
+        Timer,
+        Gauge,
+        // duplicate-review / ai-insights
+        Scissors,
+        Merge,
+        Star,
+        Users,
+        Baby,
+        PawPrint,
+        Pause,
+        Undo2,
+        Columns2,
+        ZoomIn,
+        Crown,
+        CircleCheck,
+        User,
+        Clock,
+        Tag,
+        KeyRound,
+        Plug,
     ]
 );
 

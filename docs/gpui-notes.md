@@ -337,3 +337,34 @@ window size) when the delay is long; focus can still move.
   marked as already shown, or the fade-in cover would be frozen into the screenshot.
 - SQLite `mmap_size` makes touched catalog pages count in `VmRSS` (as `RssShmem` when the catalog is on
   tmpfs): a 1M catalog shows ~2 GB resident after a few index scans although the process allocates ~110 MB.
+
+## Review views (duplicate-review, ai-insights)
+- **Focus handover between views.** A view that takes focus for its own key context (Duplicates binds J/K/1-9/S
+  in `"Duplicates && !Input"`) leaves the window focused on an element that is no longer rendered once the shell
+  switches views; key dispatch then falls back to the root and every `Shell` binding stops working.
+  `Shell::show_view` now refocuses the shell first; views take focus back when shown (deferred `window.focus`).
+- `img(Arc<RenderImage>)` (`ImageSource::Render`) paints in the first frame, unlike asset paths; use it for
+  decoded thumbnails in ordinary layouts. Wrap it in an `overflow_hidden()` box with a fixed height, or an
+  `ObjectFit::Contain` image can spill below its slot.
+- `cx.processor(|this, range, window, cx| ..)` gives `uniform_list` item closures `&mut Context<View>`, so rows
+  can use `cx.listener` and per-view caches.
+- Scripted screenshots of states that are not reachable by a shell `--command` in frame one use dev-only env
+  hooks: `PHOTOSQUIRREL_REVIEW_TAB=suggestions` (Duplicates opens on similar shots) and
+  `PHOTOSQUIRREL_SETTINGS_SECTION=ai` (settings opens on a section). `photosquirrel --demo-ai-insights N`
+  (hidden) stores recorded demo insights, shown with a "Demo data" chip.
+- `Role::CheckBox` (capital B); `InputState::masked(true)` hides a key while `value()` still returns it.
+
+## Scan dashboard, Export and Reports (scan-dashboard, export)
+- **Waking a model from `render` must be idempotent.** The status bar wakes the scan monitor on every render
+  (to pick up runs started elsewhere). If the monitor's sampling step calls `cx.notify()` even when nothing
+  changed (no run: `None` again), render -> wake -> notify -> render never parks: headless tests hang in
+  `run_until_parked` and the app spins a core. Notify only on change, and do end-of-run work once per run.
+- Headless `window.try_find` only sees elements that were painted: rows below the fold of the test window
+  (the third lane of the dashboard) are not found. Assert on the model behind them, or on visible rows.
+- A real `ps-service` engine in a headless test is fine as long as GPUI only polls it (timers plus a blocking
+  `snapshot()` on `background_spawn`); pump real time and the fake clock together (`scan_real.rs`).
+- Scripted screenshots of the scan views: `photosquirrel --demo-scan running|paused|interrupted|complete`
+  (hidden) drives Sources, Export and Reports from `DemoBackend::screenshot` over `FakeScanService`, installed
+  with `views::scan::install_primed`, which loads sources, the first snapshot, the recent-finds thumbnails
+  (`ThumbStrip::prime_blocking`, real thumbnails of the `--data-dir` catalog) and the Export plan and Reports
+  data before frame one. `cargo xtask screenshot` now finds the binaries under `CARGO_TARGET_DIR`.

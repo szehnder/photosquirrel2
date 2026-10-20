@@ -759,3 +759,63 @@ fn scenario_photo_inspector_multi_selection_summary(cx: &mut TestAppContext) {
         Some("2010–2014")
     );
 }
+
+#[gpui_kit::test]
+fn scenario_completion_report_inspector_shows_disposition(cx: &mut TestAppContext) {
+    use ui_workspace::scan_backend::ScanBackend as _;
+    let (tmp, dir) = catalog_copy(false);
+    let library_root = tmp.path().join("library");
+    let (backend, _shell, mut cx) = open_app(cx, &dir);
+    // Export every keeper (copy-only, into the temp library).
+    let out = backend
+        .export_run(
+            &library_root,
+            ps_model::ExportProfile::ApplePhotos,
+            &std::sync::atomic::AtomicBool::new(false),
+            &ps_service::export_progress::ExportProgress::new(),
+        )
+        .unwrap();
+    assert!(out.copied > 0 && out.failed.is_empty(), "{out:?}");
+    let lib = library(&mut cx);
+    wait_list(&lib, &mut cx);
+    lib.update(&mut cx, |v, cx| {
+        v.set_filters(
+            FilterBar {
+                stacks_off: true,
+                ..FilterBar::default()
+            },
+            cx,
+        )
+    });
+    wait_list(&lib, &mut cx);
+    // A covered duplicate shown in the Library, and the library copy of its keeper.
+    let ex = backend.scan().unwrap().exports();
+    let library_root = ex.last_library().unwrap().unwrap();
+    let (files, d, _) = ex.dispositions(&library_root, false).unwrap();
+    let model = cx.update(|_, cx| lib.read(cx).model().clone());
+    let (id, keeper_copy) = files
+        .iter()
+        .zip(&d)
+        .filter(|(_, x)| x.disposition == ps_model::Disposition::Covered)
+        .find_map(|(f, x)| {
+            let id = ItemId::try_from(f.file).ok()?;
+            cx.update(|_, cx| model.read(cx).index.position_of(id))?;
+            Some((id, x.library_path.clone()?))
+        })
+        .expect("a covered duplicate in the Library");
+    let keeper_copy = keeper_copy.under(&library_root).display().to_string();
+    assert!(Path::new(&keeper_copy).is_file(), "{keeper_copy}");
+    let insp = select(&lib, id, &mut cx);
+    let detail = cx.update(|_, cx| insp.read(cx).detail().cloned().unwrap());
+    let disp = detail.disposition.expect("a disposition after export");
+    assert_eq!(disp.disposition, ps_model::Disposition::Covered);
+    assert_eq!(disp.library_path.as_deref(), Some(keeper_copy.as_str()));
+    reveal_in_inspector("inspector-disposition", &mut cx);
+    let shown = label_of("inspector-disposition", &mut cx).unwrap();
+    assert!(shown.starts_with("Covered"), "{shown}");
+    reveal_in_inspector("inspector-library-path", &mut cx);
+    assert_eq!(
+        label_of("inspector-library-path", &mut cx),
+        Some(keeper_copy)
+    );
+}
