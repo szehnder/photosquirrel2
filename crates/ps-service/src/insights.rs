@@ -555,6 +555,40 @@ pub fn decide(
     Ok(excluded)
 }
 
+/// Undo an accepted (or rejected) suggestion of `content` (hex): the decision is open again, and the exclusions
+/// the acceptance recorded (those carrying the AI's reason) are removed, so the files are back in the Library.
+/// A user's own exclusion with another reason is left alone. Returns the number of files included again.
+pub fn undo(catalog: &Catalog, store: &InsightStore, content: &str) -> Result<usize> {
+    let id = parse_content(catalog, content)?;
+    let Some(i) = effective(catalog, store, &id)? else {
+        return Ok(0);
+    };
+    let Some(s) = suggestion_for(&i) else {
+        return Ok(0);
+    };
+    let set = crate::ai::capture_set(catalog, &id)?;
+    let reason = s.exclusion_reason();
+    let mut restored = 0;
+    for c in &set {
+        for f in catalog.read().files_with_content(c)? {
+            let ours = catalog.read().user_decision(f)?.is_some_and(|d| {
+                d.decision == UserDecision::Exclude && d.reason.as_deref() == Some(&reason)
+            });
+            if ours {
+                catalog.writer().submit(Command::SetUserDecision {
+                    file: f,
+                    decision: None,
+                    reason: None,
+                })?;
+                restored += 1;
+            }
+        }
+        store.set_decision(&c.to_hex(), &s.kind, SuggestionStatus::Open)?;
+    }
+    catalog.writer().flush()?;
+    Ok(restored)
+}
+
 fn parse_content(catalog: &Catalog, hex: &str) -> Result<ContentId> {
     let mut digest = [0u8; 32];
     if hex.len() != 64 {

@@ -342,6 +342,17 @@ fn scenario_ai_review_accept_exclusion_suggestion(cx: &mut TestAppContext) {
             }
         }
     }
+    // Undo restores the five: back in the Library, their suggestions open again.
+    assert!(exists("ai-review-undo-bulk", &mut cx));
+    click("ai-review-undo-bulk", &mut cx);
+    settle(&view, &mut cx);
+    let r = backend.catalog().unwrap().read();
+    for content in c.iter().take(5) {
+        for f in r.files_with_content(content).unwrap() {
+            assert!(r.user_decision(f).unwrap().is_none(), "included again");
+        }
+    }
+    assert_eq!(view.read_with(&cx, |v, _| v.items().unwrap().len()), 5);
 }
 
 #[gpui_kit::test]

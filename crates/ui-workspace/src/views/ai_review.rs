@@ -122,6 +122,8 @@ pub struct AiReviewView {
     tags: Entity<InputState>,
     pets: Entity<InputState>,
     notice: Option<String>,
+    /// The suggestions just accepted in bulk ("Exclude N suggested"), for Undo.
+    pub last_bulk: Option<Vec<String>>,
     error: Option<String>,
     busy: bool,
     generation: u64,
@@ -154,6 +156,7 @@ impl AiReviewView {
             tags,
             pets,
             notice: None,
+            last_bulk: None,
             error: None,
             busy: false,
             generation: 0,
@@ -499,12 +502,40 @@ impl AiReviewView {
         );
     }
 
-    /// Accept every open suggestion in the current list.
+    /// Accept every open suggestion in the current list ("Exclude N suggested"); Undo restores them.
     pub fn accept_all_shown(&mut self, cx: &mut Context<'_, Self>) {
         let contents = self.open_suggestions();
         if !contents.is_empty() {
+            self.last_bulk = Some(contents.clone());
             self.decide_many(contents, true, cx);
         }
+    }
+
+    /// Undo the last bulk exclusion: the suggestions are open again and the files back in the Library.
+    pub fn undo_bulk(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(contents) = self.last_bulk.take() else {
+            return;
+        };
+        let n = contents.len();
+        self.run(
+            cx,
+            move |s| {
+                let mut files = 0;
+                for c in &contents {
+                    files += s.ai_undo_decision(c)?;
+                }
+                Ok(files)
+            },
+            move |this, files, cx| {
+                this.notice = Some(format!(
+                    "Undone: {files} file{} back in the Library ({n} suggestion{} open again).",
+                    if files == 1 { "" } else { "s" },
+                    if n == 1 { "" } else { "s" }
+                ));
+                this.reload(cx);
+                crate::views::library::refresh_after_decision(cx);
+            },
+        );
     }
 
     fn open_suggestions(&self) -> Vec<String> {
@@ -621,8 +652,9 @@ fn people_badges(i: &InsightItem, cx: &App) -> Vec<AnyElement> {
                     e.people.children,
                     if e.people.children == 1 { "" } else { "ren" }
                 ),
-                colors.accent_text,
-                colors.accent_soft,
+                // Neutral: amber is the colour of warnings and suggestions here, not of people.
+                colors.text,
+                colors.raised,
                 cx,
             )
             .into_any_element(),
@@ -792,7 +824,7 @@ impl AiReviewView {
                                     .when(demo, |e| {
                                         e.child(
                                             chip(
-                                                "Demo data · recorded fixtures, not your model",
+                                                "Demo data",
                                                 colors.tone_text(colors.warning),
                                                 ui_theme::Colors::chip_bg(colors.warning),
                                                 cx,
@@ -807,12 +839,15 @@ impl AiReviewView {
                                     .text_size(Tokens::text_xs())
                                     .text_color(colors.text_muted)
                                     .child(Icon::new(IconName::Bot).size(Tokens::icon_sm()))
-                                    .child(format!("{} · {model}", provider.label()))
-                                    .child(if provider.is_hosted() {
-                                        chip("hosted · uploads previews", colors.tone_text(colors.warning), ui_theme::Colors::chip_bg(colors.warning), cx)
-                                    } else {
-                                        chip("local · nothing leaves this computer", colors.tone_text(colors.success), ui_theme::Colors::chip_bg(colors.success), cx)
-                                    })
+                                    .child(format!(
+                                        "{} · {model} · {}",
+                                        provider.label(),
+                                        if ps_service::ai::is_hosted(&settings.ai) {
+                                            "previews are uploaded to it"
+                                        } else {
+                                            "nothing leaves this computer"
+                                        }
+                                    ))
                                     .when_some(conn, |e, (fg, t)| {
                                         e.child(
                                             h_flex()
@@ -1008,12 +1043,34 @@ impl AiReviewView {
                 )
                 .child(action_button(
                     "ai-review-accept-all",
-                    "Exclude all shown",
+                    format!("Exclude {open} suggested"),
                     Some(IconName::EyeOff),
                     None,
                     Tone::Normal,
                     cx,
                     |this, _, cx| this.accept_all_shown(cx),
+                ))
+            })
+            .when_some(self.last_bulk.as_ref().map(Vec::len), |e, n| {
+                e.child(
+                    div()
+                        .id("ai-review-bulk-done")
+                        .test_support()
+                        .text_size(Tokens::text_xs())
+                        .text_color(colors.text_muted)
+                        .child(format!(
+                            "Excluded {n} suggested photo{}",
+                            if n == 1 { "" } else { "s" }
+                        )),
+                )
+                .child(action_button(
+                    "ai-review-undo-bulk",
+                    "Undo",
+                    Some(IconName::Undo2),
+                    None,
+                    Tone::Quiet,
+                    cx,
+                    |this, _, cx| this.undo_bulk(cx),
                 ))
             })
             .into_any_element()
@@ -1092,7 +1149,11 @@ impl AiReviewView {
                             .border_b_1()
                             .border_color(colors.border)
                             .cursor_pointer()
-                            .when(on, |d| d.bg(colors.accent_soft))
+                            .when(on, |d| {
+                                d.bg(ui_theme::Colors::tint(colors.accent, 0.2))
+                                    .border_l_2()
+                                    .border_color(colors.accent)
+                            })
                             .when(!on, |d| d.hover(|d| d.bg(colors.hover)))
                             .on_click(
                                 cx.listener(move |this, _, window, cx| this.select(ix, window, cx)),
@@ -1423,19 +1484,27 @@ impl AiReviewView {
                         date_of(i.at_ms)
                     )),
             )
-            .child(
-                div()
+            .child({
+                // Folder and file name on their own lines, so neither is cut off by the pane edge.
+                let shown = crate::views::kit::display_path(std::path::Path::new(&i.path));
+                let (folder, name) = match shown.rfind(std::path::MAIN_SEPARATOR) {
+                    Some(k) => (shown[..k].to_owned(), shown[k + 1..].to_owned()),
+                    None => (String::new(), shown.clone()),
+                };
+                v_flex()
+                    .id("ai-detail-path")
+                    .test_support()
+                    .aria_label(SharedString::from(shown))
+                    .w_full()
+                    .min_w_0()
                     .font_family(MONO_FONT_FAMILY)
                     .text_size(Tokens::text_2xs())
                     .text_color(colors.text_faint)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .child(crate::views::kit::middle_ellipsis(
-                        &crate::views::kit::display_path(std::path::Path::new(&i.path)),
-                        56,
-                    )),
-            )
+                    .when(!folder.is_empty(), |d| {
+                        d.child(crate::views::kit::middle_ellipsis(&folder, 54))
+                    })
+                    .child(div().text_color(colors.text_muted).child(name))
+            })
             .children(self.notice.clone().map(|n| {
                 div()
                     .id("ai-review-notice")

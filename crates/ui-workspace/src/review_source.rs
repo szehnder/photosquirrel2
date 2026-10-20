@@ -39,6 +39,11 @@ pub trait ReviewSource: Send + Sync + 'static {
     fn ai_clear(&self, content: &str) -> anyhow::Result<()>;
     /// Accept or reject an item's advisory suggestion; returns the files excluded.
     fn ai_decide(&self, content: &str, accept: bool) -> anyhow::Result<usize>;
+    /// Undo a decision: the suggestion is open again and its exclusions are removed; returns the files
+    /// included again.
+    fn ai_undo_decision(&self, _content: &str) -> anyhow::Result<usize> {
+        Ok(0)
+    }
     fn ai_status(&self) -> anyhow::Result<AiStatus>;
     /// Start (or resume) the queue for the configured provider; refuses a hosted one without consent.
     fn ai_start(&self, settings: &Settings, secrets: &Secrets) -> anyhow::Result<u64>;
@@ -177,6 +182,13 @@ impl ReviewSource for CatalogReview {
             self.istore()?,
             content,
             accept,
+        )?)
+    }
+    fn ai_undo_decision(&self, content: &str) -> anyhow::Result<usize> {
+        Ok(ps_service::insights::undo(
+            self.backend.catalog()?,
+            self.istore()?,
+            content,
         )?)
     }
     fn ai_status(&self) -> anyhow::Result<AiStatus> {
