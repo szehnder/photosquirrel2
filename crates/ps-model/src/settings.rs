@@ -303,14 +303,32 @@ pub struct Ai {
     /// Requests per minute; `None` means the provider default ([`Ai::effective_requests_per_minute`]:
     /// unlimited for local providers, [`HOSTED_DEFAULT_REQUESTS_PER_MINUTE`] for hosted ones).
     pub requests_per_minute: Option<u32>,
+    /// Seconds one description request may take; `None` means the provider default
+    /// ([`Ai::effective_request_timeout_s`]: 300 s local, 120 s hosted). Slow local vision models need long.
+    pub request_timeout_s: Option<u32>,
     /// Keychain account name per provider (the key itself lives in the OS keychain, ADR-0031).
     pub key_accounts: Vec<KeyAccount>,
 }
+
+/// Default request timeouts in seconds (mirrors `ps_llm`'s defaults).
+pub const LOCAL_REQUEST_TIMEOUT_S: u32 = 300;
+pub const HOSTED_REQUEST_TIMEOUT_S: u32 = 120;
 
 /// Default requests per minute for hosted providers (spec `ai-queue` "Concurrency and rate limits").
 pub const HOSTED_DEFAULT_REQUESTS_PER_MINUTE: u32 = 30;
 
 impl Ai {
+    /// The request timeout in effect: the configured one, else 300 s for local and 120 s for hosted providers.
+    pub fn effective_request_timeout_s(&self) -> u32 {
+        self.request_timeout_s
+            .filter(|s| *s > 0)
+            .unwrap_or(if self.provider.is_hosted() {
+                HOSTED_REQUEST_TIMEOUT_S
+            } else {
+                LOCAL_REQUEST_TIMEOUT_S
+            })
+    }
+
     /// The rate limit in effect: the configured one, else unlimited (`None`) for local providers and
     /// [`HOSTED_DEFAULT_REQUESTS_PER_MINUTE`] for hosted ones.
     pub fn effective_requests_per_minute(&self) -> Option<u32> {
@@ -338,6 +356,7 @@ impl Default for Ai {
             hosted_consent: false,
             max_concurrent_requests: 2,
             requests_per_minute: None,
+            request_timeout_s: None,
             key_accounts: Vec::new(),
         }
     }
@@ -464,6 +483,16 @@ impl Settings {
             err(
                 "ai.max_concurrent_requests",
                 "Concurrent requests must be between 1 and 64.".into(),
+            );
+        }
+        if self
+            .ai
+            .request_timeout_s
+            .is_some_and(|s| !(10..=3_600).contains(&s))
+        {
+            err(
+                "ai.request_timeout_s",
+                "The request timeout must be between 10 and 3600 seconds.".into(),
             );
         }
         if self.ai.requests_per_minute == Some(0) {

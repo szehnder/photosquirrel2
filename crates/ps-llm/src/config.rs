@@ -292,6 +292,9 @@ impl ProviderConfig {
         if !cfg.is_hosted() {
             cfg.timeouts.request = LOCAL_REQUEST_TIMEOUT;
         }
+        if let Some(secs) = ai.request_timeout_s.filter(|s| *s > 0) {
+            cfg.timeouts.request = Duration::from_secs(u64::from(secs));
+        }
         if let Some(secs) = std::env::var("PHOTOSQUIRREL_LLM_TIMEOUT_S")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
@@ -406,5 +409,20 @@ mod timeout_tests {
         assert_eq!(local.timeouts.request, LOCAL_REQUEST_TIMEOUT);
         let hosted = ProviderConfig::from_preset(preset("openai").expect("openai preset"));
         assert_eq!(hosted.timeouts.request, Timeouts::default().request);
+    }
+
+    #[test]
+    fn configured_request_timeout_wins() {
+        if std::env::var("PHOTOSQUIRREL_LLM_TIMEOUT_S").is_ok() {
+            return;
+        }
+        let ai = Ai {
+            request_timeout_s: Some(900),
+            ..Ai::default()
+        };
+        let cfg = ProviderConfig::from_settings(&ai, None);
+        assert_eq!(cfg.timeouts.request, Duration::from_secs(900));
+        assert_eq!(ai.effective_request_timeout_s(), 900);
+        assert_eq!(Ai::default().effective_request_timeout_s(), 300);
     }
 }
