@@ -39,8 +39,8 @@
 
 ## 6. Verification
 
-- [ ] 6.1 `cargo xtask ci` is green
+- [x] 6.1 `cargo xtask ci` is green
 - [ ] 6.2 Gate: `cargo xtask bench --check` reports 1M-item scroll p95 <= 8.3 ms on the reference machine
-- [ ] 6.3 `cargo xtask screenshot --all-surfaces` reviewed (grid, stacks, loupe, inspector, excluded)
+- [x] 6.3 `cargo xtask screenshot --all-surfaces` reviewed (grid, stacks, loupe, inspector, excluded) (deviation: `--all-surfaces` covers only the Library grid of these; grid, stacks, loupe, inspector, filters and Excluded were captured one by one with `cargo xtask screenshot` on the demo library and reviewed: `docs/screenshots/gallery-*.png`, toolbar also checked at 1280 px)
 - [x] 6.4 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 6.5 `openspec validate gallery --strict` passes

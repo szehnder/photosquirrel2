@@ -25,7 +25,7 @@
 
 ## 5. Verification
 
-- [ ] 5.1 `cargo xtask ci` is green
-- [ ] 5.2 Gate: review groups and override a keeper end to end on the scanned small corpus (headless UI test) and screenshots reviewed
-- [ ] 5.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
-- [ ] 5.4 `openspec validate duplicate-review --strict` passes
+- [x] 5.1 `cargo xtask ci` is green (clean worktree, second M2 gate fixes)
+- [x] 5.2 Gate: review groups and override a keeper end to end on the scanned small corpus (headless UI test) and screenshots reviewed (`ui-workspace/tests/duplicates.rs`, `scenario_duplicate_review_override_keeper` and the other scenarios; `docs/screenshots/duplicates-group-{dark,light}.png`, `duplicates-suggestions-dark.png` recaptured and reviewed)
+- [x] 5.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
+- [x] 5.4 `openspec validate duplicate-review --strict` passes
