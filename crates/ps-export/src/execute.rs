@@ -82,6 +82,16 @@ pub enum StopReason {
     Ledger(String),
 }
 
+impl std::fmt::Display for StopReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StopReason::DiskFull(m) => write!(f, "the library volume is full ({m})"),
+            StopReason::Cancelled => f.write_str("cancelled"),
+            StopReason::Ledger(m) => write!(f, "the export ledger could not be written ({m})"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ExportReport {
     pub copied: u64,

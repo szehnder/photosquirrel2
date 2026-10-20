@@ -232,6 +232,9 @@ enum ExportCommand {
         /// Files copied concurrently (1 suits a single HDD).
         #[arg(long, default_value_t = 2)]
         threads: usize,
+        /// Confirm the plan and copy. Without it the plan is shown and nothing is written.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Check the library against the ledger (and the completion report); `--verify` re-hashes every copy.
     Check {
@@ -365,8 +368,16 @@ fn run(cli: Cli) -> Result<()> {
         },
         Command::Export { command } => match command {
             ExportCommand::DryRun(t) => cmd::export::dry_run(&ctx, &t.library, settings(&t)),
-            ExportCommand::Run { target, threads } => {
-                cmd::export::run(&ctx, &target.library, settings(&target), threads)
+            ExportCommand::Run {
+                target,
+                threads,
+                yes,
+            } => {
+                if yes {
+                    cmd::export::run(&ctx, &target.library, settings(&target), threads)
+                } else {
+                    cmd::export::confirm_first(&ctx, &target.library, settings(&target))
+                }
             }
             ExportCommand::Check { library, verify } => cmd::export::check(&ctx, &library, verify),
         },

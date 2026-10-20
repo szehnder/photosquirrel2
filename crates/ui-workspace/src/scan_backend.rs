@@ -387,7 +387,7 @@ impl ScanBackend for CatalogBackend {
                 report.stopped,
                 Some(ps_service::export_progress::StopReason::Cancelled)
             ),
-            stopped: report.stopped.as_ref().map(|s| format!("{s:?}")),
+            stopped: report.stopped.as_ref().map(ToString::to_string),
             elapsed_ms: report.elapsed.as_millis() as u64,
         })
     }

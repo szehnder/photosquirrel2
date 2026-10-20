@@ -536,6 +536,7 @@ fn scenario_completion_report_cli_report_matches_ui() {
             lib.to_str().unwrap(),
             "--profile",
             "lightroom",
+            "--yes",
         ],
     );
     let v = json(&ok(data.path(), &["--json", "report", "--source", "2"]));
@@ -643,4 +644,22 @@ fn scenario_ai_queue_queue_progress_reported() {
     assert!(child.wait().unwrap().success());
     let v = json(&ok(data.path(), &["--json", "ai", "status"]));
     assert_eq!(v["data"]["state"], "paused");
+}
+
+#[test]
+fn scenario_export_cli_run_needs_yes() {
+    let data = scanned();
+    let lib = data.path().join("Library");
+    let o = run(
+        data.path(),
+        &["export", "run", "--library", lib.to_str().unwrap()],
+    );
+    assert!(!o.status.success(), "an unconfirmed export does not run");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("--yes"), "{err}");
+    assert!(
+        !err.contains("Some(") && !err.contains("PlanError"),
+        "friendly: {err}"
+    );
+    assert!(!lib.exists(), "nothing was written");
 }

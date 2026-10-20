@@ -69,7 +69,14 @@ pub fn add(ctx: &Ctx, path: &Path) -> Result<()> {
             a.source.fingerprint_samples
         );
         if !o.folded.is_empty() {
-            println!("folded existing sources into it: {:?}", o.folded);
+            println!(
+                "folded existing sources into it: {}",
+                o.folded
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
         println!("next: photosquirrel-cli scan");
     })

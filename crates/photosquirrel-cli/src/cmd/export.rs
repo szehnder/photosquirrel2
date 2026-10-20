@@ -116,8 +116,11 @@ pub fn dry_run(ctx: &Ctx, library: &Path, settings: ProfileSettings) -> Result<(
     emit(ctx.json, "export dry-run", &out, |o| {
         for f in o.files.iter().take(200) {
             println!(
-                "{:?} {} -> {} (date: {})",
-                f.action,
+                "{} {} -> {} (date: {})",
+                match f.action {
+                    ps_export::PlannedAction::Copy => "copy",
+                    ps_export::PlannedAction::Adopt => "adopt",
+                },
                 f.source_path.display(),
                 f.target,
                 f.date_source
@@ -144,6 +147,24 @@ struct RunOut<'a> {
     stopped: Option<String>,
     elapsed_ms: u64,
     cancelled: bool,
+}
+
+/// `export run` without `--yes`: show the plan, copy nothing, and say how to confirm.
+pub fn confirm_first(ctx: &Ctx, library: &Path, settings: ProfileSettings) -> Result<()> {
+    let svc = ctx.reader()?;
+    let (plan, _) = svc.exports().plan(library, settings)?;
+    let out = plan_out(&plan);
+    emit(ctx.json, "export run", &out, |o| {
+        print_totals(o);
+        println!(
+            "nothing was copied: review the plan (export dry-run lists every file), then add --yes"
+        );
+    })?;
+    anyhow::bail!(
+        "export not confirmed: add --yes to copy {} files into {}",
+        plan.totals.files + plan.totals.adopted,
+        plan.library_root.display()
+    )
 }
 
 /// `export run`: copy, verify, rename. Ctrl-C stops after the current files (re-run to resume).
@@ -179,7 +200,7 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
         sidecars: report.sidecars,
         failed: &report.failed,
         suspect: &report.suspect,
-        stopped: report.stopped.as_ref().map(|s| format!("{s:?}")),
+        stopped: report.stopped.as_ref().map(ToString::to_string),
         elapsed_ms: report.elapsed.as_millis() as u64,
         cancelled: interrupted,
     };
@@ -195,7 +216,7 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
             o.failed.len()
         );
         for f in o.failed {
-            println!("  failed: {f:?}");
+            println!("  failed: {}: {}", f.target, f.error);
         }
         for f in o.suspect {
             eprintln!(

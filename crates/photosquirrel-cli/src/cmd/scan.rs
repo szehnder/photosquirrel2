@@ -198,8 +198,12 @@ fn print_summary(run: ScanRunId, s: &RunSummary) {
     }
     if !s.incomplete_sources.is_empty() {
         println!(
-            "incomplete (offline) sources: {:?}; run `photosquirrel-cli scan --resume` when they are back",
+            "incomplete (offline) sources: {}; run `photosquirrel-cli scan --resume` when they are back",
             s.incomplete_sources
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     if s.status == RunStatus::Cancelled {

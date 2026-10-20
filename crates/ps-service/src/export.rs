@@ -551,7 +551,11 @@ mod tests {
         .expect("xmp");
         let other = tmp.path().join("IMG_0043.JPG");
         std::os::unix::fs::symlink(&real, tmp.path().join("IMG_0043.xmp")).expect("symlink");
-        assert_eq!(sidecar_date(&other), None, "a symlinked sidecar is not followed");
+        assert_eq!(
+            sidecar_date(&other),
+            None,
+            "a symlinked sidecar is not followed"
+        );
         std::fs::copy(&real, tmp.path().join("IMG_0044.xmp")).expect("copy");
         assert!(
             sidecar_date(&tmp.path().join("IMG_0044.JPG")).is_some(),

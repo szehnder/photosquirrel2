@@ -165,6 +165,10 @@ Keepers on offline sources SHALL be shown in the plan as unavailable, skipped by
 ### Requirement: Export from the CLI
 The CLI SHALL make plans with `export --dry-run` and run exports with a library, a profile and `--yes`, with `--json` output.
 
+#### Scenario: CLI run needs yes
+- **WHEN** the CLI export run is invoked without `--yes`
+- **THEN** it shows the plan, writes nothing to the library and exits with an error that names `--yes`
+
 #### Scenario: CLI dry run prints plan
 - **WHEN** the CLI export dry run runs with `--json` for the scanned small corpus
 - **THEN** it prints the plan's files, target paths and totals and writes nothing to the library
