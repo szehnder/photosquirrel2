@@ -336,7 +336,10 @@ window size) when the delay is long; focus can still move.
   possible on KDE Wayland, where agent-launched windows get only one or two frames. Primed textures are
   marked as already shown, or the fade-in cover would be frozen into the screenshot.
 - SQLite `mmap_size` makes touched catalog pages count in `VmRSS` (as `RssShmem` when the catalog is on
-  tmpfs): a 1M catalog shows ~2 GB resident after a few index scans although the process allocates ~110 MB.
+  tmpfs), once per connection that touched them: a 1M catalog showed ~2 GB resident with a 4 GiB map and
+  ~440 MB with 256 MiB per reader, although the process allocates ~110 MB. Read-only connections therefore use
+  no map and a 2 MiB page cache (`ps_catalog::db::open_reader`); idle RSS on 1M items is ~213 MB. Find such
+  costs with `/proc/<pid>/smaps` summed by mapping (the catalog file shows up by name).
 
 ## Review views (duplicate-review, ai-insights)
 - **Focus handover between views.** A view that takes focus for its own key context (Duplicates binds J/K/1-9/S

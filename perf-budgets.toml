@@ -58,8 +58,9 @@ change = "catalog"
 source = { kind = "test", package = "ps-catalog", test = "budgets", name = "scenario_catalog_id_list_for_1m_within_300_ms" }
 
 # app-shell (ADR-0026): the release app with measurement flags (opens a window; skipped by `--ci`).
-# Cold start: launch to the first presented frame, median of 10 runs. Idle RSS: resident memory after 5 s idle.
-# The shell does not load catalog items yet; the `gallery` change switches idle-rss to its 1M synthetic catalog.
+# Cold start: launch to the first presented frame, median of 10 runs. Idle RSS: resident memory after 5 s idle
+# on the gallery's 1M synthetic catalog (built once, like first-gallery-frame; PHOTOSQUIRREL_SYNTHETIC_DIR moves
+# it). Measured 213 MB (113 MB on an empty data dir).
 [[budget]]
 name = "cold-start"
 metric = "median"
@@ -74,7 +75,7 @@ metric = "max"
 max = 250.0
 unit = "MB"
 change = "app-shell"
-source = { kind = "app", args = ["--measure-idle-memory", "5"], runs = 1 }
+source = { kind = "app", args = ["--synthetic-catalog", "1000000", "--measure-idle-memory", "5"], runs = 1 }
 
 # scanning (ADR-0007, ADR-0008, ADR-0009, ADR-0026, ADR-0036). Analysis throughput as wall time per file: 6.67 ms =
 # 150 files/s of warm-cache 12 MP JPEGs on 16 cores (2,000 paths hard-linked to 50 distinct files). No-change

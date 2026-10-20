@@ -170,13 +170,15 @@ pub(crate) fn open_reader(path: &Path) -> Result<Connection> {
     )?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute_batch(
-        // Readers map up to 256 MiB (D8): enough for the hot ID-list index pages of a 1M-file catalog, while
-        // the rest goes through the page cache. A 4 GiB map made the app show ~1.9 GB of file-backed RSS at
-        // 1M files, which users read as a memory hog; the 1M ID-list budget holds either way.
+        // Readers do not memory-map the file and keep a 2 MiB page cache each. Mapped pages count in the
+        // process's RSS once per reader that touched them: with a 256 MiB map per reader the idle app showed
+        // ~440 MB of file-backed RSS on a 1M-file catalog (692 MB in all, budget 250 MB, ADR-0026). Without the
+        // map the same reads come from the OS page cache, which the kernel shares and reclaims; the 1M ID list
+        // (126 ms vs 132 ms), the first gallery frame (median 495 ms vs 548 ms) and the no-change rescan held.
         "PRAGMA query_only = 1;
          PRAGMA temp_store = MEMORY;
-         PRAGMA mmap_size = 268435456;
-         PRAGMA cache_size = -16384;",
+         PRAGMA mmap_size = 0;
+         PRAGMA cache_size = -2048;",
     )?;
     conn.set_prepared_statement_cache_capacity(32);
     rusqlite::vtab::array::load_module(&conn)?;
