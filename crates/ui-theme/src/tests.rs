@@ -150,6 +150,16 @@ fn scenario_theming_text_contrast_meets_aa() {
         ] {
             check(format!("on_semantic on {name}"), c.on_semantic, bg, AA_TEXT);
         }
+        // Status chips: tone text on the tone's soft tint over a panel.
+        for (name, tone) in [
+            ("danger", c.danger),
+            ("warning", c.warning),
+            ("success", c.success),
+            ("info", c.info),
+        ] {
+            let bg = crate::contrast::over(crate::Colors::chip_bg(tone), c.panel);
+            check(format!("{name} chip text"), c.tone_text(tone), bg, AA_TEXT);
+        }
         // Selected rows: text on the soft acorn tint over a panel.
         let soft = crate::contrast::over(c.accent_soft, c.panel);
         check("text on accent_soft".into(), c.text, soft, AA_TEXT);

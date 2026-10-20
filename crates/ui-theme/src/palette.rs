@@ -230,4 +230,31 @@ impl Colors {
     pub fn tint(color: Hsla, alpha: f32) -> Hsla {
         color.opacity(alpha)
     }
+
+    /// Alpha of the soft background of a status chip ([`Colors::chip_bg`]).
+    pub const CHIP_TINT: f32 = 0.14;
+
+    /// The soft background of a status chip in `tone` (success, info, warning, danger).
+    pub fn chip_bg(tone: Hsla) -> Hsla {
+        Self::tint(tone, Self::CHIP_TINT)
+    }
+
+    /// Text in `tone` that reads as normal text (WCAG AA 4.5:1) on its chip background over a panel: the tone
+    /// itself where it is already dark (light theme) or light (dark theme) enough, else the tone moved
+    /// towards black or white in lightness.
+    pub fn tone_text(&self, tone: Hsla) -> Hsla {
+        let bg = crate::contrast::over(Self::chip_bg(tone), self.panel);
+        let mut fg = tone;
+        for _ in 0..40 {
+            if crate::contrast::ratio(fg, bg) >= crate::contrast::AA_TEXT {
+                break;
+            }
+            fg.l = if self.dark {
+                (fg.l + 0.02).min(1.0)
+            } else {
+                (fg.l - 0.02).max(0.0)
+            };
+        }
+        fg
+    }
 }

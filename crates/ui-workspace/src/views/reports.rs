@@ -361,8 +361,8 @@ impl Render for ReportsView {
                             .child(if data.verified {
                                 kit::chip(
                                     "Copies verified by hash",
-                                    colors.success,
-                                    Colors::tint(colors.success, 0.14),
+                                    colors.tone_text(colors.success),
+                                    Colors::chip_bg(colors.success),
                                 )
                             } else {
                                 kit::chip(

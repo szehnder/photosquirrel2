@@ -584,17 +584,12 @@ fn people_badges(i: &InsightItem, cx: &App) -> Vec<AnyElement> {
     let colors = *ui_theme::colors(cx);
     let e = &i.effective;
     let mut out = Vec::new();
-    let soft = ui_theme::Colors::tint(colors.info, 0.14);
+    let soft = ui_theme::Colors::chip_bg(colors.info);
+    let info = colors.tone_text(colors.info);
     if e.people.adults > 0 {
         out.push(
-            icon_chip(
-                IconName::User,
-                e.people.adults.to_string(),
-                colors.info,
-                soft,
-                cx,
-            )
-            .into_any_element(),
+            icon_chip(IconName::User, e.people.adults.to_string(), info, soft, cx)
+                .into_any_element(),
         );
     }
     if e.people.children > 0 {
@@ -623,8 +618,8 @@ fn people_badges(i: &InsightItem, cx: &App) -> Vec<AnyElement> {
             icon_chip(
                 IconName::PawPrint,
                 label,
-                colors.success,
-                ui_theme::Colors::tint(colors.success, 0.14),
+                colors.tone_text(colors.success),
+                ui_theme::Colors::chip_bg(colors.success),
                 cx,
             )
             .into_any_element(),
@@ -775,8 +770,8 @@ impl AiReviewView {
                                         e.child(
                                             chip(
                                                 "Demo data · recorded fixtures, not your model",
-                                                colors.warning,
-                                                ui_theme::Colors::tint(colors.warning, 0.14),
+                                                colors.tone_text(colors.warning),
+                                                ui_theme::Colors::chip_bg(colors.warning),
                                                 cx,
                                             )
                                             .id("ai-review-demo"),
@@ -791,9 +786,9 @@ impl AiReviewView {
                                     .child(Icon::new(IconName::Bot).size(Tokens::icon_sm()))
                                     .child(format!("{} · {model}", provider.label()))
                                     .child(if provider.is_hosted() {
-                                        chip("hosted · uploads previews", colors.warning, ui_theme::Colors::tint(colors.warning, 0.14), cx)
+                                        chip("hosted · uploads previews", colors.tone_text(colors.warning), ui_theme::Colors::chip_bg(colors.warning), cx)
                                     } else {
-                                        chip("local · nothing leaves this computer", colors.success, ui_theme::Colors::tint(colors.success, 0.14), cx)
+                                        chip("local · nothing leaves this computer", colors.tone_text(colors.success), ui_theme::Colors::chip_bg(colors.success), cx)
                                     })
                                     .when_some(conn, |e, (fg, t)| {
                                         e.child(
@@ -1119,8 +1114,8 @@ impl AiReviewView {
                                                 d.child(icon_chip(
                                                     IconName::TriangleAlert,
                                                     format!("Exclude as {}?", s.label),
-                                                    colors.warning,
-                                                    ui_theme::Colors::tint(colors.warning, 0.14),
+                                                    colors.tone_text(colors.warning),
+                                                    ui_theme::Colors::chip_bg(colors.warning),
                                                     cx,
                                                 ))
                                             }),

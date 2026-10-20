@@ -55,11 +55,18 @@ pub fn button(
             Colors::tint(colors.border, 0.0),
         ),
         Tone::Danger => (
-            Colors::tint(colors.danger, 0.14),
-            colors.danger,
+            Colors::chip_bg(colors.danger),
+            colors.tone_text(colors.danger),
             Colors::tint(colors.danger, 0.24),
             Colors::tint(colors.danger, 0.4),
         ),
+    };
+    // Unavailable buttons are drawn neutral rather than faded, so their label stays readable (AA secondary
+    // contrast in both themes) while clearly not inviting a click.
+    let (bg, fg, border) = if enabled {
+        (bg, fg, border)
+    } else {
+        (colors.raised, colors.text_muted, colors.border)
     };
     let name: SharedString = if enabled {
         label.clone()
@@ -83,7 +90,6 @@ pub fn button(
         .text_color(fg)
         .text_size(Tokens::text_sm())
         .font_weight(FontWeight::MEDIUM)
-        .when(!enabled, |d| d.opacity(0.45))
         .when_some(on_click, |d, f| {
             d.cursor_pointer()
                 .hover(move |d| d.bg(hover))
