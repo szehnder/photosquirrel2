@@ -37,7 +37,7 @@
 
 ## 4. Live smoke
 
-- [ ] 4.1 Opt-in live test; verify `scenario_llm_providers_live_lm_studio_smoke` passes with `PHOTOSQUIRREL_LIVE_LLM=1` and LM Studio running, and is skipped otherwise (skip path verified; live run pending: LM Studio server off, no model loaded)
+- [x] 4.1 Opt-in live test; verify `scenario_llm_providers_live_lm_studio_smoke` passes with `PHOTOSQUIRREL_LIVE_LLM=1` and LM Studio running, and is skipped otherwise (skip path verified; live run passed 2026-10-19 on the reference laptop with gemma-4-e4b in LM Studio: 3 of 3 generated images gave valid ImageInsight v1, 56-69 s each, with the 600 s live timeout)
 
 ## 5. Verification
 
