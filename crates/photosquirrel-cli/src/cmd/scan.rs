@@ -81,7 +81,8 @@ pub fn start(ctx: &Ctx, sources: &[i64], resume: bool, run: Option<i64>) -> Resu
     if control::is_live(&data, Job::Scan) {
         // Another process owns the catalog: exit 2 like every other refused mutation (ADR-0041).
         return Err(super::Busy(
-            "a scan is already running in another terminal (see `photosquirrel-cli scan status`)".into(),
+            "a scan is already running in another terminal (see `photosquirrel-cli scan status`)"
+                .into(),
         )
         .into());
     }

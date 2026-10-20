@@ -63,7 +63,7 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
             "photosquirrel-cli",
         ]),
     )?;
-    let bin = root.join("target/release/photosquirrel");
+    let bin = release_dir(root).join("photosquirrel");
     let shots = root.join("target/screenshots");
     std::fs::create_dir_all(&shots)?;
     if opts.all_surfaces {
@@ -118,12 +118,21 @@ fn shoot(
     Ok(())
 }
 
+/// Where cargo put the release binaries (`CARGO_TARGET_DIR` when set, relative to the workspace root).
+fn release_dir(root: &Path) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|p| if p.is_absolute() { p } else { root.join(p) })
+        .unwrap_or_else(|| root.join("target"))
+        .join("release")
+}
+
 /// A fresh data directory; `seeded` ones get the demo library from `photosquirrel-cli demo`.
 fn seed_data_dir(root: &Path, dir: &Path, seeded: bool) -> Result<()> {
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir)?;
     if seeded {
-        let cli = root.join("target/release/photosquirrel-cli");
+        let cli = release_dir(root).join("photosquirrel-cli");
         crate::run(
             "seed demo library",
             Command::new(&cli).arg("--data-dir").arg(dir).arg("demo"),
