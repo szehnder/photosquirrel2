@@ -136,14 +136,43 @@ fn thumbnail(i: u64) -> anyhow::Result<ThumbnailRecord> {
     })
 }
 
-/// Build (once) and return the data folder holding an N-item synthetic catalog.
+/// Marks a folder this module created; only such a folder's files are ever removed (an interrupted build).
+const MARKER: &str = ".photosquirrel-synthetic";
+
+/// Build (once) and return the data folder holding an N-item synthetic catalog (benchmarks only).
+///
+/// An interrupted earlier build is cleaned up by removing only the catalog and thumbnail files this module
+/// writes, and only in a folder carrying its marker file: a folder at that path that this module did not
+/// create (`PHOTOSQUIRREL_SYNTHETIC_DIR` pointed somewhere else) is refused, never emptied.
 pub fn ensure(items: u64) -> anyhow::Result<PathBuf> {
-    let dir = cache_dir(items);
+    ensure_at(cache_dir(items), items)
+}
+
+/// [`ensure`] in a given folder.
+pub fn ensure_at(dir: PathBuf, items: u64) -> anyhow::Result<PathBuf> {
     let done = dir.join(".complete");
     if done.exists() {
         return Ok(dir);
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    if dir.exists() {
+        anyhow::ensure!(
+            dir.join(MARKER).is_file(),
+            "{} exists but was not created for a synthetic catalog; move it away or set \
+             PHOTOSQUIRREL_SYNTHETIC_DIR to another folder",
+            dir.display()
+        );
+        for e in std::fs::read_dir(&dir)? {
+            let e = e?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            let ours = name.starts_with("catalog.") || name.starts_with("thumbs.");
+            if ours && e.file_type()?.is_file() {
+                std::fs::remove_file(e.path())?;
+            }
+        }
+    } else {
+        std::fs::create_dir_all(&dir)?;
+    }
+    std::fs::write(dir.join(MARKER), b"synthetic catalog cache\n")?;
     build(&dir, items)?;
     std::fs::write(&done, b"ok")?;
     Ok(dir)
@@ -183,4 +212,35 @@ pub fn build(dir: &Path, items: u64) -> anyhow::Result<()> {
         dir.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A folder at the cache path that this module did not create is refused and left untouched; a folder it
+    /// created is rebuilt after an interrupted build.
+    #[test]
+    fn ensure_never_empties_a_folder_it_did_not_create() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let dir = tmp.path().join("photosquirrel-synthetic-3");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("catalog.db"), b"someone's file").expect("file");
+        std::fs::write(dir.join("notes.txt"), b"theirs").expect("file");
+        assert!(ensure_at(dir.clone(), 3).is_err());
+        assert_eq!(
+            std::fs::read(dir.join("catalog.db")).expect("kept"),
+            b"someone's file"
+        );
+
+        let ours = tmp.path().join("ours");
+        ensure_at(ours.clone(), 3).expect("built");
+        std::fs::remove_file(ours.join(".complete")).expect("simulate an interrupted build");
+        std::fs::write(ours.join("keep.txt"), b"not ours").expect("file");
+        ensure_at(ours.clone(), 3).expect("rebuilt");
+        assert!(
+            ours.join("keep.txt").is_file(),
+            "only its own files are removed"
+        );
+    }
 }
