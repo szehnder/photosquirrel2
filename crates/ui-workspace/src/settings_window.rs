@@ -305,16 +305,6 @@ pub fn definitions() -> Vec<SettingDef> {
             },
         },
         SettingDef {
-            key: "ai.auto_start_queue",
-            section: Ai,
-            name: "Start the AI queue after scans",
-            description: "Off: descriptions are only generated when you start the queue.",
-            control: Control::Toggle {
-                get: |s| s.ai.auto_start_queue,
-                set: |s, v| s.ai.auto_start_queue = v,
-            },
-        },
-        SettingDef {
             key: "ai.max_concurrent_requests",
             section: Ai,
             name: "Concurrent requests",
@@ -373,7 +363,8 @@ pub fn definitions() -> Vec<SettingDef> {
             key: "export.sidecars",
             section: Export,
             name: "Write XMP sidecars",
-            description: "Keywords and descriptions travel with each exported photo.",
+            description: "Keywords and descriptions travel with each exported photo (profiles that use them; \
+                          the Export view can change it per export).",
             control: Control::Toggle {
                 get: |s| s.export.sidecars,
                 set: |s, v| s.export.sidecars = v,

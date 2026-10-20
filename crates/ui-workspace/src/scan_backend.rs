@@ -166,12 +166,14 @@ pub trait ScanBackend: Send + Sync + 'static {
 
     /// The library folder used last.
     fn last_library(&self) -> Option<PathBuf>;
-    fn export_plan(&self, library: &Path, profile: ExportProfile) -> anyhow::Result<PlanPreview>;
+    /// The dry run for `settings` (profile, sidecars on or off for this export, re-copy of changed copies).
+    fn export_plan(&self, library: &Path, settings: ProfileSettings)
+    -> anyhow::Result<PlanPreview>;
     /// Run an export to the end (or until `cancel`), reporting into `progress`.
     fn export_run(
         &self,
         library: &Path,
-        profile: ExportProfile,
+        settings: ProfileSettings,
         cancel: &AtomicBool,
         progress: &ExportProgress,
     ) -> anyhow::Result<ExportOutcome>;
@@ -193,10 +195,6 @@ pub fn source_name(root: &Path) -> String {
     root.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| root.display().to_string())
-}
-
-fn profile_settings(profile: ExportProfile) -> ProfileSettings {
-    ProfileSettings::defaults(profile)
 }
 
 fn excluded_rows(
@@ -307,9 +305,13 @@ impl ScanBackend for CatalogBackend {
         self.scan().ok()?.exports().last_library().ok().flatten()
     }
 
-    fn export_plan(&self, library: &Path, profile: ExportProfile) -> anyhow::Result<PlanPreview> {
+    fn export_plan(
+        &self,
+        library: &Path,
+        settings: ProfileSettings,
+    ) -> anyhow::Result<PlanPreview> {
         let scan = self.scan()?;
-        let settings = profile_settings(profile);
+        let profile = settings.profile;
         let (plan, input) = scan.exports().plan(library, settings)?;
         let mut offline: HashMap<String, u64> = HashMap::new();
         for u in &plan.unavailable {
@@ -361,14 +363,13 @@ impl ScanBackend for CatalogBackend {
     fn export_run(
         &self,
         library: &Path,
-        profile: ExportProfile,
+        settings: ProfileSettings,
         cancel: &AtomicBool,
         progress: &ExportProgress,
     ) -> anyhow::Result<ExportOutcome> {
         let scan = self.scan()?;
         let cfg = ExecConfig::default();
-        let result =
-            scan.export_with_progress(library, profile_settings(profile), &cfg, cancel, progress);
+        let result = scan.export_with_progress(library, settings, &cfg, cancel, progress);
         self.forget_dispositions();
         let (plan, report) = result?;
         Ok(ExportOutcome {
@@ -489,7 +490,7 @@ pub struct DemoBackend {
     /// Drill-down rows by source and folder.
     pub drill_rows: Mutex<Vec<(SourceId, Option<String>, DrillRow)>>,
     /// Export calls received (tests).
-    pub exports_started: Mutex<Vec<(PathBuf, ExportProfile)>>,
+    pub exports_started: Mutex<Vec<(PathBuf, ProfileSettings)>>,
     pub removed: Mutex<Vec<SourceId>>,
     pub relinked: Mutex<Vec<(SourceId, PathBuf)>>,
     pub added: Mutex<Vec<PathBuf>>,
@@ -767,8 +768,12 @@ impl ScanBackend for DemoBackend {
         Self::lock(&self.library).clone()
     }
 
-    fn export_plan(&self, library: &Path, profile: ExportProfile) -> anyhow::Result<PlanPreview> {
-        let settings = profile_settings(profile);
+    fn export_plan(
+        &self,
+        library: &Path,
+        settings: ProfileSettings,
+    ) -> anyhow::Result<PlanPreview> {
+        let profile = settings.profile;
         let free = *Self::lock(&self.free_bytes);
         let bytes = 41_872_000_000;
         let required = bytes + (1 << 20);
@@ -821,11 +826,11 @@ impl ScanBackend for DemoBackend {
     fn export_run(
         &self,
         library: &Path,
-        profile: ExportProfile,
+        settings: ProfileSettings,
         cancel: &AtomicBool,
         _progress: &ExportProgress,
     ) -> anyhow::Result<ExportOutcome> {
-        Self::lock(&self.exports_started).push((library.to_path_buf(), profile));
+        Self::lock(&self.exports_started).push((library.to_path_buf(), settings));
         *Self::lock(&self.library) = Some(library.to_path_buf());
         while self.export_blocks.load(Ordering::SeqCst) && !cancel.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(2));

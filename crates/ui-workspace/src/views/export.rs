@@ -7,11 +7,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ps_model::ExportProfile;
-use ps_service::export_progress::{ExportProgress, ExportSnapshot};
+use ps_service::export_progress::{ExportProgress, ExportSnapshot, ProfileSettings};
 use ui_theme::{Colors, Tokens};
 
 use crate::actions::ShowReports;
@@ -69,7 +70,8 @@ type Slot = Arc<Mutex<Option<anyhow::Result<ExportOutcome>>>>;
 pub struct ExportView {
     backend: Option<SharedScanBackend>,
     pub library: Option<PathBuf>,
-    pub profile: ExportProfile,
+    /// This export's settings: the profile's defaults, adjusted here (sidecars, re-copying changed copies).
+    pub settings: ProfileSettings,
     pub plan: Option<Loadable<PlanPreview>>,
     pub phase: ExportPhase,
     plan_task: Option<Task<()>>,
@@ -98,25 +100,54 @@ pub fn suggested_library(pictures: Option<&Path>, home: Option<&Path>) -> PathBu
         .unwrap_or_else(|| PathBuf::from(LIBRARY_NAME))
 }
 
+/// The export profile a settings choice names.
+pub fn profile_of(p: ps_model::settings::ExportProfile) -> ExportProfile {
+    match p {
+        ps_model::settings::ExportProfile::Apple => ExportProfile::ApplePhotos,
+        ps_model::settings::ExportProfile::Google => ExportProfile::GooglePhotos,
+        ps_model::settings::ExportProfile::Lightroom => ExportProfile::Lightroom,
+    }
+}
+
+/// A profile's defaults with the user's sidecar preference from settings (`export.sidecars` off turns them off
+/// for every profile; on keeps each profile's default).
+pub fn settings_for(
+    profile: ExportProfile,
+    app: Option<&ps_model::settings::Settings>,
+) -> ProfileSettings {
+    let d = ProfileSettings::defaults(profile);
+    let sidecars = d.sidecars && app.is_none_or(|s| s.export.sidecars);
+    d.with_sidecars(sidecars)
+}
+
 impl ExportView {
     pub fn new(cx: &mut Context<'_, Self>) -> Self {
         let backend = ScanHub::monitor(cx).map(|m| m.read(cx).backend().clone());
+        let app = crate::settings::AppSettings::try_get(cx).cloned();
+        let profile = app
+            .as_ref()
+            .map_or(ExportProfile::ApplePhotos, |s| profile_of(s.export.profile));
         let mut this = Self {
             backend,
             library: None,
-            profile: ExportProfile::ApplePhotos,
+            settings: settings_for(profile, app.as_ref()),
             plan: None,
             phase: ExportPhase::Review,
             plan_task: None,
             run_task: None,
         };
         if let Some(b) = this.backend.clone() {
-            // The startup grace lets a scripted screenshot see the plan in frame one.
-            let lib = b.last_library().unwrap_or_else(default_library);
+            // The startup grace lets a scripted screenshot see the plan in frame one. The library: the one in
+            // settings (the last exported to), else the catalog's last, else the suggested folder.
+            let lib = app
+                .as_ref()
+                .and_then(|s| s.export.library.clone())
+                .or_else(|| b.last_library())
+                .unwrap_or_else(default_library);
             this.library = Some(lib.clone());
             if ScanHub::synchronous(cx) {
                 // The instant simulated engine of scripted screenshots: the plan is in frame one.
-                this.plan = Some(match b.export_plan(&lib, this.profile) {
+                this.plan = Some(match b.export_plan(&lib, this.settings) {
                     Ok(p) => Loadable::Ready(p),
                     Err(e) => Loadable::Failed(format!("{e:#}")),
                 });
@@ -127,9 +158,33 @@ impl ExportView {
         this
     }
 
+    pub fn profile(&self) -> ExportProfile {
+        self.settings.profile
+    }
+
+    /// Another profile: its defaults (with the settings' sidecar preference); per-export changes reset.
     pub fn set_profile(&mut self, p: ExportProfile, cx: &mut Context<'_, Self>) {
-        if self.profile != p {
-            self.profile = p;
+        if self.settings.profile != p {
+            self.settings = settings_for(p, crate::settings::AppSettings::try_get(cx));
+            self.replan(cx);
+        }
+    }
+
+    /// Sidecars on or off for this export ("defaults the user can adjust per export").
+    pub fn set_sidecars(&mut self, on: bool, cx: &mut Context<'_, Self>) {
+        if matches!(self.phase, ExportPhase::Running { .. }) {
+            return;
+        }
+        if self.settings.sidecars != on {
+            self.settings.sidecars = on;
+            self.replan(cx);
+        }
+    }
+
+    /// Copy again, beside the changed files, keepers whose library copy another app changed (ADR-0046).
+    pub fn set_recopy_modified(&mut self, on: bool, cx: &mut Context<'_, Self>) {
+        if self.settings.recopy_modified != on {
+            self.settings.recopy_modified = on;
             self.replan(cx);
         }
     }
@@ -149,8 +204,8 @@ impl ExportView {
         }
         self.phase = ExportPhase::Review;
         self.plan = Some(Loadable::Loading);
-        let profile = self.profile;
-        let reply = cx.background_spawn(async move { b.export_plan(&lib, profile) });
+        let settings = self.settings;
+        let reply = cx.background_spawn(async move { b.export_plan(&lib, settings) });
         self.plan_task = Some(cx.spawn(async move |this, cx| {
             let plan = reply.await;
             let _ = this.update(cx, |this, cx| {
@@ -207,14 +262,14 @@ impl ExportView {
         let progress = Arc::new(ExportProgress::new());
         let cancel = Arc::new(AtomicBool::new(false));
         let slot: Slot = Arc::new(Mutex::new(None));
-        let profile = self.profile;
+        let settings = self.settings;
         {
             let (progress, cancel, slot) = (progress.clone(), cancel.clone(), slot.clone());
             // A long blocking copy: its own thread, polled below (never the UI thread).
             let spawned = std::thread::Builder::new()
                 .name("export".into())
                 .spawn(move || {
-                    let r = b.export_run(&lib, profile, &cancel, &progress);
+                    let r = b.export_run(&lib, settings, &cancel, &progress);
                     *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(r);
                 });
             if let Err(e) = spawned {
@@ -236,7 +291,16 @@ impl ExportView {
                 let finished = this
                     .update(cx, |this, cx| {
                         match done {
-                            Some(Ok(o)) => this.phase = ExportPhase::Done(o),
+                            Some(Ok(o)) => {
+                                // Remember the library for the next export (`export.library`).
+                                let lib = o.library.clone();
+                                if crate::settings::AppSettings::try_get(cx).is_some() {
+                                    let _ = crate::settings::AppSettings::update(cx, |s| {
+                                        s.export.library = Some(lib)
+                                    });
+                                }
+                                this.phase = ExportPhase::Done(o);
+                            }
                             Some(Err(e)) => this.phase = ExportPhase::Failed(format!("{e:#}")),
                             None => {
                                 if let ExportPhase::Running { sample: s, .. } = &mut this.phase {
@@ -485,6 +549,57 @@ impl ExportView {
                         })),
                 )
             })
+            .when(plan.modified > 0 || self.settings.recopy_modified, |d| {
+                let recopy = self.settings.recopy_modified;
+                d.child(
+                    h_flex()
+                        .id("plan-modified")
+                        .test_support()
+                        .aria_label(SharedString::from(format!(
+                            "{} changed in the library",
+                            plan.modified
+                        )))
+                        .w_full()
+                        .gap(Tokens::space(2.0))
+                        .items_center()
+                        .p(Tokens::space(2.5))
+                        .rounded(Tokens::RADIUS_MD)
+                        .bg(Colors::tint(colors.warning, 0.08))
+                        .text_size(Tokens::text_sm())
+                        .child(
+                            Icon::new(IconName::Info)
+                                .size(Tokens::icon_sm())
+                                .text_color(colors.warning),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_color(colors.text)
+                                .child(if recopy {
+                                    "Library copies changed by another app since the export will be copied \
+                                     again, beside the changed files."
+                                        .to_owned()
+                                } else {
+                                    format!(
+                                        "{} library copies were changed by another app since the export. They \
+                                         are left as they are and not copied again.",
+                                        format_count(plan.modified)
+                                    )
+                                }),
+                        )
+                        .child(kit::button(
+                            "plan-recopy-modified",
+                            if recopy { "Leave them" } else { "Copy them again" },
+                            None,
+                            Tone::Secondary,
+                            kit::on(cx.listener(move |this, _, _, cx| {
+                                this.set_recopy_modified(!recopy, cx)
+                            })),
+                            cx,
+                        )),
+                )
+            })
             .when_some(plan.date_note.clone(), |d, note| {
                 d.child(
                     div()
@@ -514,7 +629,7 @@ impl Render for ExportView {
         let profiles = ExportProfile::ALL;
         let sel = profiles
             .iter()
-            .position(|p| *p == self.profile)
+            .position(|p| *p == self.settings.profile)
             .unwrap_or(0);
         let weak = cx.entity().downgrade();
         let profile_picker = segmented(
@@ -579,7 +694,38 @@ impl Render for ExportView {
                             .flex_1()
                             .text_size(Tokens::text_sm())
                             .text_color(colors.text_muted)
-                            .child(profile_blurb(self.profile)),
+                            .child(profile_blurb(self.settings.profile)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap(Tokens::space(3.0))
+                    .items_center()
+                    .child(
+                        Switch::new("export-sidecars")
+                            .checked(self.settings.sidecars)
+                            .accessibility_label("XMP sidecars for this export")
+                            .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                this.set_sidecars(*on, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(Tokens::text_sm())
+                            .text_color(colors.text)
+                            .child("XMP sidecars"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(Tokens::text_xs())
+                            .text_color(colors.text_muted)
+                            .child(
+                                "Keywords and descriptions next to each photo, for this export. The default is in \
+                                 Settings.",
+                            ),
                     ),
             );
 

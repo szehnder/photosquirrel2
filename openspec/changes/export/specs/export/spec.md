@@ -143,6 +143,10 @@ The export ledger SHALL record each completed copy with its size and modificatio
 ### Requirement: Profiles
 Export SHALL offer profiles: Apple Photos (sidecars on, Live Photo pairs together), Google Photos (sidecars off) and Lightroom (sidecars on, RAW+JPEG kept), whose defaults the user can adjust per export.
 
+#### Scenario: Sidecars adjusted per export
+- **WHEN** the Export view opens with the Google Photos profile from the settings and the user turns sidecars on for this export
+- **THEN** the export runs with sidecars, into the library from the settings, and the settings' defaults are unchanged
+
 #### Scenario: Google profile omits sidecars
 - **WHEN** the small corpus is exported with the Google Photos profile
 - **THEN** no `.xmp` file is written

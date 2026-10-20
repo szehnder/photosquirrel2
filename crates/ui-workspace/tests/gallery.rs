@@ -776,7 +776,9 @@ fn scenario_completion_report_inspector_shows_disposition(cx: &mut TestAppContex
     let out = backend
         .export_run(
             &library_root,
-            ps_model::ExportProfile::ApplePhotos,
+            ps_service::export_progress::ProfileSettings::defaults(
+                ps_model::ExportProfile::ApplePhotos,
+            ),
             &std::sync::atomic::AtomicBool::new(false),
             &ps_service::export_progress::ExportProgress::new(),
         )
@@ -1118,7 +1120,9 @@ fn gallery_filter_by_export_disposition(cx: &mut TestAppContext) {
     let out = backend
         .export_run(
             &library_root,
-            ps_model::ExportProfile::ApplePhotos,
+            ps_service::export_progress::ProfileSettings::defaults(
+                ps_model::ExportProfile::ApplePhotos,
+            ),
             &std::sync::atomic::AtomicBool::new(false),
             &ps_service::export_progress::ExportProgress::new(),
         )

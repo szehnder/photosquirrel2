@@ -95,7 +95,7 @@ fn confirming_the_export_starts_it(cx: &mut TestAppContext) {
     });
     let started = backend.exports_started.lock().unwrap().clone();
     assert_eq!(started.len(), 1, "confirming started one export");
-    assert_eq!(started[0].1, ExportProfile::Lightroom);
+    assert_eq!(started[0].1.profile, ExportProfile::Lightroom);
     let result = label("export-result", &mut cx).unwrap();
     assert!(result.starts_with("12381 copied"), "{result}");
 }
@@ -164,7 +164,7 @@ fn exported_corpus() -> Exported {
         let out = backend
             .export_run(
                 &library,
-                ExportProfile::ApplePhotos,
+                ps_service::export_progress::ProfileSettings::defaults(ExportProfile::ApplePhotos),
                 &AtomicBool::new(false),
                 &ExportProgress::new(),
             )
@@ -324,4 +324,45 @@ fn verify_lists_an_altered_library_copy(cx: &mut TestAppContext) {
     );
     let badge = label("report-badge-all", &mut cx).unwrap();
     assert!(badge.contains("pending"), "{badge}");
+}
+
+/// The Export view starts from the settings (profile, library, sidecar preference) and the sidecar switch
+/// changes this export only; the library exported to is remembered in `export.library`.
+#[gpui_kit::test]
+fn scenario_export_sidecars_adjusted_per_export(cx: &mut TestAppContext) {
+    let backend = Arc::new(DemoBackend::new(FakeScanService::new(
+        FakeConfig::two_sources(100.0),
+    )));
+    let (shell, mut cx) = demo_app(cx, backend.clone());
+    let lib = PathBuf::from("/media/backup/Family Library");
+    cx.update(|_, cx| {
+        ui_workspace::settings::AppSettings::update(cx, |s| {
+            s.export.profile = ps_model::settings::ExportProfile::Google;
+            s.export.library = Some(lib.clone());
+        })
+        .unwrap()
+    });
+    show(&shell, ViewId::Export, &mut cx);
+    wait(&mut cx, "the plan", |cx| exists("export-plan", cx));
+    assert_eq!(
+        label("export-library", &mut cx).as_deref(),
+        Some("/media/backup/Family Library")
+    );
+    // Google Photos: no sidecars by default; this export turns them on.
+    click("export-sidecars", &mut cx);
+    wait(&mut cx, "the replan", |cx| exists("export-plan", cx));
+    click("export-confirm", &mut cx);
+    click("export-start", &mut cx);
+    wait(&mut cx, "the export result", |cx| {
+        exists("export-result", cx)
+    });
+    let started = backend.exports_started.lock().unwrap().clone();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].0, lib);
+    assert_eq!(started[0].1.profile, ExportProfile::GooglePhotos);
+    assert!(started[0].1.sidecars, "adjusted for this export");
+    let saved = cx.update(|_, cx| ui_workspace::settings::AppSettings::get(cx).export.clone());
+    assert_eq!(saved.library.as_deref(), Some(lib.as_path()));
+    assert!(saved.sidecars, "the default itself is unchanged");
+    assert_eq!(saved.profile, ps_model::settings::ExportProfile::Google);
 }

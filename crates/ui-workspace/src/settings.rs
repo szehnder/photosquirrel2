@@ -58,6 +58,11 @@ impl AppSettings {
         &cx.global::<AppSettings>().settings
     }
 
+    /// The settings, when the global is installed (views built in isolated tests may run without it).
+    pub fn try_get(cx: &App) -> Option<&Settings> {
+        cx.try_global::<AppSettings>().map(|a| &a.settings)
+    }
+
     pub fn store(cx: &App) -> Option<&SettingsStore> {
         cx.try_global::<AppSettings>()?.store.as_ref()
     }

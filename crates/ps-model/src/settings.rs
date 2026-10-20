@@ -297,8 +297,6 @@ pub struct Ai {
     pub base_url: String,
     /// Model id; empty means "the server's loaded model".
     pub model: String,
-    /// Start the AI queue automatically after a scan. Off: the queue stays stopped until started.
-    pub auto_start_queue: bool,
     pub max_concurrent_requests: u32,
     /// Requests per minute; `None` means the provider default ([`Ai::effective_requests_per_minute`]:
     /// unlimited for local providers, [`HOSTED_DEFAULT_REQUESTS_PER_MINUTE`] for hosted ones).
@@ -363,7 +361,6 @@ impl Default for Ai {
             provider: ProviderId::LmStudio,
             base_url: ProviderId::LmStudio.default_base_url().to_owned(),
             model: String::new(),
-            auto_start_queue: false,
             max_concurrent_requests: 2,
             requests_per_minute: None,
             request_timeout_s: None,
@@ -555,7 +552,7 @@ mod tests {
         assert_eq!(s.appearance.theme, ThemeSetting::Dark);
         assert_eq!(s.ai.provider, ProviderId::LmStudio);
         assert_eq!(s.ai.base_url, "http://localhost:1234/v1");
-        assert!(s.ai.consent.is_none() && !s.ai.auto_start_queue);
+        assert!(s.ai.consent.is_none());
         let c = &s.scanning.classifier;
         assert_eq!((c.min_side_px, c.min_pixels), (200, 120_000));
         assert_eq!(c.min_video_duration_ms, 2_000);

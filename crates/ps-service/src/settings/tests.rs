@@ -46,7 +46,6 @@ fn scenario_settings_defaults_are_local() {
     assert_eq!(s.ai.provider, ProviderId::LmStudio);
     assert_eq!(s.ai.base_url, "http://localhost:1234/v1");
     assert!(s.ai.consent.is_none(), "hosted consent is off");
-    assert!(!s.ai.auto_start_queue, "the AI queue stays stopped");
     let c = &s.scanning.classifier;
     assert_eq!(c.min_side_px, 200);
     assert_eq!(c.min_pixels, 120_000);
@@ -267,4 +266,19 @@ fn consent_is_bound_to_provider_and_host_and_v1_consent_is_dropped() {
         !crate::ai::consent_covers(&moved),
         "another host needs consent"
     );
+}
+
+/// Keys that were removed (`ai.auto_start_queue`, never implemented) still load: unknown keys are ignored.
+#[test]
+fn removed_keys_are_tolerated() {
+    let dir = temp();
+    let store = SettingsStore::in_dir(dir.path());
+    std::fs::write(
+        store.path(),
+        "settings_version = 1\n[ai]\nauto_start_queue = true\nmax_concurrent_requests = 3\n",
+    )
+    .unwrap();
+    let loaded = store.load();
+    assert!(loaded.recovered.is_none());
+    assert_eq!(loaded.settings.ai.max_concurrent_requests, 3);
 }
