@@ -70,14 +70,16 @@ fn scenario_llm_providers_live_lm_studio_smoke() {
             .block_on(describer.describe(&derived.llm))
             .expect("schema-valid insight");
         eprintln!(
-            "image {i}: {:.1} s, model {}, requests {}, repaired {}\n  {}",
+            "image {i}: {:.1} s, model {}, prompt v{}, requests {}, repaired {}\n  {}",
             t0.elapsed().as_secs_f64(),
             d.provenance.model,
+            d.provenance.prompt_version,
             d.provenance.requests,
             d.repaired,
             serde_json::to_string(&d.insight).unwrap()
         );
         assert_eq!(d.provenance.schema_version, 1);
+        assert_eq!(d.provenance.prompt_version, ps_llm::PROMPT_VERSION);
         assert!(!d.insight.subject.is_empty());
     }
 }
