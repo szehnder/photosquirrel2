@@ -275,7 +275,11 @@ fn kde_activate_app() {
     let Some(qdbus) = ["qdbus6", "qdbus"].into_iter().find(|b| has(b)) else {
         return;
     };
-    let script = std::env::temp_dir().join("photosquirrel-activate.js");
+    // Beside the build output, not in /tmp (RAM-backed on the reference machine; AGENTS.md).
+    let Ok(dir) = crate::temp_dir(&std::env::current_dir().unwrap_or_default()) else {
+        return;
+    };
+    let script = dir.join("photosquirrel-activate.js");
     let js = r#"for (const w of workspace.windowList()) {
     if (String(w.resourceClass).indexOf("photosquirrel") >= 0 && !w.resourceClass.includes("cli")) {
         workspace.activeWindow = w;
