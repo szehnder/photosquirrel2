@@ -13,7 +13,7 @@
 - [x] 2.3 Stage bars and per-source rows with sparklines; verify `scenario_scan_progress_stage_counts_shown` and `scenario_scan_progress_per_source_rows_shown`
 - [x] 2.4 Recent finds strip and errors list; verify `scenario_scan_progress_recent_finds_show_thumbnails` and `scenario_scan_progress_errors_listed_with_reason`
 - [x] 2.5 Controls; verify `scenario_scan_progress_pause_from_dashboard`, `scenario_scan_progress_cancel_from_dashboard`, `scenario_scan_progress_resume_from_dashboard`
-- [x] 2.6 100 ms sampling loop and constant cost; verify `scenario_scan_progress_snapshot_sampled_at_most_10_hz` and `scenario_scan_progress_ui_cost_independent_of_rate` (headless frame p95 about 4 ms at both rates, rounds interleaved against machine noise)
+- [x] 2.6 100 ms sampling loop and constant cost; verify `scenario_scan_progress_snapshot_sampled_at_most_10_hz` and `scenario_scan_progress_ui_cost_independent_of_rate` (two apps with live runs sampled by the dashboard loop; headless frame p95 about 6 ms at both rates, rounds interleaved against machine noise)
 - [x] 2.7 Status-bar progress; verify `scenario_scan_progress_status_bar_shows_progress`
 
 ## 3. Verification

@@ -421,19 +421,13 @@ fn scenario_scan_progress_snapshot_sampled_at_most_10_hz(cx: &mut TestAppContext
     assert!(taken >= 40, "the dashboard keeps sampling ({taken})");
 }
 
-/// Render the dashboard `frames` times for a pinned snapshot of a run at `files_per_s`; returns the frame times.
-fn frame_times(r: &mut Rig, files_per_s: f64, frames: usize) -> Vec<Duration> {
-    let fake = FakeScanService::new(FakeConfig::two_sources(files_per_s));
-    fake.start_at(&[], 4_000, RunStatus::Running);
-    let snap = fake.snapshot().unwrap();
-    *r.backend.pinned.lock().unwrap() = Some(snap.clone());
-    let m = r.monitor();
-    r.cx.update(|_, cx| m.update(cx, |m, cx| m.apply(Some(snap), cx)));
+/// Let the live sampling loop take `frames` snapshots of the running scan (one per 100 ms of the fake clock) and
+/// time the dashboard frame that renders each; returns the frame times.
+fn frame_times(r: &mut Rig, frames: usize) -> Vec<Duration> {
     let mut times = Vec::with_capacity(frames);
     for _ in 0..frames {
-        let m = m.clone();
+        r.tick(100);
         let t = r.cx.update(|window, cx| {
-            m.update(cx, |_, cx| cx.notify());
             let t0 = Instant::now();
             window.refresh();
             window.render_frame(cx);
@@ -451,16 +445,43 @@ fn p95(mut times: Vec<Duration>) -> Duration {
 
 #[gpui_kit::test]
 fn scenario_scan_progress_ui_cost_independent_of_rate(cx: &mut TestAppContext) {
-    let mut r = rig(cx, FakeConfig::two_sources(100.0));
+    // Two apps, each with a live run on the simulated engine sampled by the dashboard's own loop.
+    let mut slow_app = cx.new_app();
+    let mut fast_app = cx.new_app();
+    // Large sources, so the fast run is still going after ~15 s of sampling (the layout is the same at both rates).
+    let big = |fps: f64| {
+        let mut c = FakeConfig::two_sources(fps);
+        for s in &mut c.sources {
+            s.files = 1_000_000;
+        }
+        c
+    };
+    let mut slow_rig = rig(&mut slow_app, big(100.0));
+    let mut fast_rig = rig(&mut fast_app, big(20_000.0));
+    start_all(&mut slow_rig);
+    start_all(&mut fast_rig);
+    let taken = |r: &Rig| r.backend.scan.snapshots_taken();
+    let done = |r: &mut Rig| r.snap(|s| s.processed).unwrap_or(0);
+    let (slow0, fast0) = (taken(&slow_rig), taken(&fast_rig));
+    let (slow_done0, fast_done0) = (done(&mut slow_rig), done(&mut fast_rig));
     // Warm up layout and text caches.
-    frame_times(&mut r, 100.0, 20);
-    frame_times(&mut r, 20_000.0, 20);
+    frame_times(&mut slow_rig, 10);
+    frame_times(&mut fast_rig, 10);
     // Interleave short rounds so machine noise (other tests running in parallel) hits both rates alike.
     let (mut slow, mut fast) = (Vec::new(), Vec::new());
     for _ in 0..8 {
-        slow.extend(frame_times(&mut r, 100.0, 15));
-        fast.extend(frame_times(&mut r, 20_000.0, 15));
+        slow.extend(frame_times(&mut slow_rig, 15));
+        fast.extend(frame_times(&mut fast_rig, 15));
     }
+    // The loop really sampled both runs and the shown progress moved at very different rates.
+    assert!(taken(&slow_rig) - slow0 >= 100, "slow run sampled");
+    assert!(taken(&fast_rig) - fast0 >= 100, "fast run sampled");
+    let slow_moved = done(&mut slow_rig) - slow_done0;
+    let fast_moved = done(&mut fast_rig) - fast_done0;
+    assert!(
+        fast_moved > slow_moved * 20,
+        "progress {slow_moved} vs {fast_moved} files"
+    );
     let (slow, fast) = (p95(slow), p95(fast));
     let diff = slow.abs_diff(fast);
     eprintln!("dashboard frame p95: {slow:?} at 100 files/s, {fast:?} at 20,000 files/s");
