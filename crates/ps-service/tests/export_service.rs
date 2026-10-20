@@ -268,6 +268,85 @@ fn scenario_export_library_refused_as_a_source() {
     );
 }
 
+/// export-hardening: a library made by another catalog (it has `.photosquirrel/manifest.jsonl` but is not
+/// registered here) is refused as a source like a registered one: the library itself, a folder inside it and a
+/// folder containing it, when adding and when re-linking. A library nested deeper than the add-time search is
+/// skipped by the walk, so its copies are never scanned.
+#[test]
+fn scenario_export_library_from_another_catalog_refused_as_a_source() {
+    assert_eq!(ps_scan::walk::LIBRARY_META_DIR, ps_export::LIBRARY_META_DIR);
+    assert_eq!(
+        ps_scan::walk::LIBRARY_MANIFEST_FILE,
+        ps_export::manifest::MANIFEST_FILE
+    );
+    let tmp = tempfile::tempdir().expect("tmp");
+    let mark = |lib: &Path| {
+        std::fs::create_dir_all(lib.join("2020/2020-01-01")).expect("library");
+        std::fs::create_dir_all(lib.join(".photosquirrel")).expect("meta");
+        std::fs::write(lib.join(".photosquirrel/manifest.jsonl"), b"{}\n").expect("manifest");
+        std::fs::write(lib.join("2020/2020-01-01/IMG_0001.JPG"), b"a copy").expect("copy");
+    };
+    let backup = tmp.path().join("Backup");
+    let library = backup.join("Old Library");
+    mark(&library);
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).expect("open");
+    for refused in [library.clone(), library.join("2020"), backup.clone()] {
+        let err = svc.add_source(&refused).expect_err("refused");
+        assert!(
+            matches!(err, ps_service::scan::ScanError::ExportLibrary { .. }),
+            "{refused:?}: {err}"
+        );
+        assert!(
+            err.to_string().contains("Old Library"),
+            "names the library: {err}"
+        );
+    }
+    assert!(svc.sources().expect("sources").is_empty());
+
+    // Re-linking a source onto the library is refused too.
+    let camera = tmp.path().join("Camera");
+    std::fs::create_dir_all(&camera).expect("camera");
+    std::fs::write(camera.join("IMG_0002.JPG"), b"not really a jpeg").expect("file");
+    let added = svc
+        .add_source(&camera)
+        .expect("a folder outside any library");
+    svc.start(&[]).expect("scan");
+    svc.wait().expect("wait");
+    let err = svc
+        .relink_source(added.source.id, &library)
+        .expect_err("re-link into a library refused");
+    assert!(
+        matches!(err, ps_service::scan::ScanError::ExportLibrary { .. }),
+        "{err}"
+    );
+
+    // Deeper than the add-time search: added, but the walk never enters the library.
+    let deep_root = tmp.path().join("Drive");
+    let deep = deep_root.join("a/b/c/d/e/Library");
+    mark(&deep);
+    std::fs::write(deep_root.join("IMG_0003.JPG"), b"an original").expect("file");
+    let src = svc
+        .add_source(&deep_root)
+        .expect("deep library not seen at add time");
+    svc.start(&[src.source.id]).expect("scan");
+    svc.wait().expect("wait");
+    let files = svc
+        .engine()
+        .catalog()
+        .read()
+        .source_files(src.source.id, None, 100)
+        .expect("files");
+    let paths: Vec<String> = files
+        .iter()
+        .map(|f| f.key.path.display().into_owned())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["IMG_0003.JPG".to_owned()],
+        "library copies are not scanned"
+    );
+}
+
 /// Sidecars through the real path (`Exports::input` from the catalog): a keeper whose stored AI result says
 /// "pets" with a dog, and whose user correction adds the tag "Rex", gets a sidecar with all three as subjects;
 /// a keeper with only a demo result gets no AI keywords at all.

@@ -240,7 +240,15 @@ impl Scanner {
     /// refused; existing sources inside the new root are folded into it.
     /// A registered export library, a folder inside one or a folder containing one is never a source: the
     /// library holds the copies PhotoSquirrel made, and the export refuses to write into a source.
+    /// Libraries are found by the catalog's registry and on disk (`.photosquirrel/manifest.jsonl`), so one made by
+    /// another catalog is refused too.
     fn refuse_export_library(&self, root: &Path) -> Result<()> {
+        if let Some(library) = crate::walk::find_export_library(&self.opts.fs, root) {
+            return Err(ScanError::ExportLibrary {
+                path: root.to_path_buf(),
+                library,
+            });
+        }
         for lib in self.catalog.read().export_libraries()? {
             let library = path_from_bytes(&lib.root);
             if source::overlap(root, &library) != Overlap::Disjoint {

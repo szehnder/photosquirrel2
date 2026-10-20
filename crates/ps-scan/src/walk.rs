@@ -3,7 +3,8 @@
 //! Depth-first, each folder's entries sorted by name bytes, so the walk order is the directory order the
 //! lanes read in (sequential on spinning disks). Symlinks are never followed (no loops, no escaping the
 //! source), the quarantine folder reserved by ADR-0024 is ignored, and unreadable folders are recorded and
-//! skipped. Pause and cancel are honoured between folders.
+//! skipped. Pause and cancel are honoured between folders. A folder that is an export library (it holds
+//! `.photosquirrel/manifest.jsonl`, possibly made by another catalog) is never walked: its photos are copies.
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,52 @@ use crate::fs::{EntryKind, SourceFs};
 
 /// The folder name ADR-0024 reserves for reversible cleanup; never scanned.
 pub const QUARANTINE_DIR: &str = ".photosquirrel-quarantine";
+
+/// The folder and file that mark an export library on disk (`ps_export::LIBRARY_META_DIR` and
+/// `ps_export::manifest::MANIFEST_FILE`; ps-scan does not depend on ps-export, a ps-service test keeps them equal).
+pub const LIBRARY_META_DIR: &str = ".photosquirrel";
+pub const LIBRARY_MANIFEST_FILE: &str = "manifest.jsonl";
+
+/// How deep, and through how many folders, [`find_export_library`] looks below a new source root. Deeper
+/// libraries are still never scanned: the walk skips them.
+pub const LIBRARY_SEARCH_DEPTH: usize = 4;
+pub const LIBRARY_SEARCH_MAX_DIRS: usize = 10_000;
+
+/// `dir` is an export library: it holds `.photosquirrel/manifest.jsonl`.
+pub fn is_export_library(fs: &SourceFs, dir: &Path) -> bool {
+    fs.symlink_metadata(&dir.join(LIBRARY_META_DIR).join(LIBRARY_MANIFEST_FILE))
+        .is_ok_and(|m| m.is_file())
+}
+
+/// An export library (of this or another catalog) that `root` is, is inside, or contains within
+/// [`LIBRARY_SEARCH_DEPTH`] levels. Symlinks are not followed.
+pub fn find_export_library(fs: &SourceFs, root: &Path) -> Option<PathBuf> {
+    if let Some(lib) = root.ancestors().find(|a| is_export_library(fs, a)) {
+        return Some(lib.to_path_buf());
+    }
+    let mut queue = std::collections::VecDeque::from([(root.to_path_buf(), 0usize)]);
+    let mut seen = 0usize;
+    while let Some((dir, depth)) = queue.pop_front() {
+        seen += 1;
+        if seen > LIBRARY_SEARCH_MAX_DIRS {
+            break;
+        }
+        let Ok(entries) = fs.read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.into_iter().filter(|e| e.kind == EntryKind::Dir) {
+            let child = dir.join(&e.name);
+            if e.name == LIBRARY_META_DIR {
+                if is_export_library(fs, &dir) {
+                    return Some(dir);
+                }
+            } else if depth < LIBRARY_SEARCH_DEPTH {
+                queue.push_back((child, depth + 1));
+            }
+        }
+    }
+    None
+}
 
 /// One regular file the walk found.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +83,8 @@ pub struct WalkOutput {
     pub other_skipped: u64,
     /// Folders or entries that could not be listed or stat-ed.
     pub errors: Vec<(String, String)>,
+    /// Export libraries found inside the source and not walked (relative paths).
+    pub libraries_skipped: Vec<String>,
 }
 
 /// Why a walk stopped early.
@@ -91,6 +140,19 @@ pub fn walk(
             }
         };
         out.dirs += 1;
+        if let Some(r) = &rel
+            && entries
+                .iter()
+                .any(|e| e.kind == EntryKind::Dir && e.name == LIBRARY_META_DIR)
+            && is_export_library(fs, &dir)
+        {
+            log::warn!(
+                "{} is an export library; its photos are copies and are not scanned",
+                dir.display()
+            );
+            out.libraries_skipped.push(r.display().into_owned());
+            continue;
+        }
         let thumbs_db = entries.iter().any(|e| {
             e.kind == EntryKind::File && e.name.to_string_lossy().eq_ignore_ascii_case("thumbs.db")
         });
