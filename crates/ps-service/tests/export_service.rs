@@ -225,3 +225,45 @@ fn scenario_export_stripped_keeper_filed_by_group_capture_date() {
     let from = rec.date_from.expect("date_from");
     assert!(from.ends_with("IMG_0042.JPG"), "{from}");
 }
+
+/// A registered export library, a folder inside it and a folder containing it are refused as sources (by
+/// `sources add` and the Sources view, which both go through `add_source`), and a source cannot be re-linked
+/// into it.
+#[test]
+fn scenario_export_library_refused_as_a_source() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).expect("open");
+    let photos = tmp.path().join("Pictures");
+    let library = photos.join("PhotoSquirrel Library");
+    std::fs::create_dir_all(library.join("2020/2020-01-01")).expect("library");
+    let elsewhere = tmp.path().join("Camera");
+    std::fs::create_dir_all(&elsewhere).expect("source");
+    std::fs::write(elsewhere.join("IMG_0001.JPG"), b"not really a jpeg").expect("file");
+    svc.exports()
+        .library_id(&library)
+        .expect("register library");
+    for refused in [
+        library.clone(),
+        library.join("2020"),
+        photos.clone(),
+        tmp.path().to_path_buf(),
+    ] {
+        let err = svc.add_source(&refused).expect_err("refused");
+        assert!(
+            matches!(err, ps_service::scan::ScanError::ExportLibrary { .. }),
+            "{refused:?}: {err}"
+        );
+        assert!(err.to_string().contains("export library"), "{err}");
+    }
+    let added = svc
+        .add_source(&elsewhere)
+        .expect("a folder outside the library");
+    assert!(svc.sources().expect("sources").len() == 1);
+    let err = svc
+        .relink_source(added.source.id, &library)
+        .expect_err("re-link into the library refused");
+    assert!(
+        matches!(err, ps_service::scan::ScanError::ExportLibrary { .. }),
+        "{err}"
+    );
+}

@@ -74,11 +74,15 @@ An export MUST open source files read-only and MUST NOT change any source file's
 - **THEN** a snapshot of every source tree (paths, sizes, modification times, hashes) is identical before and after
 
 ### Requirement: Library outside sources
-The library folder MUST NOT be inside any source and no source may be inside the library.
+The library folder MUST NOT be inside any source and no source may be inside the library, whether the library or the source is chosen first.
 
 #### Scenario: Library inside source refused
 - **WHEN** the user picks a folder inside a registered source as the library
 - **THEN** the export is refused with a message naming the source
+
+#### Scenario: Library refused as a source
+- **WHEN** the user adds a registered export library, a folder inside it or a folder containing it as a source
+- **THEN** the source is refused with a message naming the library
 
 ### Requirement: Paired files kept together
 RAW+JPEG keeper sets and Live Photo still/video pairs SHALL be exported into the same folder with matching file stems, applying any collision suffix to both.

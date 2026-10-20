@@ -238,6 +238,21 @@ impl Scanner {
     /// Add a folder as a source (ADR-0006): records its root, volume identity, total size and a fingerprint
     /// of up to 64 sampled files. Reads the tree, never writes to it. A root inside an existing source is
     /// refused; existing sources inside the new root are folded into it.
+    /// A registered export library, a folder inside one or a folder containing one is never a source: the
+    /// library holds the copies PhotoSquirrel made, and the export refuses to write into a source.
+    fn refuse_export_library(&self, root: &Path) -> Result<()> {
+        for lib in self.catalog.read().export_libraries()? {
+            let library = path_from_bytes(&lib.root);
+            if source::overlap(root, &library) != Overlap::Disjoint {
+                return Err(ScanError::ExportLibrary {
+                    path: root.to_path_buf(),
+                    library,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn add_source(&self, path: &Path) -> Result<AddedSource> {
         let meta = match self.opts.fs.metadata(path) {
             Ok(m) => m,
@@ -258,6 +273,7 @@ impl Scanner {
             path: path.to_path_buf(),
             source: e,
         })?;
+        self.refuse_export_library(&root)?;
         let mut fold = Vec::new();
         for s in self.records()? {
             let existing = path_from_bytes(&s.root);
@@ -377,6 +393,7 @@ impl Scanner {
             path: new_root.to_path_buf(),
             source: e,
         })?;
+        self.refuse_export_library(&root)?;
         let wanted: std::collections::HashSet<[u8; 32]> =
             samples.iter().map(|s| s.path_hash).collect();
         let mut known: HashMap<[u8; 32], RelPath> = HashMap::new();

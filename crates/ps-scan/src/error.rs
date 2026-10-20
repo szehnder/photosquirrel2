@@ -32,6 +32,14 @@ pub enum ScanError {
         by_root: PathBuf,
     },
 
+    #[error(
+        "{} overlaps the export library {}: a library is never scanned as a source (its photos are the copies \
+         PhotoSquirrel made); choose a folder outside it",
+        path.display(),
+        library.display()
+    )]
+    ExportLibrary { path: PathBuf, library: PathBuf },
+
     #[error("unknown source {0}")]
     NoSuchSource(SourceId),
 
