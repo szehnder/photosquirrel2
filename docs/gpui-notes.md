@@ -383,3 +383,13 @@ window size) when the delay is long; focus can still move.
   bounds against `inspector-scroll`).
 - Scripted screenshots of a filtered Library: `photosquirrel --gallery-filter children,pending` (hidden) sets
   the start-up filters before the warm-up, so the filtered list is ready in frame one.
+
+## Start-up loads and scripted screenshots (M2 gate fixes)
+- Views that load data before frame one (Duplicates, AI Review) go through `StartupGrace::within(deadline, job)`:
+  the job runs on a helper thread and the UI thread waits at most until the grace deadline, then falls back to
+  the asynchronous path. Never run catalog queries on the UI thread "just during the grace" without a deadline.
+- A scripted screenshot on a reused `--data-dir` restores the last session's `ui-state.json` (active view,
+  inspector state). Delete it before each capture, or pass the view's `--command`, or the PNG shows whatever
+  view the previous capture left open.
+- First launch answers the catalog summary without opening (creating) a catalog, so frame one is the welcome
+  view; anything that makes the summary slow again brings back an "Opening your catalog…" first frame.
