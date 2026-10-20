@@ -30,6 +30,10 @@ pub enum LlmError {
     /// A response that is not the provider's documented shape.
     #[error("unexpected answer from {provider}: {message}")]
     Protocol { provider: String, message: String },
+    /// The HTTP client could not be set up (TLS backend, configuration). Nothing was sent: there is no fallback
+    /// client, because a default one would follow redirects and have no timeouts (ADR-0047).
+    #[error("cannot set up the HTTP client for {provider}: {message}")]
+    Client { provider: String, message: String },
     /// The model's answer is not a valid `ImageInsight` v1 (after the repair round).
     #[error("invalid insight: {0}")]
     Invalid(String),
@@ -43,7 +47,10 @@ impl LlmError {
             | LlmError::Timeout { .. }
             | LlmError::RateLimited { .. } => true,
             LlmError::Http { status, .. } => *status >= 500 || *status == 408,
-            LlmError::Auth { .. } | LlmError::Protocol { .. } | LlmError::Invalid(_) => false,
+            LlmError::Auth { .. }
+            | LlmError::Protocol { .. }
+            | LlmError::Client { .. }
+            | LlmError::Invalid(_) => false,
         }
     }
 }

@@ -53,7 +53,7 @@ fn scenario_llm_providers_live_lm_studio_smoke() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
     let rt = ps_llm::LlmRuntime::shared();
-    let provider = provider_for(cfg);
+    let provider = provider_for(cfg).expect("provider");
     let report = rt.block_on(test_connection(&*provider));
     eprintln!("connection test: {report:?}");
     assert!(

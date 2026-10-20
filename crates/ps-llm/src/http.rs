@@ -28,23 +28,37 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-    pub fn new(cfg: &ProviderConfig) -> Self {
-        let inner = reqwest::Client::builder()
+    /// The client for `cfg`: its timeouts, no redirects. Fails when the client cannot be built; there is no
+    /// fallback (a default `reqwest::Client` follows redirects and has no timeouts).
+    pub fn new(cfg: &ProviderConfig) -> Result<Self, LlmError> {
+        Self::from_builder(cfg, Self::builder(cfg))
+    }
+
+    fn builder(cfg: &ProviderConfig) -> reqwest::ClientBuilder {
+        reqwest::Client::builder()
             .connect_timeout(cfg.timeouts.connect)
             .timeout(cfg.timeouts.request)
             .user_agent(concat!("PhotoSquirrel/", env!("CARGO_PKG_VERSION")))
             // Never follow redirects: consent covers one host (ADR-0047), and a local server must not be able
             // to send previews elsewhere by answering 3xx.
             .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-        Self {
+    }
+
+    fn from_builder(
+        cfg: &ProviderConfig,
+        builder: reqwest::ClientBuilder,
+    ) -> Result<Self, LlmError> {
+        let inner = builder.build().map_err(|e| LlmError::Client {
+            provider: cfg.name.clone(),
+            message: e.to_string(),
+        })?;
+        Ok(Self {
             inner,
             provider: cfg.name.clone(),
             secret: cfg.api_key.as_ref().map(|k| k.expose().to_owned()),
             retry: cfg.retry.clone(),
             request_timeout: cfg.timeouts.request,
-        }
+        })
     }
 
     /// The same client without retries (connection tests).
@@ -204,4 +218,21 @@ fn retry_after(h: &reqwest::header::HeaderMap) -> Option<Duration> {
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|s| s.is_finite() && *s >= 0.0)
         .map(Duration::from_secs_f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// N4: a client that cannot be built is an error, never a silent default client (which would follow
+    /// redirects and have no timeouts).
+    #[test]
+    fn a_failing_builder_is_an_error_not_a_default_client() {
+        let cfg = ProviderConfig::default_local();
+        let bad = HttpClient::builder(&cfg).user_agent("bad\nagent");
+        let err = HttpClient::from_builder(&cfg, bad).expect_err("invalid header value");
+        assert!(matches!(err, LlmError::Client { .. }), "{err:?}");
+        assert!(!err.is_retryable());
+        assert!(HttpClient::new(&cfg).is_ok());
+    }
 }

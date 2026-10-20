@@ -22,9 +22,9 @@ pub struct Anthropic {
 }
 
 impl Anthropic {
-    pub fn new(cfg: ProviderConfig) -> Self {
-        let http = HttpClient::new(&cfg);
-        Self { cfg, http }
+    pub fn new(cfg: ProviderConfig) -> Result<Self, LlmError> {
+        let http = HttpClient::new(&cfg)?;
+        Ok(Self { cfg, http })
     }
 
     fn headers(&self) -> Vec<(&'static str, String)> {

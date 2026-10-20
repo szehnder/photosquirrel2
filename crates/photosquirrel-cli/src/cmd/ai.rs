@@ -142,7 +142,7 @@ pub fn start(ctx: &Ctx, include_non_keepers: bool) -> Result<()> {
     }
     let settings = ctx.settings()?;
     let svc = ctx.service()?;
-    let ai = AiService::from_settings(&svc, &settings, &Secrets::os());
+    let ai = AiService::from_settings(&svc, &settings, &Secrets::os())?;
     let queued = ai.start(include_non_keepers)?;
     log::info!("queued {queued} new items");
     let mut last = Instant::now() - Duration::from_secs(10);

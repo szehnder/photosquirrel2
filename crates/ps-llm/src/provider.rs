@@ -178,11 +178,11 @@ pub(crate) fn pick_default_model(models: &[ModelInfo]) -> Option<&ModelInfo> {
         .or_else(|| models.iter().find(|m| m.vision != Some(false)))
 }
 
-/// Build the provider for a configuration.
-pub fn provider_for(cfg: ProviderConfig) -> Arc<dyn VisionProvider> {
-    match cfg.wire {
-        WireFormat::OpenAiCompatible => Arc::new(crate::wire::openai::OpenAiCompatible::new(cfg)),
-        WireFormat::Anthropic => Arc::new(crate::wire::anthropic::Anthropic::new(cfg)),
-        WireFormat::Gemini => Arc::new(crate::wire::gemini::Gemini::new(cfg)),
-    }
+/// Build the provider for a configuration. Fails when its HTTP client cannot be built ([`LlmError::Client`]).
+pub fn provider_for(cfg: ProviderConfig) -> Result<Arc<dyn VisionProvider>, LlmError> {
+    Ok(match cfg.wire {
+        WireFormat::OpenAiCompatible => Arc::new(crate::wire::openai::OpenAiCompatible::new(cfg)?),
+        WireFormat::Anthropic => Arc::new(crate::wire::anthropic::Anthropic::new(cfg)?),
+        WireFormat::Gemini => Arc::new(crate::wire::gemini::Gemini::new(cfg)?),
+    })
 }

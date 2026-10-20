@@ -61,7 +61,7 @@ fn anthropic_settings(server: &MockServer) -> Settings {
 
 fn describe(settings: &Settings, secrets: &Secrets) {
     let (cfg, _) = ai::provider_config(settings, secrets);
-    let d = ps_llm::Describer::new(ps_llm::provider_for(cfg));
+    let d = ps_llm::Describer::new(ps_llm::provider_for(cfg).expect("provider"));
     ps_llm::LlmRuntime::shared()
         .block_on(d.describe(&preview(1)))
         .unwrap();
@@ -135,7 +135,7 @@ fn scenario_llm_providers_key_not_written_to_disk() {
     assert_eq!(from, Some(StoredIn::Keychain));
     assert!(!format!("{cfg:?}").contains(KEY), "Debug redacts the key");
     cfg.retry.server_backoff = vec![std::time::Duration::from_millis(10)];
-    let d = ps_llm::Describer::new(ps_llm::provider_for(cfg));
+    let d = ps_llm::Describer::new(ps_llm::provider_for(cfg).expect("provider"));
     ps_llm::LlmRuntime::shared()
         .block_on(d.describe(&preview(1)))
         .unwrap();

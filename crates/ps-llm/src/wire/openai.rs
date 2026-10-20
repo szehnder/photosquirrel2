@@ -30,14 +30,14 @@ pub struct OpenAiCompatible {
 }
 
 impl OpenAiCompatible {
-    pub fn new(cfg: ProviderConfig) -> Self {
-        let http = HttpClient::new(&cfg);
-        Self {
+    pub fn new(cfg: ProviderConfig) -> Result<Self, LlmError> {
+        let http = HttpClient::new(&cfg)?;
+        Ok(Self {
             cfg,
             http,
             downgraded: AtomicBool::new(false),
             resolved: OnceCell::new(),
-        }
+        })
     }
 
     fn headers(&self) -> Vec<(&'static str, String)> {

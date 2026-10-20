@@ -212,7 +212,7 @@ impl ReviewSource for CatalogReview {
             }
             *ai = Some((
                 fingerprint,
-                ps_service::ai::AiService::from_settings(scan, settings, secrets),
+                ps_service::ai::AiService::from_settings(scan, settings, secrets)?,
             ));
         }
         let Some((_, svc)) = ai.as_ref() else {

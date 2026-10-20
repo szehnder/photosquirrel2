@@ -113,7 +113,8 @@ fn scenario_ai_queue_keepers_processed_first() {
     let server = MockServer::with_handler(|_| ok_reply());
     let cfg = cfg_for(&server.url());
     let loader = Arc::new(OrderLoader(Mutex::new(Vec::new())));
-    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), loader.clone());
+    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), loader.clone())
+        .expect("ai service");
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(server.request_count(), 0, "nothing sent before start");
     let queued = ai.start(false).unwrap();
@@ -204,7 +205,8 @@ fn raw_jpeg_pairs_are_described_once_through_the_jpeg() {
     });
     let cfg = cfg_for(&server.url());
     let loader = Arc::new(OrderLoader(Mutex::new(Vec::new())));
-    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), loader.clone());
+    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), loader.clone())
+        .expect("ai service");
     ai.start(false).unwrap();
     assert!(ai.wait_idle(Duration::from_secs(60)));
     let order = loader.0.lock().unwrap().clone();
@@ -287,7 +289,8 @@ fn ai_restart_child() {
     let (data, url) = spec.split_once('|').unwrap();
     let catalog = Arc::new(Catalog::open(Path::new(data)).unwrap());
     let cfg = cfg_for(url);
-    let ai = AiService::with_loader(catalog, cfg.clone(), qc(&cfg), fixed_loader());
+    let ai =
+        AiService::with_loader(catalog, cfg.clone(), qc(&cfg), fixed_loader()).expect("ai service");
     ai.start(false).unwrap();
     std::thread::sleep(Duration::from_secs(600));
 }
@@ -340,7 +343,8 @@ fn scenario_ai_queue_queue_survives_restart() {
     // Restart: 10 done, nothing in flight, paused; resuming sends only the 40 remaining items.
     let catalog = Arc::new(Catalog::open(&data).unwrap());
     let cfg = cfg_for(&server.url());
-    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader());
+    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader())
+        .expect("ai service");
     let s = status(&catalog).unwrap();
     assert_eq!((s.done, s.pending, s.in_flight), (10, 40, 0), "{s:?}");
     assert_eq!(s.state, "paused");
@@ -383,7 +387,8 @@ fn described_with_v1_results(
     let server = MockServer::with_handler(|_| ok_reply());
     let cfg = cfg_for(&server.url());
     {
-        let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader());
+        let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader())
+            .expect("ai service");
         ai.start(false).unwrap();
         assert!(ai.wait_idle(Duration::from_secs(60)));
     }
@@ -418,7 +423,8 @@ fn scenario_ai_queue_older_prompt_results_kept() {
     let sent = server.request_count();
     let results = status(&catalog).unwrap().results;
     // A queue with the current prompt starts again: the v1 results are kept, nothing is re-sent.
-    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader());
+    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader())
+        .expect("ai service");
     assert_eq!(ai.start(false).unwrap(), 0);
     assert!(ai.wait_idle(Duration::from_secs(30)));
     assert_eq!(
@@ -467,7 +473,8 @@ fn scenario_ai_queue_re_describe_with_current_prompt() {
     );
     let s = status(&catalog).unwrap();
     assert_eq!(s.pending, 3);
-    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader());
+    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader())
+        .expect("ai service");
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(server.request_count(), sent, "nothing sent before start");
     ai.start(false).unwrap();
@@ -481,3 +488,4 @@ fn scenario_ai_queue_re_describe_with_current_prompt() {
     assert_eq!(ps_service::ai::older_prompt_contents(&catalog).unwrap(), 0);
     assert_eq!(status(&catalog).unwrap().pending, 0);
 }
+

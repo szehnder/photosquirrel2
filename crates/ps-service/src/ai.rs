@@ -85,8 +85,20 @@ pub fn destination_fingerprint(ai: &Ai) -> (ProviderId, Option<String>, bool) {
 /// Run "Test connection" for the configured provider, blocking the calling (non-UI) thread.
 pub fn test_connection(settings: &Settings, secrets: &Secrets) -> TestReport {
     let (cfg, _) = provider_config(settings, secrets);
-    let provider = ps_llm::provider_for(cfg);
-    ps_llm::LlmRuntime::shared().block_on(ps_llm::test_connection(&*provider))
+    let name = cfg.name.clone();
+    match ps_llm::provider_for(cfg) {
+        Ok(provider) => ps_llm::LlmRuntime::shared().block_on(ps_llm::test_connection(&*provider)),
+        Err(e) => TestReport {
+            provider: name,
+            reachable: false,
+            latency: None,
+            error: Some(e.to_string()),
+            model: None,
+            model_found: None,
+            accepts_images: None,
+            models: Vec::new(),
+        },
+    }
 }
 
 // ---- The catalog-backed queue (ai-insights tasks 2.1, 2.3, 2.5, 2.8) --------------------------------------
@@ -603,14 +615,22 @@ impl std::fmt::Debug for AiService {
 
 impl AiService {
     /// The queue for the provider the settings describe (key from the keychain/environment).
-    pub fn from_settings(scan: &ScanService, settings: &Settings, secrets: &Secrets) -> AiService {
+    pub fn from_settings(
+        scan: &ScanService,
+        settings: &Settings,
+        secrets: &Secrets,
+    ) -> Result<AiService, ps_llm::LlmError> {
         let (cfg, _) = provider_config(settings, secrets);
         let qc = QueueConfig::from_settings(&settings.ai, &cfg);
         AiService::with_provider(scan.engine().catalog().clone(), cfg, qc)
     }
 
     /// The queue for an explicit provider configuration (tests, CLI overrides).
-    pub fn with_provider(catalog: Arc<Catalog>, cfg: ProviderConfig, qc: QueueConfig) -> AiService {
+    pub fn with_provider(
+        catalog: Arc<Catalog>,
+        cfg: ProviderConfig,
+        qc: QueueConfig,
+    ) -> Result<AiService, ps_llm::LlmError> {
         let loader: Arc<dyn PreviewLoader> = Arc::new(SourcePreviewLoader::new(catalog.clone()));
         AiService::with_loader(catalog, cfg, qc, loader)
     }
@@ -621,23 +641,23 @@ impl AiService {
         cfg: ProviderConfig,
         qc: QueueConfig,
         loader: Arc<dyn PreviewLoader>,
-    ) -> AiService {
+    ) -> Result<AiService, ps_llm::LlmError> {
         let provider_name = cfg.name.clone();
         let model = cfg.model.clone();
         let store: Arc<dyn QueueStore> = Arc::new(CatalogQueueStore::new(catalog.clone()));
         let queue = AiQueue::new(
             store,
             loader,
-            Describer::new(ps_llm::provider_for(cfg)),
+            Describer::new(ps_llm::provider_for(cfg)?),
             qc,
             ps_llm::LlmRuntime::shared().handle(),
         );
-        AiService {
+        Ok(AiService {
             queue,
             catalog,
             provider: provider_name,
             model,
-        }
+        })
     }
 
     /// Queue keepers (and non-keepers when opted in) and start sending. A hosted provider without consent

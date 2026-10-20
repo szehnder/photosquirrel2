@@ -61,7 +61,7 @@ fn queue(store: &Arc<MemoryStore>, server: &MockServer, concurrency: usize) -> A
     AiQueue::new(
         store.clone(),
         loader(),
-        Describer::new(provider_for(cfg)),
+        Describer::new(provider_for(cfg).expect("provider")),
         qc,
         LlmRuntime::shared().handle(),
     )
@@ -299,7 +299,7 @@ fn scenario_llm_providers_hosted_provider_needs_consent() {
     let q = AiQueue::new(
         store.clone(),
         loader(),
-        Describer::new(provider_for(cfg.clone())),
+        Describer::new(provider_for(cfg.clone()).expect("provider")),
         qc,
         LlmRuntime::shared().handle(),
     );
@@ -432,7 +432,9 @@ fn scenario_llm_providers_redirects_are_never_followed() {
         ..Ai::default()
     };
     let cfg = ProviderConfig::from_settings(&ai, None);
-    let client = ps_llm::http::HttpClient::new(&cfg).without_retries();
+    let client = ps_llm::http::HttpClient::new(&cfg)
+        .expect("client")
+        .without_retries();
     let r = LlmRuntime::shared().block_on(client.post_json(
         &cfg.url("/chat/completions"),
         &[],
@@ -462,7 +464,7 @@ fn offline_previews_are_deferred_and_progress_counts() {
     let q = AiQueue::new(
         store.clone(),
         offline,
-        Describer::new(provider_for(cfg.clone())),
+        Describer::new(provider_for(cfg.clone()).expect("provider")),
         QueueConfig::local(&cfg.name),
         LlmRuntime::shared().handle(),
     );

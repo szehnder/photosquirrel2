@@ -49,7 +49,7 @@ fn fast_retries() -> RetryPolicy {
 }
 
 fn describe(cfg: ProviderConfig) -> Result<ps_llm::Described, ps_llm::DescribeFailure> {
-    let d = Describer::new(provider_for(cfg));
+    let d = Describer::new(provider_for(cfg).expect("provider"));
     rt().block_on(d.describe(&preview(1)))
 }
 
@@ -193,7 +193,7 @@ fn scenario_llm_providers_original_never_uploaded() {
             &openai_reply(&insight_json("landscape", 0, 0, &[]).to_string()),
         )
     });
-    let d = Describer::new(provider_for(lm_studio(&server)));
+    let d = Describer::new(provider_for(lm_studio(&server)).expect("provider"));
     rt().block_on(d.describe(&derived.llm)).unwrap();
 
     let req = &server.requests()[0];
@@ -298,7 +298,7 @@ fn scenario_llm_providers_second_failure_recorded() {
 fn scenario_llm_providers_test_unreachable_provider() {
     let mut cfg = ProviderConfig::default_local();
     cfg.base_url = format!("http://127.0.0.1:{}/v1", closed_port());
-    let p = provider_for(cfg);
+    let p = provider_for(cfg).expect("provider");
     let t0 = Instant::now();
     let report = rt().block_on(test_connection(&*p));
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
@@ -321,7 +321,7 @@ fn connection_test_reports_model_and_vision() {
     ))]);
     let mut cfg = ProviderConfig::default_local();
     cfg.base_url = format!("{}/v1", server.url());
-    let report = rt().block_on(test_connection(&*provider_for(cfg)));
+    let report = rt().block_on(test_connection(&*provider_for(cfg).expect("provider")));
     assert!(report.reachable, "{report:?}");
     assert_eq!(report.model.as_deref(), Some("google/gemma-4-e4b"));
     assert_eq!(
@@ -345,7 +345,7 @@ fn connection_test_reports_model_and_vision() {
     let mut cfg = preset("ollama");
     cfg.base_url = format!("{}/v1", server.url());
     cfg.model = "qwen2.5vl:7b".into();
-    let report = rt().block_on(test_connection(&*provider_for(cfg)));
+    let report = rt().block_on(test_connection(&*provider_for(cfg).expect("provider")));
     assert!(report.reachable);
     assert_eq!(report.model_found, Some(false));
     assert!(report.error.unwrap().contains("qwen2.5vl:7b"));
@@ -410,7 +410,7 @@ fn rejected_response_format_falls_back_to_prompt_only() {
     ]);
     let cfg = lm_studio(&server);
     assert_eq!(cfg.structured, StructuredOutput::JsonSchema);
-    let d = Describer::new(provider_for(cfg));
+    let d = Describer::new(provider_for(cfg).expect("provider"));
     let rt = rt();
     rt.block_on(d.describe(&preview(1))).unwrap();
     rt.block_on(d.describe(&preview(2))).unwrap();
@@ -436,7 +436,7 @@ fn unconfigured_model_resolves_to_the_loaded_one() {
     ]);
     let mut cfg = ProviderConfig::default_local();
     cfg.base_url = format!("{}/v1", server.url());
-    let d = Describer::new(provider_for(cfg));
+    let d = Describer::new(provider_for(cfg).expect("provider"));
     rt().block_on(d.describe(&preview(3))).unwrap();
     assert_eq!(server.requests()[1].json()["model"], "google/gemma-4-e4b");
 }
