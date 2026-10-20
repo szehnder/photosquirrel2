@@ -145,10 +145,30 @@ pub fn current(cx: &App) -> Option<Entity<DuplicatesView>> {
 }
 
 /// "Keeper #1 4032×3024 · 3.1 MB   vs   next best #2 1024×768 · 210 KB": the keeper beside the best copy that
-/// lost, so "Why this copy" names both members' dimensions.
+/// lost, so "Why this copy" names both members' dimensions. Byte-identical copies of the keeper are skipped
+/// (comparing a file with itself explains nothing); when every other copy is one, the line says so.
 pub fn why_compare_line(d: &ReviewDetail) -> Option<String> {
     let k = d.group.member(d.group.keeper)?;
-    let r = d.members().iter().find(|m| !m.in_keeper_set && !m.keeper)?;
+    let others = d.members().iter().filter(|m| !m.in_keeper_set && !m.keeper);
+    let identical = |m: &GroupMember| {
+        m.edge == MemberEdge::Exact && d.matched_against(m.file) == Some(d.group.keeper)
+    };
+    let Some(r) = others.clone().find(|m| !identical(m)) else {
+        let n = others.count();
+        if n == 0 {
+            return None;
+        }
+        let rest = if n == 1 {
+            "The other copy is identical, byte for byte".to_owned()
+        } else {
+            format!("The other {n} copies are identical, byte for byte")
+        };
+        return Some(format!(
+            "Keeper #1: {} · {}\n{rest}",
+            dims(k.width, k.height),
+            format_bytes(k.size)
+        ));
+    };
     Some(format!(
         "Keeper #1: {} · {}\nNext best #{}: {} · {}",
         dims(k.width, k.height),
@@ -994,8 +1014,7 @@ impl DuplicatesView {
                         div()
                             .id("duplicates-progress")
                             .test_support()
-                            .font_family(MONO_FONT_FAMILY)
-                            .text_size(Tokens::text_xs())
+                            .text_size(Tokens::text_sm())
                             .text_color(colors.text_muted)
                             .child(match &list {
                                 Some(l) => format!(
@@ -1426,10 +1445,10 @@ impl DuplicatesView {
             .rounded(Tokens::RADIUS_LG)
             .bg(colors.raised)
             .border_1()
+            // Only the keyboard-focused card is outlined in the accent; the keeper is marked by its badge, so the
+            // two never look alike.
             .border_color(if focused {
                 colors.accent
-            } else if m.keeper {
-                ui_theme::Colors::tint(colors.accent, 0.6)
             } else {
                 colors.border
             })

@@ -721,5 +721,35 @@ fn group_composition_wording_promises_no_export_or_deletion(cx: &mut TestAppCont
             .all(|t| !t.contains("exported") && !t.contains("reclaimable")),
         "{text:?}"
     );
-    assert!(text.last().unwrap().contains("not copied again"), "{text:?}");
+    assert!(
+        text.last().unwrap().contains("not copied again"),
+        "{text:?}"
+    );
+}
+
+/// "Next best" names the best copy that differs from the keeper, not a byte-identical copy of it.
+#[gpui_kit::test]
+fn why_compare_line_skips_byte_identical_copies(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let identical = |d: &ReviewDetail, m: &ps_service::groups::GroupMember| {
+        m.edge == MemberEdge::Exact && d.matched_against(m.file) == Some(d.group.keeper)
+    };
+    let d = open_group(&view, &backend, &mut cx, |d| {
+        let others: Vec<_> = d
+            .members()
+            .iter()
+            .filter(|m| !m.keeper && !m.in_keeper_set)
+            .collect();
+        others.first().is_some_and(|m| identical(d, m)) && others.iter().any(|m| !identical(d, m))
+    });
+    let line = duplicates::why_compare_line(&d).unwrap();
+    let n: usize = line
+        .split("Next best #")
+        .nth(1)
+        .and_then(|r| r.split(':').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("{line}"));
+    let m = &d.members()[n - 1];
+    assert!(!identical(&d, m), "{line} names an identical copy");
 }
