@@ -146,6 +146,12 @@ fn sidecar_date(path: &Path) -> Option<CaptureTime> {
         candidates.push(path.with_extension(ext));
     }
     candidates.into_iter().find_map(|p| {
+        // Only a regular file (not followed through a symlink): opening a FIFO or a device would block or
+        // read forever on a source tree we do not control.
+        let m = std::fs::symlink_metadata(&p).ok()?;
+        if !m.file_type().is_file() || m.len() > SIDECAR_MAX_BYTES {
+            return None;
+        }
         let f = std::fs::File::open(&p).ok()?;
         let mut buf = Vec::new();
         f.take(SIDECAR_MAX_BYTES).read_to_end(&mut buf).ok()?;
@@ -508,4 +514,48 @@ impl<'a> Exports<'a> {
 /// Profile defaults for a profile name (`apple`, `google`, `lightroom`).
 pub fn profile_settings(name: &str) -> Option<ProfileSettings> {
     ExportProfile::parse(name).map(ProfileSettings::defaults)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A FIFO (or a symlink) named like a sidecar is never opened: the date lookup returns at once.
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_date_skips_fifos_and_symlinks() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let photo = tmp.path().join("IMG_0042.JPG");
+        std::fs::write(&photo, b"jpeg").expect("photo");
+        let fifo = tmp.path().join("IMG_0042.JPG.xmp");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(made.success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = photo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(sidecar_date(&p));
+        });
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("returned without blocking on the FIFO");
+        assert_eq!(got, None);
+
+        let real = tmp.path().join("elsewhere.xmp");
+        std::fs::write(
+            &real,
+            br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="2019-05-04T10:00:00"/></rdf:RDF></x:xmpmeta>"#,
+        )
+        .expect("xmp");
+        let other = tmp.path().join("IMG_0043.JPG");
+        std::os::unix::fs::symlink(&real, tmp.path().join("IMG_0043.xmp")).expect("symlink");
+        assert_eq!(sidecar_date(&other), None, "a symlinked sidecar is not followed");
+        std::fs::copy(&real, tmp.path().join("IMG_0044.xmp")).expect("copy");
+        assert!(
+            sidecar_date(&tmp.path().join("IMG_0044.JPG")).is_some(),
+            "a regular sidecar is read"
+        );
+    }
 }
