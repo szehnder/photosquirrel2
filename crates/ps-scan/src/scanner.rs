@@ -284,7 +284,8 @@ impl Scanner {
         self.refuse_export_library(&root)?;
         let mut fold = Vec::new();
         for s in self.records()? {
-            let existing = path_from_bytes(&s.root);
+            // Roots stored before verbatim prefixes were dropped (Windows) still compare by their plain form.
+            let existing = ps_model::path::simplify_canonical(path_from_bytes(&s.root));
             match source::overlap(&root, &existing) {
                 Overlap::Same => {
                     return Err(ScanError::AlreadySource {

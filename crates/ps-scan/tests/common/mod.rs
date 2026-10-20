@@ -203,6 +203,19 @@ impl Env {
         self.s().add_source(root).expect("add source").source.id
     }
 
+    /// A source's root as the scanner stores and opens it (canonical: macOS `/private/var`, Windows long
+    /// names). Absolute paths the instrumented layer records are under this, not under the path given to
+    /// [`Env::add`].
+    pub fn root(&self, id: SourceId) -> PathBuf {
+        self.s()
+            .sources()
+            .expect("sources")
+            .into_iter()
+            .find(|s| s.id == id)
+            .expect("source")
+            .root
+    }
+
     /// Scan `sources` to the end.
     pub fn scan(&self, sources: &[SourceId]) -> RunSummary {
         self.s().start_scan(sources).expect("start scan");

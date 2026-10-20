@@ -68,6 +68,9 @@ fn groups_listed_and_explained() {
     let tmp = tempfile::tempdir().expect("tmp");
     let root = corpus(tmp.path());
     let svc = scanned(tmp.path(), &root);
+    // Member paths are under the stored, canonical source roots (macOS: /private/var/...; Windows: long
+    // names, no `\\?\` prefix), so compare with the canonical corpus folder.
+    let root = ps_model::path::simplify_canonical(std::fs::canonicalize(&root).expect("canonical"));
     let g = svc.groups();
     let t = g.totals().expect("totals");
     assert!(t.groups > 5 && t.grouped_files > t.groups, "{t:?}");

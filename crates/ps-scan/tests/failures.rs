@@ -71,9 +71,9 @@ fn scenario_scanning_unreadable_file_recorded() {
 fn scenario_scanning_failed_retried_at_most_twice() {
     let _cores = shared();
     let (_tmp, root, rel) = with_unreadable();
-    let path = root.join(&rel);
     let e = env();
     let id = e.add(&root);
+    let path = e.root(id).join(&rel);
     let mut attempted = Vec::new();
     for _run in 0..4 {
         e.instr.reset();

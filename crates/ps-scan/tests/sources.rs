@@ -233,10 +233,18 @@ fn scenario_sources_inner_source_folded_into_outer() {
     assert_eq!(summary.diff.unchanged as usize, inner_files.len());
     let after = e.files(outer_id);
     let bytes = e.instr.bytes_per_file();
+    let outer_root = e.root(outer_id);
+    assert!(
+        !bytes.is_empty() && bytes.keys().all(|p| p.starts_with(&outer_root)),
+        "the rest of the outer source was read, under its stored root"
+    );
     for (rel, f) in &inner_files {
         let key = format!("Backup 2015/{rel}");
         assert_eq!(after[&key].id, f.id);
-        assert!(!bytes.contains_key(&outer.join(&key)), "{key} not re-read");
+        assert!(
+            !bytes.contains_key(&outer_root.join(&key)),
+            "{key} not re-read"
+        );
     }
     assert_eq!(
         after.len(),

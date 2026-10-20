@@ -133,6 +133,78 @@ pub fn path_to_bytes(path: &Path) -> Vec<u8> {
     }
 }
 
+/// The form PhotoSquirrel stores and compares for a path `std::fs::canonicalize` returned.
+///
+/// On Windows `canonicalize` returns a verbatim path (`\\?\C:\Photos`, `\\?\UNC\nas\share`). Users never type
+/// those, they show up badly in the UI, and they do not compare equal to the plain form of the same folder,
+/// so the plain form is kept whenever it names exactly the same file (see [`strip_verbatim`]). Elsewhere the
+/// path is returned unchanged. No I/O: callers canonicalize, this only rewrites the result.
+pub fn simplify_canonical(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(plain) = path.to_str().and_then(strip_verbatim) {
+        return PathBuf::from(plain);
+    }
+    path
+}
+
+/// The plain Windows form of a verbatim path, or `None` when there is none that means the same thing.
+///
+/// `\\?\C:\a\b` becomes `C:\a\b` and `\\?\UNC\server\share\a` becomes `\\server\share\a`. The prefix is kept
+/// (`None`) for other verbatim forms (volume GUIDs, device paths), for paths of `MAX_PATH` (260) or more
+/// UTF-16 units, and when a component would be read differently without it: one containing `/` or a character
+/// Win32 forbids, ending in `.` or a space, or a reserved device name such as `CON` or `com1.txt`.
+/// Platform-independent string logic so it is tested on every platform.
+pub fn strip_verbatim(s: &str) -> Option<String> {
+    let (plain, body) = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        (format!(r"\\{rest}"), rest)
+    } else {
+        let rest = s.strip_prefix(r"\\?\")?;
+        let b = rest.as_bytes();
+        let is_drive = b.len() >= 2
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b.len() == 2 || b[2] == b'\\');
+        if !is_drive {
+            return None;
+        }
+        let plain = if b.len() == 2 {
+            format!(r"{rest}\")
+        } else {
+            rest.to_owned()
+        };
+        (plain, &rest[2..])
+    };
+    const MAX_PATH: usize = 260;
+    if plain.encode_utf16().count() >= MAX_PATH {
+        return None;
+    }
+    let plain_safe = body.split('\\').filter(|c| !c.is_empty()).all(|c| {
+        c != "."
+            && c != ".."
+            && !c.ends_with(['.', ' '])
+            && !c
+                .chars()
+                .any(|ch| ch < ' ' || matches!(ch, '/' | '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+            && !is_reserved_device_name(c)
+    });
+    plain_safe.then_some(plain)
+}
+
+/// `CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, with or without an extension, any case.
+fn is_reserved_device_name(component: &str) -> bool {
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    match upper.as_bytes() {
+        b"CON" | b"PRN" | b"AUX" | b"NUL" => true,
+        [b'C', b'O', b'M', d] | [b'L', b'P', b'T', d] => d.is_ascii_digit(),
+        _ => false,
+    }
+}
+
 /// Decode storage bytes produced by [`path_to_bytes`] or [`RelPath`].
 pub fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     PathBuf::from(bytes_to_os(bytes))
@@ -301,6 +373,45 @@ mod tests {
         assert_eq!(p.to_path_buf().as_os_str(), name);
         let abs = Path::new(std::ffi::OsStr::from_bytes(b"/mnt/\xc3(x"));
         assert_eq!(path_from_bytes(&path_to_bytes(abs)), abs);
+    }
+
+    #[test]
+    fn verbatim_windows_paths_simplify_only_when_equivalent() {
+        let ok = |s: &str| strip_verbatim(s);
+        assert_eq!(
+            ok(r"\\?\C:\Users\me\Pictures").as_deref(),
+            Some(r"C:\Users\me\Pictures")
+        );
+        assert_eq!(ok(r"\\?\D:\").as_deref(), Some(r"D:\"));
+        assert_eq!(ok(r"\\?\D:").as_deref(), Some(r"D:\"));
+        assert_eq!(
+            ok(r"\\?\UNC\nas\photos\2015").as_deref(),
+            Some(r"\\nas\photos\2015")
+        );
+        // Already plain, or a form without a plain equivalent: left alone.
+        assert_eq!(ok(r"C:\Users"), None);
+        assert_eq!(ok("/private/var/folders"), None);
+        assert_eq!(ok(r"\\?\Volume{1234}\Photos"), None);
+        assert_eq!(ok(r"\\?\GLOBALROOT\Device\HarddiskVolume1"), None);
+        // Names Win32 would read differently without the prefix.
+        assert_eq!(ok(r"\\?\C:\Photos\trailing."), None);
+        assert_eq!(ok(r"\\?\C:\Photos\trailing "), None);
+        assert_eq!(ok(r"\\?\C:\Photos\a/b"), None);
+        assert_eq!(ok(r"\\?\C:\Photos\CON"), None);
+        assert_eq!(ok(r"\\?\C:\Photos\com1.jpg"), None);
+        assert_eq!(ok(r"\\?\C:\Photos\nul .txt"), None);
+        assert_eq!(
+            ok(r"\\?\C:\Photos\Console\comet").as_deref(),
+            Some(r"C:\Photos\Console\comet")
+        );
+        // Long paths need the prefix.
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(ok(&long), None);
+        // Not Windows: nothing to simplify.
+        if !cfg!(windows) {
+            let p = PathBuf::from(r"\\?\C:\x");
+            assert_eq!(simplify_canonical(p.clone()), p);
+        }
     }
 
     #[test]

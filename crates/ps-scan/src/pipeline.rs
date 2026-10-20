@@ -1065,7 +1065,9 @@ pub(crate) fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Normalised absolute form of a root (for overlap checks and storage).
+/// Normalised absolute form of a root (for overlap checks and storage): symlinks resolved (macOS `/var` is
+/// `/private/var`), and on Windows the plain `C:\...` form rather than the `\\?\` verbatim one
+/// `canonicalize` returns, so stored roots match what users and the rest of the app see.
 pub(crate) fn normalize_root(p: &Path) -> std::io::Result<PathBuf> {
-    std::fs::canonicalize(p)
+    std::fs::canonicalize(p).map(ps_model::path::simplify_canonical)
 }

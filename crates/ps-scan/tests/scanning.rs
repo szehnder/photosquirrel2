@@ -32,8 +32,8 @@ fn full_scan() -> &'static FullScan {
             .drives
             .iter()
             .map(|d| {
-                let root = c.root.join(d);
-                (d.clone(), env.add(&root), root)
+                let id = env.add(&c.root.join(d));
+                (d.clone(), id, env.root(id))
             })
             .collect();
         env.instr.reset(); // count the scan only, not the fingerprinting
