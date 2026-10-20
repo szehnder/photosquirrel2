@@ -11,7 +11,7 @@
 //! - **Dismissed suggestions** are keyed by the pair's content identities, so they stay dismissed after a
 //!   rescan. Dismissing never changes a file or a group (ADR-0013: suggestions are never merged).
 //!
-//! Both live in `review-state.json` next to the catalog until catalog migration 4 grows
+//! Both live in `review-state.json` next to the catalog (ADR-0042) until a catalog migration grows
 //! `suggestion.dismissed_at` and membership-keyed review columns (the catalog is owned by the engine; this
 //! file is the interim store and is read once, written atomically on each change).
 //!

@@ -2,7 +2,7 @@
 
 ## 1. Service and schema
 
-- [x] 1.1 Migration 4 (`suggestion.dismissed_at`, review keying) and `ps-service::groups::list` with filters/sorts; verify `cargo test -p ps-service groups` list/filter unit tests (as `ps_service::review::list` + `ps-service/tests/review.rs`; review state and dismissals live in an interim `review-state.json` next to the catalog, keyed by content identity, until the catalog grows the columns)
+- [x] 1.1 Review keying and dismissal persistence (interim `review-state.json` next to the catalog, keyed by content identity, ADR-0042; no catalog migration yet) and the group list with filters/sorts; verify list/filter tests in `ps_service::review::list` and `ps-service/tests/review.rs`
 - [x] 1.2 Review state invalidation on membership change; verify a `ps-service` test that adding a member to a reviewed group makes it unreviewed
 
 ## 2. Group list

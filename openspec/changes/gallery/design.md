@@ -33,8 +33,8 @@ User exclusion is the `excluded` disposition source of ADR-0023 and must never b
 - **Live updates.** During scans the view re-queries the ID list at most every 2 s; the new list is diffed by
   locating the current top item via its sort key (binary search) to keep the anchor.
 - **Filters.** `ps-model::Filter` gains camera model, GPS presence, folder prefix and date range; each maps to
-  an indexed SQL predicate (new covering index `(camera_model, capture_ts, id)` in migration 3).
-- **User include/exclude (migration 3).** `user_inclusion(file_id, decision, reason, at)`; the classifier result
+  an indexed SQL predicate (new covering index `(camera_model, capture_ts, id)` in migration `0007_gallery.sql`).
+- **User include/exclude (migration `0007_gallery.sql`).** `user_inclusion(file_id, decision, reason, at)`; the classifier result
   is kept and the user decision wins in queries and in later rescans (ADR-0015 "nothing silently disappears").
 - **Reveal.** `opener` logic per OS (`xdg-open` on the parent folder / `dbus FileManager1.ShowItems` on Linux,
   `open -R` on macOS, `explorer /select,` on Windows) behind a trait so tests record the call.

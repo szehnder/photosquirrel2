@@ -21,9 +21,11 @@ this copy"; ADR-0021 keeps AI out of these decisions; ADR-0018 virtualisation fo
   (two previews with shared zoom/pan state).
 - **List virtualisation.** Group list uses gpui `uniform_list` (row height fixed); data from
   `ps-service::groups::list(filter, sort)` returning IDs + summary rows in pages of 512 (ADR-0018 pattern).
-- **Persistence (migration 4).** `dup_group.reviewed_at` exists; add `suggestion.dismissed_at`. Review state is
-  keyed by the group's keeper content id so it survives regrouping when the group is unchanged; a group whose
-  membership changes becomes unreviewed again.
+- **Persistence (interim store, ADR-0042).** The catalog's `dup_group.reviewed_at` exists but group ids change on
+  regrouping, and there is no `suggestion.dismissed_at` yet. Review state and dismissed suggestions live in
+  `review-state.json` next to the catalog, keyed by content: a group by the multiset of its members' content ids,
+  so it survives regrouping when the group is unchanged and becomes unreviewed again when its membership changes;
+  a dismissed pair by its two content ids. A later catalog migration moves both into the catalog.
 - **Separation.** Calls `ps-service::groups::separate(file)`, which records the ADR-0033 constraint and regroups
   the affected component synchronously (small) before the UI refreshes.
 - **Keys.** 1-9 choose keeper, J/K navigate, R mark reviewed, S separate (with confirmation), X dismiss
