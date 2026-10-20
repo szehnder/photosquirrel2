@@ -46,3 +46,7 @@
 - [x] 5.2 Gate: recorded-fixture tests pass for all three providers and the live LM Studio smoke passes once on the reference machine (fixtures for openai, anthropic and gemini carry the v2 prompt; `scenario_llm_providers_{openai_compatible,anthropic,gemini}_request_shape` pass; live re-run with prompt v2 on 2026-10-20: gemma-4-e4b in LM Studio, 3 of 3 generated images gave valid ImageInsight v1 with prompt v2, no repair, 73.6 / 66.9 / 68.2 s, 900 s timeout)
 - [x] 5.3 `cargo xtask spec-coverage` reports every scenario of this change mapped (the 27 unmapped belong to performance-budgets, quarantine-cleanup and release-packaging)
 - [x] 5.4 `openspec validate ai-insights --strict` passes
+
+## 6. M3 gate fixes
+
+- [x] 6.1 The gallery's insight index follows scans and in-place re-descriptions: the stamp includes the scan runs started and ended (a change rebuilds the file mapping) and the AI result write number (catalog migration 11 `ai_result.seq`), and in-place updates read the rows written after the index's number whatever their time; verify `scenario_ai_review_filter_stays_current_after_a_scan` (real scan adds a second copy) and `insight_filter_follows_an_in_place_re_description_with_an_older_time`, `ai_result_seq_finds_rewrites_whatever_their_time`

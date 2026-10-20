@@ -39,6 +39,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     LEDGER_SUSPECT_MIGRATION,
     LEDGER_MTIME_MIGRATION,
     LEDGER_SIDECARS_MIGRATION,
+    AI_RESULT_SEQ_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -90,6 +91,13 @@ pub const LEDGER_SIDECARS_MIGRATION: Migration = Migration {
     version: 10,
     name: "ledger_sidecars",
     sql: include_str!("../migrations/0010_ledger_sidecars.sql"),
+};
+
+/// Migration 11 (`ai_result.seq`: a write sequence for incremental readers).
+pub const AI_RESULT_SEQ_MIGRATION: Migration = Migration {
+    version: 11,
+    name: "ai_result_seq",
+    sql: include_str!("../migrations/0011_ai_result_seq.sql"),
 };
 
 /// `thumbs.db` migrations.

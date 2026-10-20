@@ -28,6 +28,10 @@ The gallery and AI Review view SHALL filter by category, contains children, cont
 - **WHEN** the user filters by "contains children"
 - **THEN** exactly the photos whose effective insight has at least one child are shown
 
+#### Scenario: Filter stays current after a scan
+- **WHEN** a scan adds another copy of a photo that has an insight and the user filters by that insight again
+- **THEN** the new copy is shown too, and a photo described again replaces its old description in the filter
+
 ### Requirement: Advisory only
 AI insights MUST NOT change duplicate groups, keepers, exclusions, export selection or cleanup eligibility by themselves.
 

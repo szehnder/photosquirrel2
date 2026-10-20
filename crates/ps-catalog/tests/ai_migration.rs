@@ -62,3 +62,55 @@ fn ai_insights_migration_applies_on_latest_schema() {
         "single row"
     );
 }
+
+/// Migration 11: older results keep seq 0; every write (also a re-description in place with an older time)
+/// takes the next number, so an incremental reader finds it.
+#[test]
+fn ai_result_seq_finds_rewrites_whatever_their_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog.db");
+    ps_catalog::db::create_catalog_at_version(
+        &path,
+        ps_catalog::db::AI_RESULT_SEQ_MIGRATION.version - 1,
+    )
+    .unwrap();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO ai_result (content_id, provider, model, schema_version, prompt_version, insight,
+                 latency_ms, requests, at) VALUES (?1, 'p', 'm', 1, 1, '{}', 1, 1, 500)",
+            [vec![1u8; 32]],
+        )
+        .unwrap();
+    }
+    let cat = ps_catalog::Catalog::open_file(&path, Default::default()).unwrap();
+    assert!(
+        cat.read()
+            .ai_result_contents_after_seq(0)
+            .unwrap()
+            .is_empty()
+    );
+    let row = |d: u8, at_ms: i64| ps_catalog::AiResultRow {
+        content: ps_model::ContentId::full([d; 32]),
+        provider: "p".into(),
+        model: "m".into(),
+        schema_version: 1,
+        prompt_version: 2,
+        insight: "{}".into(),
+        latency_ms: 1,
+        requests: 1,
+        at_ms,
+    };
+    cat.writer().ai_complete(row(2, 1_000)).unwrap();
+    assert_eq!(
+        cat.read().ai_result_contents_after_seq(0).unwrap(),
+        vec![[2u8; 32]]
+    );
+    // Content 1 is described again in place, with a time older than every row.
+    cat.writer().ai_complete(row(1, 10)).unwrap();
+    assert_eq!(
+        cat.read().ai_result_contents_after_seq(1).unwrap(),
+        vec![[1u8; 32]]
+    );
+    cat.close().unwrap();
+}

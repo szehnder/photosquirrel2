@@ -601,20 +601,22 @@ impl Library {
     }
 
     /// Bring `index` up to `stamp` by re-reading only the contents whose result or correction changed.
-    /// `false` when it cannot (results were removed, a new row carries an older time than the index, or too
-    /// much changed): the caller rebuilds.
+    /// `false` when it cannot (results were removed, a scan started or ended, or too much changed): the caller
+    /// rebuilds.
     fn update_insight_index(&self, index: &mut InsightIndex, stamp: InsightStamp) -> Result<bool> {
         let started = std::time::Instant::now();
         let old = index.stamp;
-        if stamp.results < old.results {
+        // A scan started or ended: files appeared, vanished or changed content, and the index maps files.
+        // Rebuild (only when a filter is next used, not on every scan batch).
+        if stamp.results < old.results || stamp.scans != old.scans {
             return Ok(false);
         }
         let r = self.catalog()?.read();
         let mut changed: HashSet<[u8; 32]> = HashSet::new();
-        if (stamp.results, stamp.latest_ms) != (old.results, old.latest_ms) {
-            // Rows at or after the index's newest time: new results and results replaced in place (the same
-            // content, provider and model), plus the already indexed rows of that very millisecond.
-            let rows = r.ai_result_contents_since(old.latest_ms)?;
+        if (stamp.results, stamp.latest_ms, stamp.seq) != (old.results, old.latest_ms, old.seq) {
+            // Rows written after the index's newest write number: new results and results replaced in place
+            // (the same content, provider and model), whatever their time (catalog migration 11).
+            let rows = r.ai_result_contents_after_seq(old.seq)?;
             if (stamp.results - old.results) as usize > rows.len() {
                 return Ok(false);
             }

@@ -564,3 +564,121 @@ fn a_new_insight_updates_the_insight_index_in_place() {
     lib.id_list(&children).expect("list");
     assert_eq!(lib.insight_index_stats().updates, 2);
 }
+
+/// Store `insight` as the result of `content` at `at_ms` (provider "test", so it is not demo data).
+fn store_result(
+    cat: &ps_catalog::Catalog,
+    content: ps_model::ContentId,
+    insight: &ps_model::ImageInsight,
+    at_ms: i64,
+) {
+    cat.writer()
+        .ai_complete(ps_catalog::AiResultRow {
+            content,
+            provider: "test".into(),
+            model: "m".into(),
+            schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
+            prompt_version: ps_llm::PROMPT_VERSION,
+            insight: serde_json::to_string(insight).expect("json"),
+            latency_ms: 1,
+            requests: 1,
+            at_ms,
+        })
+        .expect("store result");
+}
+
+fn children_query() -> GalleryQuery {
+    GalleryQuery {
+        insight: InsightCriteria {
+            children: true,
+            ..InsightCriteria::default()
+        },
+        stacks: false,
+        ..query()
+    }
+}
+
+/// A scan that adds another copy of a described photo: the insight filter lists the new copy too (the index
+/// maps files, and a scan changes files without touching any AI result).
+#[test]
+fn scenario_ai_review_filter_stays_current_after_a_scan() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let src = tmp.path().join("Camera");
+    std::fs::create_dir_all(&src).expect("source");
+    let photo = ps_fixtures::media::jpeg(640, 480, 11, 90);
+    std::fs::write(src.join("IMG_0001.JPG"), &photo).expect("photo");
+    std::fs::write(
+        src.join("IMG_0002.JPG"),
+        ps_fixtures::media::jpeg(640, 480, 12, 90),
+    )
+    .expect("photo");
+    let lib = Library::open(&tmp.path().join("data")).expect("open");
+    let scan = lib.scan().expect("engine");
+    scan.add_source(&src).expect("add");
+    scan.start(&[]).expect("scan");
+    scan.wait().expect("wait");
+    let cat = lib.catalog().expect("catalog").clone();
+    let mut content = None;
+    cat.read()
+        .for_each_file(|f| {
+            if f.key.path.file_name() == b"IMG_0001.JPG" {
+                content = f.identity;
+            }
+        })
+        .expect("files");
+    let content = content.expect("analysed");
+    store_result(
+        &cat,
+        content,
+        &insights::sample_insight(0),
+        ps_export::now_ms(),
+    );
+    assert_eq!(lib.id_list(&children_query()).expect("list").len(), 1);
+
+    std::fs::write(src.join("Copy of IMG_0001.JPG"), &photo).expect("a second copy");
+    scan.start(&[]).expect("rescan");
+    scan.wait().expect("wait");
+    let copies = cat.read().files_with_content(&content).expect("copies");
+    assert_eq!(copies.len(), 2);
+    let list = lib.id_list(&children_query()).expect("list");
+    assert_eq!(list.len(), 2, "the new copy is listed: {:?}", list.ids);
+}
+
+/// A photo described again in place (same content, provider and model) with a time that is not newer than
+/// the index's newest result: the filter still follows the new description.
+#[test]
+fn insight_filter_follows_an_in_place_re_description_with_an_older_time() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let lib = synthetic_library(tmp.path(), 200);
+    let cat = lib.catalog().expect("catalog").clone();
+    let mut contents = Vec::new();
+    cat.read()
+        .for_each_file(|f| {
+            if contents.len() < 2
+                && f.class == Some(ps_model::PhotoClass::Photo)
+                && let Some(c) = f.identity
+                && !contents.contains(&c)
+            {
+                contents.push(c);
+            }
+        })
+        .expect("files");
+    let (a, b) = (contents[0], contents[1]);
+    store_result(&cat, a, &insights::sample_insight(0), 2_000);
+    store_result(&cat, b, &insights::sample_insight(0), 5_000);
+    let before = lib.id_list(&children_query()).expect("list").len();
+    assert!(before >= 2);
+    // `a` is re-described (no children now) at a time older than `b`'s result.
+    store_result(&cat, a, &insights::sample_insight(1), 1_000);
+    let after = lib.id_list(&children_query()).expect("list");
+    let a_files = cat.read().files_with_content(&a).expect("files");
+    assert!(
+        a_files
+            .iter()
+            .filter_map(|f| ItemId::try_from(*f).ok())
+            .all(|id| !after.ids.contains(&id)),
+        "the re-described photo left the filter"
+    );
+    assert!(after.len() < before);
+    assert_eq!(lib.insight_index_stats().full_builds, 1, "updated in place");
+}

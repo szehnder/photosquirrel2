@@ -285,11 +285,13 @@ impl Writer {
         self.exec(move |c| {
             c.prepare_cached(
                 "INSERT INTO ai_result (content_id, provider, model, schema_version, prompt_version, insight,
-                                        latency_ms, requests, at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                                        latency_ms, requests, at, seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                         (SELECT coalesce(max(seq), 0) + 1 FROM ai_result))
                  ON CONFLICT (content_id, provider, model, schema_version) DO UPDATE SET
                     prompt_version = excluded.prompt_version, insight = excluded.insight,
-                    latency_ms = excluded.latency_ms, requests = excluded.requests, at = excluded.at",
+                    latency_ms = excluded.latency_ms, requests = excluded.requests, at = excluded.at,
+                    seq = excluded.seq",
             )?
             .execute(params![
                 &result.content.digest[..],
@@ -475,14 +477,14 @@ impl Readers {
         })
     }
 
-    /// The content of every result row stored at or after `at_ms`, one entry per row (`ai_result_by_time`).
-    /// Incremental updates of the gallery's insight index (`ps_service::library`).
-    pub fn ai_result_contents_since(&self, at_ms: i64) -> Result<Vec<[u8; 32]>> {
+    /// Contents whose result was written after write number `seq` (migration 11): new results and results
+    /// replaced in place, whatever their `at`.
+    pub fn ai_result_contents_after_seq(&self, seq: i64) -> Result<Vec<[u8; 32]>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
-                "SELECT content_id FROM ai_result INDEXED BY ai_result_by_time WHERE at >= ?1",
+                "SELECT content_id FROM ai_result INDEXED BY ai_result_by_seq WHERE seq > ?1",
             )?;
-            let mut rows = stmt.query([at_ms])?;
+            let mut rows = stmt.query([seq])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
                 if let rusqlite::types::ValueRef::Blob(d) = r.get_ref(0)?

@@ -337,27 +337,47 @@ impl InsightFilter {
     }
 }
 
-/// Changes when results, corrections or decisions change (the live view polls it, ADR-0019).
+/// Changes when results, corrections or decisions change, and when a scan starts or ends (the live view polls
+/// it, ADR-0019; the gallery's insight index compares it).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InsightStamp {
     pub results: u64,
     pub latest_ms: i64,
     pub revision: u64,
+    /// Highest AI result write number (catalog migration 11): changes on every new or re-described result,
+    /// whatever its time.
+    #[serde(default)]
+    pub seq: i64,
+    /// Scan runs started and ended: files (and so the files of each described content) change with scans.
+    #[serde(default)]
+    pub scans: (i64, i64),
 }
 
 /// The current stamp (one cheap aggregate query).
 pub fn stamp(catalog: &Catalog, store: &InsightStore) -> Result<InsightStamp> {
-    let (results, latest_ms) = catalog.read().with(|c| {
+    let (results, latest_ms, seq, scans) = catalog.read().with(|c| {
         Ok(c.query_row(
-            "SELECT count(*), coalesce(max(at), 0) FROM ai_result",
+            "SELECT count(*), coalesce(max(at), 0), coalesce(max(seq), 0),
+                    (SELECT coalesce(max(id), 0) FROM scan_run),
+                    (SELECT count(*) FROM scan_run WHERE ended_at IS NOT NULL)
+             FROM ai_result",
             [],
-            |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)?)),
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    (r.get::<_, i64>(3)?, r.get::<_, i64>(4)?),
+                ))
+            },
         )?)
     })?;
     Ok(InsightStamp {
         results,
         latest_ms,
         revision: store.revision(),
+        seq,
+        scans,
     })
 }
 
