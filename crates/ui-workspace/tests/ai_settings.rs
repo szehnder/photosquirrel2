@@ -164,3 +164,136 @@ fn test_connection_reports_an_unreachable_server(cx: &mut TestAppContext) {
     assert!(!r.reachable);
     assert!(exists("ai-test-result", &mut cx));
 }
+
+/// Records `ai_destination_changed` calls; every other call is unused here.
+#[derive(Default)]
+struct PauseRecorder {
+    paused: std::sync::atomic::AtomicUsize,
+}
+
+impl ui_workspace::review_source::ReviewSource for PauseRecorder {
+    fn groups(
+        &self,
+        _: ps_service::review::ReviewFilter,
+        _: ps_service::review::ReviewSort,
+    ) -> anyhow::Result<ps_service::review::ReviewList> {
+        anyhow::bail!("unused")
+    }
+    fn group(&self, _: ps_model::FileId) -> anyhow::Result<ps_service::review::ReviewDetail> {
+        anyhow::bail!("unused")
+    }
+    fn set_keeper(
+        &self,
+        _: ps_model::FileId,
+        _: ps_model::FileId,
+    ) -> anyhow::Result<ps_service::review::ReviewDetail> {
+        anyhow::bail!("unused")
+    }
+    fn separate(
+        &self,
+        _: ps_model::FileId,
+        _: ps_model::FileId,
+    ) -> anyhow::Result<ps_service::groups::SeparateOutcome> {
+        anyhow::bail!("unused")
+    }
+    fn merge(
+        &self,
+        _: ps_model::FileId,
+        _: ps_model::FileId,
+    ) -> anyhow::Result<ps_service::review::ReviewDetail> {
+        anyhow::bail!("unused")
+    }
+    fn undo_merges(&self, _: ps_model::FileId) -> anyhow::Result<ps_service::review::ReviewDetail> {
+        anyhow::bail!("unused")
+    }
+    fn set_reviewed(&self, _: ps_model::FileId, _: bool) -> anyhow::Result<bool> {
+        anyhow::bail!("unused")
+    }
+    fn suggestions(&self, _: u64) -> anyhow::Result<Vec<ps_service::review::SuggestionCard>> {
+        Ok(Vec::new())
+    }
+    fn dismiss(&self, _: ps_model::FileId, _: ps_model::FileId) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn explain(&self, _: ps_model::FileId, _: ps_model::FileId) -> anyhow::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn ai_stamp(&self) -> anyhow::Result<ps_service::insights::InsightStamp> {
+        Ok(Default::default())
+    }
+    fn ai_items(
+        &self,
+        _: &ps_service::insights::InsightFilter,
+        _: u64,
+    ) -> anyhow::Result<Vec<ps_service::insights::InsightItem>> {
+        Ok(Vec::new())
+    }
+    fn ai_correct(&self, _: &str, _: ps_service::insights::Correction) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn ai_clear(&self, _: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn ai_decide(&self, _: &str, _: bool) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+    fn ai_status(&self) -> anyhow::Result<ps_service::ai::AiStatus> {
+        anyhow::bail!("unused")
+    }
+    fn ai_start(
+        &self,
+        _: &ps_model::settings::Settings,
+        _: &ps_service::secrets::Secrets,
+    ) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    fn ai_pause(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn ai_destination_changed(&self) -> anyhow::Result<bool> {
+        self.paused
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(true)
+    }
+}
+
+/// ADR-0047: a running AI queue is paused whenever the provider, the server address or the consent changes, so
+/// nothing more is sent to a destination the user no longer chose; other settings leave it running.
+#[gpui_kit::test]
+fn scenario_ai_queue_changing_the_destination_pauses_the_queue(cx: &mut TestAppContext) {
+    let (panel, mut cx) = panel(cx);
+    let rec = Arc::new(PauseRecorder::default());
+    cx.update(|_, cx| cx.set_global(ui_workspace::review_source::ReviewGlobal(Some(rec.clone()))));
+    let paused = || rec.paused.load(std::sync::atomic::Ordering::SeqCst);
+
+    cx.update(|_, cx| {
+        AppSettings::update(cx, |s| {
+            s.appearance.theme = ps_model::settings::ThemeSetting::Light
+        })
+        .unwrap()
+    });
+    cx.run_until_parked();
+    assert_eq!(paused(), 0, "an unrelated setting keeps the queue running");
+
+    click("ai-provider-5", &mut cx); // Gemini: another provider
+    cx.run_until_parked();
+    assert_eq!(paused(), 1);
+
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle_consent(true, cx)));
+    click("ai-consent-allow", &mut cx); // consent given
+    cx.run_until_parked();
+    assert_eq!(paused(), 2);
+
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle_consent(false, cx))); // withdrawn
+    cx.run_until_parked();
+    assert_eq!(paused(), 3);
+
+    cx.update(|_, cx| {
+        AppSettings::update(cx, |s| {
+            ui_workspace::settings_ai::set_base_url(s, "https://proxy.example.com/v1beta".into())
+        })
+        .unwrap()
+    });
+    cx.run_until_parked();
+    assert_eq!(paused(), 4, "another server address");
+}

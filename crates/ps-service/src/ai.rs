@@ -10,6 +10,7 @@ use ps_model::settings::{Ai, ProviderId, Settings};
 use crate::secrets::{ApiKey as StoredKey, Secrets, StoredIn, default_account};
 
 pub use ps_llm::consent::ConsentRequired;
+pub use ps_llm::queue::QueueState;
 pub use ps_llm::{ProviderConfig, TestReport};
 
 /// The keychain account for `provider`: the one recorded in settings, else the default.
@@ -97,8 +98,8 @@ use std::time::Duration;
 
 use ps_catalog::{AiItemState, AiResultRow, AiRunState, Catalog};
 use ps_llm::queue::{
-    AiQueue, PreviewLoader, QueueConfig, QueueCounts, QueueItem, QueueProgress, QueueState,
-    QueueStore, ResultKey, StartError,
+    AiQueue, PreviewLoader, QueueConfig, QueueCounts, QueueItem, QueueProgress, QueueStore,
+    ResultKey, StartError,
 };
 use ps_llm::{Described, Describer, PreviewError, PreviewInput, PreviewJpeg};
 use ps_model::{ContentId, FileId, Format, ImageInsight, MediaKind, PhotoClass, path_from_bytes};

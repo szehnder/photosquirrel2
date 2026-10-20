@@ -8,7 +8,7 @@ never repeats work and never sends anything without being started.
 ## ADDED Requirements
 
 ### Requirement: Nothing sent before start
-No photo SHALL be sent to any provider until the user starts the AI queue, and stopping or pausing it SHALL stop new requests.
+No photo SHALL be sent to any provider until the user starts the AI queue, and stopping or pausing it SHALL stop new requests. Changing the provider, the server address or the hosted consent SHALL pause a running queue.
 
 #### Scenario: Nothing sent before start
 - **WHEN** a corpus is scanned and the application idles with a recording provider configured
@@ -17,6 +17,10 @@ No photo SHALL be sent to any provider until the user starts the AI queue, and s
 #### Scenario: Pause stops new requests
 - **WHEN** the queue is paused while running
 - **THEN** no new request starts after in-flight requests finish
+
+#### Scenario: Changing the destination pauses the queue
+- **WHEN** the queue is running and the user chooses another provider, edits the server address or withdraws consent
+- **THEN** the queue is paused, and an unrelated settings change leaves it running
 
 ### Requirement: Persisted queue order
 The queue SHALL be persisted in the catalog and SHALL process keepers of class photo or likely photo first, then other keepers, in capture-date order; non-keepers SHALL be included only when the user opts in.

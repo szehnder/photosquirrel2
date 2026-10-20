@@ -47,6 +47,11 @@ pub trait ReviewSource: Send + Sync + 'static {
     fn ai_redescribe_older(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
+    /// The provider, server address or consent changed (ADR-0047): pause a running queue so nothing more is
+    /// sent to the old destination; the user starts it again for the new one. `true` when a queue was paused.
+    fn ai_destination_changed(&self) -> anyhow::Result<bool> {
+        Ok(false)
+    }
 }
 
 /// [`ReviewSource`] over the catalog behind a [`CatalogBackend`].
@@ -207,6 +212,19 @@ impl ReviewSource for CatalogReview {
         Ok(ps_service::ai::redescribe_older_prompts(
             self.backend.catalog()?,
         )?)
+    }
+    fn ai_destination_changed(&self) -> anyhow::Result<bool> {
+        // Drop the queue built for the old destination; the next start builds one for the new settings.
+        let old = self.ai.lock().unwrap_or_else(|p| p.into_inner()).take();
+        match old {
+            Some((_, svc)) => {
+                let running = svc.state() == ps_service::ai::QueueState::Running;
+                svc.pause()?;
+                log::info!("AI provider, address or consent changed: the AI queue is paused");
+                Ok(running)
+            }
+            None => Ok(false),
+        }
     }
     fn ai_pause(&self) -> anyhow::Result<()> {
         match self.ai.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {

@@ -90,6 +90,19 @@ impl AppSettings {
         if !errors.is_empty() {
             return Err(errors);
         }
+        // A new AI destination (provider, server address or consent) pauses a running queue before anything
+        // more is sent (ADR-0047). The pause writes the catalog: off the UI thread.
+        if ps_service::ai::destination_fingerprint(&next.ai)
+            != ps_service::ai::destination_fingerprint(&this.settings.ai)
+            && let Some(src) = crate::review_source::ReviewGlobal::get(cx)
+        {
+            cx.background_spawn(async move {
+                if let Err(e) = src.ai_destination_changed() {
+                    log::error!("could not pause the AI queue after a provider change: {e:#}");
+                }
+            })
+            .detach();
+        }
         let this = cx.global_mut::<AppSettings>();
         if next.appearance.theme != this.settings.appearance.theme {
             // Choosing a theme in settings replaces the run's `--theme` override.
