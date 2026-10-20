@@ -42,7 +42,7 @@
 
 ## 5. Verification
 
-- [ ] 5.1 `cargo xtask ci` is green
-- [ ] 5.2 Gate: recorded-fixture tests pass for all three providers and the live LM Studio smoke passes once on the reference machine
-- [ ] 5.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
-- [ ] 5.4 `openspec validate ai-insights --strict` passes
+- [x] 5.1 `cargo xtask ci` is green (clean worktree of HEAD, 2026-10-20)
+- [x] 5.2 Gate: recorded-fixture tests pass for all three providers and the live LM Studio smoke passes once on the reference machine (fixtures for openai, anthropic and gemini carry the v2 prompt; `scenario_llm_providers_{openai_compatible,anthropic,gemini}_request_shape` pass; live re-run with prompt v2 on 2026-10-20: gemma-4-e4b in LM Studio, 3 of 3 generated images gave valid ImageInsight v1 with prompt v2, no repair, 73.6 / 66.9 / 68.2 s, 900 s timeout)
+- [x] 5.3 `cargo xtask spec-coverage` reports every scenario of this change mapped (the 27 unmapped belong to performance-budgets, quarantine-cleanup and release-packaging)
+- [x] 5.4 `openspec validate ai-insights --strict` passes
