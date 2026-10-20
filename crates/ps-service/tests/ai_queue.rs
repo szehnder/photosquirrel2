@@ -137,8 +137,129 @@ fn scenario_ai_queue_keepers_processed_first() {
         "no non-keeper is requested"
     );
     let s = status(&catalog).unwrap();
-    assert_eq!((s.done, s.pending, s.results), (queued, 0, queued));
+    assert_eq!((s.done, s.pending), (queued, 0));
+    // RAW+JPEG pairs are described once; their other content gets the same result.
+    assert!(s.results >= queued, "{} results for {queued}", s.results);
     assert_eq!(ai.state(), QueueState::Finished);
+}
+
+/// Keeper sets of several contents (RAW+JPEG pairs) in a scanned corpus, as (JPEG content, other contents).
+fn capture_pairs(catalog: &Catalog) -> Vec<(ContentId, Vec<ContentId>)> {
+    let r = catalog.read();
+    let mut out = Vec::new();
+    for (_, _, set) in r.group_memberships().unwrap() {
+        let recs: Vec<_> = set
+            .iter()
+            .filter_map(|f| r.file_by_id(*f).unwrap())
+            .collect();
+        let jpeg = recs
+            .iter()
+            .find(|f| f.format == Some(ps_model::Format::Jpeg))
+            .and_then(|f| f.identity);
+        let mut others: Vec<ContentId> = recs
+            .iter()
+            .filter(|f| f.format.is_some_and(|x| x.is_raw()))
+            .filter_map(|f| f.identity)
+            .collect();
+        others.dedup();
+        if let Some(j) = jpeg
+            && !others.is_empty()
+            && !others.contains(&j)
+        {
+            out.push((j, others));
+        }
+    }
+    out
+}
+
+#[test]
+fn raw_jpeg_pairs_are_described_once_through_the_jpeg() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("corpus");
+    let w = DirWriter::new(&root).unwrap();
+    let mut params = tiny();
+    params.raw_share = 1.0;
+    ps_fixtures::generate_with(9, Preset::Small, params, &w).unwrap();
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).unwrap();
+    for d in ["drive-a", "drive-b", "drive-c"] {
+        svc.add_source(&root.join(d)).unwrap();
+    }
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    let catalog = svc.engine().catalog().clone();
+    let pairs = capture_pairs(&catalog);
+    assert!(pairs.len() >= 2, "the corpus has RAW+JPEG pairs: {pairs:?}");
+    // A queue from before pairs were described once: the RAW content was queued on its own.
+    let (_, raws) = &pairs[0];
+    catalog
+        .writer()
+        .ai_enqueue(vec![(raws[0], i64::MIN / 2)])
+        .unwrap();
+
+    let server = MockServer::with_handler(|_| {
+        Reply::json(
+            200,
+            &openai_reply(&insight_json("pets", 0, 0, &["dog"]).to_string()),
+        )
+    });
+    let cfg = cfg_for(&server.url());
+    let loader = Arc::new(OrderLoader(Mutex::new(Vec::new())));
+    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), loader.clone());
+    ai.start(false).unwrap();
+    assert!(ai.wait_idle(Duration::from_secs(60)));
+    let order = loader.0.lock().unwrap().clone();
+    assert_eq!(server.request_count(), order.len());
+    let unique: HashSet<_> = order.iter().collect();
+    assert_eq!(unique.len(), order.len(), "no content is described twice");
+    let r = catalog.read();
+    for (jpeg, raws) in &pairs {
+        assert!(order.contains(jpeg), "the pair's JPEG is described");
+        for raw in raws {
+            assert!(!order.contains(raw), "the pair's RAW is not sent");
+            let a = r.ai_result_for(jpeg).unwrap().expect("JPEG result");
+            let b = r
+                .ai_result_for(raw)
+                .unwrap()
+                .expect("RAW gets the same result");
+            assert_eq!(a.insight, b.insight);
+        }
+    }
+    assert_eq!(status(&catalog).unwrap().pending, 0);
+
+    // AI Review lists each pair once, with both files; a correction applies to both contents.
+    let store = ps_service::insights::InsightStore::in_memory();
+    let items = ps_service::insights::items(
+        &catalog,
+        &store,
+        &ps_service::insights::InsightFilter::default(),
+        10_000,
+    )
+    .unwrap();
+    for (jpeg, raws) in &pairs {
+        let listed: Vec<_> = items
+            .iter()
+            .filter(|i| i.content == jpeg.to_hex() || raws.iter().any(|r| i.content == r.to_hex()))
+            .collect();
+        assert_eq!(listed.len(), 1, "one AI Review item per pair");
+        assert_eq!(listed[0].content, jpeg.to_hex());
+        let raw_files = r.files_with_content(&raws[0]).unwrap();
+        assert!(raw_files.iter().all(|f| listed[0].files.contains(f)));
+    }
+    let (jpeg, raws) = &pairs[0];
+    ps_service::insights::correct(
+        &catalog,
+        &store,
+        &jpeg.to_hex(),
+        ps_service::insights::Correction {
+            category: Some(ps_model::SceneCategory::Travel),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let raw_effective = ps_service::insights::effective(&catalog, &store, &raws[0])
+        .unwrap()
+        .unwrap();
+    assert_eq!(raw_effective.category, ps_model::SceneCategory::Travel);
 }
 
 const CHILD_ENV: &str = "PS_AI_RESTART_CHILD";

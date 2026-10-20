@@ -392,6 +392,11 @@ pub fn items(
         if !seen.insert(row.content.digest) {
             continue;
         }
+        // A RAW+JPEG pair is one photo: list it once, under the content the AI described, with both files.
+        let set = crate::ai::capture_set(catalog, &row.content)?;
+        if set[0] != row.content && r.ai_result_for(&set[0])?.is_some() {
+            continue;
+        }
         let Ok(ai) = serde_json::from_str::<ImageInsight>(&row.insight) else {
             log::warn!("unreadable insight for {}", row.content.to_hex());
             continue;
@@ -403,7 +408,10 @@ pub fn items(
             s.status = store.decision(&content, &s.kind);
             s
         });
-        let files = r.files_with_content(&row.content)?;
+        let mut files = r.files_with_content(&row.content)?;
+        for other in set.iter().filter(|c| **c != row.content) {
+            files.extend(r.files_with_content(other)?);
+        }
         let mut name = String::new();
         let mut path = String::new();
         for f in &files {
@@ -461,6 +469,39 @@ pub fn effective(
     ))
 }
 
+/// The hex contents `content` (hex) is corrected and decided with: its capture set ([`crate::ai::capture_set`]),
+/// so a correction of a RAW+JPEG pair applies to both files.
+fn set_of(catalog: &Catalog, content: &str) -> Result<Vec<String>> {
+    let Ok(id) = parse_content(catalog, content) else {
+        return Ok(vec![content.to_owned()]);
+    };
+    Ok(crate::ai::capture_set(catalog, &id)?
+        .iter()
+        .map(ContentId::to_hex)
+        .collect())
+}
+
+/// Correct the insight of `content` (hex) and of the rest of its capture set.
+pub fn correct(
+    catalog: &Catalog,
+    store: &InsightStore,
+    content: &str,
+    c: Correction,
+) -> Result<()> {
+    for hex in set_of(catalog, content)? {
+        store.correct(&hex, c.clone());
+    }
+    Ok(())
+}
+
+/// Drop the corrections of `content` (hex) and of the rest of its capture set.
+pub fn clear(catalog: &Catalog, store: &InsightStore, content: &str) -> Result<()> {
+    for hex in set_of(catalog, content)? {
+        store.clear(&hex);
+    }
+    Ok(())
+}
+
 /// Accept or reject the open suggestion of `content` (hex). Accepting an exclusion records a user exclusion
 /// of every file with that content, with the AI's reason; rejecting records only the decision. Returns the
 /// number of files excluded.
@@ -477,9 +518,14 @@ pub fn decide(
     let Some(s) = suggestion_for(&i) else {
         return Ok(0);
     };
+    let set = crate::ai::capture_set(catalog, &id)?;
     let mut excluded = 0;
     if accept {
-        for f in catalog.read().files_with_content(&id)? {
+        let mut files = Vec::new();
+        for c in &set {
+            files.extend(catalog.read().files_with_content(c)?);
+        }
+        for f in files {
             catalog.writer().submit(Command::SetUserDecision {
                 file: f,
                 decision: Some(UserDecision::Exclude),
@@ -489,15 +535,14 @@ pub fn decide(
         }
         catalog.writer().flush()?;
     }
-    store.set_decision(
-        content,
-        &s.kind,
-        if accept {
-            SuggestionStatus::Accepted
-        } else {
-            SuggestionStatus::Rejected
-        },
-    );
+    let status = if accept {
+        SuggestionStatus::Accepted
+    } else {
+        SuggestionStatus::Rejected
+    };
+    for c in &set {
+        store.set_decision(&c.to_hex(), &s.kind, status);
+    }
     Ok(excluded)
 }
 

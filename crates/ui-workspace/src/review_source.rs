@@ -148,12 +148,19 @@ impl ReviewSource for CatalogReview {
         )?)
     }
     fn ai_correct(&self, content: &str, c: Correction) -> anyhow::Result<()> {
-        self.istore()?.correct(content, c);
-        Ok(())
+        Ok(ps_service::insights::correct(
+            self.backend.catalog()?,
+            self.istore()?,
+            content,
+            c,
+        )?)
     }
     fn ai_clear(&self, content: &str) -> anyhow::Result<()> {
-        self.istore()?.clear(content);
-        Ok(())
+        Ok(ps_service::insights::clear(
+            self.backend.catalog()?,
+            self.istore()?,
+            content,
+        )?)
     }
     fn ai_decide(&self, content: &str, accept: bool) -> anyhow::Result<usize> {
         Ok(ps_service::insights::decide(

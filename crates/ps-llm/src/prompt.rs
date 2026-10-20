@@ -8,7 +8,8 @@ use ps_model::{INSIGHT_JSON_SCHEMA, INSIGHT_SCHEMA_VERSION};
 use serde_json::Value;
 
 /// Version of the prompt wording below. Bump on every wording change.
-pub const PROMPT_VERSION: u32 = 1;
+/// v2: domestic animals are `pets`; `animals` is for wildlife only.
+pub const PROMPT_VERSION: u32 = 2;
 
 /// System message: role and output discipline.
 pub const SYSTEM_V1: &str = "You are a careful photo-cataloguing assistant for a private family photo library. \
@@ -25,15 +26,17 @@ Describe the attached image as one JSON object with exactly these fields:
 build a sandcastle on a sunny beach.\" No names, no speculation.
 - \"category\": the single best fit, one of:
   portrait (one or two people are the clear subject, close up or posed), people (people are the main subject: \
-groups, crowds, people at a distance or doing something), pets (dogs, cats and other domestic pets), \
-animals (wild, farm or zoo animals, birds, insects), nature (plants, flowers, trees, close-up nature), \
+groups, crowds, people at a distance or doing something), pets (any domestic animal: dogs, cats, rabbits, \
+hamsters, pet birds, horses, farm animals), animals (wildlife only: wild animals, wild birds, zoo animals, \
+insects), nature (plants, flowers, trees, close-up nature), \
 landscape (wide scenery: mountains, sea, sky, fields), travel (landmarks, sightseeing, hotels, airports, \
 tourist spots), urban (streets, buildings, architecture, city life), food (meals, dishes, drinks), \
 event (party, wedding, birthday, holiday celebration, concert, ceremony), sports (playing or watching sport), \
 document (paper, receipt, form, whiteboard, sign or page photographed for its text), screenshot (a capture of \
 a computer, phone or TV screen), artwork (painting, drawing, illustration, graphic design, logo, meme, rendered \
 image), object (a single item or product close up), other.
-  When people are clearly visible and important, prefer portrait or people over the setting.
+  When people are clearly visible and important, prefer portrait or people over the setting. A dog, cat or \
+other domestic animal as the subject is always pets, never animals.
 - \"also\": up to 3 further categories from the same list, most relevant first, not repeating \"category\"; \
 [] when none apply.
 - \"is_photo\": true when the image is a photograph of a real scene taken with a camera or phone; false for \
@@ -128,6 +131,15 @@ mod tests {
             assert!(p.user.contains(c.as_str()), "{c:?} explained");
         }
         assert!(repair_message("missing field `category`").contains("missing field `category`"));
+    }
+
+    #[test]
+    fn domestic_animals_are_pets_and_wildlife_is_animals() {
+        let p = Prompt::insight_v1();
+        assert_eq!(p.version, 2);
+        assert!(p.user.contains("pets (any domestic animal: dogs, cats"));
+        assert!(p.user.contains("animals (wildlife only"));
+        assert!(p.user.contains("always pets, never animals"));
     }
 
     /// D4: the schema text in the prompt is key-sorted whatever serde_json's feature set.

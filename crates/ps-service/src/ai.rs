@@ -67,7 +67,7 @@ use ps_llm::queue::{
     QueueStore, ResultKey, StartError,
 };
 use ps_llm::{Described, Describer, PreviewError, PreviewInput, PreviewJpeg};
-use ps_model::{ContentId, FileId, ImageInsight, MediaKind, PhotoClass, path_from_bytes};
+use ps_model::{ContentId, FileId, Format, ImageInsight, MediaKind, PhotoClass, path_from_bytes};
 use serde::{Deserialize, Serialize};
 
 use crate::scan::ScanService;
@@ -127,22 +127,33 @@ impl QueueStore for CatalogQueueStore {
         )
     }
 
+    /// Store the result for the item's whole capture set (a RAW+JPEG pair is described once, through its
+    /// JPEG, and the insight is stored for both contents so every view shows it on both files).
     fn complete(&self, item: &QueueItem, d: &Described) {
         let insight = serde_json::to_string(&d.insight).unwrap_or_default();
-        logged(
-            "complete",
-            self.catalog.writer().ai_complete(AiResultRow {
-                content: item.content,
-                provider: d.provenance.provider.clone(),
-                model: d.provenance.model.clone(),
-                schema_version: d.provenance.schema_version,
-                prompt_version: d.provenance.prompt_version,
-                insight,
-                latency_ms: d.provenance.latency.as_millis() as u64,
-                requests: d.provenance.requests,
-                at_ms: ps_export::now_ms(),
-            }),
-        );
+        let at_ms = ps_export::now_ms();
+        let set = logged("capture set", capture_set(&self.catalog, &item.content));
+        let contents = if set.is_empty() {
+            vec![item.content]
+        } else {
+            set
+        };
+        for content in contents {
+            logged(
+                "complete",
+                self.catalog.writer().ai_complete(AiResultRow {
+                    content,
+                    provider: d.provenance.provider.clone(),
+                    model: d.provenance.model.clone(),
+                    schema_version: d.provenance.schema_version,
+                    prompt_version: d.provenance.prompt_version,
+                    insight: insight.clone(),
+                    latency_ms: d.provenance.latency.as_millis() as u64,
+                    requests: d.provenance.requests,
+                    at_ms,
+                }),
+            );
+        }
     }
 
     fn mark_done(&self, item: &QueueItem) {
@@ -259,8 +270,55 @@ pub fn queue_priority(keeper: bool, class: Option<PhotoClass>, capture_ms: Optio
     tier * TIER + t
 }
 
+/// Order of preference for the one member of a capture set the AI describes: a JPEG first (the cheapest to
+/// decode into a preview), then by best-copy rank.
+fn describe_order(format: Option<Format>, rank: usize) -> (bool, usize) {
+    (format != Some(Format::Jpeg), rank)
+}
+
+/// The distinct contents of `content`'s **capture set**, the one it is described with: the keeper set of its
+/// duplicate group when that holds more than one content (a RAW+JPEG pair, ADR-0037). The representative the
+/// queue describes comes first ([`describe_order`]). A content outside such a set is alone: `[content]`.
+pub fn capture_set(
+    catalog: &Catalog,
+    content: &ContentId,
+) -> Result<Vec<ContentId>, ps_catalog::CatalogError> {
+    let r = catalog.read();
+    for f in r.files_with_content(content)? {
+        let Some(g) = r.group_of_file(f)? else {
+            continue;
+        };
+        let Some(row) = r.group(g)? else { continue };
+        if !row.keeper_set.contains(&f) {
+            continue;
+        }
+        let mut set: Vec<((bool, usize), ContentId)> = Vec::new();
+        for (rank, m) in row
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.in_keeper_set)
+        {
+            if let Some(rec) = r.file_by_id(m.file)?
+                && let Some(c) = rec.identity
+                && !set.iter().any(|(_, x)| *x == c)
+            {
+                set.push((describe_order(rec.format, rank), c));
+            }
+        }
+        if set.len() > 1 {
+            set.sort_by_key(|(o, _)| *o);
+            return Ok(set.into_iter().map(|(_, c)| c).collect());
+        }
+    }
+    Ok(vec![*content])
+}
+
 /// Queue every analyzed image keeper (singletons and group keeper sets), and the other group members when
-/// `include_non_keepers`. Byte-identical copies share one entry. Returns the number of new entries.
+/// `include_non_keepers`. Byte-identical copies share one entry, and a keeper set of several contents (a
+/// RAW+JPEG pair) is queued once, through its JPEG: the other contents get the same result when it completes
+/// ([`CatalogQueueStore`]), and entries queued for them earlier are marked done. Returns the number of new
+/// entries.
 pub fn enqueue(
     catalog: &Catalog,
     include_non_keepers: bool,
@@ -268,11 +326,22 @@ pub fn enqueue(
     let r = catalog.read();
     let mut keepers: HashSet<FileId> = HashSet::new();
     let mut members: HashSet<FileId> = HashSet::new();
+    // Keeper sets with more than one file, and each such file's set and rank in it.
+    let mut sets: Vec<Vec<FileId>> = Vec::new();
+    let mut in_set: HashMap<FileId, (usize, usize)> = HashMap::new();
     for (_, m, set) in r.group_memberships()? {
         members.extend(m);
-        keepers.extend(set);
+        keepers.extend(set.iter().copied());
+        if set.len() > 1 {
+            for (rank, f) in set.iter().enumerate() {
+                in_set.insert(*f, (sets.len(), rank));
+            }
+            sets.push(set);
+        }
     }
     let mut best: HashMap<ContentId, i64> = HashMap::new();
+    // Set members' content and describe order, by set.
+    let mut set_contents: Vec<Vec<((bool, usize), ContentId)>> = vec![Vec::new(); sets.len()];
     r.for_each_file(|f| {
         let (Some(content), Some(class)) = (f.identity, f.class) else {
             return;
@@ -293,14 +362,56 @@ pub fn enqueue(
         if !keeper && !include_non_keepers {
             return;
         }
+        if let Some((set, rank)) = in_set.get(&f.id) {
+            set_contents[*set].push((describe_order(f.format, *rank), content));
+        }
         let p = queue_priority(keeper, Some(class), f.capture_ms);
         best.entry(content)
             .and_modify(|e| *e = (*e).min(p))
             .or_insert(p);
     })?;
+    let mut covered: Vec<ContentId> = Vec::new();
+    for mut set in set_contents {
+        set.sort_by_key(|(o, _)| *o);
+        set.dedup_by_key(|(_, c)| *c);
+        let Some(((_, _), rep)) = set.first().copied() else {
+            continue;
+        };
+        for (_, other) in set.into_iter().skip(1) {
+            if other == rep {
+                continue;
+            }
+            if let Some(p) = best.remove(&other)
+                && let Some(rp) = best.get_mut(&rep)
+            {
+                *rp = (*rp).min(p);
+            }
+            covered.push(other);
+        }
+    }
     let mut items: Vec<(ContentId, i64)> = best.into_iter().collect();
     items.sort_by_key(|(c, p)| (*p, *c));
-    catalog.writer().ai_enqueue(items)
+    let added = catalog.writer().ai_enqueue(items)?;
+    // Entries queued for a pair's other content before pairs were described once: their result comes with
+    // the representative's.
+    for c in covered {
+        let pending = r.with(|db| {
+            Ok(db
+                .query_row(
+                    "SELECT state FROM ai_queue WHERE content_id = ?1",
+                    [&c.digest[..]],
+                    |row| row.get::<_, i64>(0),
+                )
+                .ok()
+                == Some(0))
+        })?;
+        if pending {
+            catalog
+                .writer()
+                .ai_set_state(c, AiItemState::Done, 0, None)?;
+        }
+    }
+    Ok(added)
 }
 
 /// Queue counts and run state straight from the catalog (no provider, nothing sent).
