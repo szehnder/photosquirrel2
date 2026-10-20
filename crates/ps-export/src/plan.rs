@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use ps_model::{ContentId, FileId, LedgerEntry, LedgerState, RelPath, SourceId};
+use ps_model::{ContentId, FileId, LedgerEntry, LedgerKind, LedgerState, RelPath, SourceId};
 use serde::Serialize;
 
 use crate::date::{DateOrigin, DateSource};
@@ -69,6 +69,9 @@ pub struct PlannedBundle {
     pub sidecar: Option<RelPath>,
     /// 1 = original name, n >= 2 = ` (n)`.
     pub suffix: u32,
+    /// Files of the bundle already in the library. A bundle with no `files` and a `sidecar` only writes the
+    /// sidecar of exported files that have none (a crashed sidecar write, or sidecars turned on, ADR-0045).
+    pub already: Vec<AlreadyExported>,
 }
 
 /// A keeper on an offline source: listed, skipped, left pending.
@@ -86,6 +89,11 @@ pub struct AlreadyExported {
     pub unit: usize,
     pub file: FileId,
     pub library_rel_path: RelPath,
+    #[serde(skip)]
+    pub content: ContentId,
+    /// The copy's full BLAKE3 from the ledger (for a sidecar that lists it).
+    #[serde(skip)]
+    pub full_hash: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -261,9 +269,24 @@ struct Planner<'a> {
     reserved: HashSet<Vec<u8>>,
     /// Paths of `in_progress` ledger rows: a partial file there is ours, stale, removed before copying.
     in_progress: HashSet<Vec<u8>>,
+    /// Sidecars the ledger records as written (`done` sidecar rows): collision key -> the content described.
+    sidecars: HashMap<Vec<u8>, ContentId>,
+    /// The same rows by content.
+    sidecars_of: HashMap<ContentId, Vec<RelPath>>,
 }
 
 impl Planner<'_> {
+    /// A sidecar we wrote for one of `contents` is at `rel` (ADR-0045): the name is ours to keep.
+    fn our_sidecar(&self, rel: &RelPath, contents: &[ContentId]) -> io::Result<bool> {
+        let key = collision_key(rel);
+        Ok(!self.reserved.contains(&key)
+            && self
+                .sidecars
+                .get(&key)
+                .is_some_and(|c| contents.contains(c))
+            && matches!(self.probe.existing(rel)?, Existing::File { .. }))
+    }
+
     /// Name free apart from a possible stale partial of ours.
     fn free_name(&self, rel: &RelPath) -> io::Result<bool> {
         let key = collision_key(rel);
@@ -309,8 +332,17 @@ pub fn plan(
 
     let mut done: HashMap<ContentId, Vec<&LedgerEntry>> = HashMap::new();
     let mut in_progress = HashSet::new();
+    let mut sidecars = HashMap::new();
+    let mut sidecars_of: HashMap<ContentId, Vec<RelPath>> = HashMap::new();
     for e in ledger {
         match e.state {
+            LedgerState::Done if e.kind == LedgerKind::Sidecar => {
+                sidecars.insert(collision_key(&e.library_rel_path), e.content);
+                sidecars_of
+                    .entry(e.content)
+                    .or_default()
+                    .push(e.library_rel_path.clone());
+            }
             LedgerState::Done => done.entry(e.content).or_default().push(e),
             LedgerState::InProgress => {
                 in_progress.insert(collision_key(&e.library_rel_path));
@@ -324,6 +356,8 @@ pub fn plan(
         probe,
         reserved: HashSet::new(),
         in_progress,
+        sidecars,
+        sidecars_of,
     };
 
     let mut groups = bundles(input, settings.live_pairs_together);
@@ -374,27 +408,77 @@ pub fn plan(
         // (or every copy, with `verify_library`) is re-hashed (ADR-0044). A same-size file with other bytes is
         // not this content (D7).
         let mut todo = Vec::new();
+        let mut already = Vec::new();
         for (u, f) in &all {
             let mut found = None;
             for e in done.get(&f.content).into_iter().flatten() {
                 if check_copy(probe, e, settings.verify_library)? == CopyCheck::Ok {
-                    found = Some(e.library_rel_path.clone());
+                    found = Some(*e);
                     break;
                 }
             }
             match found {
-                Some(path) => {
-                    p.reserved.insert(collision_key(&path));
-                    out.already_exported.push(AlreadyExported {
+                Some(e) => {
+                    p.reserved.insert(collision_key(&e.library_rel_path));
+                    let a = AlreadyExported {
                         unit: *u,
                         file: f.file,
-                        library_rel_path: path,
-                    });
+                        library_rel_path: e.library_rel_path.clone(),
+                        content: f.content,
+                        full_hash: e.full_hash,
+                    };
+                    out.already_exported.push(a.clone());
+                    already.push(a);
                 }
                 None => todo.push((*u, *f)),
             }
         }
+        let contents: Vec<ContentId> = all.iter().map(|(_, f)| f.content).collect();
+        let kind = if units.len() > 1 {
+            BundleKind::LivePhoto
+        } else if all.len() > 1 {
+            BundleKind::KeeperSet
+        } else {
+            BundleKind::Single
+        };
         if todo.is_empty() {
+            // Every file is in the library. With sidecars on and none of ours present, write the missing
+            // sidecar next to the primary copy if that name is free (ADR-0045); a name taken by anything else
+            // (a sidecar from before ledger rows, the user's own file) is left alone.
+            if settings.sidecars {
+                let mut ours = false;
+                for rel in contents
+                    .iter()
+                    .filter_map(|c| p.sidecars_of.get(c))
+                    .flatten()
+                {
+                    if matches!(probe.existing(rel)?, Existing::File { .. }) {
+                        ours = true;
+                        break;
+                    }
+                }
+                let primary = &already[0].library_rel_path;
+                let stem = split_name(primary.file_name()).0;
+                let folder = primary
+                    .parent()
+                    .map(|f| f.display().into_owned())
+                    .unwrap_or_default();
+                if !ours
+                    && let Some(rel) = join(&folder, &candidate(stem, b".xmp", 1))
+                    && p.free_name(&rel)?
+                {
+                    p.reserved.insert(collision_key(&rel));
+                    out.totals.sidecars += 1;
+                    out.bundles.push(PlannedBundle {
+                        units,
+                        kind,
+                        files: Vec::new(),
+                        sidecar: Some(rel),
+                        suffix: 1,
+                        already,
+                    });
+                }
+            }
             continue;
         }
 
@@ -428,6 +512,9 @@ pub fn plan(
                 }
                 if p.free_name(&rel)? {
                     sidecar = Some(rel);
+                } else if p.our_sidecar(&rel, &contents)? {
+                    // Our own sidecar of this content (its copy was deleted and is copied again): keep the
+                    // name and the sidecar as it is.
                 } else {
                     // An existing sidecar is only acceptable next to our own identical files.
                     let ours = slots.iter().all(|(_, s)| *s == Slot::Identical)
@@ -480,19 +567,13 @@ pub fn plan(
             p.reserved.insert(collision_key(s));
             out.totals.sidecars += 1;
         }
-        let kind = if units.len() > 1 {
-            BundleKind::LivePhoto
-        } else if all.len() > 1 {
-            BundleKind::KeeperSet
-        } else {
-            BundleKind::Single
-        };
         out.bundles.push(PlannedBundle {
             units,
             kind,
             files,
             sidecar,
             suffix: n,
+            already,
         });
     }
 

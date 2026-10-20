@@ -198,3 +198,204 @@ fn scenario_export_lightroom_profile_keeps_raw_pairs() {
         pairs
     );
 }
+
+// ---- sidecars in the ledger (ADR-0045) ----
+
+const SIDECAR_KILL_ENV: &str = "PS_EXPORT_SIDECAR_KILL_DIR";
+
+/// Kills the process when the first sidecar is about to be renamed into place.
+struct AbortBeforeSidecarRename;
+
+impl ps_export::CopyHooks for AbortBeforeSidecarRename {
+    fn before_rename(&self, _f: ps_model::FileId, partial: &std::path::Path) {
+        if partial.to_string_lossy().ends_with(".xmp.ps-partial") {
+            std::process::abort();
+        }
+    }
+}
+
+/// The same three-photo input in the parent and the child.
+fn sidecar_kill_input(dir: &std::path::Path) -> ps_export::ExportInput {
+    let root = dir.join("src");
+    let src = ps_export::SourceInfo {
+        id: ps_model::SourceId(1),
+        root: root.clone(),
+        online: true,
+        name: "drive-s".into(),
+    };
+    let units = (0..3)
+        .map(|i| {
+            let name = format!("IMG_{i}.JPG");
+            let p = root.join(&name);
+            let data = fs::read(&p).expect("read");
+            unit(vec![ps_export::KeeperFile {
+                file: ps_model::FileId(i + 1),
+                source: src.id,
+                rel_path: rel(&name),
+                size: data.len() as u64,
+                mtime_ns: mtime_ns(&p),
+                content: ps_hash::identity_from_buffer(&data),
+                format: format_of(&name),
+                capture: day(2018, 4, 4),
+                undated: false,
+                date_origin: ps_export::DateOrigin::OWN_EXIF,
+                content_identifier: None,
+            }])
+        })
+        .collect();
+    ps_export::ExportInput {
+        sources: vec![src],
+        units,
+    }
+}
+
+fn lightroom_run(
+    input: &ps_export::ExportInput,
+    lib: &std::path::Path,
+    ledger: &mut dyn Ledger,
+    hooks: &dyn ps_export::CopyHooks,
+) -> ps_export::ExportReport {
+    let rows = ledger.entries().expect("rows");
+    let settings = ProfileSettings::defaults(ExportProfile::Lightroom);
+    let p = plan(input, &rows, lib, &FsLibrary::new(lib), settings).expect("plan");
+    execute(
+        &p,
+        input,
+        ledger,
+        &ExecConfig::default(),
+        hooks,
+        &AtomicBool::new(false),
+    )
+    .expect("export")
+}
+
+/// A kill while a sidecar is being written leaves its partial and an `in_progress` sidecar row; the next run
+/// removes the partial and writes the sidecar, so the resumed export is complete with every `.xmp`.
+#[test]
+fn scenario_export_interrupted_sidecar_is_finished_on_resume() {
+    if let Some(dir) = std::env::var_os(SIDECAR_KILL_ENV) {
+        let dir = std::path::PathBuf::from(dir);
+        let input = sidecar_kill_input(&dir);
+        let mut ledger = FileLedger::new(dir.join("ledger.jsonl"));
+        lightroom_run(
+            &input,
+            &dir.join("library"),
+            &mut ledger,
+            &AbortBeforeSidecarRename,
+        );
+        unreachable!("the child is killed before the first sidecar rename");
+    }
+    let tmp = scratch("sidecar-kill");
+    let dir = tmp.path();
+    fs::create_dir(dir.join("src")).expect("src");
+    for i in 0..3u64 {
+        let p = dir.join("src").join(format!("IMG_{i}.JPG"));
+        fs::write(&p, bytes(500 + i, 30_000)).expect("write");
+        set_mtime(&p, 1_520_000_000);
+    }
+    let status = std::process::Command::new(std::env::current_exe().expect("exe"))
+        .args([
+            "scenario_export_interrupted_sidecar_is_finished_on_resume",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(SIDECAR_KILL_ENV, dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("spawn child");
+    assert!(!status.success(), "child was killed");
+    let lib = dir.join("library");
+    let partials = partials_under(&lib);
+    assert_eq!(partials.len(), 1, "{partials:?}");
+    assert!(partials[0].to_string_lossy().ends_with(".xmp.ps-partial"));
+
+    let input = sidecar_kill_input(dir);
+    let mut ledger = FileLedger::new(dir.join("ledger.jsonl"));
+    let r = lightroom_run(&input, &lib, &mut ledger, &NoHooks);
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    assert_eq!(r.stale_partials_removed, 1);
+    assert!(partials_under(&lib).is_empty());
+    for i in 0..3 {
+        let side = lib.join(format!("2018/2018-04-04/IMG_{i}.xmp"));
+        xmp::parse(&fs::read(&side).expect("sidecar written")).expect("valid XMP");
+        assert!(lib.join(format!("2018/2018-04-04/IMG_{i}.JPG")).is_file());
+    }
+    assert_eq!(library_by_hash(&lib).len(), 3, "each photo exactly once");
+    let rows = ledger.entries().expect("rows");
+    let sidecars = rows
+        .iter()
+        .filter(|e| e.kind == ps_model::LedgerKind::Sidecar)
+        .filter(|e| e.state == ps_model::LedgerState::Done)
+        .count();
+    assert_eq!(sidecars, 3);
+    // Nothing is left to do.
+    let again = lightroom_run(&input, &lib, &mut ledger, &NoHooks);
+    assert_eq!((again.copied, again.adopted, again.sidecars), (0, 0, 0));
+}
+
+/// A library copy the user deleted is copied again under its original name: its sidecar, which the ledger
+/// records as ours, does not push the photo to "IMG (2).JPG", and is left as it is.
+#[test]
+fn scenario_export_deleted_copy_restored_to_its_name() {
+    let mut s = Sources::new("restore", 1);
+    let f = s.add(
+        0,
+        "DCIM/IMG_4000.JPG",
+        &bytes(77, 9_000),
+        0,
+        day(2021, 1, 2),
+    );
+    let input = s.input(vec![unit(vec![f])]);
+    let lib = s.library();
+    let mut ledger = MemoryLedger::new();
+    let settings = ProfileSettings::defaults(ExportProfile::ApplePhotos);
+    let (_, r) = export(&input, &lib, &mut ledger, settings);
+    assert_eq!((r.copied, r.sidecars), (1, 1));
+    let photo = lib.join("2021/2021-01-02/IMG_4000.JPG");
+    let side = lib.join("2021/2021-01-02/IMG_4000.xmp");
+    let side_before = fs::read(&side).expect("sidecar");
+    fs::remove_file(&photo).expect("the user deletes the library copy");
+    let (p, r) = export(&input, &lib, &mut ledger, settings);
+    assert_eq!(p.totals.collisions, 0, "no suffix");
+    assert_eq!((r.copied, r.sidecars), (1, 0));
+    assert!(photo.is_file());
+    assert!(!lib.join("2021/2021-01-02/IMG_4000 (2).JPG").exists());
+    assert_eq!(fs::read(&side).expect("kept"), side_before);
+}
+
+/// Sidecars turned on for a library first exported without them: each exported bundle gets its sidecar
+/// next to its copy, and nothing is copied again.
+#[test]
+fn sidecars_are_added_to_an_exported_library() {
+    let mut s = Sources::new("add-sidecars", 1);
+    let f = s.add(
+        0,
+        "DCIM/IMG_4100.JPG",
+        &bytes(78, 9_000),
+        0,
+        day(2021, 1, 3),
+    );
+    let input = s.input(vec![unit(vec![f])]);
+    let lib = s.library();
+    let mut ledger = MemoryLedger::new();
+    let (_, r) = export(
+        &input,
+        &lib,
+        &mut ledger,
+        ProfileSettings::defaults(ExportProfile::GooglePhotos),
+    );
+    assert_eq!((r.copied, r.sidecars), (1, 0));
+    let (p, r) = export(
+        &input,
+        &lib,
+        &mut ledger,
+        ProfileSettings::defaults(ExportProfile::ApplePhotos),
+    );
+    assert_eq!((p.totals.files, p.totals.sidecars), (0, 1));
+    assert_eq!((r.copied, r.sidecars), (0, 1));
+    let side = xmp::parse(&fs::read(lib.join("2021/2021-01-03/IMG_4100.xmp")).expect("sidecar"))
+        .expect("valid");
+    assert!(side.files[0].starts_with("IMG_4100.JPG "));
+}

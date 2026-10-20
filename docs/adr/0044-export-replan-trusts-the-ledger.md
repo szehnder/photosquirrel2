@@ -23,8 +23,8 @@ could only be noticed by hashing.
 - A full re-hash of every recorded copy happens only on request: `export dry-run|run --verify`, `report --verify`
   and the Reports view's Verify, or for rows that lack the hash to compare (the catalog identity is used then).
 - Budget `export-replan-50k` (perf-budgets.toml): re-planning a library that holds 50,000 exported files, all in
-  the ledger, takes at most 500 ms (median of 3, release, reference machine; measured 187 ms on NVMe) and reads no library
-  file. Measured in
+  the ledger, takes at most 800 ms (median of 3, release, reference machine) and reads no library file. Measured
+  187 ms for the files alone and 398 ms once each bundle's sidecar is in the ledger too (ADR-0045), on NVMe. Measured in
   `ps-export/tests/budgets.rs`; `scenario_export_re_plan_reads_no_file_contents` counts the reads.
 
 ## Alternatives considered

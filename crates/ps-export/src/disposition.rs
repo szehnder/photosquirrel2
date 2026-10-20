@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use ps_model::{
-    CompletionCounts, ContentId, Disposition, ExclusionReason, FileId, LedgerEntry, LedgerState,
-    PhotoClass, RelPath, SourceId,
+    CompletionCounts, ContentId, Disposition, ExclusionReason, FileId, LedgerEntry, PhotoClass,
+    RelPath, SourceId,
 };
 use serde::Serialize;
 
@@ -93,7 +93,7 @@ pub fn check_library(
     let probe = FsLibrary::new(library);
     ledger
         .iter()
-        .filter(|e| e.state == LedgerState::Done)
+        .filter(|e| e.is_exported_file())
         .map(|e| {
             let check = check_copy(&probe, e, verify).unwrap_or(CopyCheck::Missing);
             (e.library_rel_path.clone(), check)
@@ -105,7 +105,7 @@ pub fn check_library(
 pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition> {
     // Contents with a valid library copy -> its path.
     let mut valid: HashMap<ContentId, RelPath> = HashMap::new();
-    for e in facts.ledger.iter().filter(|e| e.state == LedgerState::Done) {
+    for e in facts.ledger.iter().filter(|e| e.is_exported_file()) {
         if facts.checks.get(&e.library_rel_path) == Some(&CopyCheck::Ok) {
             valid
                 .entry(e.content)

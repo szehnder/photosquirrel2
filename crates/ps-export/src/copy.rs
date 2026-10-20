@@ -355,6 +355,8 @@ pub fn write_new_file(
     rel: &RelPath,
     bytes: &[u8],
     cfg: &CopyConfig,
+    hooks: &dyn CopyHooks,
+    file: FileId,
 ) -> Result<RenameMethod, CopyError> {
     let target = lib
         .prepare(rel)
@@ -385,6 +387,7 @@ pub fn write_new_file(
             found: hex(blake3::hash(&back).as_bytes()),
         });
     }
+    hooks.before_rename(file, &partial);
     let method = rename_no_replace(&partial, &target, cfg.allow_check_then_rename)
         .map_err(CopyError::io("rename", &target))?;
     guard.armed = false;

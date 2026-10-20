@@ -74,6 +74,37 @@ impl LedgerState {
     }
 }
 
+/// What a ledger row's library path holds (ADR-0045). Stable storage codes: 0, 1.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LedgerKind {
+    /// A copied (or adopted) photo or video.
+    #[default]
+    File,
+    /// The `<stem>.xmp` sidecar written next to a bundle's files; `content` and `file` are the primary file's,
+    /// `full_hash` and `size` the sidecar's own.
+    Sidecar,
+}
+
+impl LedgerKind {
+    pub fn code(self) -> i64 {
+        match self {
+            LedgerKind::File => 0,
+            LedgerKind::Sidecar => 1,
+        }
+    }
+
+    pub fn from_code(c: i64) -> Option<Self> {
+        match c {
+            0 => Some(LedgerKind::File),
+            1 => Some(LedgerKind::Sidecar),
+            _ => None,
+        }
+    }
+}
+
 /// One export ledger row: a catalog content exported (or being exported) to one library path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LedgerEntry {
@@ -95,6 +126,16 @@ pub struct LedgerEntry {
     /// migration 9.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_mtime_ns: Option<i64>,
+    /// A copied file or a sidecar (ADR-0045). Only `File` rows say a content is exported.
+    #[serde(default)]
+    pub kind: LedgerKind,
+}
+
+impl LedgerEntry {
+    /// A completed copy (or adoption) of a photo or video: the rows that make a content exported.
+    pub fn is_exported_file(&self) -> bool {
+        self.state == LedgerState::Done && self.kind == LedgerKind::File
+    }
 }
 
 /// Why a file is `excluded` (ADR-0023).

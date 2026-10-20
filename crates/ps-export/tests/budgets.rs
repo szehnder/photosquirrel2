@@ -23,8 +23,8 @@ fn budget(name: &str, value: f64, unit: &str, max: f64) {
     }
 }
 
-/// Re-plan a library that already holds every keeper: 50,000 exported files in 500 day folders, all
-/// recorded in the ledger with their size and time. The plan must find them all exported without reading
+/// Re-plan a library that already holds every keeper: 50,000 exported files with their sidecars in 500 day
+/// folders, all recorded in the ledger with their size and time. The plan must find them all exported without reading
 /// any of them (the Export view re-plans on open and on every profile change).
 #[test]
 fn replan_50k_exported_within_budget() {
@@ -57,6 +57,26 @@ fn replan_50k_exported_within_budget() {
         let path = target.under(&lib);
         fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         fs::write(&path, [7u8; 16]).expect("write");
+        // The bundle's sidecar, as an Apple Photos export leaves it.
+        let side = ps_export::layout::join(
+            &ps_export::layout::folder_of(&k),
+            format!("IMG_{i:06}.xmp").as_bytes(),
+        )
+        .expect("sidecar");
+        let side_path = side.under(&lib);
+        fs::write(&side_path, b"<x:xmpmeta/>").expect("write sidecar");
+        rows.push(LedgerEntry {
+            content,
+            full_hash: None,
+            file: k.file,
+            library_rel_path: side,
+            size: 12,
+            state: LedgerState::Done,
+            profile: ExportProfile::ApplePhotos,
+            at_ms: 0,
+            library_mtime_ns: None,
+            kind: ps_model::LedgerKind::Sidecar,
+        });
         rows.push(LedgerEntry {
             content,
             full_hash: Some(digest),
@@ -67,6 +87,7 @@ fn replan_50k_exported_within_budget() {
             profile: ExportProfile::ApplePhotos,
             at_ms: 0,
             library_mtime_ns: Some(mtime_ns(&path)),
+            kind: ps_model::LedgerKind::File,
         });
         units.push(unit(vec![k]));
     }

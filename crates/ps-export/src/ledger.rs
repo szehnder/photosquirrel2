@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::io;
 
-use ps_model::{ContentId, LedgerEntry, LedgerState, RelPath};
+use ps_model::{ContentId, LedgerEntry, RelPath};
 
 /// Storage for ledger rows of one library.
 pub trait Ledger: Send {
@@ -40,8 +40,9 @@ impl MemoryLedger {
         self.rows.get(path)
     }
 
+    /// `done` file rows (sidecar rows excluded, ADR-0045).
     pub fn done(&self) -> impl Iterator<Item = &LedgerEntry> {
-        self.rows.values().filter(|e| e.state == LedgerState::Done)
+        self.rows.values().filter(|e| e.is_exported_file())
     }
 
     /// Done rows of a content.

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot_free::Mutex;
-use ps_model::{ContentId, ContentIdKind, FileId, LedgerEntry, LedgerState, RelPath};
+use ps_model::{ContentId, ContentIdKind, FileId, LedgerEntry, LedgerKind, LedgerState, RelPath};
 use serde::Serialize;
 
 use crate::copy::{
@@ -145,6 +145,7 @@ impl Ctx<'_> {
             profile: self.plan.settings.profile,
             at_ms: crate::now_ms(),
             library_mtime_ns: None,
+            kind: LedgerKind::File,
         }
     }
 
@@ -343,12 +344,50 @@ impl Ctx<'_> {
                 }
             }
         }
-        if let (Some(rel), false) = (&b.sidecar, done.is_empty()) {
-            self.write_sidecar(b, rel, &done);
+        // The sidecar lists the files copied now and those already in the library (a sidecar-only bundle).
+        let mut listed: Vec<SideFile> = done
+            .iter()
+            .map(|(f, h)| SideFile {
+                target: f.target.clone(),
+                content: f.content,
+                file: f.file,
+                full: *h,
+            })
+            .collect();
+        listed.extend(b.already.iter().map(|a| SideFile {
+            target: a.library_rel_path.clone(),
+            content: a.content,
+            file: a.file,
+            full: a.full_hash.unwrap_or(match a.content.kind {
+                ContentIdKind::Full => a.content.digest,
+                ContentIdKind::Sampled => [0; 32],
+            }),
+        }));
+        if let (Some(rel), false) = (&b.sidecar, listed.is_empty())
+            && !self.stopped()
+        {
+            self.write_sidecar(b, rel, &listed);
         }
     }
 
-    fn write_sidecar(&self, b: &PlannedBundle, rel: &RelPath, done: &[(&PlannedFile, [u8; 32])]) {
+    fn sidecar_entry(&self, primary: &SideFile, rel: &RelPath, state: LedgerState) -> LedgerEntry {
+        LedgerEntry {
+            content: primary.content,
+            full_hash: None,
+            file: primary.file,
+            library_rel_path: rel.clone(),
+            size: 0,
+            state,
+            profile: self.plan.settings.profile,
+            at_ms: crate::now_ms(),
+            library_mtime_ns: None,
+            kind: LedgerKind::Sidecar,
+        }
+    }
+
+    /// Write the bundle's sidecar with a ledger row around it (ADR-0045): `in_progress` before its partial
+    /// file exists (so recovery removes a crashed write's partial), `done` once it is in place.
+    fn write_sidecar(&self, b: &PlannedBundle, rel: &RelPath, done: &[SideFile]) {
         let units: Vec<_> = b.units.iter().map(|&u| &self.input.units[u]).collect();
         let (subjects, description, people, pets) = xmp::subjects_of(&units);
         let mut sources = Vec::new();
@@ -359,7 +398,8 @@ impl Ctx<'_> {
                 }
             }
         }
-        let (primary, full) = done[0];
+        let primary = &done[0];
+        let full = primary.full;
         let side = xmp::Sidecar {
             subjects,
             description,
@@ -371,11 +411,11 @@ impl Ctx<'_> {
             full_hash: Some(ContentId::full(full).to_hex()),
             files: done
                 .iter()
-                .map(|(f, h)| {
+                .map(|f| {
                     format!(
                         "{} {}",
                         String::from_utf8_lossy(f.target.file_name()),
-                        ContentId::full(*h).to_hex()
+                        ContentId::full(f.full).to_hex()
                     )
                 })
                 .collect(),
@@ -392,17 +432,45 @@ impl Ctx<'_> {
             });
             return;
         }
-        match write_new_file(&self.lib, rel, &bytes, &self.cfg.copy) {
+        if !self.record(&self.sidecar_entry(primary, rel, LedgerState::InProgress)) {
+            return;
+        }
+        match write_new_file(
+            &self.lib,
+            rel,
+            &bytes,
+            &self.cfg.copy,
+            self.hooks,
+            primary.file,
+        ) {
             Ok(m) => {
+                let mut e = self.sidecar_entry(primary, rel, LedgerState::Done);
+                e.full_hash = Some(*blake3::hash(&bytes).as_bytes());
+                e.size = bytes.len() as u64;
+                e.library_mtime_ns = self.library_mtime(rel);
+                self.record(&e);
                 let mut s = self.shared.lock();
                 s.report.sidecars += 1;
                 *s.report.renames.entry(m).or_default() += 1;
             }
-            // A sidecar that appeared meanwhile is left as it is.
-            Err(CopyError::TargetExists { .. }) => {}
-            Err(e) => self.fail(None, rel, &e),
+            // A sidecar that appeared meanwhile is not ours: it is left as it is.
+            Err(CopyError::TargetExists { .. }) => {
+                self.record(&self.sidecar_entry(primary, rel, LedgerState::Failed));
+            }
+            Err(e) => {
+                self.record(&self.sidecar_entry(primary, rel, LedgerState::Failed));
+                self.fail(None, rel, &e);
+            }
         }
     }
+}
+
+/// A file a sidecar lists.
+struct SideFile {
+    target: RelPath,
+    content: ContentId,
+    file: FileId,
+    full: [u8; 32],
 }
 
 /// Remove the partial files of `in_progress` rows (a crashed run) and mark those rows failed. Returns the

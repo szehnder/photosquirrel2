@@ -8,7 +8,7 @@
 use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
-use ps_model::{ContentId, ExportProfile, FileId, LedgerEntry, LedgerState, RelPath};
+use ps_model::{ContentId, ExportProfile, FileId, LedgerEntry, LedgerKind, LedgerState, RelPath};
 
 use crate::error::{CatalogError, Result};
 use crate::model::{codes, now_ms};
@@ -620,6 +620,7 @@ fn ledger_row(r: &Row<'_>) -> Result<LedgerEntry> {
         profile: profile_from(&profile).ok_or_else(|| corrupt("export profile"))?,
         at_ms: r.get(8)?,
         library_mtime_ns: r.get(9)?,
+        kind: LedgerKind::from_code(r.get(10)?).ok_or_else(|| corrupt("ledger kind"))?,
     })
 }
 
@@ -642,13 +643,14 @@ impl Writer {
         self.exec(move |c| {
             c.prepare_cached(
                 "INSERT INTO export_ledger (library_id, content_id, identity_kind, full_hash, file_id,
-                                            library_rel_path, size, state, profile, at, library_mtime_ns)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                            library_rel_path, size, state, profile, at, library_mtime_ns,
+                                            kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT (library_id, library_rel_path) DO UPDATE SET
                     content_id = excluded.content_id, identity_kind = excluded.identity_kind,
                     full_hash = excluded.full_hash, file_id = excluded.file_id, size = excluded.size,
                     state = excluded.state, profile = excluded.profile, at = excluded.at,
-                    library_mtime_ns = excluded.library_mtime_ns",
+                    library_mtime_ns = excluded.library_mtime_ns, kind = excluded.kind",
             )?
             .execute(params![
                 library,
@@ -661,7 +663,8 @@ impl Writer {
                 entry.state.code(),
                 entry.profile.as_str(),
                 entry.at_ms,
-                entry.library_mtime_ns
+                entry.library_mtime_ns,
+                entry.kind.code()
             ])?;
             Ok(())
         })
@@ -692,7 +695,7 @@ impl Readers {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
                 "SELECT content_id, identity_kind, full_hash, file_id, library_rel_path, size, state, profile, at,
-                        library_mtime_ns
+                        library_mtime_ns, kind
                  FROM export_ledger WHERE library_id = ?1 ORDER BY library_rel_path",
             )?;
             let mut rows = stmt.query([library])?;

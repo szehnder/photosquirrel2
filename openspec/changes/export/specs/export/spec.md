@@ -92,11 +92,19 @@ RAW+JPEG keeper sets and Live Photo still/video pairs SHALL be exported into the
 - **THEN** both are written to the same folder with the same stem
 
 ### Requirement: XMP sidecars
-When enabled, each exported file SHALL get a `<name>.xmp` sidecar containing the effective AI and user keywords as subjects, the description, people and pet counts as keywords and PhotoSquirrel provenance (content hash, source paths); sidecars SHALL be valid XMP.
+When enabled, each exported file SHALL get a `<name>.xmp` sidecar containing the effective AI and user keywords as subjects, the description, people and pet counts as keywords and PhotoSquirrel provenance (content hash, source paths); sidecars SHALL be valid XMP. Sidecars SHALL be recorded in the export ledger like copies: an interrupted sidecar write SHALL be cleaned up and written again, an exported file without its sidecar SHALL get one when sidecars are on, and a sidecar the export wrote SHALL keep its name when its file is copied again.
 
 #### Scenario: Sidecar contains AI keywords
 - **WHEN** a keeper with insight category "pets", 1 dog and a user tag "Rex" is exported with sidecars on
 - **THEN** its sidecar is valid XMP whose subjects include "pets", "dog" and "Rex" and whose provenance names its content hash
+
+#### Scenario: Interrupted sidecar is finished on resume
+- **WHEN** an export is killed while writing a sidecar and run again
+- **THEN** the stale sidecar partial file is removed, every exported file has its sidecar and the export reports nothing left to do
+
+#### Scenario: Deleted copy restored to its name
+- **WHEN** a library copy whose sidecar the export wrote is deleted and the export runs again
+- **THEN** the photo is copied to its original name, without a suffix, and the sidecar is left unchanged
 
 ### Requirement: Manifest
 Each export SHALL append one JSON line per exported file to `<library>/.photosquirrel/manifest.jsonl` with its library path, full hash, all duplicate source paths, keeper reasons, profile and time.

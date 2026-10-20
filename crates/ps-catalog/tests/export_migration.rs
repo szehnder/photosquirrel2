@@ -136,3 +136,52 @@ fn ledger_mtime_migration_keeps_rows_and_round_trips() {
     );
     cat.close().expect("close");
 }
+
+/// Migration 10 (ADR-0045): every existing row is a file row; sidecar rows round-trip and the code is checked.
+#[test]
+fn ledger_sidecars_migration_marks_old_rows_as_files() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("catalog.db");
+    db::create_catalog_at_version(&path, db::LEDGER_SIDECARS_MIGRATION.version - 1)
+        .expect("catalog");
+    {
+        let conn = Connection::open(&path).expect("open");
+        conn.execute(
+            "INSERT INTO export_library (id, root_path, created_at) VALUES (1, ?1, 0)",
+            params![b"/lib".to_vec()],
+        )
+        .expect("library");
+        conn.execute(
+            "INSERT INTO export_ledger (library_id, content_id, identity_kind, full_hash, file_id,
+                 library_rel_path, size, state, profile, at)
+             VALUES (1, ?1, 0, ?1, 42, ?2, 10, 1, 'apple', 5)",
+            params![vec![7u8; 32], b"a.jpg".to_vec()],
+        )
+        .expect("row");
+    }
+    let cat = ps_catalog::Catalog::open_file(&path, Default::default()).expect("upgrade");
+    let rows = cat.read().ledger(1).expect("rows");
+    assert_eq!(rows[0].kind, ps_model::LedgerKind::File);
+    let mut side = rows[0].clone();
+    side.library_rel_path = ps_model::RelPath::from_bytes(b"a.xmp".to_vec()).expect("rel");
+    side.kind = ps_model::LedgerKind::Sidecar;
+    cat.writer().ledger_record(1, side).expect("record");
+    let kinds: Vec<_> = cat
+        .read()
+        .ledger(1)
+        .expect("rows")
+        .into_iter()
+        .map(|r| r.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![ps_model::LedgerKind::File, ps_model::LedgerKind::Sidecar]
+    );
+    cat.close().expect("close");
+    let conn = Connection::open(&path).expect("open");
+    assert!(
+        conn.execute("UPDATE export_ledger SET kind = 2", [])
+            .is_err(),
+        "kind codes are checked"
+    );
+}

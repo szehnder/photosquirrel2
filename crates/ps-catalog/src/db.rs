@@ -38,6 +38,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     GALLERY_MIGRATION,
     LEDGER_SUSPECT_MIGRATION,
     LEDGER_MTIME_MIGRATION,
+    LEDGER_SIDECARS_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -82,6 +83,13 @@ pub const LEDGER_MTIME_MIGRATION: Migration = Migration {
     version: 9,
     name: "ledger_mtime",
     sql: include_str!("../migrations/0009_ledger_mtime.sql"),
+};
+
+/// Migration 10 (ADR-0045: sidecars have ledger rows, `export_ledger.kind`).
+pub const LEDGER_SIDECARS_MIGRATION: Migration = Migration {
+    version: 10,
+    name: "ledger_sidecars",
+    sql: include_str!("../migrations/0010_ledger_sidecars.sql"),
 };
 
 /// `thumbs.db` migrations.
