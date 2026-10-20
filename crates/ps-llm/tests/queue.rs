@@ -311,8 +311,11 @@ fn scenario_llm_providers_hosted_provider_needs_consent() {
     assert_eq!(server.request_count(), 0, "no request sent");
     let gemini = ProviderId::Gemini;
     assert!(ps_llm::consent::check(&cfg, gemini, None).is_err());
-    let given = ps_llm::consent::consent_for(gemini, &cfg.base_url);
-    assert!(ps_llm::consent::check(&cfg, gemini, given.as_ref()).is_ok());
+    // Consent is given for Gemini's HTTPS API; the plain-HTTP recording server is never covered (ADR-0048).
+    let https = ProviderConfig::from_settings(&ai, None);
+    let given = ps_llm::consent::consent_for(gemini, &https.base_url);
+    assert!(ps_llm::consent::check(&https, gemini, given.as_ref()).is_ok());
+    assert!(ps_llm::consent::check(&cfg, gemini, given.as_ref()).is_err());
     assert!(
         ps_llm::consent::check(&ProviderConfig::default_local(), ProviderId::LmStudio, None)
             .is_ok()
@@ -350,6 +353,68 @@ fn scenario_llm_providers_consent_covers_one_host() {
         destination_host("https://gemini-proxy.example.com/v1beta").as_deref(),
         Some("gemini-proxy.example.com")
     );
+}
+
+/// ADR-0048: consent binds the scheme too. Consent for Anthropic over HTTPS does not cover the same host over
+/// plain HTTP (on its default port or on 443), no consent can be given for a hosted provider over HTTP, and
+/// settings validation refuses such an address with a message saying why.
+#[test]
+fn scenario_llm_providers_hosted_providers_require_https() {
+    use ps_llm::consent::{check, consent_for, covers, destination_host};
+    let ai = Ai {
+        provider: ProviderId::Anthropic,
+        base_url: "https://api.anthropic.com".into(),
+        ..Ai::default()
+    };
+    let given = consent_for(ProviderId::Anthropic, &ai.base_url).expect("consent over https");
+    assert_eq!(given.host, "api.anthropic.com");
+    let cfg = ProviderConfig::from_settings(&ai, None);
+    assert!(check(&cfg, ProviderId::Anthropic, Some(&given)).is_ok());
+    for plain in [
+        "http://api.anthropic.com/v1",
+        "http://api.anthropic.com:443/v1",
+        "HTTP://api.anthropic.com",
+    ] {
+        let moved = Ai {
+            base_url: plain.into(),
+            consent: Some(given.clone()),
+            ..ai.clone()
+        };
+        let cfg = ProviderConfig::from_settings(&moved, None);
+        assert!(
+            !covers(&cfg, ProviderId::Anthropic, Some(&given)),
+            "{plain}: https consent must not cover plain http"
+        );
+        assert!(
+            check(&cfg, ProviderId::Anthropic, Some(&given)).is_err(),
+            "{plain}"
+        );
+        assert!(
+            consent_for(ProviderId::Anthropic, plain).is_none(),
+            "{plain}: no consent for a hosted provider over http"
+        );
+        assert_ne!(
+            destination_host(plain).as_deref(),
+            Some("api.anthropic.com"),
+            "{plain}"
+        );
+        let settings = ps_model::settings::Settings {
+            ai: moved,
+            ..Default::default()
+        };
+        let err = settings
+            .validate()
+            .into_iter()
+            .find(|e| e.key == "ai.base_url")
+            .unwrap_or_else(|| {
+                panic!("{plain}: validation must refuse a non-https hosted address")
+            });
+        assert!(err.message.contains("https://"), "{}", err.message);
+        assert!(err.message.contains("unencrypted"), "{}", err.message);
+    }
+    // A local server over http stays fine.
+    let local = ps_model::settings::Settings::default();
+    assert!(local.validate().is_empty());
 }
 
 /// A local server answering with a redirect cannot send a request (and its preview) to another host: the

@@ -311,8 +311,9 @@ pub struct Ai {
     pub consent: Option<HostedConsent>,
 }
 
-/// Consent to send previews to one hosted destination: the provider and the normalized host (`host[:port]`,
-/// lower case, the port only when not the scheme's default) it was given for (ADR-0047).
+/// Consent to send previews to one hosted destination: the provider and the normalized destination it was
+/// given for (ADR-0047, ADR-0048): `host[:port]` for HTTPS, `scheme://host[:port]` otherwise, lower case, the
+/// port only when not the scheme's default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedConsent {
     pub provider: ProviderId,
@@ -480,11 +481,20 @@ impl Settings {
                 format!("Text size must be between {MIN_UI_FONT_SIZE} and {MAX_UI_FONT_SIZE} px."),
             );
         }
-        let url = self.ai.base_url.trim();
+        let url = self.ai.base_url.trim().to_ascii_lowercase();
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             err(
                 "ai.base_url",
                 "The server address must start with http:// or https://.".into(),
+            );
+        } else if self.ai.provider.is_hosted() && !url.starts_with("https://") {
+            // ADR-0048: previews and the API key must never travel unencrypted to a hosted provider.
+            err(
+                "ai.base_url",
+                format!(
+                    "{} needs an https:// address: photos and your API key would otherwise be sent unencrypted.",
+                    self.ai.provider.label()
+                ),
             );
         }
         if self.ai.max_concurrent_requests == 0 || self.ai.max_concurrent_requests > 64 {

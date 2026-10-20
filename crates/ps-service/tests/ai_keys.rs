@@ -56,7 +56,6 @@ fn anthropic_settings(server: &MockServer) -> Settings {
     s.ai.provider = ProviderId::Anthropic;
     s.ai.base_url = format!("{}/v1", server.url());
     s.ai.model = "claude-haiku-4-5".into();
-    s.ai.consent = ps_service::ai::consent_for(&s.ai);
     s
 }
 
@@ -122,8 +121,13 @@ fn scenario_llm_providers_key_not_written_to_disk() {
             provider: ProviderId::Anthropic,
             account: account.clone(),
         });
+    // The saved file names the real HTTPS endpoint (a hosted provider over plain HTTP does not validate,
+    // ADR-0048); requests go to the recording server.
     let store = SettingsStore::in_dir(&config_dir);
-    store.save(&settings).unwrap();
+    let mut saved = settings.clone();
+    saved.ai.base_url = ProviderId::Anthropic.default_base_url().into();
+    saved.ai.consent = ai::consent_for(&saved.ai);
+    store.save(&saved).unwrap();
     let catalog = ps_catalog::Catalog::open(&data_dir).unwrap();
 
     // Make a request (with a fast retry so the retry is logged).
