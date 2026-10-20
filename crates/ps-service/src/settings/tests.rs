@@ -120,6 +120,28 @@ fn invalid_values_are_rejected_and_nothing_is_written() {
 }
 
 #[test]
+fn windows_executables_are_recognised_by_extension() {
+    for ok in [
+        "ffmpeg.exe",
+        "C:/tools/FFMPEG.EXE",
+        "wrap.cmd",
+        "wrap.bat",
+        "x.com",
+    ] {
+        assert!(
+            super::has_windows_executable_extension(Path::new(ok)),
+            "{ok}"
+        );
+    }
+    for no in ["ffmpeg", "ffmpeg.txt", "ffmpeg.exe.txt", "exe"] {
+        assert!(
+            !super::has_windows_executable_extension(Path::new(no)),
+            "{no}"
+        );
+    }
+}
+
+#[test]
 fn corrupt_file_is_backed_up_and_defaults_used() {
     let dir = temp();
     let store = SettingsStore::in_dir(dir.path());

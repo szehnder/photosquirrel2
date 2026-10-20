@@ -312,8 +312,18 @@ fn is_executable(path: &Path) -> bool {
     }
     #[cfg(not(unix))]
     {
-        true
+        has_windows_executable_extension(path)
     }
+}
+
+/// Windows has no execute bit: a file runs when its extension says so (`ffmpeg.exe`, a `.cmd` wrapper).
+#[cfg_attr(unix, allow(dead_code))]
+fn has_windows_executable_extension(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["exe", "com", "bat", "cmd"]
+            .iter()
+            .any(|x| e.eq_ignore_ascii_case(x))
+    })
 }
 
 /// A probed file as the catalog stores it: probe fields, the class, and the classifier hash in force when it
