@@ -17,6 +17,7 @@
 - [x] 3.4 Separation with confirmation; verify `scenario_duplicate_review_separate_a_member`
 - [x] 3.5 Paired keeper card; verify `scenario_duplicate_review_keeper_set_shown_as_pair`
 - [x] 3.6 Keyboard review flow; verify `scenario_duplicate_review_keyboard_review_flow`
+- [x] 3.7 Manual merge ("Merge with…") persisted as an ADR-0033 merge constraint, with undo; verify `scenario_duplicate_review_merge_two_groups`
 
 ## 4. Suggestions
 

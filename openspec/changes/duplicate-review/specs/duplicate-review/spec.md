@@ -54,6 +54,13 @@ The user SHALL be able to mark a member as not a duplicate; it SHALL leave the g
 - **WHEN** the user marks a member as not a duplicate
 - **THEN** it disappears from the group, appears in the Library as its own item and remains separate after a rescan
 
+### Requirement: Merge groups manually
+The user SHALL be able to merge two groups that automatic matching kept apart. A merge SHALL change no file; it SHALL be persisted as a user decision ("always pair" between the groups' keepers, ADR-0033) that regrouping respects, the merged group's keeper SHALL be recomputed by the best-copy ranking unless the user chose one, separations SHALL win over merges, and the user SHALL be able to undo the merge.
+
+#### Scenario: Merge two groups
+- **WHEN** the user merges a group with another group
+- **THEN** one group holds the members of both with a recomputed keeper, it stays merged after a rescan, and undoing the merge splits it back into the two groups
+
 ### Requirement: Keeper sets shown as pairs
 A RAW+JPEG keeper set SHALL be shown as one paired keeper card, and choosing either file of the pair SHALL keep the pair together.
 

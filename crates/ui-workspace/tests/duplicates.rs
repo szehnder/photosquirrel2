@@ -358,41 +358,48 @@ fn scenario_duplicate_review_override_keeper(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn scenario_duplicate_review_override_survives_restart(cx: &mut TestAppContext) {
     let (_tmp, data) = catalog_copy();
-    // A previous session chose another keeper.
-    let chosen = {
-        let svc =
-            ps_service::scan::ScanService::open(&data, ps_service::scan::ScanOptions::default())
-                .unwrap();
-        let g = svc.groups();
-        let list = g
-            .list(ps_service::groups::GroupOrder::Reclaimable, 0, 100)
-            .unwrap();
-        let d = list
-            .iter()
-            .map(|r| g.show(r.id).unwrap())
-            .find(|d| {
-                d.keeper_set.len() == 1
-                    && d.members
-                        .iter()
-                        .any(|m| !m.keeper && m.edge == MemberEdge::Derivative)
+    // Session one: press 2 in the UI, then quit the app and drop everything that holds the catalog.
+    let (group_keeper, second) = {
+        let mut app = cx.new_app();
+        let (backend, shell, view, mut vcx) = open_dups(&mut app, &data);
+        let d = open_group(&view, &backend, &mut vcx, |d| {
+            d.members().len() >= 2
+                && !d.is_pair()
+                && !d.members()[1].in_keeper_set
+                && d.members()[1].edge == MemberEdge::Derivative
+        });
+        let second = d.members()[1].file;
+        vcx.simulate_keystrokes("2");
+        settle(&view, &mut vcx);
+        let v = view.clone();
+        wait_until(&mut vcx, "the new keeper", move |cx| {
+            cx.update(|_, cx| {
+                v.read(cx)
+                    .detail()
+                    .is_some_and(|d| d.group.keeper == second)
             })
-            .unwrap();
-        let other = d
-            .members
-            .iter()
-            .find(|m| !m.keeper && m.edge == MemberEdge::Derivative)
-            .unwrap()
-            .file;
-        g.set_keeper(d.id, other).unwrap();
-        other
+        });
+        let lib = Arc::downgrade(backend.library());
+        drop((backend, shell, view, vcx));
+        app.quit();
+        app.update(|cx| cx.clear_globals());
+        app.run_until_parked();
+        drop(app);
+        assert!(
+            lib.upgrade().is_none(),
+            "the first session still holds the catalog"
+        );
+        (d.group.keeper, second)
     };
+    assert_ne!(group_keeper, second);
+    // Session two: a new app on the same data shows the user's keeper.
     let (backend, _shell, view, mut cx) = open_dups(cx, &data);
     let d = open_group(&view, &backend, &mut cx, |d| {
-        d.group.member(chosen).is_some()
+        d.group.member(second).is_some()
     });
-    assert_eq!(d.group.keeper, chosen);
+    assert_eq!(d.group.keeper, second);
     let shown = detail(&view, &mut cx);
-    assert_eq!(shown.group.keeper, chosen);
+    assert_eq!(shown.group.keeper, second);
     assert!(
         shown.group.chosen_by_you,
         "shown as chosen by you after restart"
@@ -452,6 +459,87 @@ fn scenario_duplicate_review_separate_a_member(cx: &mut TestAppContext) {
         scan.groups().group_of(file).unwrap(),
         scan.groups().group_of(rest).unwrap()
     );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_merge_two_groups(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let a = open_group(&view, &backend, &mut cx, |d| {
+        d.members().len() >= 2 && !d.is_pair()
+    });
+    let scan = backend.scan().unwrap();
+    let rows = cx.update(|_, cx| view.read(cx).list().unwrap().rows.clone());
+    let b = rows
+        .iter()
+        .map(|r| scan.groups().show(r.id).unwrap())
+        .find(|g| g.id != a.group.id && g.keeper_set.len() == 1)
+        .expect("a second group");
+    let (a_files, b_files): (Vec<FileId>, Vec<FileId>) = (
+        a.group.members.iter().map(|m| m.file).collect(),
+        b.members.iter().map(|m| m.file).collect(),
+    );
+    let groups_before = rows.len();
+    {
+        let view = view.clone();
+        let other = b.id;
+        cx.update(|_, cx| view.update(cx, |v, cx| v.merge_with(other, cx)));
+    }
+    settle(&view, &mut cx);
+    let total = a_files.len() + b_files.len();
+    let v = view.clone();
+    wait_until(&mut cx, "the merged group", move |cx| {
+        cx.update(|_, cx| {
+            v.read(cx)
+                .detail()
+                .is_some_and(|d| d.members().len() == total)
+        })
+    });
+    let merged = detail(&view, &mut cx);
+    assert!(
+        merged
+            .members()
+            .iter()
+            .any(|m| m.edge == MemberEdge::UserMerge),
+        "joined by the user's merge"
+    );
+    // The keeper is recomputed by the ranking over all members (not a user choice).
+    assert!(!merged.group.chosen_by_you);
+    assert!(!merged.group.keeper_reasons.is_empty());
+    let g = scan.groups();
+    g.regroup().unwrap();
+    let again = g.group_of(merged.group.keeper).unwrap().unwrap();
+    assert_eq!(g.show(again).unwrap().keeper, merged.group.keeper);
+    let v = view.clone();
+    wait_until(&mut cx, "one group fewer", move |cx| {
+        cx.update(|_, cx| v.read(cx).list().unwrap().rows.len() == groups_before - 1)
+    });
+    // A rescan keeps the merge (a persisted user decision).
+    scan.start(&[]).unwrap();
+    scan.wait().unwrap();
+    let ga = g.group_of(a_files[0]).unwrap();
+    assert!(ga.is_some());
+    assert!(b_files.iter().all(|f| g.group_of(*f).unwrap() == ga));
+    // Undo splits it back into the two automatic groups.
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.undo_merge(cx)));
+    }
+    settle(&view, &mut cx);
+    let v = view.clone();
+    let (na, nb) = (a_files.len(), b_files.len());
+    wait_until(&mut cx, "the split group", move |cx| {
+        cx.update(|_, cx| {
+            v.read(cx)
+                .detail()
+                .is_some_and(|d| [na, nb].contains(&d.members().len()))
+        })
+    });
+    let ga = g.group_of(a_files[0]).unwrap();
+    let gb = g.group_of(b_files[0]).unwrap();
+    assert_ne!(ga, gb, "separate groups again");
+    assert!(a_files.iter().all(|f| g.group_of(*f).unwrap() == ga));
+    assert!(b_files.iter().all(|f| g.group_of(*f).unwrap() == gb));
 }
 
 #[gpui_kit::test]

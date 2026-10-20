@@ -658,8 +658,28 @@ impl DuplicatesView {
             cx,
             move |s| s.merge(group, other),
             |this, d, cx| {
+                this.notice = Some(
+                    "Groups merged by you. Nothing was copied or changed on disk; use Merge with… > Undo merge to \
+                     split them again."
+                        .into(),
+                );
+                let id = d.group.id;
+                this.show_detail(d);
+                this.reload_then(Some(id), cx);
+            },
+        );
+    }
+
+    /// Undo the user merges of the open group (back to automatic matching).
+    pub fn undo_merge(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(d) = &self.detail else { return };
+        let group = d.group.id;
+        self.run(
+            cx,
+            move |s| s.undo_merges(group),
+            |this, d, cx| {
                 this.notice =
-                    Some("Groups merged by you. Separate a copy any time to undo.".into());
+                    Some("Merge undone: the groups are as automatic matching made them.".into());
                 let id = d.group.id;
                 this.show_detail(d);
                 this.reload_then(Some(id), cx);
@@ -1696,6 +1716,7 @@ impl DuplicatesView {
         let mut nearest = others;
         nearest.sort_by_key(|o| o.2);
         nearest.truncate(8);
+        let merged_by_you = d.members().iter().any(|m| m.edge == MemberEdge::UserMerge);
         let weak = cx.weak_entity();
         let merge = Button::new("duplicates-merge")
             .label("Merge with…")
@@ -1710,6 +1731,14 @@ impl DuplicatesView {
                     menu = menu.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| {
                         let _ = weak.update(cx, |v, cx| v.merge_with(id, cx));
                     }));
+                }
+                if merged_by_you {
+                    let weak = weak.clone();
+                    menu = menu
+                        .separator()
+                        .item(PopupMenuItem::new("Undo merge").on_click(move |_, _, cx| {
+                            let _ = weak.update(cx, |v, cx| v.undo_merge(cx));
+                        }));
                 }
                 menu
             });

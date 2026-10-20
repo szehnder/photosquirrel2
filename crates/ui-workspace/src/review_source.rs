@@ -26,6 +26,8 @@ pub trait ReviewSource: Send + Sync + 'static {
     /// "This is a different photo" (ADR-0033).
     fn separate(&self, group: FileId, file: FileId) -> anyhow::Result<SeparateOutcome>;
     fn merge(&self, a: FileId, b: FileId) -> anyhow::Result<ReviewDetail>;
+    /// Undo the user merges inside `group` (back to automatic matching).
+    fn undo_merges(&self, group: FileId) -> anyhow::Result<ReviewDetail>;
     fn set_reviewed(&self, group: FileId, reviewed: bool) -> anyhow::Result<bool>;
     fn suggestions(&self, limit: u64) -> anyhow::Result<Vec<SuggestionCard>>;
     fn dismiss(&self, a: FileId, b: FileId) -> anyhow::Result<()>;
@@ -97,6 +99,11 @@ impl ReviewSource for CatalogReview {
     fn merge(&self, a: FileId, b: FileId) -> anyhow::Result<ReviewDetail> {
         let scan = self.backend.scan()?;
         let d = scan.groups().merge(a, b)?;
+        Ok(ps_service::review::show(scan, self.store()?, d.id)?)
+    }
+    fn undo_merges(&self, group: FileId) -> anyhow::Result<ReviewDetail> {
+        let scan = self.backend.scan()?;
+        let d = scan.groups().undo_merges(group)?;
         Ok(ps_service::review::show(scan, self.store()?, d.id)?)
     }
     fn set_reviewed(&self, group: FileId, reviewed: bool) -> anyhow::Result<bool> {

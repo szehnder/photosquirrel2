@@ -453,6 +453,34 @@ impl<'a> Groups<'a> {
         self.show(now)
     }
 
+    /// Undo the user merges inside a group: remove every "always pair" constraint between two of its members'
+    /// contents, then regroup. The group falls back to what automatic matching (and separations) decide; the
+    /// returned detail is the group that now holds the former keeper.
+    pub fn undo_merges(&self, group: FileId) -> Result<GroupDetail> {
+        let g = self.row(group)?;
+        let contents: std::collections::HashSet<ContentId> =
+            self.contents(&g)?.into_iter().map(|(_, c)| c).collect();
+        let pairs: Vec<(ContentId, ContentId)> = self
+            .read()
+            .group_constraints()?
+            .merges
+            .into_iter()
+            .filter(|(a, b)| contents.contains(a) && contents.contains(b))
+            .collect();
+        if !pairs.is_empty() {
+            self.svc
+                .engine()
+                .catalog()
+                .writer()
+                .set_merges(pairs, false)?;
+            self.regroup()?;
+        }
+        let now = self
+            .group_of(g.keeper)?
+            .ok_or(GroupError::NoSuchGroup(group))?;
+        self.show(now)
+    }
+
     /// The separations among the members' contents of a group or with a file (as hex content ids).
     pub fn separations(&self) -> Result<Vec<SeparationInfo>> {
         Ok(self

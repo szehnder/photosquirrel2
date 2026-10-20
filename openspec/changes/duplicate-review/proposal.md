@@ -14,6 +14,8 @@ photo. Burst and similar shots must be visible as suggestions without ever being
   path, join reason and distances, keeper badge and a "Why this copy" panel (ADR-0013, ADR-0014).
 - Actions: choose keeper (click or number keys), separate a member ("not a duplicate", ADR-0033 proposed in
   `duplicate-groups`), mark reviewed; keyboard flow (J/K next/previous group).
+- Manual merge ("Merge with…"): an escape hatch when automatic matching misses a pair. It changes no files,
+  is stored as an ADR-0033 "always pair" constraint that regrouping respects, and can be undone.
 - RAW+JPEG keeper sets shown as a pair.
 - Similar-shot suggestions panel: pairs shown side by side, dismissable, never merged.
 
@@ -34,5 +36,5 @@ photo. Burst and similar shots must be visible as suggestions without ever being
 
 ## Out of scope
 
-- Merging groups manually or accepting a suggestion as a merge; bulk auto-review rules; similar-shot browsing
+- Accepting a similar-shot suggestion as a merge (bursts stay suggestions, ADR-0013); bulk auto-review rules; similar-shot browsing
   beyond pairs (later `similar-shots`).
