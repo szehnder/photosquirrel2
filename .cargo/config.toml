@@ -12,10 +12,7 @@ rustflags = ["-C", "target-cpu=x86-64-v2"]
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "target-cpu=x86-64-v2"]
 
-# Tests, benches and `cargo run` put temp data on disk under target/ instead of /tmp, which is a small RAM-backed
-# tmpfs on the reference machine (AGENTS.md "Machine resources"). Leaked test corpora then cost disk, not memory,
-# and `cargo clean` removes them.
-[env]
-TMPDIR = { value = "target", relative = true, force = true }
-TMP = { value = "target", relative = true, force = true }
-TEMP = { value = "target", relative = true, force = true }
+# Temp data: `cargo xtask ci|bench` create `<target dir>/tmp` and point TMPDIR/TMP/TEMP at it for the cargo they
+# run (AGENTS.md "Machine resources"). There is deliberately no [env] TMPDIR here: a workspace-relative value breaks
+# every `tempfile::tempdir()` when `./target` does not exist (a clean checkout built with CARGO_TARGET_DIR set
+# elsewhere). Shared test fixtures live under CARGO_TARGET_TMPDIR instead.

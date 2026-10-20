@@ -119,12 +119,8 @@ fn shoot(
 }
 
 /// Where cargo put the release binaries (`CARGO_TARGET_DIR` when set, relative to the workspace root).
-fn release_dir(root: &Path) -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .map(|p| if p.is_absolute() { p } else { root.join(p) })
-        .unwrap_or_else(|| root.join("target"))
-        .join("release")
+pub(crate) fn release_dir(root: &Path) -> PathBuf {
+    crate::target_dir(root).join("release")
 }
 
 /// A fresh data directory; `seeded` ones get the demo library from `photosquirrel-cli demo`.

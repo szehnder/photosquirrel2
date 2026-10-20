@@ -206,7 +206,7 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
     if needs_app {
         crate::run(
             "build release app",
-            Command::new("cargo").args([
+            crate::cargo(root)?.args([
                 "build",
                 "--release",
                 "-p",
@@ -289,7 +289,7 @@ fn measure(root: &Path, b: &Budget) -> Result<Option<f64>> {
             test,
             name,
         } => {
-            let out = Command::new("cargo")
+            let out = crate::cargo(root)?
                 .args(["test", "--release", "-q", "-p", package, "--test", test])
                 .args(["--", "--exact", name, "--nocapture", "--test-threads=1"])
                 .stderr(Stdio::inherit())
@@ -304,12 +304,12 @@ fn measure(root: &Path, b: &Budget) -> Result<Option<f64>> {
         Source::Criterion { package, bench, id } => {
             crate::run(
                 &format!("bench {package}/{bench}"),
-                Command::new("cargo").args([
+                crate::cargo(root)?.args([
                     "bench", "-q", "-p", package, "--bench", bench, "--", "--noplot", id,
                 ]),
             )?;
-            let path = root
-                .join("target/criterion")
+            let path = crate::target_dir(root)
+                .join("criterion")
                 .join(id)
                 .join("new/estimates.json");
             let json: serde_json::Value = serde_json::from_str(
@@ -329,8 +329,9 @@ fn measure(root: &Path, b: &Budget) -> Result<Option<f64>> {
             render_p95,
         } => {
             let key = measure.as_deref().unwrap_or(&b.name);
-            let bin = root.join("target/release/photosquirrel");
-            let data = root.join("target/perf-data");
+            let release = crate::screenshot::release_dir(root);
+            let bin = release.join("photosquirrel");
+            let data = crate::target_dir(root).join("perf-data");
             let mut values = Vec::new();
             for _ in 0..*runs {
                 let _ = std::fs::remove_dir_all(&data);
@@ -338,7 +339,7 @@ fn measure(root: &Path, b: &Budget) -> Result<Option<f64>> {
                 if *seeded {
                     crate::run(
                         "seed the demo library",
-                        Command::new(root.join("target/release/photosquirrel-cli"))
+                        Command::new(release.join("photosquirrel-cli"))
                             .arg("--data-dir")
                             .arg(&data)
                             .arg("demo"),

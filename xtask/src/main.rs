@@ -154,6 +154,34 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Where cargo puts build output: `CARGO_TARGET_DIR` when set (relative to the workspace root), else `target/`.
+pub(crate) fn target_dir(root: &Path) -> PathBuf {
+    resolve_target_dir(root, std::env::var_os("CARGO_TARGET_DIR"))
+}
+
+fn resolve_target_dir(root: &Path, env: Option<std::ffi::OsString>) -> PathBuf {
+    env.filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .map(|p| if p.is_absolute() { p } else { root.join(p) })
+        .unwrap_or_else(|| root.join("target"))
+}
+
+/// `<target dir>/tmp`, created if missing. Tests and tools run by xtask put temp data there instead of `/tmp`,
+/// which is a small RAM-backed tmpfs on the reference machine (AGENTS.md "Machine resources").
+pub(crate) fn temp_dir(root: &Path) -> Result<PathBuf> {
+    let dir = target_dir(root).join("tmp");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// A `cargo` command whose children write temp data under [`temp_dir`] (TMPDIR, TMP and TEMP).
+pub(crate) fn cargo(root: &Path) -> Result<Command> {
+    let tmp = temp_dir(root)?;
+    let mut cmd = Command::new("cargo");
+    cmd.env("TMPDIR", &tmp).env("TMP", &tmp).env("TEMP", &tmp);
+    Ok(cmd)
+}
+
 pub(crate) fn run(step: &str, cmd: &mut Command) -> Result<()> {
     eprintln!("\n==> {step}");
     let status = cmd
@@ -172,7 +200,7 @@ fn ci(root: &Path, no_test: bool) -> Result<()> {
     )?;
     run(
         "cargo clippy",
-        Command::new("cargo").args([
+        cargo(root)?.args([
             "clippy",
             "--workspace",
             "--all-targets",
@@ -188,7 +216,7 @@ fn ci(root: &Path, no_test: bool) -> Result<()> {
     if !no_test {
         run(
             "cargo test",
-            Command::new("cargo").args(["test", "--workspace"]),
+            cargo(root)?.args(["test", "--workspace", "--no-fail-fast"]),
         )?;
     }
     if which("openspec") {
@@ -212,4 +240,27 @@ fn which(bin: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|p| p.join(bin).is_file()))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_dir_follows_cargo_target_dir() {
+        let root = Path::new("/ws");
+        assert_eq!(resolve_target_dir(root, None), Path::new("/ws/target"));
+        assert_eq!(
+            resolve_target_dir(root, Some("".into())),
+            Path::new("/ws/target")
+        );
+        assert_eq!(
+            resolve_target_dir(root, Some("t2".into())),
+            Path::new("/ws/t2")
+        );
+        assert_eq!(
+            resolve_target_dir(root, Some("/abs/t".into())),
+            Path::new("/abs/t")
+        );
+    }
 }

@@ -60,9 +60,11 @@ measured; for M1, the ground-truth corpus gate (ADR-0025: precision >= 0.995, re
 
 ## Machine resources
 The dev machine has 30 GB RAM, a 16 GB RAM-backed `/tmp` and a shared disk. GPUI builds are large (20-70 GB per
-target dir). At most two agents compile at once, each with `CARGO_BUILD_JOBS=4` and `--test-threads=4`. Tests and
-tools write corpora and temp data under `target/` (or a `tempfile` dir that is removed on drop), never leaving
-directories in `/tmp`. Delete per-agent target dirs once their work is committed.
+target dir). At most two agents compile at once, each with `CARGO_BUILD_JOBS=4` and `--test-threads=4`. Shared
+test corpora live under `CARGO_TARGET_TMPDIR`; other temp data goes in a `tempfile` dir that is removed on drop.
+`cargo xtask ci` and `cargo xtask bench` create `<target dir>/tmp` and point TMPDIR/TMP/TEMP at it for the cargo
+they run, so even leaks land on disk; when running `cargo test` by hand, set `TMPDIR` to an existing folder under
+`target/`. Never leave directories in `/tmp`. Delete per-agent target dirs once their work is committed.
 
 ## Useful commands
 ```
