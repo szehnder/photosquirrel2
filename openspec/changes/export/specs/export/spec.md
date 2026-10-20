@@ -100,11 +100,14 @@ RAW+JPEG keeper sets and Live Photo still/video pairs SHALL be exported into the
 - **THEN** both are written to the same folder with the same stem
 
 ### Requirement: XMP sidecars
-When enabled, each exported file SHALL get a `<name>.xmp` sidecar containing the effective AI and user keywords as subjects, the description, people and pet counts as keywords and PhotoSquirrel provenance (content hash, source paths); sidecars SHALL be valid XMP. Sidecars SHALL be recorded in the export ledger like copies: an interrupted sidecar write SHALL be cleaned up and written again, an exported file without its sidecar SHALL get one when sidecars are on, and a sidecar the export wrote SHALL keep its name when its file is copied again.
+When enabled, each exported file SHALL get a `<name>.xmp` sidecar containing the effective AI and user keywords as subjects, the description, people and pet counts as keywords and PhotoSquirrel provenance (content hash, source paths); sidecars SHALL be valid XMP.
 
 #### Scenario: Sidecar contains AI keywords
 - **WHEN** a keeper with insight category "pets", 1 dog and a user tag "Rex" is exported with sidecars on
 - **THEN** its sidecar is valid XMP whose subjects include "pets", "dog" and "Rex" and whose provenance names its content hash
+
+### Requirement: Sidecars in the ledger
+Sidecars SHALL be recorded in the export ledger like copies: an interrupted sidecar write SHALL be cleaned up and written again, an exported file without its sidecar SHALL get one when sidecars are on, and a sidecar the export wrote SHALL keep its name when its file is copied again.
 
 #### Scenario: Interrupted sidecar is finished on resume
 - **WHEN** an export is killed while writing a sidecar and run again
@@ -122,7 +125,7 @@ Each export SHALL append one JSON line per exported file to `<library>/.photosqu
 - **THEN** the manifest gains exactly 10 lines, each parseable and listing every copy's source path
 
 ### Requirement: Idempotent and resumable
-The export ledger SHALL record each completed copy with its size and modification time; re-running an export to the same library SHALL copy only keepers not yet exported, and an interrupted export SHALL resume, removing stale partial files of its own. A ledger-recorded copy still at its path whose bytes another application changed SHALL be reported as changed in the library and SHALL NOT be copied again unless the user asks. Planning SHALL trust a ledger-recorded copy that still has its recorded size and modification time without reading it, re-hashing only copies whose time changed, or every copy when the user asks to verify.
+The export ledger SHALL record each completed copy with its size and modification time; re-running an export to the same library SHALL copy only keepers not yet exported, and an interrupted export SHALL resume, removing stale partial files of its own.
 
 #### Scenario: Re-export copies only new
 - **WHEN** the small corpus is exported, a new drive is scanned and the export is run again
@@ -132,6 +135,13 @@ The export ledger SHALL record each completed copy with its size and modificatio
 - **WHEN** an export is killed mid-copy and run again
 - **THEN** the stale `.ps-partial` file is removed, every keeper ends up exported exactly once and no file is duplicated
 
+#### Scenario: Disk full stops cleanly
+- **WHEN** the library volume runs out of space during a copy
+- **THEN** the partial file is removed, the export stops with a disk-full message and completed files remain recorded
+
+### Requirement: Re-plans trust the ledger
+Planning SHALL trust a ledger-recorded copy that still has its recorded size and modification time without reading it, re-hashing only copies whose time changed, or every copy when the user asks to verify. A ledger-recorded copy still at its path whose bytes another application changed SHALL be reported as changed in the library and SHALL NOT be copied again unless the user asks.
+
 #### Scenario: Library copy changed by another app is not copied again
 - **WHEN** another application rewrites an exported library copy, changing its size, and the export runs again
 - **THEN** the plan lists that copy as changed in the library, nothing is copied and no suffixed duplicate appears; only when the user asks to copy it again is a fresh copy made beside it
@@ -139,10 +149,6 @@ The export ledger SHALL record each completed copy with its size and modificatio
 #### Scenario: Re-plan reads no file contents
 - **WHEN** every keeper has been exported and the export is planned again
 - **THEN** the plan lists them all as already exported without reading any library file, and with verify it re-hashes each of them
-
-#### Scenario: Disk full stops cleanly
-- **WHEN** the library volume runs out of space during a copy
-- **THEN** the partial file is removed, the export stops with a disk-full message and completed files remain recorded
 
 ### Requirement: Profiles
 Export SHALL offer profiles: Apple Photos (sidecars on, Live Photo pairs together), Google Photos (sidecars off) and Lightroom (sidecars on, RAW+JPEG kept), whose defaults the user can adjust per export.
