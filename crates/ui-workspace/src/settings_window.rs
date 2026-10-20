@@ -656,7 +656,7 @@ impl Focusable for SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let colors = *ui_theme::colors(cx);
         let query = self.search.read(cx).value();
         let searching = !query.trim().is_empty();
@@ -750,6 +750,8 @@ impl Render for SettingsWindow {
             .track_focus(&self.focus)
             .w(Tokens::settings_width())
             .h(Tokens::settings_height())
+            // Never taller than the window allows (minimum window size); the body scrolls.
+            .max_h(window.viewport_size().height * 0.8)
             .rounded(Tokens::RADIUS_LG)
             .bg(colors.overlay)
             .border_1()

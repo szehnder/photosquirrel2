@@ -225,6 +225,12 @@ impl Shell {
     }
 
     /// Whether the central view currently shows onboarding.
+    /// Whether the inspector is on screen: as the layout says, except over the welcome view of an empty
+    /// library, where it would only say "No photo selected" beside zero counts.
+    pub fn inspector_visible(&self) -> bool {
+        self.layout.inspector_shown() && !self.shows_onboarding()
+    }
+
     pub fn shows_onboarding(&self) -> bool {
         matches!(self.layout.active_view, ViewId::Library | ViewId::Sources)
             && self.summary.ready().is_some_and(CatalogSummary::is_empty)
@@ -494,7 +500,7 @@ impl Shell {
     ) {
         let total = window.viewport_size().width;
         let other = match side {
-            Side::Navigator if self.layout.inspector_shown() => px(self.layout.inspector_width),
+            Side::Navigator if self.inspector_visible() => px(self.layout.inspector_width),
             Side::Inspector if self.layout.navigator_open => px(self.layout.navigator_width),
             _ => Pixels::ZERO,
         };

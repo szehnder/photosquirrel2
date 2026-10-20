@@ -91,8 +91,10 @@ fn scenario_theming_reduced_motion_disables_animation(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn scenario_theming_metadata_uses_mono_font(cx: &mut TestAppContext) {
-    init_app(cx, Arc::new(FakeBackend::default()), None);
+    // A library with photos: over the welcome view of an empty one the inspector is hidden.
+    init_app(cx, Arc::new(FakeBackend::small_corpus()), None);
     let (shell, mut cx) = open(cx);
+    wait_loaded(&shell, &mut cx);
     let hash = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
     let inspector = cx.update(|_, cx| shell.read(cx).inspector().clone());
     cx.update(|_, cx| {

@@ -60,6 +60,10 @@ fn scenario_app_shell_first_launch_shows_onboarding(cx: &mut TestAppContext) {
         "central view shows onboarding"
     );
     assert!(
+        !exists("inspector", &mut cx),
+        "no inspector beside the welcome view of an empty library"
+    );
+    assert!(
         exists("onboarding-read-only", &mut cx),
         "explains sources are only read"
     );

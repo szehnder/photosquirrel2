@@ -305,7 +305,7 @@ impl Render for CommandPalette {
                 .id(SharedString::from(format!("palette-row-{ix}")))
                 .test_support()
                 .flex_none()
-                .h(Tokens::size(34.0))
+                .h(Tokens::palette_row_height())
                 .px(Tokens::space(3.0))
                 .mx(Tokens::space(1.5))
                 .gap(Tokens::space(3.0))

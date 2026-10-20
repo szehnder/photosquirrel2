@@ -112,7 +112,7 @@ impl Tokens {
         Self::size(860.0)
     }
     pub fn settings_height() -> Rems {
-        Self::size(600.0)
+        Self::size(664.0)
     }
     pub fn settings_nav_width() -> Rems {
         Self::size(196.0)
@@ -123,8 +123,13 @@ impl Tokens {
     pub fn palette_width() -> Rems {
         Self::size(600.0)
     }
+    /// Height of a command palette row.
+    pub fn palette_row_height() -> Rems {
+        Self::size(34.0)
+    }
+    /// Exactly ten palette rows plus the list's 6 px top and bottom padding, so no row is cut at the footer.
     pub fn palette_list_height() -> Rems {
-        Self::size(360.0)
+        Self::size(10.0 * 34.0 + 12.0)
     }
     /// Distance of overlays from the top of the window.
     pub fn overlay_top() -> Rems {
