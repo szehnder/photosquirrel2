@@ -435,6 +435,16 @@ impl Library {
             .copied()
             .filter(|id| counts.contains_key(id))
             .collect();
+        // Badges count the stack's files that this list shows, not every group member: excluded files (and
+        // files the filters leave out) are not in it, so badges and singles add up to the files the toolbar
+        // and the navigator count.
+        let mut shown: HashMap<ItemId, u16> = HashMap::with_capacity(present.len());
+        for id in &list.ids {
+            if let Some(k) = member_of.get(id) {
+                let n = shown.entry(*k).or_insert(1);
+                *n = n.saturating_add(1);
+            }
+        }
         let mut out = IdList::default();
         out.ids.reserve(list.len());
         out.keys.reserve(list.len());
@@ -444,9 +454,10 @@ impl Library {
             {
                 continue;
             }
-            let key: SortKey = match counts.get(&id) {
-                Some(n) => key.with_group_data(*n),
-                None => key,
+            // `present` keepers only (counts holds every keeper); one with no member shown is a single.
+            let key: SortKey = match shown.get(&id) {
+                Some(n) if counts.contains_key(&id) => key.with_group_data(*n),
+                _ => key,
             };
             out.ids.push(id);
             out.keys.push(key);
@@ -797,15 +808,28 @@ impl Library {
         }
     }
 
-    /// Members of the stack `keeper` heads, keeper first.
+    /// Members of the stack `keeper` heads that are in the Library (not excluded, like its badge counts),
+    /// keeper first.
     pub fn stack_members(&self, keeper: ItemId) -> Result<Vec<ItemId>> {
         if let Some(g) = self.group_of(FileId::from(keeper))? {
+            let others: ItemSet = g
+                .members
+                .iter()
+                .filter_map(|m| ItemId::try_from(m.file).ok())
+                .filter(|i| *i != keeper)
+                .collect();
+            let shown = self.catalog()?.read().id_list_within(
+                &library_filter(),
+                &ps_model::Sort::default(),
+                &others,
+            )?;
+            let in_library: HashSet<ItemId> = shown.ids.iter().copied().collect();
             let mut out = vec![keeper];
             out.extend(
                 g.members
                     .iter()
                     .filter_map(|m| ItemId::try_from(m.file).ok())
-                    .filter(|i| *i != keeper),
+                    .filter(|i| *i != keeper && in_library.contains(i)),
             );
             return Ok(out);
         }

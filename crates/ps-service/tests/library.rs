@@ -383,3 +383,68 @@ fn disposition_filter_lists_exactly_the_files_with_that_disposition() {
         either
     );
 }
+
+/// Stack badges count the files the Library shows: an excluded member leaves its stack's count and its
+/// expansion, so badges plus singles always add up to the unstacked list (the toolbar's and navigator's count).
+#[test]
+fn stack_counts_and_members_leave_out_excluded_files() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tmp.path().join("corpus");
+    ps_fixtures::generate_with(
+        11,
+        Preset::Small,
+        tiny(),
+        &DirWriter::new(&root).expect("w"),
+    )
+    .expect("generate");
+    let data = tmp.path().join("data");
+    let svc = ScanService::open(&data, ScanOptions::default()).expect("open");
+    for d in ["drive-a", "drive-b", "drive-c"] {
+        svc.add_source(&root.join(d)).expect("add");
+    }
+    svc.start(&[]).expect("start");
+    svc.wait().expect("summary");
+    let lib = Library::with_service(&data, svc);
+    let flat = GalleryQuery {
+        stacks: false,
+        ..query()
+    };
+    let adds_up = |lib: &Library| {
+        let stacked = lib.id_list(&query()).expect("stacked");
+        let files: u64 = stacked
+            .keys
+            .iter()
+            .map(|k| u64::from(k.group_data().max(1)))
+            .sum();
+        assert_eq!(files, lib.id_list(&flat).expect("flat").len() as u64);
+        stacked
+    };
+    let stacked = adds_up(&lib);
+    let (keeper, n) = stacked
+        .ids
+        .iter()
+        .zip(&stacked.keys)
+        .map(|(id, k)| (*id, k.group_data()))
+        .find(|(_, n)| *n >= 3)
+        .expect("a stack of three or more");
+    let members = lib.stack_members(keeper).expect("members");
+    assert_eq!(members.len(), usize::from(n));
+    lib.set_decision(
+        members[1],
+        Some(ps_model::library::Decision::Exclude),
+        Some("test".into()),
+    )
+    .expect("exclude");
+    let stacked = adds_up(&lib);
+    let at = stacked
+        .ids
+        .iter()
+        .position(|i| *i == keeper)
+        .expect("keeper");
+    assert_eq!(stacked.keys[at].group_data(), n - 1, "the badge drops it");
+    let excluded = members[1];
+    let members = lib.stack_members(keeper).expect("members");
+    assert_eq!(members.len(), usize::from(n - 1));
+    assert_eq!(members[0], keeper);
+    assert!(!members.contains(&excluded), "the expansion leaves it out");
+}
