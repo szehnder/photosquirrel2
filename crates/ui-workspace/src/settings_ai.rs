@@ -723,7 +723,7 @@ impl Render for AiSettingsPanel {
                 "setting-ai.model",
                 cx,
             ))
-            .children(consent)
+            // Right under the model it fetches; the hosted consent card follows.
             .child(row(
                 "Test connection",
                 "Checks the provider answers and has the model. No photo is sent.",
@@ -731,6 +731,7 @@ impl Render for AiSettingsPanel {
                 "setting-ai.test",
                 cx,
             ))
+            .children(consent)
             .children(self.message.clone().map(|(ok, m)| {
                 div()
                     .id("ai-settings-message")

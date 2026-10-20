@@ -15,7 +15,7 @@ use std::time::Duration;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
-use gpui_kit::component::{Icon, Sizable as _, button::Button, h_flex, v_flex};
+use gpui_kit::component::{Icon, button::Button, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ps_model::{PeopleEstimate, SceneCategory};
@@ -761,10 +761,9 @@ impl AiReviewView {
                                         div()
                                             .id("ai-review-count")
                                             .test_support()
-                                            .font_family(MONO_FONT_FAMILY)
-                                            .text_size(Tokens::text_xs())
+                                            .text_size(Tokens::text_sm())
                                             .text_color(colors.text_muted)
-                                            .child(format!("{} photos · newest first", format_count(count as u64))),
+                                            .child(format!("{} photos analysed · newest first", format_count(count as u64))),
                                     )
                                     .when(demo, |e| {
                                         e.child(
@@ -967,8 +966,9 @@ impl AiReviewView {
                         .text_size(Tokens::text_xs())
                         .text_color(colors.text_muted)
                         .child(format!(
-                            "{open} suggestion{} shown",
-                            if open == 1 { "" } else { "s" }
+                            "{open} of these {} suggest{} excluding",
+                            if open == 1 { "photo" } else { "photos" },
+                            if open == 1 { "s" } else { "" }
                         )),
                 )
                 .child(action_button(
@@ -1338,18 +1338,24 @@ impl AiReviewView {
                     .child(self.stepper("ai-detail-adults", "Adults", e.people.adults, true, cx))
                     .child(mark(corrected("people"))),
             )
-            .child(self.stepper("ai-detail-children", "Children", e.people.children, false, cx))
+            // One people correction covers both counts, so both rows carry the same AI/corrected mark.
+            .child(
+                h_flex()
+                    .gap(Tokens::space(2.0))
+                    .child(self.stepper("ai-detail-children", "Children", e.people.children, false, cx))
+                    .child(mark(corrected("people"))),
+            )
             .child(
                 v_flex()
                     .gap(Tokens::space(1.0))
                     .child(h_flex().gap(Tokens::space(2.0)).child(div().text_size(Tokens::text_sm()).text_color(colors.text_muted).child("Pets")).child(mark(corrected("pets"))))
-                    .child(Input::new(&self.pets).small().aria_label("Pets")),
+                    .child(Input::new(&self.pets).aria_label("Pets")),
             )
             .child(
                 v_flex()
                     .gap(Tokens::space(1.0))
                     .child(h_flex().gap(Tokens::space(2.0)).child(div().text_size(Tokens::text_sm()).text_color(colors.text_muted).child("Tags")).child(mark(corrected("tags"))))
-                    .child(Input::new(&self.tags).small().aria_label("Tags")),
+                    .child(Input::new(&self.tags).aria_label("Tags")),
             )
             .child(
                 h_flex()
@@ -1387,7 +1393,11 @@ impl AiReviewView {
                     .text_color(colors.text_faint)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(crate::views::kit::display_path(std::path::Path::new(&i.path))),
+                    .whitespace_nowrap()
+                    .child(crate::views::kit::middle_ellipsis(
+                        &crate::views::kit::display_path(std::path::Path::new(&i.path)),
+                        56,
+                    )),
             )
             .children(self.notice.clone().map(|n| {
                 div()
