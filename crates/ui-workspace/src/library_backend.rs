@@ -75,6 +75,16 @@ impl CatalogBackend {
 
 impl LibraryBackend for CatalogBackend {
     fn summary(&self) -> anyhow::Result<CatalogSummary> {
+        // First launch: no catalog yet, so the library is empty. Answer at once instead of creating and
+        // migrating a catalog first, so the first frame already shows the welcome view.
+        if !self
+            .lib
+            .data_dir()
+            .join(ps_service::scan::CATALOG_FILE)
+            .exists()
+        {
+            return Ok(CatalogSummary::default());
+        }
         let s = self.lib.summary()?;
         Ok(CatalogSummary {
             sources: s.sources,
@@ -188,5 +198,24 @@ impl GallerySource for CatalogBackend {
 
     fn excluded(&self) -> anyhow::Result<Vec<ExcludedRow>> {
         self.lib.excluded()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use ::core::prelude::v1::test;
+
+    use super::*;
+
+    #[test]
+    fn first_launch_summary_is_empty_without_creating_a_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = CatalogBackend::new(dir.path());
+        assert!(LibraryBackend::summary(&b).unwrap().is_empty());
+        assert!(
+            !dir.path().join(ps_service::scan::CATALOG_FILE).exists(),
+            "asking for the summary creates nothing"
+        );
     }
 }

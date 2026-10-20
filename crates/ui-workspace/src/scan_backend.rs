@@ -963,3 +963,49 @@ impl ui_gallery::source::GallerySource for DemoThumbs {
         self.inner.excluded()
     }
 }
+
+/// The shell's backend for `--demo-scan` screenshots: the real library, with the navigator's and status bar's
+/// source count taken from the simulated scan engine, so the shell and the Sources view agree.
+pub struct DemoShellBackend {
+    inner: Arc<dyn crate::service::LibraryBackend>,
+    sources: u32,
+}
+
+impl DemoShellBackend {
+    pub fn new(inner: Arc<dyn crate::service::LibraryBackend>, demo: &DemoBackend) -> Self {
+        let sources = ScanBackend::sources(demo).map_or(0, |s| s.len() as u32);
+        Self { inner, sources }
+    }
+}
+
+impl crate::service::LibraryBackend for DemoShellBackend {
+    fn summary(&self) -> anyhow::Result<crate::service::CatalogSummary> {
+        let mut s = self.inner.summary()?;
+        s.sources = self.sources;
+        Ok(s)
+    }
+    fn interrupted_run(&self) -> anyhow::Result<Option<crate::service::InterruptedRun>> {
+        self.inner.interrupted_run()
+    }
+    fn resume_run(&self, run: ScanRunId) -> anyhow::Result<()> {
+        self.inner.resume_run(run)
+    }
+    fn rescan(&self) -> anyhow::Result<()> {
+        self.inner.rescan()
+    }
+    fn add_source(&self, path: PathBuf) -> anyhow::Result<()> {
+        self.inner.add_source(path)
+    }
+    fn activity(&self) -> Option<crate::service::ActivitySnapshot> {
+        self.inner.activity()
+    }
+    fn gallery(self: Arc<Self>) -> Arc<dyn ui_gallery::source::GallerySource> {
+        self.inner.clone().gallery()
+    }
+    fn scans(self: Arc<Self>) -> Option<SharedScanBackend> {
+        self.inner.clone().scans()
+    }
+    fn review(self: Arc<Self>) -> Option<Arc<dyn crate::review_source::ReviewSource>> {
+        self.inner.clone().review()
+    }
+}

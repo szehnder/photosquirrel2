@@ -21,7 +21,7 @@ use crate::views::scan::{ScanHub, ScanMonitor};
 use crate::views::scan_dashboard::{self, DashboardModel, device_label};
 
 /// The remove confirmation's promise.
-pub const REMOVE_PROMISE: &str = "Only PhotoSquirrel's catalog records are removed. No file in the folder is moved, changed or deleted.";
+pub const REMOVE_PROMISE: &str = "PhotoSquirrel only forgets this folder: its catalog records are removed. No file in the folder is moved, changed or deleted, and you can add it again any time.";
 
 pub struct SourcesView {
     monitor: Option<Entity<ScanMonitor>>,
@@ -249,12 +249,16 @@ impl SourcesView {
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle(id, cx)))
             });
         let status = if row.online {
-            kit::chip("Online", colors.success, Colors::tint(colors.success, 0.14))
+            kit::chip(
+                "Online",
+                colors.tone_text(colors.success),
+                Colors::chip_bg(colors.success),
+            )
         } else {
             kit::chip(
                 "Offline",
-                colors.warning,
-                Colors::tint(colors.warning, 0.14),
+                colors.tone_text(colors.warning),
+                Colors::chip_bg(colors.warning),
             )
         };
         let last = row
@@ -272,8 +276,8 @@ impl SourcesView {
             ),
             kit::button(
                 format!("source-remove-{}", id.0),
-                "Remove…",
-                Some(IconName::Trash),
+                "Remove source…",
+                Some(IconName::Unlink),
                 Tone::Ghost,
                 (!active)
                     .then(|| kit::on(cx.listener(move |this, _, _, cx| this.ask_remove(id, cx))))
@@ -420,7 +424,7 @@ impl SourcesView {
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(colors.text)
                                         .child(format!(
-                                            "Remove “{}” from PhotoSquirrel?",
+                                            "Forget “{}”? The folder and its files stay as they are.",
                                             row.name
                                         )),
                                 )
@@ -444,8 +448,8 @@ impl SourcesView {
                         ))
                         .child(kit::button(
                             format!("source-remove-yes-{}", id.0),
-                            "Remove source",
-                            Some(IconName::Trash),
+                            "Forget this source",
+                            Some(IconName::Unlink),
                             Tone::Danger,
                             kit::on(cx.listener(|this, _, _, cx| this.confirm_remove(cx))),
                             cx,

@@ -56,6 +56,7 @@ icon_assets!(
         // scan-dashboard / export
         Link,
         Trash,
+        Unlink,
         BadgeCheck,
         WifiOff,
         Timer,

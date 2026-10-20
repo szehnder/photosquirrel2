@@ -414,6 +414,18 @@ fn stages_card(s: &ProgressSnapshot, colors: &Colors, cx: &App) -> AnyElement {
                         .child(format_count(n)),
                 )
         }))
+        .child(
+            div()
+                .id("stages-note")
+                .test_support()
+                .pt(Tokens::space(1.0))
+                .text_size(Tokens::text_2xs())
+                .text_color(colors.text_faint)
+                .child(
+                    "Every file of the sources in this run: Done includes files unchanged since the last scan, \
+                     which are not processed again.",
+                ),
+        )
         .into_any_element()
 }
 
@@ -572,8 +584,8 @@ fn lanes_card(
                         .when(src.incomplete, |d| {
                             d.child(kit::chip(
                                 "Offline · incomplete",
-                                colors.warning,
-                                Colors::tint(colors.warning, 0.14),
+                                colors.tone_text(colors.warning),
+                                Colors::chip_bg(colors.warning),
                             ))
                         })
                         .child(div().flex_1())
@@ -596,31 +608,23 @@ fn lanes_card(
                                 )),
                         ),
                 )
+                // The bar spans the row; the numbers and the throughput sparkline share the line below it.
+                .child(kit::bar(frac, colors.accent, cx))
                 .child(
                     h_flex()
                         .w_full()
                         .items_center()
-                        .gap(Tokens::space(4.0))
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap(Tokens::space(1.0))
-                                .child(kit::bar(frac, colors.accent, cx))
-                                .child(
-                                    h_flex()
-                                        .gap(Tokens::space(3.0))
-                                        .text_size(Tokens::text_xs())
-                                        .text_color(colors.text_muted)
-                                        .child(format!(
-                                            "{} / {} files",
-                                            format_count(src.processed),
-                                            format_count(src.to_process)
-                                        ))
-                                        .child(format!("{fps:.0} files/s"))
-                                        .child(kit::format_rate(mbps)),
-                                ),
-                        )
+                        .gap(Tokens::space(3.0))
+                        .text_size(Tokens::text_xs())
+                        .text_color(colors.text_muted)
+                        .child(format!(
+                            "{} / {} files",
+                            format_count(src.processed),
+                            format_count(src.to_process)
+                        ))
+                        .child(format!("{fps:.0} files/s"))
+                        .child(kit::format_rate(mbps))
+                        .child(div().flex_1())
                         .child(
                             div()
                                 .w(Tokens::size(160.0))
@@ -629,8 +633,8 @@ fn lanes_card(
                                 .when(spark.len() < 2, |d| {
                                     d.flex()
                                         .items_center()
-                                        .justify_center()
-                                        .text_size(Tokens::text_2xs())
+                                        .justify_end()
+                                        .text_size(Tokens::text_xs())
                                         .text_color(colors.text_faint)
                                         .child(if running { "measuring…" } else { "" })
                                 })
@@ -690,7 +694,10 @@ fn recent_card(
                 .aria_label(SharedString::from(format!("{n} recent photos")))
                 .w_full()
                 .gap(Tokens::space(1.0))
-                .overflow_x_scroll()
+                // One row of whole thumbnails: those that do not fit wrap out of sight instead of being cut.
+                .flex_wrap()
+                .h(Tokens::size(64.0))
+                .overflow_hidden()
                 .when(n == 0, |d| {
                     d.child(
                         div()

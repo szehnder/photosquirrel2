@@ -174,6 +174,20 @@ fn main() {
             }
             None => Arc::new(EmptyBackend),
         };
+    // `--demo-scan`: a simulated scan engine for the Sources, Export and Reports views; the shell's source count
+    // comes from it too, so the navigator and status bar agree with the Sources view.
+    let demo_scans = args.demo_scan.as_deref().map(|mode| {
+        Arc::new(ui_workspace::scan_backend::DemoBackend::screenshot(
+            mode,
+            ui_workspace::views::export::default_library(),
+        ))
+    });
+    let backend: Arc<dyn LibraryBackend> = match &demo_scans {
+        Some(demo) => Arc::new(ui_workspace::scan_backend::DemoShellBackend::new(
+            backend, demo,
+        )),
+        None => backend,
+    };
     gpui_kit::application()
         .with_assets(AppAssets)
         .run(move |cx| {
@@ -189,11 +203,7 @@ fn main() {
                 cx,
             );
             ui_workspace::motion::watch_os_preference(cx);
-            if let Some(mode) = args.demo_scan.as_deref() {
-                let scans = Arc::new(ui_workspace::scan_backend::DemoBackend::screenshot(
-                    mode,
-                    ui_workspace::views::export::default_library(),
-                ));
+            if let Some(scans) = demo_scans.clone() {
                 let thumbs = Arc::new(ui_workspace::scan_backend::DemoThumbs::over(
                     backend.clone().gallery(),
                 ));
