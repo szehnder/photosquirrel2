@@ -187,7 +187,15 @@ fn free_space_at(_p: &Path) -> io::Result<Option<u64>> {
     Ok(None)
 }
 
-/// Make a path absolute and resolve symlinks of its existing part (the rest is appended lexically).
+/// The canonical form of an existing path, as the scanner stores source roots (Windows verbatim prefix
+/// dropped when equivalent), so library and source paths compare like for like.
+fn canonical(path: &Path) -> io::Result<PathBuf> {
+    fs::canonicalize(path).map(ps_model::path::simplify_canonical)
+}
+
+/// Make a path absolute and resolve symlinks of its longest existing ancestor; the missing rest is appended and
+/// `.`/`..` in it are resolved lexically. So a library folder that does not exist yet still compares correctly
+/// with source roots reached through symlinks (macOS `/var` is `/private/var`).
 pub fn normalize(path: &Path) -> io::Result<PathBuf> {
     let abs = if path.is_absolute() {
         path.to_path_buf()
@@ -195,9 +203,9 @@ pub fn normalize(path: &Path) -> io::Result<PathBuf> {
         std::env::current_dir()?.join(path)
     };
     let mut existing = abs.as_path();
-    let mut rest = Vec::new();
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
     loop {
-        match fs::canonicalize(existing) {
+        match canonical(existing) {
             Ok(c) => {
                 let mut out = c;
                 for comp in rest.iter().rev() {
@@ -205,13 +213,20 @@ pub fn normalize(path: &Path) -> io::Result<PathBuf> {
                 }
                 return Ok(lexical(&out));
             }
-            Err(_) => match (existing.parent(), existing.file_name()) {
-                (Some(parent), Some(name)) => {
-                    rest.push(name.to_os_string());
-                    existing = parent;
-                }
-                _ => return Ok(lexical(&abs)),
-            },
+            Err(_) => {
+                // The last component, `..` and `.` included (`file_name` is `None` for those).
+                let Some(last) = existing.components().next_back() else {
+                    return Ok(lexical(&abs));
+                };
+                let (Component::Normal(_) | Component::CurDir | Component::ParentDir) = last else {
+                    return Ok(lexical(&abs));
+                };
+                let Some(parent) = existing.parent() else {
+                    return Ok(lexical(&abs));
+                };
+                rest.push(last.as_os_str().to_os_string());
+                existing = parent;
+            }
         }
     }
 }
@@ -251,7 +266,7 @@ impl LibraryRoot {
     /// Create the library folder if needed and canonicalize it.
     pub fn open_or_create(path: &Path) -> io::Result<Self> {
         fs::create_dir_all(path)?;
-        let root = fs::canonicalize(path)?;
+        let root = canonical(path)?;
         if !fs::metadata(&root)?.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotADirectory,
@@ -316,7 +331,7 @@ impl LibraryRoot {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e),
         }
-        let parent = path.parent().map(fs::canonicalize).transpose()?;
+        let parent = path.parent().map(canonical).transpose()?;
         if !parent.is_some_and(|p| p.starts_with(&self.root)) {
             return Err(escape(&path));
         }
@@ -346,13 +361,23 @@ mod tests {
     fn normalize_handles_missing_tail() {
         let d = tempfile::tempdir().expect("tempdir");
         let n = normalize(&d.path().join("a/../b/c")).expect("normalize");
-        assert_eq!(
-            n,
-            fs::canonicalize(d.path())
-                .expect("canon")
-                .join("b")
-                .join("c")
-        );
+        assert_eq!(n, canonical(d.path()).expect("canon").join("b").join("c"));
+    }
+
+    /// The macOS shape: the temp dir is reached through a symlink (`/var` -> `/private/var`) and the tail,
+    /// with a `..` in it, does not exist yet. The existing prefix must still resolve through the symlink.
+    #[cfg(unix)]
+    #[test]
+    fn normalize_resolves_symlinked_prefix_of_missing_tail() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let real = d.path().join("private-var");
+        fs::create_dir(&real).expect("real");
+        let link = d.path().join("var");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let want = canonical(&real).expect("canon").join("b").join("c");
+        assert_eq!(normalize(&link.join("a/../b/c")).expect("normalize"), want);
+        assert_eq!(normalize(&link.join("b/./c")).expect("normalize"), want);
+        assert_eq!(normalize(&link.join("b/c")).expect("normalize"), want);
     }
 
     #[cfg(unix)]
