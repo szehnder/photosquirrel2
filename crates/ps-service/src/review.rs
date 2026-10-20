@@ -19,7 +19,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +27,7 @@ use ps_catalog::{FileRecord, Readers};
 use ps_model::{FileId, SourceId, path_from_bytes};
 
 use crate::groups::{GroupDetail, GroupError, GroupMember, MemberEdge, SuggestionInfo};
+use crate::json_store::JsonFile;
 use crate::scan::ScanService;
 
 /// The review store's file in the data directory.
@@ -54,18 +54,15 @@ struct ReviewState {
 /// Review state and dismissed suggestions, persisted in [`REVIEW_FILE`].
 #[derive(Debug)]
 pub struct ReviewStore {
-    path: Option<PathBuf>,
-    state: Mutex<ReviewState>,
+    file: JsonFile<ReviewState>,
 }
 
 impl ReviewStore {
-    /// The store in `data_dir` (empty when there is none yet; a damaged file is moved aside and logged).
+    /// The store in `data_dir` (empty when there is none yet; a damaged or unreadable file is moved aside and
+    /// logged, and one that cannot be moved aside is never saved over).
     pub fn open(data_dir: &Path) -> ReviewStore {
-        let path = data_dir.join(REVIEW_FILE);
-        let state = crate::json_store::load(&path);
         ReviewStore {
-            path: Some(path),
-            state: Mutex::new(state),
+            file: JsonFile::open(data_dir.join(REVIEW_FILE)),
         }
     }
 
@@ -84,34 +81,29 @@ impl ReviewStore {
     /// Nothing persisted (tests).
     pub fn in_memory() -> ReviewStore {
         ReviewStore {
-            path: None,
-            state: Mutex::new(ReviewState::default()),
+            file: JsonFile::in_memory(),
         }
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut ReviewState) -> T, save: bool) -> T {
-        let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        let out = f(&mut st);
-        if save && let Some(path) = &self.path {
+    fn read<T>(&self, f: impl FnOnce(&ReviewState) -> T) -> T {
+        self.file.read(f)
+    }
+
+    /// Change and save; a change that cannot be saved is not kept and is an error.
+    fn update<T>(&self, f: impl FnOnce(&mut ReviewState) -> T) -> Result<T> {
+        Ok(self.file.update(|st| {
             st.version = 1;
-            if let Err(e) = write_atomically(path, &st) {
-                log::error!("could not save {}: {e}", path.display());
-            }
-        }
-        out
+            f(st)
+        })?)
     }
 
     fn is_reviewed(&self, key: &str) -> bool {
-        self.with(|s| s.reviewed.contains_key(key), false)
+        self.read(|s| s.reviewed.contains_key(key))
     }
 
     fn is_dismissed(&self, key: &str) -> bool {
-        self.with(|s| s.dismissed.contains_key(key), false)
+        self.read(|s| s.dismissed.contains_key(key))
     }
-}
-
-fn write_atomically(path: &Path, st: &ReviewState) -> std::io::Result<()> {
-    crate::json_store::save(path, st)
 }
 
 fn now_ms() -> i64 {
@@ -690,16 +682,13 @@ pub fn set_reviewed(
     reviewed: bool,
 ) -> Result<bool> {
     let d = show(svc, store, id)?;
-    store.with(
-        |s| {
-            if reviewed {
-                s.reviewed.insert(d.key.clone(), now_ms());
-            } else {
-                s.reviewed.remove(&d.key);
-            }
-        },
-        true,
-    );
+    store.update(|s| {
+        if reviewed {
+            s.reviewed.insert(d.key.clone(), now_ms());
+        } else {
+            s.reviewed.remove(&d.key);
+        }
+    })?;
     svc.groups().set_reviewed(id, reviewed)?;
     Ok(reviewed)
 }
@@ -819,18 +808,15 @@ pub fn dismiss(svc: &ScanService, store: &ReviewStore, a: FileId, b: FileId) -> 
             .ok_or(GroupError::NoContent(f))
     };
     let key = pair_key(content(a)?, content(b)?);
-    store.with(
-        |s| {
-            s.dismissed.insert(key, now_ms());
-        },
-        true,
-    );
+    store.update(|s| {
+        s.dismissed.insert(key, now_ms());
+    })?;
     Ok(())
 }
 
 /// Number of dismissed suggestions (tests, the CLI).
 pub fn dismissed_count(store: &ReviewStore) -> usize {
-    store.with(|s| s.dismissed.len(), false)
+    store.read(|s| s.dismissed.len())
 }
 
 /// Explain why two members are (or are not) the same photo.
@@ -860,7 +846,8 @@ mod tests {
     fn store_persists_review_state() {
         let tmp = tempfile::tempdir().expect("tmp");
         let s = ReviewStore::open(tmp.path());
-        s.with(|st| st.reviewed.insert("k".into(), 1), true);
+        s.update(|st| st.reviewed.insert("k".into(), 1))
+            .expect("save");
         let again = ReviewStore::open(tmp.path());
         assert!(again.is_reviewed("k"));
     }
@@ -871,7 +858,8 @@ mod tests {
         std::fs::write(tmp.path().join(REVIEW_FILE), b"{\"reviewed\": [").unwrap();
         let s = ReviewStore::open(tmp.path());
         assert!(!s.is_reviewed("k"));
-        s.with(|st| st.reviewed.insert("k".into(), 1), true);
+        s.update(|st| st.reviewed.insert("k".into(), 1))
+            .expect("save");
         let names: Vec<String> = std::fs::read_dir(tmp.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

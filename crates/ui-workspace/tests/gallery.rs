@@ -958,13 +958,17 @@ fn gallery_inspector_ai_section_shows_the_insight_as_a_suggestion(cx: &mut TestA
     assert!(!exists("inspector-ai-none", &mut cx));
 
     // The user's correction wins in the inspector; the AI's value stays visible beside it.
-    backend.insight_store().unwrap().correct(
-        &content,
-        ps_service::insights::Correction {
-            category: Some(ps_model::SceneCategory::Travel),
-            ..Default::default()
-        },
-    );
+    backend
+        .insight_store()
+        .unwrap()
+        .correct(
+            &content,
+            ps_service::insights::Correction {
+                category: Some(ps_model::SceneCategory::Travel),
+                ..Default::default()
+            },
+        )
+        .expect("save correction");
     // Reselect to reload the detail.
     let model = cx.update(|_, cx| lib.read(cx).model().clone());
     model.update(&mut cx, |m, cx| {
@@ -1058,8 +1062,8 @@ fn gallery_filter_contains_children_uses_the_effective_insight(cx: &mut TestAppC
         }),
         ..Default::default()
     };
-    store.correct(&contents[0], people(0));
-    store.correct(&contents[1], people(2));
+    store.correct(&contents[0], people(0)).expect("save");
+    store.correct(&contents[1], people(2)).expect("save");
     lib.update(&mut cx, |v, cx| {
         v.set_filters(FilterBar::default(), cx);
     });

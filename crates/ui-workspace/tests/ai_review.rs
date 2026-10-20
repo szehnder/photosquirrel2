@@ -398,6 +398,41 @@ fn scenario_ai_review_user_correction_wins(cx: &mut TestAppContext) {
     assert!(row.insight.contains("\"nature\""));
 }
 
+/// A correction that cannot be saved (here `ai-review.json.tmp` is a folder, so the atomic write fails) is
+/// reported in the view's status line and not kept, instead of only being logged.
+#[gpui_kit::test]
+fn ai_review_save_failure_is_shown_not_swallowed(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, view, mut cx) = open_ai(cx, &data);
+    let c = photo_contents(&backend, 1);
+    record(
+        &backend,
+        c[0],
+        &insight(SceneCategory::Nature, 0, 0, true),
+        1,
+    );
+    settle(&view, &mut cx);
+    std::fs::create_dir_all(data.join("ai-review.json.tmp")).unwrap();
+    let v = view.clone();
+    cx.update(|window, cx| v.update(cx, |v, cx| v.select(0, window, cx)));
+    let v = view.clone();
+    cx.update(|_, cx| v.update(cx, |v, cx| v.set_category(SceneCategory::Travel, cx)));
+    settle(&view, &mut cx);
+    let error = view.read_with(&cx, |v, _| v.error().map(str::to_owned));
+    let error = error.expect("the failed save is shown");
+    assert!(error.contains("ai-review.json"), "{error}");
+    assert!(
+        view.read_with(&cx, |v, _| v.notice().is_none()),
+        "no \"Saved\" notice"
+    );
+    let items = view.read_with(&cx, |v, _| v.items().unwrap().to_vec());
+    assert_eq!(
+        items[0].effective.category,
+        SceneCategory::Nature,
+        "the unsaved correction is not kept"
+    );
+}
+
 /// A fixture folder under the target dir, built once and reused by later runs and test binaries (a file lock
 /// keeps concurrent builders apart; a `<name>.complete` file beside it marks a finished build). Nothing is left in `/tmp`.
 fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::PathBuf {

@@ -190,13 +190,15 @@ fn insight_filter_uses_the_effective_insight() {
         adults: 1,
         children: 0,
     };
-    store.correct(
-        first.content_hash.as_deref().expect("hash"),
-        Correction {
-            people: Some(no_kids),
-            ..Correction::default()
-        },
-    );
+    store
+        .correct(
+            first.content_hash.as_deref().expect("hash"),
+            Correction {
+                people: Some(no_kids),
+                ..Correction::default()
+            },
+        )
+        .expect("save correction");
     let landscape = all
         .ids
         .iter()
@@ -215,18 +217,20 @@ fn insight_filter_uses_the_effective_insight() {
         .expect("p")
         .content_hash
         .expect("hash");
-    store.correct(
-        &hash,
-        Correction {
-            people: Some(ps_model::PeopleEstimate {
-                total: 2,
-                adults: 0,
-                children: 2,
-            }),
-            category: Some(SceneCategory::Travel),
-            ..Correction::default()
-        },
-    );
+    store
+        .correct(
+            &hash,
+            Correction {
+                people: Some(ps_model::PeopleEstimate {
+                    total: 2,
+                    adults: 0,
+                    children: 2,
+                }),
+                category: Some(SceneCategory::Travel),
+                ..Correction::default()
+            },
+        )
+        .expect("save");
     let list = lib.id_list(&children).expect("list");
     assert_eq!(list.len(), 60);
     assert!(!list.ids.contains(&first.id));

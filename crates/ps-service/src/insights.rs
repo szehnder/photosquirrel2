@@ -13,11 +13,11 @@
 //! Every call reads the catalog: call from a background thread, never the UI thread.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::json_store::JsonFile;
 use ps_catalog::{AiResultRow, Catalog, CatalogError, Command, UserDecision};
 use ps_model::{ContentId, FileId, ImageInsight, PeopleEstimate, SceneCategory, path_from_bytes};
 
@@ -180,17 +180,13 @@ struct StoreState {
 /// Corrections and suggestion decisions, persisted in [`INSIGHTS_FILE`].
 #[derive(Debug)]
 pub struct InsightStore {
-    path: Option<PathBuf>,
-    state: Mutex<StoreState>,
+    file: JsonFile<StoreState>,
 }
 
 impl InsightStore {
     pub fn open(data_dir: &Path) -> InsightStore {
-        let path = data_dir.join(INSIGHTS_FILE);
-        let state = crate::json_store::load(&path);
         InsightStore {
-            path: Some(path),
-            state: Mutex::new(state),
+            file: JsonFile::open(data_dir.join(INSIGHTS_FILE)),
         }
     }
 
@@ -201,82 +197,67 @@ impl InsightStore {
 
     pub fn in_memory() -> InsightStore {
         InsightStore {
-            path: None,
-            state: Mutex::new(StoreState::default()),
+            file: JsonFile::in_memory(),
         }
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut StoreState) -> T, save: bool) -> T {
-        let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        let out = f(&mut st);
-        if save {
+    fn read<T>(&self, f: impl FnOnce(&StoreState) -> T) -> T {
+        self.file.read(f)
+    }
+
+    /// Change and save; a change that cannot be saved is not kept and is an error.
+    fn update<T>(&self, f: impl FnOnce(&mut StoreState) -> T) -> Result<T> {
+        self.file.update(|st| {
             st.revision += 1;
             st.version = 1;
-            if let Some(path) = &self.path {
-                let r = crate::json_store::save(path, &*st);
-                if let Err(e) = r {
-                    log::error!("could not save {}: {e}", path.display());
-                }
-            }
-        }
-        out
+            f(st)
+        })
     }
 
     /// Every stored correction, by content (hex).
     pub fn corrections(&self) -> BTreeMap<String, Correction> {
-        self.with(|s| s.corrections.clone(), false)
+        self.read(|s| s.corrections.clone())
     }
 
     pub fn correction(&self, content: &str) -> Option<Correction> {
-        self.with(|s| s.corrections.get(content).cloned(), false)
+        self.read(|s| s.corrections.get(content).cloned())
     }
 
-    /// Merge corrections into the stored ones for `content` (hex).
-    pub fn correct(&self, content: &str, c: Correction) {
-        self.with(
-            |s| {
-                s.corrections
-                    .entry(content.to_owned())
-                    .or_default()
-                    .merge(c)
-            },
-            true,
-        );
+    /// Merge corrections into the stored ones for `content` (hex). An error when it could not be saved (then
+    /// nothing changed).
+    pub fn correct(&self, content: &str, c: Correction) -> Result<()> {
+        self.update(|s| {
+            s.corrections
+                .entry(content.to_owned())
+                .or_default()
+                .merge(c);
+        })
     }
 
     /// Back to the AI's values.
-    pub fn clear(&self, content: &str) {
-        self.with(
-            |s| {
-                s.corrections.remove(content);
-            },
-            true,
-        );
+    pub fn clear(&self, content: &str) -> Result<()> {
+        self.update(|s| {
+            s.corrections.remove(content);
+        })
     }
 
     fn decision(&self, content: &str, kind: &str) -> SuggestionStatus {
-        self.with(
-            |s| {
-                s.decisions
-                    .get(&format!("{content}:{kind}"))
-                    .copied()
-                    .unwrap_or_default()
-            },
-            false,
-        )
+        self.read(|s| {
+            s.decisions
+                .get(&format!("{content}:{kind}"))
+                .copied()
+                .unwrap_or_default()
+        })
     }
 
-    fn set_decision(&self, content: &str, kind: &str, status: SuggestionStatus) {
-        self.with(
-            |s| {
-                s.decisions.insert(format!("{content}:{kind}"), status);
-            },
-            true,
-        );
+    fn set_decision(&self, content: &str, kind: &str, status: SuggestionStatus) -> Result<()> {
+        self.update(|s| {
+            s.decisions.insert(format!("{content}:{kind}"), status);
+        })
     }
 
     pub fn revision(&self) -> u64 {
-        self.with(|s| s.revision, false)
+        self.read(|s| s.revision)
     }
 }
 
@@ -489,7 +470,7 @@ pub fn correct(
     c: Correction,
 ) -> Result<()> {
     for hex in set_of(catalog, content)? {
-        store.correct(&hex, c.clone());
+        store.correct(&hex, c.clone())?;
     }
     Ok(())
 }
@@ -497,7 +478,7 @@ pub fn correct(
 /// Drop the corrections of `content` (hex) and of the rest of its capture set.
 pub fn clear(catalog: &Catalog, store: &InsightStore, content: &str) -> Result<()> {
     for hex in set_of(catalog, content)? {
-        store.clear(&hex);
+        store.clear(&hex)?;
     }
     Ok(())
 }
@@ -541,7 +522,7 @@ pub fn decide(
         SuggestionStatus::Rejected
     };
     for c in &set {
-        store.set_decision(&c.to_hex(), &s.kind, status);
+        store.set_decision(&c.to_hex(), &s.kind, status)?;
     }
     Ok(excluded)
 }
@@ -782,7 +763,8 @@ mod tests {
                 category: Some(SceneCategory::Pets),
                 ..Correction::default()
             },
-        );
+        )
+        .expect("save");
         let names: Vec<String> = std::fs::read_dir(tmp.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

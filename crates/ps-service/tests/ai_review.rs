@@ -82,13 +82,15 @@ fn scenario_ai_review_ai_never_changes_keeper() {
     let items = insights::items(catalog, &store, &InsightFilter::default(), 10_000).expect("items");
     assert!(!items.is_empty());
     for i in &items {
-        store.correct(
-            &i.content,
-            Correction {
-                category: Some(ps_model::SceneCategory::Travel),
-                ..Correction::default()
-            },
-        );
+        store
+            .correct(
+                &i.content,
+                Correction {
+                    category: Some(ps_model::SceneCategory::Travel),
+                    ..Correction::default()
+                },
+            )
+            .expect("save");
         // Rejecting a suggestion records only the decision.
         insights::decide(catalog, &store, &i.content, false).expect("decide");
     }
