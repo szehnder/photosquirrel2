@@ -31,10 +31,8 @@ impl log::Log for FileLogger {
 fn log_file() -> &'static PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
-        let p = std::env::temp_dir().join(format!(
-            "claude-1000-ps-service-ai-keys-{}.log",
-            std::process::id()
-        ));
+        let p = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("ps-service-ai-keys-{}.log", std::process::id()));
         let f = std::fs::File::create(&p).unwrap();
         log::set_logger(Box::leak(Box::new(FileLogger(Mutex::new(f))))).unwrap();
         log::set_max_level(log::LevelFilter::Trace);

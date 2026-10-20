@@ -14,7 +14,6 @@ use ps_fixtures::{
 use ps_model::PhotoClass;
 
 struct Corpus {
-    _dir: tempfile::TempDir,
     root: PathBuf,
     truth: Truth,
 }
@@ -23,15 +22,12 @@ struct Corpus {
 fn small() -> &'static Corpus {
     static C: OnceLock<Corpus> = OnceLock::new();
     C.get_or_init(|| {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path().join("corpus");
-        let w = DirWriter::new(&root).expect("writer");
-        let truth = generate(42, Preset::Small, &w).expect("generate");
-        Corpus {
-            _dir: dir,
-            root,
-            truth,
-        }
+        let root = shared_dir("fixtures-corpus-small-42", |root| {
+            let w = DirWriter::new(root).expect("writer");
+            generate(42, Preset::Small, &w).expect("generate");
+        });
+        let truth = Truth::read(&root).expect("truth");
+        Corpus { root, truth }
     })
 }
 
@@ -839,4 +835,20 @@ fn scenario_test_corpus_small_preset_is_quick() {
     if !cfg!(debug_assertions) {
         assert!(secs < 30.0, "small preset took {secs:.1} s");
     }
+}
+
+/// A fixture folder under the target dir, built once and reused by later runs and test binaries (a file lock
+/// keeps concurrent builders apart; a `<name>.complete` file beside it marks a finished build). Nothing is left in `/tmp`.
+fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(root.parent().expect("parent")).expect("fixture base");
+    let lock = std::fs::File::create(root.with_extension("lock")).expect("fixture lock");
+    lock.lock().expect("lock the fixture");
+    let done = root.with_extension("complete");
+    if !done.is_file() {
+        let _ = std::fs::remove_dir_all(&root);
+        build(&root);
+        std::fs::write(&done, b"ok").expect("completion marker");
+    }
+    root
 }

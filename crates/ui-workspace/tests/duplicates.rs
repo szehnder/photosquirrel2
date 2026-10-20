@@ -25,28 +25,29 @@ struct Template {
 fn template() -> &'static Template {
     static T: OnceLock<Template> = OnceLock::new();
     T.get_or_init(|| {
-        let root = std::env::current_dir()
-            .unwrap()
-            .join("../../target/agent-review/test-data")
-            .join(format!("dup-template-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let corpus = root.join("corpus");
-        let dir = root.join("data");
-        ps_fixtures::generate(
-            42,
-            ps_fixtures::Preset::Small,
-            &ps_fixtures::DirWriter::new(&corpus).unwrap(),
-        )
-        .unwrap();
-        {
-            let scan =
-                ps_service::scan::ScanService::open(&dir, ps_service::scan::ScanOptions::default())
-                    .unwrap();
-            let s = scan.add_source(&corpus).unwrap();
-            scan.start(&[s.source.id]).unwrap();
-            scan.wait().unwrap();
+        let root = shared_dir("duplicates-template", |root| {
+            let corpus = root.join("corpus");
+            let dir = root.join("data");
+            ps_fixtures::generate(
+                42,
+                ps_fixtures::Preset::Small,
+                &ps_fixtures::DirWriter::new(&corpus).unwrap(),
+            )
+            .unwrap();
+            {
+                let scan = ps_service::scan::ScanService::open(
+                    &dir,
+                    ps_service::scan::ScanOptions::default(),
+                )
+                .unwrap();
+                let s = scan.add_source(&corpus).unwrap();
+                scan.start(&[s.source.id]).unwrap();
+                scan.wait().unwrap();
+            }
+        });
+        Template {
+            dir: root.join("data"),
         }
-        Template { dir }
     })
 }
 
@@ -599,4 +600,20 @@ fn scenario_duplicate_review_dismiss_a_suggestion(cx: &mut TestAppContext) {
         "files unchanged"
     );
     assert!(!paths.0.is_empty());
+}
+
+/// A fixture folder under the target dir, built once and reused by later runs and test binaries (a file lock
+/// keeps concurrent builders apart; a `<name>.complete` file beside it marks a finished build). Nothing is left in `/tmp`.
+fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(root.parent().expect("parent")).expect("fixture base");
+    let lock = std::fs::File::create(root.with_extension("lock")).expect("fixture lock");
+    lock.lock().expect("lock the fixture");
+    let done = root.with_extension("complete");
+    if !done.is_file() {
+        let _ = std::fs::remove_dir_all(&root);
+        build(&root);
+        std::fs::write(&done, b"ok").expect("completion marker");
+    }
+    root
 }

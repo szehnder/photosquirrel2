@@ -17,9 +17,10 @@ use ps_model::{
     RelPath, SourceId,
 };
 
-/// A fresh scratch folder under /tmp/claude-1000 (never in the repository or a home photo folder).
+/// A fresh scratch folder under the target dir (never in the repository, `/tmp` or a home photo folder),
+/// removed on drop.
 pub fn scratch(tag: &str) -> tempfile::TempDir {
-    let base = Path::new("/tmp/claude-1000");
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::create_dir_all(base).expect("scratch base");
     tempfile::Builder::new()
         .prefix(&format!("ps-export-{tag}-"))
@@ -171,21 +172,17 @@ pub fn day(y: i32, m: u8, d: u8) -> Option<CaptureTime> {
 pub struct SmallCorpus {
     pub root: PathBuf,
     pub truth: Truth,
-    _dir: tempfile::TempDir,
 }
 
 pub fn small_corpus() -> &'static SmallCorpus {
     static C: OnceLock<SmallCorpus> = OnceLock::new();
     C.get_or_init(|| {
-        let dir = scratch("corpus");
-        let root = dir.path().join("corpus");
-        let w = DirWriter::new(&root).expect("dir writer");
-        let truth = ps_fixtures::generate(42, Preset::Small, &w).expect("generate");
-        SmallCorpus {
-            root,
-            truth,
-            _dir: dir,
-        }
+        let root = shared_dir("export-corpus-small-42", |root| {
+            let w = DirWriter::new(root).expect("dir writer");
+            ps_fixtures::generate(42, Preset::Small, &w).expect("generate");
+        });
+        let truth = Truth::read(&root).expect("truth");
+        SmallCorpus { root, truth }
     })
 }
 
@@ -415,4 +412,20 @@ pub fn library_by_hash(lib: &Path) -> BTreeMap<[u8; 32], Vec<PathBuf>> {
 
 pub fn photo_class_is_junk(c: PhotoClass) -> bool {
     matches!(c, PhotoClass::Junk | PhotoClass::Graphic)
+}
+
+/// A fixture folder under the target dir, built once and reused by later runs and test binaries (a file lock
+/// keeps concurrent builders apart; a `<name>.complete` file beside it marks a finished build). Nothing is left in `/tmp`.
+fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(root.parent().expect("parent")).expect("fixture base");
+    let lock = std::fs::File::create(root.with_extension("lock")).expect("fixture lock");
+    lock.lock().expect("lock the fixture");
+    let done = root.with_extension("complete");
+    if !done.is_file() {
+        let _ = std::fs::remove_dir_all(&root);
+        build(&root);
+        std::fs::write(&done, b"ok").expect("completion marker");
+    }
+    root
 }
