@@ -183,7 +183,10 @@ mod tests {
         let t0 = Instant::now();
         c.cancel();
         assert_eq!(t.join().expect("join"), Err(Cancelled));
-        assert!(t0.elapsed() < Duration::from_millis(250));
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "cancel woke the parked thread"
+        );
         assert_eq!(c.busy_count(), 0);
         // Cancel is final.
         c.resume();

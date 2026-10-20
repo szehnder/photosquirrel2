@@ -90,7 +90,8 @@ mod tests {
             1
         });
         assert_eq!(slow, None);
-        assert!(started.elapsed() < Duration::from_millis(300));
+        // Gave up at the deadline instead of waiting for the 400 ms job.
+        assert!(started.elapsed() < Duration::from_millis(390));
         assert_eq!(StartupGrace::within(started, || 1), None, "past deadline");
     }
 }

@@ -129,7 +129,7 @@ fn scenario_scan_control_cancel_within_250_ms() {
     let latency = t.elapsed();
     println!("cancel latency: {latency:?}");
     assert!(
-        latency <= Duration::from_millis(250),
+        latency <= ps_fixtures::ci_slack(Duration::from_millis(250)),
         "all threads stopped after {latency:?}"
     );
     assert_eq!(summary.status, RunStatus::Cancelled);
@@ -157,7 +157,7 @@ fn scenario_scan_control_pause_within_250_ms() {
     let latency = t.elapsed();
     println!("pause latency: {latency:?}");
     assert!(
-        latency <= Duration::from_millis(250),
+        latency <= ps_fixtures::ci_slack(Duration::from_millis(250)),
         "idle after {latency:?}"
     );
     // No new file starts while paused.

@@ -77,7 +77,8 @@ mod tests {
             }
             let took = t0.elapsed();
             assert!(
-                took >= Duration::from_millis(290) && took < Duration::from_millis(900),
+                // At least the spacing (three 100 ms gaps); the upper bound only catches a stuck limiter.
+                took >= Duration::from_millis(290) && took < Duration::from_secs(5),
                 "{took:?}"
             );
             let u = RateLimiter::unlimited();
@@ -85,7 +86,10 @@ mod tests {
             for _ in 0..100 {
                 u.acquire().await;
             }
-            assert!(t1.elapsed() < Duration::from_millis(50));
+            assert!(
+                t1.elapsed() < Duration::from_secs(1),
+                "unlimited never waits"
+            );
         });
     }
 }

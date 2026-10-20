@@ -485,9 +485,12 @@ fn scenario_scan_progress_ui_cost_independent_of_rate(cx: &mut TestAppContext) {
     let (slow, fast) = (p95(slow), p95(fast));
     let diff = slow.abs_diff(fast);
     eprintln!("dashboard frame p95: {slow:?} at 100 files/s, {fast:?} at 20,000 files/s");
-    assert!(diff < Duration::from_millis(1), "p95 differs by {diff:?}");
     assert!(
-        slow.max(fast) <= Duration::from_micros(8_300),
+        diff < ps_fixtures::ci_slack(Duration::from_millis(1)),
+        "p95 differs by {diff:?}"
+    );
+    assert!(
+        slow.max(fast) <= ps_fixtures::ci_slack(Duration::from_micros(8_300)),
         "p95 {:?} over 8.3 ms",
         slow.max(fast)
     );

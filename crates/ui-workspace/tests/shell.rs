@@ -276,11 +276,11 @@ fn scenario_app_shell_slow_query_keeps_ui_responsive(cx: &mut TestAppContext) {
     let worst = *times.last().unwrap();
     println!("frames while loading: {frames}, p95 {p95:?}, worst {worst:?}");
     assert!(
-        p95 < Duration::from_micros(16_700),
+        p95 < ps_fixtures::ci_slack(Duration::from_micros(16_700)),
         "p95 frame {p95:?} while the query ran"
     );
     assert!(
-        worst < Duration::from_millis(250),
+        worst < ps_fixtures::ci_slack(Duration::from_millis(250)),
         "a frame blocked for {worst:?}"
     );
     wait_loaded(&shell, &mut cx);

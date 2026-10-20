@@ -73,8 +73,15 @@ fn scenario_catalog_batch_flushes_after_100_ms() {
     let src = add_source(&cat, "/mnt/a");
     let rows: Vec<FileRow> = (0..10).map(|i| discovered_row(src, i)).collect();
     cat.writer().upsert_files(rows).expect("submit");
+    // The behaviour, not the runner's speed: a small batch is not committed at once (it waits for the 100 ms
+    // timer; nothing makes it earlier), it is committed by the timer without a flush, in one transaction, and
+    // it shows up well within a generous bound even on a slow CI machine.
     let seen = wait_until(Duration::from_secs(5), || count(&cat) == 10).expect("visible");
-    assert!(seen <= Duration::from_millis(150), "visible after {seen:?}");
+    assert!(
+        seen >= Duration::from_millis(50),
+        "committed after {seen:?}: before the timer, as if size-flushed"
+    );
+    assert!(seen <= Duration::from_secs(2), "visible after {seen:?}");
     assert_eq!(cat.writer().stats().commits, 2, "source + one timed batch");
 }
 

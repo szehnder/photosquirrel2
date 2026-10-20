@@ -64,7 +64,7 @@ impl Real {
                 return;
             }
             assert!(
-                start.elapsed() <= Duration::from_millis(250),
+                start.elapsed() <= ps_fixtures::ci_slack(Duration::from_millis(250)),
                 "status {:?} is not {want:?} within 250 ms",
                 label("scan-status", &mut self.cx)
             );

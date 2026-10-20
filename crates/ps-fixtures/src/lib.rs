@@ -27,7 +27,7 @@ pub mod media;
 pub use eval::{ResultGroup, Score};
 pub use generate::{GenerateError, generate, generate_with};
 pub use preset::{Params, Preset};
-pub use shared::{shared_corpus, shared_dir};
+pub use shared::{ci_slack, shared_corpus, shared_dir};
 pub use truth::{
     BurstVariant, Category, MustNotMerge, MustNotMergeKind, TRUTH_FILE, Truth, TruthFile,
 };

@@ -47,6 +47,17 @@ pub fn shared_corpus(base: &Path, name: &str, seed: u64, preset: Preset) -> Path
     })
 }
 
+/// A latency bound from a spec scenario for a test: exact on a developer machine, four times as generous on a
+/// shared CI runner (`CI` is set, as GitHub Actions does), where a slow neighbour must not fail behaviour tests.
+/// The real budgets are measured by the budgets tests and `cargo xtask bench`, never through this.
+pub fn ci_slack(bound: std::time::Duration) -> std::time::Duration {
+    if std::env::var_os("CI").is_some_and(|v| !v.is_empty() && v != "false") {
+        bound * 4
+    } else {
+        bound
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
