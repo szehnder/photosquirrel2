@@ -287,7 +287,7 @@ fn scenario_llm_providers_hosted_provider_needs_consent() {
     let ai = Ai {
         provider: ProviderId::Gemini,
         base_url: ProviderId::Gemini.default_base_url().into(),
-        hosted_consent: false,
+        consent: None,
         ..Ai::default()
     };
     let mut cfg = ProviderConfig::from_settings(&ai, Some(ps_llm::ApiKey::new("test-gemini-key")));
@@ -309,9 +309,77 @@ fn scenario_llm_providers_hosted_provider_needs_consent() {
     assert_eq!(q.state(), QueueState::Paused);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(server.request_count(), 0, "no request sent");
-    assert!(ps_llm::consent::check(&cfg, false).is_err());
-    assert!(ps_llm::consent::check(&cfg, true).is_ok());
-    assert!(ps_llm::consent::check(&ProviderConfig::default_local(), false).is_ok());
+    let gemini = ProviderId::Gemini;
+    assert!(ps_llm::consent::check(&cfg, gemini, None).is_err());
+    let given = ps_llm::consent::consent_for(gemini, &cfg.base_url);
+    assert!(ps_llm::consent::check(&cfg, gemini, given.as_ref()).is_ok());
+    assert!(
+        ps_llm::consent::check(&ProviderConfig::default_local(), ProviderId::LmStudio, None)
+            .is_ok()
+    );
+}
+
+/// ADR-0047: consent names one provider at one host. Consent given for Gemini at its API host does not cover
+/// another provider, nor the same provider at another server address.
+#[test]
+fn scenario_llm_providers_consent_covers_one_host() {
+    use ps_llm::consent::{check, consent_for, destination_host};
+    let ai = Ai {
+        provider: ProviderId::Gemini,
+        base_url: ProviderId::Gemini.default_base_url().into(),
+        ..Ai::default()
+    };
+    let cfg = ProviderConfig::from_settings(&ai, None);
+    let given = consent_for(ProviderId::Gemini, &ai.base_url).expect("consent");
+    assert_eq!(given.host, "generativelanguage.googleapis.com");
+    assert!(check(&cfg, ProviderId::Gemini, Some(&given)).is_ok());
+    assert!(check(&cfg, ProviderId::OpenAi, Some(&given)).is_err());
+    let moved = Ai {
+        base_url: "https://gemini-proxy.example.com/v1beta".into(),
+        ..ai.clone()
+    };
+    let cfg = ProviderConfig::from_settings(&moved, None);
+    let err = check(&cfg, ProviderId::Gemini, Some(&given)).expect_err("another host");
+    assert_eq!(err.host, "gemini-proxy.example.com");
+    assert!(
+        err.message.contains("gemini-proxy.example.com"),
+        "{}",
+        err.message
+    );
+    assert_eq!(
+        destination_host("https://gemini-proxy.example.com/v1beta").as_deref(),
+        Some("gemini-proxy.example.com")
+    );
+}
+
+/// A local server answering with a redirect cannot send a request (and its preview) to another host: the
+/// client never follows redirects.
+#[test]
+fn scenario_llm_providers_redirects_are_never_followed() {
+    let elsewhere = MockServer::with_handler(|_| ok_reply());
+    let target = format!("{}/v1/chat/completions", elsewhere.url());
+    let local = MockServer::with_handler(move |_| {
+        ps_llm::testing::Reply::json(307, &serde_json::json!({})).with_header("location", &target)
+    });
+    let ai = Ai {
+        base_url: format!("{}/v1", local.url()),
+        model: "m".into(),
+        ..Ai::default()
+    };
+    let cfg = ProviderConfig::from_settings(&ai, None);
+    let client = ps_llm::http::HttpClient::new(&cfg).without_retries();
+    let r = LlmRuntime::shared().block_on(client.post_json(
+        &cfg.url("/chat/completions"),
+        &[],
+        &serde_json::json!({"model": "m"}),
+    ));
+    assert!(r.is_err(), "a 307 is an error, not followed: {r:?}");
+    assert_eq!(local.request_count(), 1);
+    assert_eq!(
+        elsewhere.request_count(),
+        0,
+        "nothing reached the other host"
+    );
 }
 
 #[test]

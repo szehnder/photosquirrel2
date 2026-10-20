@@ -103,7 +103,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             base_url: settings.ai.base_url.clone(),
             model: settings.ai.model.clone(),
             hosted: settings.ai.provider.is_hosted(),
-            hosted_consent: settings.ai.hosted_consent,
+            hosted_consent: ps_service::ai::consent_covers(&settings.ai),
             requests_per_minute: settings.ai.effective_requests_per_minute(),
         },
         network_used: false,

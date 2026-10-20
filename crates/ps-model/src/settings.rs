@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::ClassifierSettings;
 
 /// Current `settings_version`. Bump with a migration in `ps-service::settings` when a field changes meaning.
-pub const SETTINGS_VERSION: u32 = 1;
+/// Version 2 (ADR-0047): hosted consent is `ai.consent`, bound to a provider and a host; version 1's
+/// `ai.hosted_consent = true` is ignored (consent must be given again).
+pub const SETTINGS_VERSION: u32 = 2;
 
 /// Everything the user can set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -297,8 +299,6 @@ pub struct Ai {
     pub model: String,
     /// Start the AI queue automatically after a scan. Off: the queue stays stopped until started.
     pub auto_start_queue: bool,
-    /// The user agreed to send previews to a hosted provider (ADR-0021). Off by default.
-    pub hosted_consent: bool,
     pub max_concurrent_requests: u32,
     /// Requests per minute; `None` means the provider default ([`Ai::effective_requests_per_minute`]:
     /// unlimited for local providers, [`HOSTED_DEFAULT_REQUESTS_PER_MINUTE`] for hosted ones).
@@ -308,6 +308,17 @@ pub struct Ai {
     pub request_timeout_s: Option<u32>,
     /// Keychain account name per provider (the key itself lives in the OS keychain, ADR-0031).
     pub key_accounts: Vec<KeyAccount>,
+    /// The user's consent to upload previews, given to one provider at one host (ADR-0021, ADR-0047). It covers
+    /// only that destination: another provider or server address needs consent again. `None` by default.
+    pub consent: Option<HostedConsent>,
+}
+
+/// Consent to send previews to one hosted destination: the provider and the normalized host (`host[:port]`,
+/// lower case, the port only when not the scheme's default) it was given for (ADR-0047).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedConsent {
+    pub provider: ProviderId,
+    pub host: String,
 }
 
 /// Default request timeouts in seconds (mirrors `ps_llm`'s defaults).
@@ -353,11 +364,11 @@ impl Default for Ai {
             base_url: ProviderId::LmStudio.default_base_url().to_owned(),
             model: String::new(),
             auto_start_queue: false,
-            hosted_consent: false,
             max_concurrent_requests: 2,
             requests_per_minute: None,
             request_timeout_s: None,
             key_accounts: Vec::new(),
+            consent: None,
         }
     }
 }
@@ -544,7 +555,7 @@ mod tests {
         assert_eq!(s.appearance.theme, ThemeSetting::Dark);
         assert_eq!(s.ai.provider, ProviderId::LmStudio);
         assert_eq!(s.ai.base_url, "http://localhost:1234/v1");
-        assert!(!s.ai.hosted_consent && !s.ai.auto_start_queue);
+        assert!(s.ai.consent.is_none() && !s.ai.auto_start_queue);
         let c = &s.scanning.classifier;
         assert_eq!((c.min_side_px, c.min_pixels), (200, 120_000));
         assert_eq!(c.min_video_duration_ms, 2_000);

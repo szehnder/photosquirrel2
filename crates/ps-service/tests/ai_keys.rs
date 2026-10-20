@@ -56,7 +56,7 @@ fn anthropic_settings(server: &MockServer) -> Settings {
     s.ai.provider = ProviderId::Anthropic;
     s.ai.base_url = format!("{}/v1", server.url());
     s.ai.model = "claude-haiku-4-5".into();
-    s.ai.hosted_consent = true;
+    s.ai.consent = ps_service::ai::consent_for(&s.ai);
     s
 }
 

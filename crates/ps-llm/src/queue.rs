@@ -100,7 +100,10 @@ pub struct QueueConfig {
     pub provider_name: String,
     /// Previews would leave the machine.
     pub hosted: bool,
+    /// The user's consent covers this provider and host (ADR-0047).
     pub hosted_consent: bool,
+    /// Where previews go (`host[:port]`), for the consent prompt.
+    pub destination: String,
 }
 
 /// Default requests per minute for hosted providers (spec "Concurrency and rate limits").
@@ -114,6 +117,7 @@ impl QueueConfig {
             provider_name: provider_name.to_owned(),
             hosted: false,
             hosted_consent: false,
+            destination: "localhost".to_owned(),
         }
     }
 
@@ -124,8 +128,10 @@ impl QueueConfig {
             concurrency: ai.max_concurrent_requests.clamp(1, 64) as usize,
             requests_per_minute: ai.effective_requests_per_minute().filter(|n| *n > 0),
             provider_name: provider.name.clone(),
+            destination: crate::consent::destination_host(&provider.base_url)
+                .unwrap_or_else(|| provider.base_url.clone()),
             hosted,
-            hosted_consent: ai.hosted_consent,
+            hosted_consent: crate::consent::covers(provider, ai.provider, ai.consent.as_ref()),
         }
     }
 }
@@ -242,6 +248,7 @@ impl AiQueue {
         if cfg.hosted && !cfg.hosted_consent {
             return Err(StartError::ConsentRequired(consent_prompt(
                 &cfg.provider_name,
+                &cfg.destination,
             )));
         }
         self.inner.finished.store(false, Ordering::SeqCst);

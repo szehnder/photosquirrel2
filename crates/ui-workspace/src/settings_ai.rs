@@ -4,7 +4,8 @@
 //! that names the provider and says previews will be uploaded (ADR-0021), and "Test connection" (which lists
 //! models and never sends a photo).
 //!
-//! Choosing another provider withdraws consent: consent is given to one named provider.
+//! Consent is given to one named provider at one host (ADR-0047): choosing another provider or editing the server
+//! address withdraws it, and the consent card names the destination host.
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -85,22 +86,34 @@ pub fn preset_index(s: &Settings) -> usize {
         .unwrap_or(0)
 }
 
-/// Apply a preset: provider and address; switching provider withdraws hosted consent and clears the model.
+/// Apply a preset: provider and address; switching provider clears the model, and any change of provider or
+/// address withdraws hosted consent (ADR-0047).
 pub fn apply_preset(s: &mut Settings, ix: usize) {
     let p = PRESETS[ix.min(PRESETS.len() - 1)];
     if s.ai.provider != p.provider {
-        s.ai.hosted_consent = false;
         s.ai.model.clear();
+    }
+    if s.ai.provider != p.provider || s.ai.base_url != p.base_url {
+        s.ai.consent = None;
     }
     s.ai.provider = p.provider;
     s.ai.base_url = p.base_url.to_owned();
 }
 
-/// The consent wording (ADR-0021): names the provider and says images will be uploaded.
-pub fn consent_text(provider: ProviderId) -> String {
+/// Set the server address; consent given for another host is withdrawn (ADR-0047).
+pub fn set_base_url(s: &mut Settings, url: String) {
+    s.ai.base_url = url;
+    if !ps_service::ai::consent_covers(&s.ai) {
+        s.ai.consent = None;
+    }
+}
+
+/// The consent wording (ADR-0021, ADR-0047): names the provider and the host, and says images will be uploaded.
+pub fn consent_text(provider: ProviderId, host: &str) -> String {
     format!(
-        "Upload previews of your photos to {}. Each photo you queue is sent as a 1024 px JPEG preview to be \
-         described; originals never leave this computer. Nothing is sent until you start the AI queue.",
+        "Upload previews of your photos to {} at {host}. Each photo you queue is sent there as a 1024 px JPEG \
+         preview to be described; originals never leave this computer. Nothing is sent until you start the AI \
+         queue.",
         provider.label()
     )
 }
@@ -143,7 +156,7 @@ impl AiSettingsPanel {
                 if matches!(e, InputEvent::Change) {
                     let text = state.read(cx).value().trim().to_owned();
                     if text != AppSettings::get(cx).ai.base_url {
-                        if let Err(errs) = AppSettings::update(cx, |s| s.ai.base_url = text) {
+                        if let Err(errs) = AppSettings::update(cx, |s| set_base_url(s, text)) {
                             this.message = errs.first().map(|e| (false, e.message.clone()));
                         } else {
                             this.message = None;
@@ -217,14 +230,14 @@ impl AiSettingsPanel {
             self.confirming_consent = true;
         } else {
             self.confirming_consent = false;
-            let _ = AppSettings::update(cx, |s| s.ai.hosted_consent = false);
+            let _ = AppSettings::update(cx, |s| s.ai.consent = None);
         }
         cx.notify();
     }
 
     pub fn confirm_consent(&mut self, cx: &mut Context<'_, Self>) {
         self.confirming_consent = false;
-        let _ = AppSettings::update(cx, |s| s.ai.hosted_consent = true);
+        let _ = AppSettings::update(cx, |s| s.ai.consent = ps_service::ai::consent_for(&s.ai));
         cx.notify();
     }
 
@@ -533,8 +546,10 @@ impl Render for AiSettingsPanel {
             )
         });
 
-        let consent = provider.is_hosted().then(|| {
-            let on = s.ai.hosted_consent;
+        let hosted = ps_service::ai::is_hosted(&s.ai);
+        let host = ps_service::ai::destination_host(&s.ai).unwrap_or_else(|| s.ai.base_url.clone());
+        let consent = hosted.then(|| {
+            let on = ps_service::ai::consent_covers(&s.ai);
             let confirming = self.confirming_consent;
             v_flex()
                 .id("setting-ai.hosted_consent")
@@ -573,7 +588,7 @@ impl Render for AiSettingsPanel {
                                         .test_support()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .child(format!(
-                                            "Send photo previews to {}",
+                                            "Send photo previews to {} at {host}",
                                             provider.label()
                                         )),
                                 )
@@ -583,7 +598,7 @@ impl Render for AiSettingsPanel {
                                         .test_support()
                                         .text_size(Tokens::text_sm())
                                         .text_color(colors.text_muted)
-                                        .child(consent_text(provider)),
+                                        .child(consent_text(provider, &host)),
                                 ),
                         )
                         .child(
@@ -632,7 +647,8 @@ impl Render for AiSettingsPanel {
                             .text_size(Tokens::text_xs())
                             .text_color(colors.warning)
                             .child(format!(
-                                "Allowed for {} only. Choosing another provider withdraws this.",
+                                "Allowed for {} at {host} only. Another provider or server address needs \
+                                 your consent again.",
                                 provider.label()
                             )),
                     )
@@ -705,7 +721,7 @@ impl Render for AiSettingsPanel {
             .w_full()
             .child(row(
                 "Provider",
-                if provider.is_hosted() {
+                if hosted {
                     "Hosted: previews are uploaded to the provider, only with your consent below."
                 } else {
                     "Local: every photo stays on this computer."

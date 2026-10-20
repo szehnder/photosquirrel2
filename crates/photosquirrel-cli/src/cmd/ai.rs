@@ -40,7 +40,7 @@ pub fn providers(ctx: &Ctx) -> Result<()> {
         base_url: s.ai.base_url.clone(),
         model: s.ai.model.clone(),
         hosted: s.ai.provider.is_hosted(),
-        consent: s.ai.hosted_consent,
+        consent: ps_service::ai::consent_covers(&s.ai),
         requests_per_minute: s.ai.effective_requests_per_minute(),
         presets: ps_llm::PRESETS
             .iter()

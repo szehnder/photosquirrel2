@@ -33,6 +33,9 @@ impl HttpClient {
             .connect_timeout(cfg.timeouts.connect)
             .timeout(cfg.timeouts.request)
             .user_agent(concat!("PhotoSquirrel/", env!("CARGO_PKG_VERSION")))
+            // Never follow redirects: consent covers one host (ADR-0047), and a local server must not be able
+            // to send previews elsewhere by answering 3xx.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {

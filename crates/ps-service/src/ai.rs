@@ -42,9 +42,43 @@ pub fn provider_config(
     (cfg, from)
 }
 
-/// `Ok` when previews may be sent: a local provider, or a hosted one the user consented to by name.
+/// `Ok` when previews may be sent: a local provider, or a hosted one the user consented to for this provider
+/// and destination host (ADR-0047).
 pub fn check_consent(settings: &Settings, cfg: &ProviderConfig) -> Result<(), ConsentRequired> {
-    ps_llm::consent::check(cfg, settings.ai.hosted_consent)
+    ps_llm::consent::check(cfg, settings.ai.provider, settings.ai.consent.as_ref())
+}
+
+/// Previews would leave this machine with these settings (a hosted provider, or a non-local address).
+pub fn is_hosted(ai: &Ai) -> bool {
+    ProviderConfig::from_settings(ai, None).is_hosted()
+}
+
+/// Where previews would go (`host[:port]`), for the consent card.
+pub fn destination_host(ai: &Ai) -> Option<String> {
+    ps_llm::consent::destination_host(&ProviderConfig::from_settings(ai, None).base_url)
+}
+
+/// The stored consent covers the configured provider and host.
+pub fn consent_covers(ai: &Ai) -> bool {
+    ps_llm::consent::covers(
+        &ProviderConfig::from_settings(ai, None),
+        ai.provider,
+        ai.consent.as_ref(),
+    )
+}
+
+/// The consent to store when the user agrees for the configured provider and host.
+pub fn consent_for(ai: &Ai) -> Option<ps_model::settings::HostedConsent> {
+    ps_llm::consent::consent_for(
+        ai.provider,
+        &ProviderConfig::from_settings(ai, None).base_url,
+    )
+}
+
+/// What the AI queue sends to: provider, normalized destination and whether consent covers it. The app pauses
+/// a running queue whenever this changes (ADR-0047).
+pub fn destination_fingerprint(ai: &Ai) -> (ProviderId, Option<String>, bool) {
+    (ai.provider, destination_host(ai), consent_covers(ai))
 }
 
 /// Run "Test connection" for the configured provider, blocking the calling (non-UI) thread.

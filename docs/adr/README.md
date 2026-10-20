@@ -50,3 +50,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0044](0044-export-replan-trusts-the-ledger.md) | An export re-plan trusts the ledger: size and modification time, no re-hash |
 | [0045](0045-sidecars-in-the-export-ledger.md) | XMP sidecars have export ledger rows |
 | [0046](0046-library-copies-changed-by-other-apps.md) | A library copy changed by another app stays the export of its photo |
+| [0047](0047-hosted-consent-bound-to-provider-and-host.md) | Hosted AI consent is bound to a provider and a host; no redirects |

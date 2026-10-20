@@ -70,11 +70,19 @@ API keys SHALL be stored in the operating system's credential store, with `OPENA
 - **THEN** requests use the environment variable's key
 
 ### Requirement: Hosted provider consent
-Selecting a non-local provider SHALL require an explicit consent that names the provider and states that previews will be uploaded; without consent the AI queue MUST refuse to start.
+Selecting a non-local provider SHALL require an explicit consent that names the provider and the destination host and states that previews will be uploaded; without consent the AI queue MUST refuse to start. Consent SHALL be stored for that provider and host only: choosing another provider or editing the server address SHALL withdraw it. Requests MUST NOT follow HTTP redirects.
 
 #### Scenario: Hosted provider needs consent
 - **WHEN** the user selects Gemini without giving consent and starts the AI queue
 - **THEN** the queue does not start, no request is sent and the consent prompt names Gemini
+
+#### Scenario: Consent covers one host
+- **WHEN** the user consented to Gemini at its API host and the server address is then changed to another host
+- **THEN** the consent no longer applies, the queue refuses to start and the prompt names the new host
+
+#### Scenario: Redirects are never followed
+- **WHEN** a local provider answers a request with a redirect to another server
+- **THEN** the request fails and nothing is sent to the other server
 
 ### Requirement: Rate limits respected
 On a rate-limit response the provider layer SHALL wait for the provider's retry-after time (or exponential backoff from 2 s when absent) before retrying.

@@ -33,7 +33,7 @@ fn scenario_settings_settings_persist_across_restart() {
     assert_eq!(cli.path(), app.path());
     // Human-readable and versioned.
     let text = std::fs::read_to_string(app.path()).unwrap();
-    assert!(text.contains("settings_version = 1"), "{text}");
+    assert!(text.contains("settings_version = 2"), "{text}");
     assert!(text.contains("theme = \"light\""), "{text}");
 }
 
@@ -45,7 +45,7 @@ fn scenario_settings_defaults_are_local() {
     assert!(loaded.recovered.is_none());
     assert_eq!(s.ai.provider, ProviderId::LmStudio);
     assert_eq!(s.ai.base_url, "http://localhost:1234/v1");
-    assert!(!s.ai.hosted_consent, "hosted consent is off");
+    assert!(s.ai.consent.is_none(), "hosted consent is off");
     assert!(!s.ai.auto_start_queue, "the AI queue stays stopped");
     let c = &s.scanning.classifier;
     assert_eq!(c.min_side_px, 200);
@@ -70,7 +70,10 @@ fn scenario_settings_no_secrets_in_settings_file() {
         .update(|s| {
             s.ai.provider = ProviderId::Anthropic;
             s.ai.base_url = ProviderId::Anthropic.default_base_url().into();
-            s.ai.hosted_consent = true;
+            s.ai.consent = Some(ps_model::settings::HostedConsent {
+                provider: ProviderId::Anthropic,
+                host: "api.anthropic.com".into(),
+            });
             s.ai.key_accounts.push(ps_model::settings::KeyAccount {
                 provider: ProviderId::Anthropic,
                 account: account.clone(),
@@ -226,4 +229,42 @@ fn scenario_settings_threshold_change_reclassifies() {
 
     // Unchanged settings: nothing to do on the next rescan.
     assert!(reclassify_stale(&mut rows, &new, |_, _, _| unreachable!()).is_empty());
+}
+
+/// ADR-0047: consent is stored bound to a provider and a host and round-trips; a version-1 file's bare
+/// `hosted_consent = true` is not taken as consent for anything.
+#[test]
+fn consent_is_bound_to_provider_and_host_and_v1_consent_is_dropped() {
+    let dir = temp();
+    let store = SettingsStore::in_dir(dir.path());
+    std::fs::write(
+        store.path(),
+        "settings_version = 1\n[ai]\nprovider = \"gemini\"\n\
+         base_url = \"https://generativelanguage.googleapis.com/v1beta\"\nhosted_consent = true\n",
+    )
+    .unwrap();
+    let loaded = store.load();
+    assert!(loaded.recovered.is_none(), "an old file is not corrupt");
+    assert_eq!(loaded.settings.ai.provider, ProviderId::Gemini);
+    assert!(
+        loaded.settings.ai.consent.is_none(),
+        "v1 consent is not carried over"
+    );
+    assert!(!crate::ai::consent_covers(&loaded.settings.ai));
+    store
+        .update(|s| s.ai.consent = crate::ai::consent_for(&s.ai))
+        .unwrap();
+    let text = std::fs::read_to_string(store.path()).unwrap();
+    assert!(
+        text.contains("host = \"generativelanguage.googleapis.com\""),
+        "{text}"
+    );
+    let again = store.load().settings;
+    assert!(crate::ai::consent_covers(&again.ai));
+    let mut moved = again.ai.clone();
+    moved.base_url = "https://other.example.com/v1beta".into();
+    assert!(
+        !crate::ai::consent_covers(&moved),
+        "another host needs consent"
+    );
 }

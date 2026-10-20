@@ -185,8 +185,16 @@ impl SettingsStore {
     }
 }
 
-/// Bring older files up to the current version (none yet: version 1 is the first).
+/// Bring older files up to the current version. Version 1 kept hosted consent as a bare `hosted_consent`
+/// flag, which is no longer read (ADR-0047): consent is asked again, for a provider and a host.
 fn migrate(mut settings: Settings) -> Settings {
+    if settings.settings_version < 2 {
+        log::info!(
+            "settings version {} -> {SETTINGS_VERSION}: hosted AI consent is now given per provider and host; \
+             any earlier consent must be given again",
+            settings.settings_version
+        );
+    }
     if settings.settings_version > SETTINGS_VERSION {
         log::warn!(
             "settings were written by a newer PhotoSquirrel (version {}); unknown keys are ignored",

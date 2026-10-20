@@ -57,10 +57,14 @@ fn hosted_provider_needs_named_explicit_consent(cx: &mut TestAppContext) {
     click("ai-provider-4", &mut cx); // Anthropic
     let ai = cx.update(|_, cx| AppSettings::get(cx).ai.clone());
     assert_eq!(ai.provider, ProviderId::Anthropic);
-    assert!(!ai.hosted_consent);
+    assert!(ai.consent.is_none());
     assert!(exists("setting-ai.hosted_consent", &mut cx));
-    assert!(consent_text(ProviderId::Anthropic).contains("Anthropic"));
-    assert!(consent_text(ProviderId::Anthropic).contains("Upload previews"));
+    let text = consent_text(ProviderId::Anthropic, "api.anthropic.com");
+    assert!(
+        text.contains("Anthropic") && text.contains("api.anthropic.com"),
+        "{text}"
+    );
+    assert!(text.contains("Upload previews"));
     assert_eq!(
         panel.read_with(&cx, |p, _| p.key_state().clone()),
         KeyState::Missing
@@ -69,15 +73,58 @@ fn hosted_provider_needs_named_explicit_consent(cx: &mut TestAppContext) {
     // Turning the switch on asks first; only the explicit confirmation consents.
     cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle_consent(true, cx)));
     assert!(panel.read_with(&cx, |p, _| p.is_confirming_consent()));
-    assert!(!cx.update(|_, cx| AppSettings::get(cx).ai.hosted_consent));
+    assert!(cx.update(|_, cx| AppSettings::get(cx).ai.consent.is_none()));
     click("ai-consent-allow", &mut cx);
-    assert!(cx.update(|_, cx| AppSettings::get(cx).ai.hosted_consent));
+    let consent = cx.update(|_, cx| AppSettings::get(cx).ai.consent.clone());
+    assert_eq!(
+        consent,
+        Some(ps_model::settings::HostedConsent {
+            provider: ProviderId::Anthropic,
+            host: "api.anthropic.com".into(),
+        }),
+        "consent names the provider and the host"
+    );
 
     // Consent is for one named provider: choosing another withdraws it.
     click("ai-provider-5", &mut cx); // Gemini
     let ai = cx.update(|_, cx| AppSettings::get(cx).ai.clone());
     assert_eq!(ai.provider, ProviderId::Gemini);
-    assert!(!ai.hosted_consent);
+    assert!(ai.consent.is_none());
+}
+
+/// ADR-0047: editing the server address withdraws consent given for the old host; the consent card names the
+/// new destination. A local provider pointed at a remote address needs consent too.
+#[gpui_kit::test]
+fn editing_the_server_address_withdraws_consent(cx: &mut TestAppContext) {
+    let (panel, mut cx) = panel(cx);
+    click("ai-provider-5", &mut cx); // Gemini
+    cx.update(|_, cx| panel.update(cx, |p, cx| p.toggle_consent(true, cx)));
+    click("ai-consent-allow", &mut cx);
+    assert!(cx.update(|_, cx| ps_service::ai::consent_covers(&AppSettings::get(cx).ai)));
+    cx.update(|_, cx| {
+        AppSettings::update(cx, |s| {
+            ui_workspace::settings_ai::set_base_url(s, "https://proxy.example.com/v1beta".into())
+        })
+        .unwrap()
+    });
+    let ai = cx.update(|_, cx| AppSettings::get(cx).ai.clone());
+    assert!(ai.consent.is_none(), "another host: consent withdrawn");
+    assert_eq!(
+        ps_service::ai::destination_host(&ai).as_deref(),
+        Some("proxy.example.com")
+    );
+
+    // An OpenAI-compatible "local" provider at a remote address is hosted: the consent card appears.
+    click("ai-provider-1", &mut cx); // Ollama
+    assert!(!exists("setting-ai.hosted_consent", &mut cx));
+    cx.update(|_, cx| {
+        AppSettings::update(cx, |s| {
+            ui_workspace::settings_ai::set_base_url(s, "https://llm.example.net/v1".into())
+        })
+        .unwrap()
+    });
+    cx.run_until_parked();
+    assert!(exists("setting-ai.hosted_consent", &mut cx));
 }
 
 #[gpui_kit::test]
