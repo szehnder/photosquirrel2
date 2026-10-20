@@ -117,3 +117,111 @@ fn export_small_corpus_reexport_copies_nothing_and_every_drive_is_accounted_for(
         .expect("drill down");
     assert!(!pending.is_empty() && pending.iter().all(|p| p.path.starts_with(&corpus)));
 }
+
+/// ADR-0043: a keeper that lost its EXIF is filed by the capture date another copy in its group remembers, and
+/// the plan and the manifest say so.
+#[test]
+fn scenario_export_stripped_keeper_filed_by_group_capture_date() {
+    use ps_fixtures::media::{ExifSpec, encode_jpeg, exif_tiff, insert_exif, photo_rgb};
+
+    let tmp = tempfile::tempdir().expect("tmp");
+    let src = tmp.path().join("phone");
+    std::fs::create_dir_all(src.join("chat")).expect("mkdir");
+    let rgb = photo_rgb(1200, 900, 77);
+    let pixels = encode_jpeg(&rgb, 1200, 900, 90);
+    let spec = ExifSpec {
+        date_time_original: Some("2023:06:26 10:15:00".into()),
+        ..ExifSpec::canon_5d()
+    };
+    let original = insert_exif(&pixels, &exif_tiff(&spec));
+    // The same picture re-encoded by a messaging app: no EXIF at all, modified in 2024.
+    let stripped = encode_jpeg(&rgb, 1200, 900, 89);
+    let orig_path = src.join("IMG_0042.JPG");
+    let stripped_path = src.join("chat/photo_42.jpg");
+    std::fs::write(&orig_path, &original).expect("write");
+    std::fs::write(&stripped_path, &stripped).expect("write");
+    // 2024-03-01T12:00:00Z
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_709_294_400);
+    std::fs::File::options()
+        .write(true)
+        .open(&stripped_path)
+        .and_then(|f| f.set_modified(t))
+        .expect("mtime");
+
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).expect("open");
+    svc.add_source(&src).expect("add");
+    svc.start(&[]).expect("start");
+    svc.wait().expect("scan");
+
+    let groups = svc
+        .groups()
+        .list(ps_service::groups::GroupOrder::Id, 0, 10)
+        .expect("groups");
+    assert_eq!(groups.len(), 1, "the two copies form one group: {groups:?}");
+    let detail = svc.groups().show(groups[0].id).expect("show");
+    let member = |p: &Path| {
+        detail
+            .members
+            .iter()
+            .find(|m| {
+                m.path
+                    .ends_with(p.strip_prefix(&src).expect("under source"))
+            })
+            .unwrap_or_else(|| panic!("{} in {:?}", p.display(), detail.members))
+            .file
+    };
+    let (stripped_id, orig_id) = (member(&stripped_path), member(&orig_path));
+    // Keep the EXIF-less copy (as a user might, or as the automatic choice would for a larger stripped copy).
+    let detail = svc
+        .groups()
+        .set_keeper(detail.id, stripped_id)
+        .expect("set keeper");
+    assert!(
+        detail
+            .members
+            .iter()
+            .any(|m| m.file == stripped_id && m.keeper)
+    );
+
+    let library = tmp.path().join("Library");
+    let settings = profile_settings("apple").expect("profile");
+    let (plan, _) = svc.exports().plan(&library, settings).expect("plan");
+    let planned: Vec<_> = plan.files().collect();
+    assert_eq!(planned.len(), 1, "{planned:?}");
+    let f = planned[0];
+    assert_eq!(f.file, stripped_id);
+    assert_eq!(f.target.display(), "2023/2023-06-26/photo_42.jpg");
+    assert_eq!(f.date_origin.copy, Some(orig_id));
+    assert_eq!(
+        f.date_origin.source,
+        ps_export::DateSource::Embedded {
+            provenance: ps_model::DateProvenance::DateTimeOriginal
+        }
+    );
+    assert_eq!(f.date_origin.describe(), "DateTimeOriginal of another copy");
+    assert_eq!(plan.totals.dates.other_copy, 1);
+    assert!(
+        plan.totals
+            .dates
+            .note()
+            .is_some_and(|n| n.contains("1 filed by the date of another copy"))
+    );
+
+    let cancel = AtomicBool::new(false);
+    let (_, report) = svc
+        .exports()
+        .run(&library, settings, &ExecConfig::default(), &cancel)
+        .expect("export");
+    assert_eq!(report.copied, 1, "{report:?}");
+    assert!(library.join("2023/2023-06-26/photo_42.jpg").is_file());
+    let manifest =
+        std::fs::read_to_string(library.join(".photosquirrel/manifest.jsonl")).expect("manifest");
+    let rec: ps_export::manifest::ManifestRecord =
+        serde_json::from_str(manifest.lines().next().expect("a line")).expect("record");
+    assert_eq!(
+        rec.date_source.as_deref(),
+        Some("DateTimeOriginal of another copy")
+    );
+    let from = rec.date_from.expect("date_from");
+    assert!(from.ends_with("IMG_0042.JPG"), "{from}");
+}

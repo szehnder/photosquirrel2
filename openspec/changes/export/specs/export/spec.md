@@ -29,6 +29,13 @@ Files SHALL be placed at `<library>/<YYYY>/<YYYY-MM-DD>/<original file name>` us
 - **WHEN** a keeper without any capture date and modified on 2009-02-03 is exported
 - **THEN** it is copied to `<library>/Undated/2009/2009-02-03/`
 
+### Requirement: Filing date from the duplicate group
+A keeper without an embedded capture date of its own SHALL be filed by the best capture date its duplicate group knows: the keeper's own DateTimeOriginal, CreateDate or container date first, then another copy's embedded date, then a date in a copy's file name or XMP sidecar, and the file modification time (under `Undated/`) only when none of these exists. The plan, the CLI dry run and the manifest SHALL say where each file's date came from.
+
+#### Scenario: Stripped keeper filed by group capture date
+- **WHEN** the keeper of a duplicate group has no EXIF and was modified in 2024, and another copy in the group has DateTimeOriginal 2023-06-26
+- **THEN** the keeper is placed in `<library>/2023/2023-06-26/` and its plan entry and manifest record say the date is the DateTimeOriginal of another copy
+
 ### Requirement: Never overwrite
 An export MUST NOT overwrite or modify any existing file in the library; a different file at the target name SHALL get a ` (2)`, ` (3)`... suffix, and an identical file (same full hash) already there SHALL be recorded as exported without copying.
 

@@ -429,6 +429,7 @@ fn kill_input(dir: &Path) -> ExportInput {
                 format: format_of(n),
                 capture: day(2021, 9, 9),
                 undated: false,
+                date_origin: ps_export::DateOrigin::OWN_EXIF,
                 content_identifier: None,
             }])
         })

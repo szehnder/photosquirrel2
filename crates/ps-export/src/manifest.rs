@@ -37,6 +37,13 @@ pub struct ManifestRecord {
     pub adopted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidecar: Option<String>,
+    /// Where the date of the library folder came from ("DateTimeOriginal of another copy", ADR-0043).
+    /// Absent in records written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_source: Option<String>,
+    /// The other copy whose date was used, when it was not the file's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_from: Option<String>,
 }
 
 /// An open manifest for appending.

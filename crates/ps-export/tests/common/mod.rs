@@ -131,6 +131,11 @@ impl Sources {
             content: ps_hash::identity_from_buffer(data),
             format: format_of(rel_path),
             undated: capture.is_none(),
+            date_origin: if capture.is_none() {
+                ps_export::DateOrigin::MTIME
+            } else {
+                ps_export::DateOrigin::OWN_EXIF
+            },
             capture,
             content_identifier: None,
         }
@@ -255,6 +260,7 @@ pub fn corpus_model(c: &SmallCorpus, drives: &[&str], offline: &[&str]) -> Corpu
             format: Format::from_storage(&f.format),
             capture: None,
             undated: true,
+            date_origin: ps_export::DateOrigin::MTIME,
             content_identifier: None,
         }
     };

@@ -14,6 +14,7 @@
 - [x] 2.5 Library/source overlap check; verify `scenario_export_library_inside_source_refused`
 - [x] 2.6 Pairs (RAW+JPEG, Live Photo); verify `scenario_export_raw_jpeg_pair_keeps_stem` and `scenario_export_live_photo_pair_kept_together`
 - [x] 2.7 Offline sources; verify `scenario_export_offline_source_files_deferred`
+- [x] 2.8 Filing date from the duplicate group (ADR-0043): an EXIF-less keeper is filed by another copy's embedded date, then a file-name or XMP-sidecar date, mtime last; the plan, CLI dry run, Export view and manifest say where the date came from; verify `scenario_export_stripped_keeper_filed_by_group_capture_date` (ps-service, real scan of a stripped and an EXIF copy) and `ps_export::date` unit tests (file-name patterns, sidecar parsing, resolution order)
 
 ## 3. Copier
 

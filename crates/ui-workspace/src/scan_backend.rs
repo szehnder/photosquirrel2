@@ -67,6 +67,8 @@ pub struct PlanPreview {
     pub blocker: Option<String>,
     /// A few planned copies (source path -> library path) to show where things go.
     pub examples: Vec<(String, String)>,
+    /// Files not dated by their own metadata (ADR-0043): borrowed, file-name, sidecar and undated counts.
+    pub date_note: Option<String>,
 }
 
 /// How an export run ended.
@@ -349,6 +351,7 @@ impl ScanBackend for CatalogBackend {
             required_bytes: plan.required_bytes,
             blocker: plan.blocker().map(|b| b.to_string()),
             examples,
+            date_note: plan.totals.dates.note(),
         })
     }
 
@@ -808,6 +811,14 @@ impl ScanBackend for DemoBackend {
                     "2012/2012-12-24/IMG_0042 (2).JPG".into(),
                 ),
             ],
+            date_note: ps_service::export_progress::DateTotals {
+                own: 11_977,
+                other_copy: 318,
+                file_name: 41,
+                sidecar: 0,
+                undated: 82,
+            }
+            .note(),
         })
     }
 

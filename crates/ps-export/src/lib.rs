@@ -4,6 +4,7 @@
 //!
 //! - [`input`]: the pure export input (keeper sets with metadata, insights and every copy's source path). The
 //!   service builds it from the catalog and the dedup grouping; tests build it directly.
+//! - [`date`]: the filing date of a keeper (its own EXIF, else the best date its duplicate group knows).
 //! - [`plan`]: the dry run. Keepers minus the ledger, the dated layout ([`layout`]), collision suffixes,
 //!   adoption of identical files already in the library, RAW+JPEG and Live Photo bundles ([`pairs`]),
 //!   offline sources, the library/source overlap check and the free-space check. Planning only reads.
@@ -19,6 +20,7 @@
 //! ever removed are this exporter's own `.ps-partial` files inside the library.
 
 pub mod copy;
+pub mod date;
 pub mod disposition;
 pub mod execute;
 pub mod input;
@@ -33,6 +35,7 @@ pub mod rename;
 pub mod xmp;
 
 pub use copy::{CopyConfig, CopyError, CopyHooks, CopyOutcome, NoHooks};
+pub use date::{DateFacts, DateOrigin, DateSource, FilingDate};
 pub use disposition::{
     Badge, CompletionReport, CopyCheck, DispositionFacts, FileDisposition, FileFacts, FolderReport,
     GroupFacts, SourceReport, check_library, derive_dispositions, report,
@@ -42,7 +45,7 @@ pub use input::{CopyRef, ExportInput, ExportUnit, KeeperFile, SourceInfo};
 pub use ledger::{Ledger, MemoryLedger};
 pub use library::{Existing, FsLibrary, LibraryProbe, LibraryRoot, PARTIAL_SUFFIX};
 pub use plan::{
-    BundleKind, Plan, PlanBlocker, PlanError, PlanTotals, PlannedAction, PlannedBundle,
+    BundleKind, DateTotals, Plan, PlanBlocker, PlanError, PlanTotals, PlannedAction, PlannedBundle,
     PlannedFile, Unavailable, plan,
 };
 pub use profile::ProfileSettings;

@@ -485,6 +485,16 @@ impl ExportView {
                         })),
                 )
             })
+            .when_some(plan.date_note.clone(), |d, note| {
+                d.child(
+                    div()
+                        .id("export-date-note")
+                        .w_full()
+                        .text_size(Tokens::text_xs())
+                        .text_color(colors.text_muted)
+                        .child(note),
+                )
+            })
             .into_any_element()
     }
 }

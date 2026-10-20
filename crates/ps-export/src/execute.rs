@@ -165,6 +165,17 @@ impl Ctx<'_> {
         }
     }
 
+    /// Source path of a copy of `unit` (the copy a borrowed filing date came from).
+    fn copy_path(&self, unit: usize, file: FileId) -> Option<String> {
+        let c = self.input.units[unit]
+            .copies
+            .iter()
+            .find(|c| c.file == file)?;
+        self.input
+            .source_path(c.source, &c.rel_path)
+            .map(|p| path_string(&p))
+    }
+
     fn source_paths(&self, unit: usize) -> Vec<String> {
         let u = &self.input.units[unit];
         let mut v: Vec<String> = u
@@ -203,6 +214,8 @@ impl Ctx<'_> {
             at_ms: crate::now_ms(),
             adopted,
             sidecar: sidecar.map(|s| s.display().into_owned()),
+            date_source: Some(f.date_origin.describe()),
+            date_from: f.date_origin.copy.and_then(|c| self.copy_path(f.unit, c)),
         };
         let mut s = self.shared.lock();
         if let Err(e) = s.manifest.append(&rec) {

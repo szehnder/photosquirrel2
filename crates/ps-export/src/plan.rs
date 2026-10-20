@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use ps_model::{ContentId, FileId, LedgerEntry, LedgerState, RelPath, SourceId};
 use serde::Serialize;
 
+use crate::date::{DateOrigin, DateSource};
 use crate::input::{ExportInput, KeeperFile, SourceInfo};
 use crate::layout::{MAX_SUFFIX, candidate, collision_key, folder_of, join, split_name};
 use crate::library::{Existing, LibraryProbe, normalize, partial_of};
@@ -42,6 +43,8 @@ pub struct PlannedFile {
     pub mtime_ns: i64,
     pub content: ContentId,
     pub action: PlannedAction,
+    /// Where the date of the target folder came from (ADR-0043).
+    pub date_origin: DateOrigin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -96,6 +99,53 @@ pub struct PlanTotals {
     pub sidecars: u64,
     pub unavailable: u64,
     pub already_exported: u64,
+    /// Planned files by where their filing date came from.
+    pub dates: DateTotals,
+}
+
+/// Planned files by filing-date origin (ADR-0043).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct DateTotals {
+    /// The file's own embedded date.
+    pub own: u64,
+    /// The embedded date of another copy in the duplicate group (the keeper lost its EXIF).
+    pub other_copy: u64,
+    pub file_name: u64,
+    pub sidecar: u64,
+    /// Only the modification time: under `Undated/`.
+    pub undated: u64,
+}
+
+impl DateTotals {
+    pub fn add(&mut self, o: DateOrigin) {
+        let slot = match (o.source, o.copy) {
+            (DateSource::FileMtime, _) => &mut self.undated,
+            (DateSource::Embedded { .. }, None) => &mut self.own,
+            (DateSource::Embedded { .. }, Some(_)) => &mut self.other_copy,
+            (DateSource::FileName, _) => &mut self.file_name,
+            (DateSource::Sidecar, _) => &mut self.sidecar,
+        };
+        *slot += 1;
+    }
+
+    /// "Dates: 3 filed by another copy's date, 1 by its file name, 2 undated (file time only)", or `None` when
+    /// every planned file is dated by its own metadata.
+    pub fn note(&self) -> Option<String> {
+        let parts: Vec<String> = [
+            (
+                self.other_copy,
+                "filed by the date of another copy (no EXIF of their own)",
+            ),
+            (self.file_name, "dated by their file name"),
+            (self.sidecar, "dated by an XMP sidecar"),
+            (self.undated, "undated (file time only, under Undated/)"),
+        ]
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect();
+        (!parts.is_empty()).then(|| format!("Dates: {}.", parts.join(", ")))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -420,7 +470,9 @@ pub fn plan(
                 mtime_ns: f.mtime_ns,
                 content: f.content,
                 action,
+                date_origin: f.date_origin,
             });
+            out.totals.dates.add(f.date_origin);
         }
         if let Some(s) = &sidecar {
             p.reserved.insert(collision_key(s));

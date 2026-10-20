@@ -33,6 +33,9 @@ changes *what* is exported, only sidecar content). Keeper sets come from ADR-001
 - **Undated layout.** ADR-0022 says undated files go to `<library>/Undated/` "marked undated" without a
   sub-layout; we use `Undated/<YYYY>/<YYYY-MM-DD>/` by file mtime to avoid one huge folder. Recorded here;
   flagged in the report as an ADR clarification.
+- **Filing date (ADR-0043).** A keeper without its own embedded date is filed by the best date its duplicate group
+  knows (another copy's EXIF, then a file-name or sidecar date), and only then by mtime under `Undated/`; each
+  planned file and manifest record says where its date came from.
 - **Live Photo pairing.** ADR-0022 requires keeping HEIC+MOV pairs together but does not define detection: we pair
   a still and a video in the same folder with the same stem whose Apple ContentIdentifier (MakerNote / QuickTime
   `com.apple.quicktime.content.identifier`) matches, falling back to same stem + capture time within 2 s.

@@ -17,13 +17,13 @@ use serde::Serialize;
 
 use ps_catalog::Catalog;
 use ps_export::{
-    CompletionReport, CopyRef, DispositionFacts, ExecConfig, ExportInput, ExportReport, ExportUnit,
-    FileDisposition, FileFacts, FsLibrary, GroupFacts, KeeperFile, Ledger, NoHooks, Plan,
-    ProfileSettings, SourceInfo,
+    CompletionReport, CopyRef, DateFacts, DispositionFacts, ExecConfig, ExportInput, ExportReport,
+    ExportUnit, FileDisposition, FileFacts, FsLibrary, GroupFacts, KeeperFile, Ledger, NoHooks,
+    Plan, ProfileSettings, SourceInfo,
 };
 use ps_model::{
-    CaptureTime, Disposition, ExportProfile, FileId, GroupId, ImageInsight, LedgerEntry,
-    PhotoClass, SourceStatus, Stage, path_from_bytes, path_to_bytes,
+    CaptureDate, CaptureTime, DateProvenance, Disposition, ExportProfile, FileId, GroupId,
+    ImageInsight, LedgerEntry, PhotoClass, SourceStatus, Stage, path_from_bytes, path_to_bytes,
 };
 
 use crate::scan::ScanService;
@@ -111,9 +111,46 @@ impl ScanService {
     }
 }
 
-fn capture_of(meta: Option<&ps_model::Metadata>) -> Option<CaptureTime> {
+/// A file's own resolved capture date (with provenance); `undated` when it is only the file time.
+fn embedded_of(
+    rec: &ps_catalog::FileRecord,
+    meta: Option<&ps_model::Metadata>,
+) -> Option<CaptureDate> {
     let m = meta?;
-    m.capture_date.map(|d| d.value).or(m.fields.capture_time)
+    let d = m.capture_date.or_else(|| {
+        m.fields.capture_time.map(|value| CaptureDate {
+            value,
+            provenance: DateProvenance::DateTimeOriginal,
+            undated: false,
+        })
+    })?;
+    Some(CaptureDate {
+        undated: d.undated || rec.capture_undated,
+        ..d
+    })
+}
+
+/// Largest sidecar read when looking for a date.
+const SIDECAR_MAX_BYTES: u64 = 1 << 20;
+
+/// The date in an XMP sidecar next to `path` (`IMG_0042.JPG.xmp`, `IMG_0042.xmp`, either case). Opened
+/// read-only; a missing or unreadable sidecar is no date.
+fn sidecar_date(path: &Path) -> Option<CaptureTime> {
+    use std::io::Read as _;
+    let mut candidates = Vec::with_capacity(4);
+    for ext in ["xmp", "XMP"] {
+        let mut s = path.as_os_str().to_os_string();
+        s.push(".");
+        s.push(ext);
+        candidates.push(PathBuf::from(s));
+        candidates.push(path.with_extension(ext));
+    }
+    candidates.into_iter().find_map(|p| {
+        let f = std::fs::File::open(&p).ok()?;
+        let mut buf = Vec::new();
+        f.take(SIDECAR_MAX_BYTES).read_to_end(&mut buf).ok()?;
+        ps_export::date::xmp_sidecar_date(&buf)
+    })
 }
 
 impl<'a> Exports<'a> {
@@ -149,8 +186,33 @@ impl<'a> Exports<'a> {
         r.analyzed_files(None, |rec, meta| {
             recs.insert(rec.id, (rec, meta));
         })?;
-        let keeper_file = |id: FileId| -> Option<KeeperFile> {
+        let online_roots: HashMap<ps_model::SourceId, &Path> = sources
+            .iter()
+            .filter(|s| s.online)
+            .map(|s| (s.id, s.root.as_path()))
+            .collect();
+        let facts = |id: FileId| -> Option<DateFacts<'_>> {
             let (rec, meta) = recs.get(&id)?;
+            Some(DateFacts {
+                file: id,
+                name: rec.key.path.file_name(),
+                embedded: embedded_of(rec, meta.as_ref()),
+            })
+        };
+        let sidecar = |f: &DateFacts<'_>| -> Option<CaptureTime> {
+            let (rec, _) = recs.get(&f.file)?;
+            let root = online_roots.get(&rec.key.source)?;
+            sidecar_date(&rec.key.path.under(root))
+        };
+        // The filing date (ADR-0043): the file's own embedded date, else the best its group knows.
+        let keeper_file = |id: FileId, group: &[FileId]| -> Option<KeeperFile> {
+            let (rec, meta) = recs.get(&id)?;
+            let others: Vec<DateFacts<'_>> = group
+                .iter()
+                .filter(|f| **f != id)
+                .filter_map(|f| facts(*f))
+                .collect();
+            let date = ps_export::date::resolve(&facts(id)?, &others, sidecar);
             Some(KeeperFile {
                 file: rec.id,
                 source: rec.key.source,
@@ -159,8 +221,9 @@ impl<'a> Exports<'a> {
                 mtime_ns: rec.stat.mtime_ns,
                 content: rec.identity?,
                 format: rec.format,
-                capture: capture_of(meta.as_ref()),
-                undated: rec.capture_undated || capture_of(meta.as_ref()).is_none(),
+                capture: date.capture,
+                undated: date.undated,
+                date_origin: date.origin,
                 // Live Photo pairing (`ps_export::pairs`): the Apple ContentIdentifier from the metadata.
                 content_identifier: meta
                     .as_ref()
@@ -190,7 +253,10 @@ impl<'a> Exports<'a> {
             }
             let mut ids: Vec<FileId> = vec![g.keeper];
             ids.extend(set.iter().copied().filter(|f| *f != g.keeper));
-            let files: Vec<KeeperFile> = ids.iter().filter_map(|f| keeper_file(*f)).collect();
+            let files: Vec<KeeperFile> = ids
+                .iter()
+                .filter_map(|f| keeper_file(*f, &members))
+                .collect();
             if files.is_empty() {
                 continue;
             }
@@ -215,7 +281,9 @@ impl<'a> Exports<'a> {
             .collect();
         singles.sort();
         for id in singles {
-            let Some(k) = keeper_file(id) else { continue };
+            let Some(k) = keeper_file(id, &[]) else {
+                continue;
+            };
             units.push(ExportUnit {
                 group: None,
                 files: vec![k],

@@ -21,6 +21,9 @@ struct PlannedFileOut {
     target: String,
     size: u64,
     action: ps_export::PlannedAction,
+    /// Where the target folder's date came from (ADR-0043).
+    date_origin: ps_export::DateOrigin,
+    date_source: String,
 }
 
 #[derive(Serialize)]
@@ -51,6 +54,8 @@ fn plan_out(plan: &Plan) -> DryRunOut<'_> {
                 target: f.target.display().into_owned(),
                 size: f.size,
                 action: f.action,
+                date_origin: f.date_origin,
+                date_source: f.date_origin.describe(),
             })
             .collect(),
         unavailable: &plan.unavailable,
@@ -67,6 +72,11 @@ fn print_totals(o: &DryRunOut<'_>) {
         o.totals.sidecars,
         o.totals.collisions,
         o.totals.unavailable
+    );
+    let d = &o.totals.dates;
+    println!(
+        "dates: {} own, {} from another copy in the group, {} from file names, {} from sidecars, {} undated",
+        d.own, d.other_copy, d.file_name, d.sidecar, d.undated
     );
     if let Some(free) = o.free_bytes {
         println!(
@@ -88,7 +98,13 @@ pub fn dry_run(ctx: &Ctx, library: &Path, settings: ProfileSettings) -> Result<(
     let out = plan_out(&plan);
     emit(ctx.json, "export dry-run", &out, |o| {
         for f in o.files.iter().take(200) {
-            println!("{:?} {} -> {}", f.action, f.source_path.display(), f.target);
+            println!(
+                "{:?} {} -> {} (date: {})",
+                f.action,
+                f.source_path.display(),
+                f.target,
+                f.date_source
+            );
         }
         if o.files.len() > 200 {
             println!("... and {} more", o.files.len() - 200);

@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::date::DateOrigin;
 use ps_model::{
     CaptureTime, ContentId, FileId, Format, GroupId, ImageInsight, MediaKind, RelPath, SourceId,
 };
@@ -29,10 +30,13 @@ pub struct KeeperFile {
     /// Catalog identity (full or sampled, ADR-0011); the copy is verified against it.
     pub content: ContentId,
     pub format: Option<Format>,
-    /// Resolved capture date (DateTimeOriginal, else container date, else file time).
+    /// Filing date (ADR-0043, [`crate::date::resolve`]): the file's own embedded date, else the best date its
+    /// duplicate group knows, else a file-name or sidecar date, else the file time.
     pub capture: Option<CaptureTime>,
-    /// The capture date is only the file modification time (placed under `Undated/`).
+    /// The filing date is only the file modification time (placed under `Undated/`).
     pub undated: bool,
+    /// Where `capture` came from (shown in the plan, the CLI and the manifest).
+    pub date_origin: DateOrigin,
     /// Apple ContentIdentifier pairing a Live Photo still with its video.
     pub content_identifier: Option<String>,
 }
