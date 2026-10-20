@@ -1,6 +1,7 @@
 //! `<library>/.photosquirrel/manifest.jsonl` (ADR-0022): one JSON line per exported (or adopted) file, appended
 //! and synced after the file is in place. Never rewritten. A crash between the append and the ledger update
-//! can repeat a line on resume (the file is then adopted); readers key records by `library_path`.
+//! leaves the file to be adopted on resume; the adoption does not append a second line for the same path and
+//! bytes ([`Manifest::contains`]).
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -50,6 +51,9 @@ pub struct ManifestRecord {
 #[derive(Debug)]
 pub struct Manifest {
     file: File,
+    path: std::path::PathBuf,
+    /// `(library_path, full_hash)` of the lines already in the file, read on first use (adoptions only).
+    known: Option<std::collections::HashSet<(String, String)>>,
 }
 
 impl Manifest {
@@ -68,7 +72,26 @@ impl Manifest {
             ));
         }
         let file = OpenOptions::new().append(true).create(true).open(&path)?;
-        Ok(Manifest { file })
+        Ok(Manifest {
+            file,
+            path,
+            known: None,
+        })
+    }
+
+    /// The manifest already has a line for `library_path` with `full_hash` (hex). Reads the file once, on the
+    /// first call; an unreadable line is skipped.
+    pub fn contains(&mut self, library_path: &str, full_hash: &str) -> bool {
+        let path = &self.path;
+        let known = self.known.get_or_insert_with(|| {
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<ManifestRecord>(l).ok())
+                .map(|r| (r.library_path, r.full_hash))
+                .collect()
+        });
+        known.contains(&(library_path.to_owned(), full_hash.to_owned()))
     }
 
     /// Append one record and sync it.
@@ -76,7 +99,11 @@ impl Manifest {
         let mut line = serde_json::to_vec(rec).map_err(io::Error::other)?;
         line.push(b'\n');
         self.file.write_all(&line)?;
-        self.file.sync_data()
+        self.file.sync_data()?;
+        if let Some(k) = &mut self.known {
+            k.insert((rec.library_path.clone(), rec.full_hash.clone()));
+        }
+        Ok(())
     }
 }
 

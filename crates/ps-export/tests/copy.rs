@@ -822,3 +822,98 @@ fn scenario_export_library_copy_changed_by_another_app_is_not_copied_again() {
     assert_eq!(photos_under(&lib.join("2017")), 1, "no \" (2)\" copy");
     assert_eq!(fs::read(&out).expect("left alone"), edited);
 }
+
+/// A ledger whose `done` write for one path fails once: a crash between the manifest line and the `done` row.
+struct FailDoneOnce {
+    inner: MemoryLedger,
+    path: ps_model::RelPath,
+    failed: bool,
+}
+
+impl Ledger for FailDoneOnce {
+    fn entries(&self) -> io::Result<Vec<ps_model::LedgerEntry>> {
+        self.inner.entries()
+    }
+
+    fn record(&mut self, e: &ps_model::LedgerEntry) -> io::Result<()> {
+        if !self.failed && e.state == LedgerState::Done && e.library_rel_path == self.path {
+            self.failed = true;
+            return Err(io::Error::other("killed before the done row"));
+        }
+        self.inner.record(e)
+    }
+}
+
+/// The manifest line of a file is written, then the `done` row is lost: the resumed export adopts the file and
+/// does not append a second manifest line for it.
+#[test]
+fn resume_after_a_lost_done_row_adds_no_duplicate_manifest_line() {
+    let mut s = Sources::new("manifest-dup", 1);
+    let units: Vec<_> = (0..3)
+        .map(|i| {
+            unit(vec![s.add(
+                0,
+                &format!("IMG_{i}.JPG"),
+                &bytes(700 + i, 10_000),
+                0,
+                day(2014, 4, 4),
+            )])
+        })
+        .collect();
+    let input = s.input(units);
+    let lib = s.library();
+    let mut ledger = FailDoneOnce {
+        inner: MemoryLedger::new(),
+        path: rel("2014/2014-04-04/IMG_0.JPG"),
+        failed: false,
+    };
+    let r = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    assert!(matches!(r.stopped, Some(StopReason::Ledger(_))), "{r:?}");
+    let r = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    assert_eq!(r.adopted, 1, "the file already in place is adopted");
+    let manifest = ps_export::manifest::read_manifest(&lib).expect("manifest");
+    assert_eq!(manifest.len(), 3, "{manifest:#?}");
+    assert_eq!(
+        manifest
+            .iter()
+            .filter(|m| m.library_path == "2014/2014-04-04/IMG_0.JPG")
+            .count(),
+        1
+    );
+}
+
+/// An adoption is re-verified when it runs: a file that changed after planning is not recorded as exported.
+#[test]
+fn adoption_is_reverified_at_execute_time() {
+    let mut s = Sources::new("adopt-reverify", 1);
+    let data = bytes(800, 12_000);
+    let f = s.add(0, "IMG_A.JPG", &data, 0, day(2013, 3, 3));
+    let input = s.input(vec![unit(vec![f])]);
+    let lib = s.library();
+    let target = lib.join("2013/2013-03-03/IMG_A.JPG");
+    fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+    fs::write(&target, &data).expect("identical file already there");
+    let p = plan(&input, &[], &lib, &FsLibrary::new(&lib), google()).expect("plan");
+    assert_eq!(p.totals.adopted, 1);
+    let mut other = data.clone();
+    other[10] ^= 1;
+    fs::write(&target, &other).expect("changed after planning");
+    let mut ledger = MemoryLedger::new();
+    let r = execute(
+        &p,
+        &input,
+        &mut ledger,
+        &ExecConfig::default(),
+        &NoHooks,
+        &AtomicBool::new(false),
+    )
+    .expect("export");
+    assert_eq!(r.adopted, 0);
+    assert_eq!(r.failed.len(), 1);
+    assert!(
+        ledger.done().next().is_none(),
+        "nothing recorded as exported"
+    );
+    assert_eq!(fs::read(&target).expect("left alone"), other);
+}

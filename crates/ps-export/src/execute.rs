@@ -205,6 +205,25 @@ impl Ctx<'_> {
         v
     }
 
+    /// The full hash of the file at an adoption target if it still is the planned content (regular file, size,
+    /// hash; the sampled identity too for sampled contents), else `None`.
+    fn reverify_adopt(&self, f: &PlannedFile) -> std::io::Result<Option<[u8; 32]>> {
+        let path = self.lib.path(&f.target);
+        let m = std::fs::symlink_metadata(&path)?;
+        if !m.file_type().is_file() || m.len() != f.size {
+            return Ok(None);
+        }
+        let (full, n) = full_hash_of(std::fs::File::open(&path)?)?;
+        let same = n == f.size
+            && match f.content.kind {
+                ContentIdKind::Full => full == f.content.digest,
+                ContentIdKind::Sampled => {
+                    ps_hash::identity_from_reader(std::fs::File::open(&path)?, f.size)? == f.content
+                }
+            };
+        Ok(same.then_some(full))
+    }
+
     /// Manifest line then ledger `done`.
     fn finish(&self, f: &PlannedFile, full: [u8; 32], adopted: bool, sidecar: Option<&RelPath>) {
         let rec = ManifestRecord {
@@ -229,7 +248,12 @@ impl Ctx<'_> {
         };
         let mtime = self.library_mtime(&f.target);
         let mut s = self.shared.lock();
-        if let Err(e) = s.manifest.append(&rec) {
+        // An adoption after a crash between this file's manifest line and its `done` row would repeat the
+        // line: the manifest already records this path with these bytes, so it is not appended again.
+        let recorded = adopted && s.manifest.contains(&rec.library_path, &rec.full_hash);
+        if recorded {
+            log::info!("{} is already in the manifest", f.target);
+        } else if let Err(e) = s.manifest.append(&rec) {
             // The copy is in place and verified; a manifest failure must not lose the ledger row.
             log::error!("manifest append for {}: {e}", f.target);
             s.report.failed.push(FailedFile {
@@ -277,14 +301,21 @@ impl Ctx<'_> {
             }
             match f.action {
                 PlannedAction::Adopt => {
-                    let full = match f.content.kind {
-                        ContentIdKind::Full => Ok(f.content.digest),
-                        ContentIdKind::Sampled => std::fs::File::open(self.lib.path(&f.target))
-                            .and_then(full_hash_of)
-                            .map(|(h, _)| h),
-                    };
-                    match full {
-                        Ok(full) => {
+                    // Re-verify now: the plan saw an identical file, but time passed since (the plan may
+                    // have been shown for minutes); only a file that is still this content is recorded.
+                    match self.reverify_adopt(f) {
+                        Ok(None) => {
+                            let msg = "the identical file found at this path while planning has changed \
+                                       since; nothing was recorded (export again to plan it anew)";
+                            log::warn!("adoption of {}: {msg}", f.target);
+                            self.record(&self.entry(f, LedgerState::Failed, None));
+                            self.shared.lock().report.failed.push(FailedFile {
+                                file: Some(f.file),
+                                target: f.target.clone(),
+                                error: msg.into(),
+                            });
+                        }
+                        Ok(Some(full)) => {
                             self.finish(f, full, true, b.sidecar.as_ref());
                             self.shared.lock().report.adopted += 1;
                             done.push((f, full));
@@ -293,7 +324,7 @@ impl Ctx<'_> {
                             Some(f),
                             &f.target,
                             &CopyError::Io {
-                                op: "read",
+                                op: "re-verify",
                                 path: self.lib.path(&f.target),
                                 source: e,
                             },

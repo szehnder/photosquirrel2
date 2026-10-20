@@ -15,9 +15,10 @@
 //! - [`xmp`] sidecars, the append-only [`manifest`], [`profile`] defaults.
 //! - [`disposition`]: derived dispositions and completion reports (ADR-0023).
 //!
-//! Safety invariants (tested in `tests/safety.rs`): sources are opened read-only and never changed; nothing is
-//! written outside the library root; no existing library file is ever replaced or modified; the only files
-//! ever removed are this exporter's own `.ps-partial` files inside the library.
+//! Safety invariants (tested in `tests/copy.rs`: `scenario_export_export_leaves_sources_untouched`,
+//! `scenario_export_existing_file_never_overwritten`, the kill and disk-full tests): sources are opened read-only
+//! and never changed; nothing is written outside the library root; no existing library file is ever replaced
+//! or modified; the only files ever removed are this exporter's own `.ps-partial` files inside the library.
 
 pub mod copy;
 pub mod date;
