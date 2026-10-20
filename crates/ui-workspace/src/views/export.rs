@@ -2,7 +2,7 @@
 //! plan (counts, bytes, free space, collisions, unavailable keepers), confirm, watch the copy with Cancel,
 //! then open the library folder. Copy-only: sources are never changed (ADR-0004, ADR-0022).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -76,12 +76,26 @@ pub struct ExportView {
     run_task: Option<Task<()>>,
 }
 
-/// The suggested library folder for a first export.
+/// The library folder's name inside the suggested parent.
+pub const LIBRARY_NAME: &str = "PhotoSquirrel Library";
+
+/// The suggested library folder for a first export: in Pictures, else in the home folder. Never a temporary
+/// folder: a library there would vanish with the next reboot or cleanup.
 pub fn default_library() -> PathBuf {
-    directories::UserDirs::new()
-        .and_then(|d| d.picture_dir().map(|p| p.to_path_buf()))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("PhotoSquirrel Library")
+    let dirs = directories::UserDirs::new();
+    suggested_library(
+        dirs.as_ref().and_then(|d| d.picture_dir()),
+        dirs.as_ref().map(|d| d.home_dir()),
+    )
+}
+
+/// [`default_library`] for given Pictures and home folders. With neither (no user folders at all) it is a bare
+/// relative name, which the user replaces with Choose folder.
+pub fn suggested_library(pictures: Option<&Path>, home: Option<&Path>) -> PathBuf {
+    pictures
+        .or(home)
+        .map(|d| d.join(LIBRARY_NAME))
+        .unwrap_or_else(|| PathBuf::from(LIBRARY_NAME))
 }
 
 impl ExportView {
@@ -869,5 +883,26 @@ impl Render for ExportView {
             .child(plan_el)
             .child(action)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LIBRARY_NAME, suggested_library};
+    use std::path::Path;
+
+    #[test]
+    fn default_library_prefers_pictures_then_home_never_tmp() {
+        let pics = Path::new("/home/u/Pictures");
+        let home = Path::new("/home/u");
+        assert_eq!(
+            suggested_library(Some(pics), Some(home)),
+            pics.join(LIBRARY_NAME)
+        );
+        assert_eq!(suggested_library(None, Some(home)), home.join(LIBRARY_NAME));
+        let bare = suggested_library(None, None);
+        assert_eq!(bare, Path::new(LIBRARY_NAME));
+        assert!(!bare.starts_with(std::env::temp_dir()));
+        assert!(!super::default_library().starts_with(std::env::temp_dir()));
     }
 }
