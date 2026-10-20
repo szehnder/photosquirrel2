@@ -68,7 +68,17 @@ fn scenario_app_shell_idle_memory_within_250_mb() {
     if !gui_tests_enabled() {
         return;
     }
-    let mb = measure(&["--measure-idle-memory", "5"], "idle-rss");
+    // The same measurement as perf-budgets.toml `idle-rss`: 5 s idle on the gallery's 1M synthetic catalog
+    // (built once; the per-run data dir that `measure` passes is replaced by the synthetic one).
+    let mb = measure(
+        &[
+            "--synthetic-catalog",
+            "1000000",
+            "--measure-idle-memory",
+            "5",
+        ],
+        "idle-rss",
+    );
     println!("measure idle-rss={mb:.1} MB");
     assert!(
         mb <= 250.0,
