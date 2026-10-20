@@ -848,13 +848,58 @@ impl DuplicatesView {
 
 // ---- rendering -------------------------------------------------------------------------------------------
 
+/// What the group holds, for the "Why this copy" card: (amount, description) rows.
+fn group_composition(d: &ReviewDetail) -> Vec<(String, String)> {
+    let count = |e: MemberEdge| d.members().iter().filter(|m| m.edge == e).count();
+    let plural = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            one.to_owned()
+        } else {
+            many.to_owned()
+        }
+    };
+    let mut rows = Vec::new();
+    let keepers = d.group.keeper_set.len().max(1);
+    rows.push((
+        keepers.to_string(),
+        plural(
+            keepers,
+            "keeper, exported",
+            "keepers (RAW+JPEG pair), exported together",
+        ),
+    ));
+    for (edge, one, many) in [
+        (
+            MemberEdge::Exact,
+            "exact copy, byte for byte",
+            "exact copies, byte for byte",
+        ),
+        (
+            MemberEdge::Derivative,
+            "resized or recompressed version",
+            "resized or recompressed versions",
+        ),
+        (
+            MemberEdge::UserMerge,
+            "copy merged by you",
+            "copies merged by you",
+        ),
+    ] {
+        let n = count(edge);
+        if n > 0 {
+            rows.push((n.to_string(), plural(n, one, many)));
+        }
+    }
+    rows.push((
+        format_bytes(d.group.reclaimable_bytes),
+        "not exported again (reclaimable)".to_owned(),
+    ));
+    rows
+}
+
 fn edge_chip(d: &ReviewDetail, m: &GroupMember, cx: &App) -> Div {
     let colors = *ui_theme::colors(cx);
-    let via = m
-        .via
-        .and_then(|v| d.number_of(v))
-        .map(|n| format!(" of #{n}"))
-        .unwrap_or_default();
+    let via = d.matched_label(m.file);
     match m.edge {
         MemberEdge::Keeper => icon_chip(
             IconName::Crown,
@@ -865,8 +910,8 @@ fn edge_chip(d: &ReviewDetail, m: &GroupMember, cx: &App) -> Div {
         ),
         MemberEdge::Exact => chip(
             format!("Exact copy{via}"),
-            colors.success,
-            ui_theme::Colors::tint(colors.success, 0.14),
+            colors.tone_text(colors.success),
+            ui_theme::Colors::chip_bg(colors.success),
             cx,
         ),
         MemberEdge::Derivative => {
@@ -875,8 +920,8 @@ fn edge_chip(d: &ReviewDetail, m: &GroupMember, cx: &App) -> Div {
             let tone = if close { colors.warning } else { colors.info };
             chip(
                 format!("Same image, resized or recompressed{via}"),
-                tone,
-                ui_theme::Colors::tint(tone, 0.14),
+                colors.tone_text(tone),
+                ui_theme::Colors::chip_bg(tone),
                 cx,
             )
         }
@@ -1550,6 +1595,31 @@ impl DuplicatesView {
                         .child(t),
                 )
             })
+            .child(
+                v_flex()
+                    .id("duplicates-why-group")
+                    .test_support()
+                    .pt(Tokens::space(2.0))
+                    .gap(Tokens::space(1.0))
+                    .border_t_1()
+                    .border_color(colors.border)
+                    .child(eyebrow("In this group", cx))
+                    .children(group_composition(d).into_iter().map(|(n, what)| {
+                        h_flex()
+                            .gap(Tokens::space(2.0))
+                            .text_size(Tokens::text_sm())
+                            .child(
+                                div()
+                                    .w(Tokens::size(56.0))
+                                    .flex_none()
+                                    .text_right()
+                                    .whitespace_nowrap()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(n),
+                            )
+                            .child(div().text_color(colors.text_muted).child(what))
+                    }))
+            )
             .child(div().flex_1())
             .child(
                 h_flex()
@@ -1744,7 +1814,6 @@ impl DuplicatesView {
             });
         let header = h_flex()
             .flex_none()
-            .flex_wrap()
             .px(Tokens::space(5.0))
             .py(Tokens::space(3.0))
             .gap(Tokens::space(3.0))
@@ -1754,7 +1823,7 @@ impl DuplicatesView {
             .child(
                 v_flex()
                     .flex_1()
-                    .min_w(Tokens::size(280.0))
+                    .min_w(Tokens::size(240.0))
                     .child(
                         h_flex()
                             .gap(Tokens::space(2.0))
@@ -1772,15 +1841,18 @@ impl DuplicatesView {
                                 e.child(icon_chip(
                                     IconName::CircleCheck,
                                     "Reviewed",
-                                    colors.success,
-                                    ui_theme::Colors::tint(colors.success, 0.14),
+                                    colors.tone_text(colors.success),
+                                    ui_theme::Colors::chip_bg(colors.success),
                                     cx,
                                 ))
                             }),
                     )
                     .child(
                         div()
-                            .font_family(MONO_FONT_FAMILY)
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
                             .text_size(Tokens::text_xs())
                             .text_color(colors.text_muted)
                             .child(format!(
@@ -1846,6 +1918,7 @@ impl DuplicatesView {
             )
             .child(
                 h_flex()
+                    .flex_wrap()
                     .gap(Tokens::space(2.0))
                     .items_baseline()
                     .child(eyebrow(format!("Why these are the same photo · {} copies", d.members().len()), cx))
@@ -1862,8 +1935,15 @@ impl DuplicatesView {
                     .id("duplicates-members")
                     .test_support()
                     .w_full()
-                    .overflow_x_scroll()
-                    .child(h_flex().items_start().gap(Tokens::space(3.0)).pb(Tokens::space(2.0)).children(cards)),
+                    // Wrap instead of a horizontal strip, so no card is cut off mid-text.
+                    .child(
+                        h_flex()
+                            .flex_wrap()
+                            .items_start()
+                            .gap(Tokens::space(3.0))
+                            .pb(Tokens::space(2.0))
+                            .children(cards),
+                    ),
             )
             .when(related > 0, |e| {
                 e.child(

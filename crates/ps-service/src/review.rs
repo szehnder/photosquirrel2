@@ -559,6 +559,39 @@ impl ReviewDetail {
             .map(|i| i + 1)
     }
 
+    /// The member `f` was matched against, for labels: an exact copy of an exact copy is an exact copy of the
+    /// first one (byte identity is transitive), so chains of exact copies collapse to their origin.
+    pub fn matched_against(&self, f: FileId) -> Option<FileId> {
+        let m = self.group.member(f)?;
+        let mut via = m.via?;
+        if m.edge == MemberEdge::Exact {
+            let mut hops = 0;
+            while let Some(v) = self.group.member(via)
+                && v.edge == MemberEdge::Exact
+                && let Some(next) = v.via
+                && hops < self.group.members.len()
+            {
+                via = next;
+                hops += 1;
+            }
+        }
+        Some(via)
+    }
+
+    /// " of the keeper" or " of #n" for the member `f` was matched against ([`ReviewDetail::matched_against`]).
+    pub fn matched_label(&self, f: FileId) -> String {
+        match self.matched_against(f) {
+            Some(v) if v == self.group.keeper || self.group.keeper_set.contains(&v) => {
+                " of the keeper".to_owned()
+            }
+            Some(v) => self
+                .number_of(v)
+                .map(|n| format!(" of #{n}"))
+                .unwrap_or_default(),
+            None => String::new(),
+        }
+    }
+
     /// The keeper set has more than one file (RAW+JPEG, ADR-0014/0037).
     pub fn is_pair(&self) -> bool {
         self.group.keeper_set.len() > 1

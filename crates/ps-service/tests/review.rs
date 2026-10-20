@@ -305,3 +305,36 @@ fn dismissed_suggestions_stay_dismissed() {
     .expect("list");
     assert_eq!(list.suggestions as usize, after.len());
 }
+
+#[test]
+fn exact_copy_chains_are_labelled_by_their_origin() {
+    use ps_service::groups::MemberEdge;
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = corpus(tmp.path());
+    let svc = scanned(tmp.path(), &root);
+    let store = ReviewStore::in_memory();
+    let all = review::list(
+        &svc,
+        &store,
+        ReviewFilter::default(),
+        ReviewSort::Reclaimable,
+    )
+    .expect("list");
+    let mut exact = 0;
+    for row in &all.rows {
+        let d = review::show(&svc, &store, row.id).expect("show");
+        for m in d.members().iter().filter(|m| m.edge == MemberEdge::Exact) {
+            exact += 1;
+            let origin = d.matched_against(m.file).expect("matched");
+            let o = d.group.member(origin).expect("origin is a member");
+            assert_ne!(o.edge, MemberEdge::Exact, "chains collapse to their origin");
+            let label = d.matched_label(m.file);
+            if o.keeper || o.in_keeper_set {
+                assert_eq!(label, " of the keeper");
+            } else {
+                assert!(label.starts_with(" of #"), "{label}");
+            }
+        }
+    }
+    assert!(exact > 0, "the corpus has exact copies");
+}
