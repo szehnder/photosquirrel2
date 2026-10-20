@@ -4,7 +4,8 @@
 //! `--keep-data`), waits for it to settle, captures the app window to a PNG and lets the app exit.
 //!
 //! `cargo xtask screenshot --all-surfaces` captures every surface in [`SURFACES`] in light and dark
-//! themes and writes `target/screenshots/gallery/index.html` for review (ADR-0028).
+//! themes and writes `<target dir>/screenshots/gallery/index.html` for review (ADR-0028). The target dir
+//! follows `CARGO_TARGET_DIR`, as for `bench`.
 //! Surfaces marked `seeded` start from a demo library (`photosquirrel-cli demo`: generated corpus, scanned).
 //!
 //! Capture backends, tried in order:
@@ -77,7 +78,7 @@ const SURFACES: &[Surface] = &[
 pub fn run(root: &Path, opts: Options) -> Result<()> {
     crate::run(
         "build release app",
-        Command::new("cargo").args([
+        crate::cargo(root)?.args([
             "build",
             "--release",
             "-p",
@@ -87,7 +88,7 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         ]),
     )?;
     let bin = release_dir(root).join("photosquirrel");
-    let shots = root.join("target/screenshots");
+    let shots = crate::target_dir(root).join("screenshots");
     std::fs::create_dir_all(&shots)?;
     if opts.all_surfaces {
         return gallery(root, &bin, &shots, opts.delay);

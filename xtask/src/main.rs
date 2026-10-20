@@ -76,13 +76,13 @@ enum Cmd {
         /// Seconds to wait before capturing.
         #[arg(long, default_value_t = 3.0)]
         delay: f32,
-        /// Output file (default: target/screenshots/photosquirrel-<time>.png).
+        /// Output file (default: <target dir>/screenshots/photosquirrel-<time>.png).
         #[arg(long)]
         out: Option<PathBuf>,
         /// Use the normal data directory instead of a fresh one.
         #[arg(long)]
         keep_data: bool,
-        /// Capture every surface in both themes into target/screenshots/gallery/index.html.
+        /// Capture every surface in both themes into <target dir>/screenshots/gallery/index.html.
         #[arg(long)]
         all_surfaces: bool,
         /// Arguments for the app, after `--`.
