@@ -381,6 +381,25 @@ fn kill_child() {
     std::thread::sleep(Duration::from_secs(600));
 }
 
+/// Make `from` vanish mid-scan by moving it to `to`. On Unix the rename succeeds while the scanner has files
+/// under it open (like a drive pulled out mid-read); Windows refuses it (`Access is denied`) until no handle
+/// under the folder is open, so retry until the scanner is between files.
+fn unplug(from: &Path, to: &Path) {
+    let t = Instant::now();
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::PermissionDenied
+                    && t.elapsed() < Duration::from_secs(60) =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => panic!("unplug {}: {e}", from.display()),
+        }
+    }
+}
+
 #[test]
 fn scenario_scan_control_source_vanishes_mid_scan() {
     let _cores = shared();
@@ -392,6 +411,13 @@ fn scenario_scan_control_source_vanishes_mid_scan() {
     copy_tree(&c.root.join("drive-c"), &b);
     let e = env_with(ScanOptions {
         read_delay: Some(Duration::from_millis(15)),
+        // Windows cannot rename a folder while a file under it is open, so the unplug below waits for a
+        // moment between files; one reader per lane makes those moments regular (every `read_delay`).
+        max_readers: if cfg!(windows) {
+            1
+        } else {
+            ScanOptions::default().max_readers
+        },
         ..ScanOptions::default()
     });
     let ia = e.add(&a);
@@ -403,7 +429,7 @@ fn scenario_scan_control_source_vanishes_mid_scan() {
             .any(|p| p.source == ib && p.processed >= 10)
     });
     let away = tmp.path().join("unplugged");
-    std::fs::rename(&b, &away).expect("unplug drive-c");
+    unplug(&b, &away);
     let summary = e.s().wait().expect("summary");
     completed(&summary);
     assert_eq!(summary.incomplete_sources, vec![ib], "{summary:#?}");
