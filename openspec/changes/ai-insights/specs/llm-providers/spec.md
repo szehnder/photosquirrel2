@@ -70,7 +70,7 @@ API keys SHALL be stored in the operating system's credential store, with `OPENA
 - **THEN** requests use the environment variable's key
 
 ### Requirement: Hosted provider consent
-Selecting a non-local provider SHALL require an explicit consent that names the provider and the destination host and states that previews will be uploaded; without consent the AI queue MUST refuse to start. Consent SHALL be stored for that provider and host only: choosing another provider or editing the server address SHALL withdraw it. Requests MUST NOT follow HTTP redirects. Consent SHALL be bound to the destination's scheme, host and port, and a hosted provider (OpenAI, Anthropic, Gemini) MUST use an `https://` address: settings with a non-HTTPS address for one are rejected with a message saying why, and no consent covers it.
+Selecting a non-local provider SHALL require an explicit consent that names the provider and the destination host and states that previews will be uploaded; without consent the AI queue MUST refuse to start. Consent SHALL be stored for that provider and host only: choosing another provider or editing the server address SHALL withdraw it. Requests MUST NOT follow HTTP redirects.
 
 #### Scenario: Hosted provider needs consent
 - **WHEN** the user selects Gemini without giving consent and starts the AI queue
@@ -80,13 +80,16 @@ Selecting a non-local provider SHALL require an explicit consent that names the 
 - **WHEN** the user consented to Gemini at its API host and the server address is then changed to another host
 - **THEN** the consent no longer applies, the queue refuses to start and the prompt names the new host
 
-#### Scenario: Hosted providers require HTTPS
-- **WHEN** the user consented to Anthropic at `https://api.anthropic.com` and the server address is then changed to `http://api.anthropic.com/v1` (or `http://api.anthropic.com:443/v1`)
-- **THEN** the consent no longer applies, no new consent can be given for that address, and saving the settings is refused with a message that the address must use https://
-
 #### Scenario: Redirects are never followed
 - **WHEN** a local provider answers a request with a redirect to another server
 - **THEN** the request fails and nothing is sent to the other server
+
+### Requirement: Hosted providers use HTTPS
+Consent SHALL be bound to the destination's scheme, host and port. A hosted provider (OpenAI, Anthropic, Gemini) MUST use an `https://` address: settings with a non-HTTPS address for one are rejected with a message saying why, and no consent covers it.
+
+#### Scenario: Hosted providers require HTTPS
+- **WHEN** the user consented to Anthropic at `https://api.anthropic.com` and the server address is then changed to `http://api.anthropic.com/v1` (or `http://api.anthropic.com:443/v1`)
+- **THEN** the consent no longer applies, no new consent can be given for that address, and saving the settings is refused with a message that the address must use https://
 
 ### Requirement: Rate limits respected
 On a rate-limit response the provider layer SHALL wait for the provider's retry-after time (or exponential backoff from 2 s when absent) before retrying.
