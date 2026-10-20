@@ -21,14 +21,22 @@ fn preset() -> Preset {
     }
 }
 
-/// The corpus root: `target/corpus-<preset>` (generated once, reused when its truth matches).
+/// The corpus root: an existing `target/corpus-<preset>` of the workspace when its truth matches, else one
+/// generated once under CARGO_TARGET_TMPDIR (the workspace's ./target need not exist).
 fn corpus(p: Preset) -> (PathBuf, Truth) {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let matches = |t: &Truth| t.seed == 42 && t.preset == p.as_str();
+    let shared = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target")
         .join(format!("corpus-{}", p.as_str()));
+    if let Ok(t) = Truth::read(&shared)
+        && matches(&t)
+    {
+        return (shared, t);
+    }
+    let root =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("corpus-gate-{}-42", p.as_str()));
     if let Ok(t) = Truth::read(&root)
-        && t.seed == 42
-        && t.preset == p.as_str()
+        && matches(&t)
     {
         return (root, t);
     }

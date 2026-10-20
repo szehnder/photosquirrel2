@@ -10,7 +10,8 @@ use ps_service::export::profile_settings;
 use ps_service::scan::{ScanOptions, ScanService};
 
 fn small_corpus() -> PathBuf {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/corpus-small");
+    // Under CARGO_TARGET_TMPDIR, not the workspace's ./target, which need not exist (CARGO_TARGET_DIR elsewhere).
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("export-service-corpus-small-42");
     if !ps_fixtures::Truth::read(&root).is_ok_and(|t| t.seed == 42 && t.preset == "small") {
         let _ = std::fs::remove_dir_all(&root);
         let w = ps_fixtures::DirWriter::new(&root).expect("writer");
