@@ -187,7 +187,7 @@ pub struct Compare {
 const ZOOMS: [f32; 6] = [1.0, 1.5, 2.0, 3.0, 4.0, 8.0];
 
 const SORTS: [(&str, ReviewSort); 4] = [
-    ("Reclaimable", ReviewSort::Reclaimable),
+    ("Size of copies", ReviewSort::Reclaimable),
     ("Copies", ReviewSort::MemberCount),
     ("Date", ReviewSort::CaptureDate),
     ("Needs attention", ReviewSort::NeedsAttention),
@@ -849,7 +849,7 @@ impl DuplicatesView {
 // ---- rendering -------------------------------------------------------------------------------------------
 
 /// What the group holds, for the "Why this copy" card: (amount, description) rows.
-fn group_composition(d: &ReviewDetail) -> Vec<(String, String)> {
+pub fn group_composition(d: &ReviewDetail) -> Vec<(String, String)> {
     let count = |e: MemberEdge| d.members().iter().filter(|m| m.edge == e).count();
     let plural = |n: usize, one: &str, many: &str| {
         if n == 1 {
@@ -864,8 +864,8 @@ fn group_composition(d: &ReviewDetail) -> Vec<(String, String)> {
         keepers.to_string(),
         plural(
             keepers,
-            "keeper, exported",
-            "keepers (RAW+JPEG pair), exported together",
+            "keeper: the copy export takes",
+            "keepers (RAW+JPEG pair): export takes both together",
         ),
     ));
     for (edge, one, many) in [
@@ -892,7 +892,7 @@ fn group_composition(d: &ReviewDetail) -> Vec<(String, String)> {
     }
     rows.push((
         format_bytes(d.group.reclaimable_bytes),
-        "not exported again (reclaimable)".to_owned(),
+        "in the other copies: not copied again".to_owned(),
     ));
     rows
 }
@@ -1014,7 +1014,7 @@ impl DuplicatesView {
                     .text_color(colors.text_faint)
                     .child(match &list {
                         Some(l) => format!(
-                            "{} reclaimable by keeping one copy of each · {} similar shots to look at",
+                            "{} in extra copies, not copied again on export · {} similar shots to look at",
                             format_bytes(l.reclaimable_bytes),
                             format_count(suggestions)
                         ),
@@ -1856,7 +1856,7 @@ impl DuplicatesView {
                             .text_size(Tokens::text_xs())
                             .text_color(colors.text_muted)
                             .child(format!(
-                                "{} copies · {} reclaimable{}",
+                                "{} copies · {} not copied again{}",
                                 d.members().len(),
                                 format_bytes(d.group.reclaimable_bytes),
                                 captured

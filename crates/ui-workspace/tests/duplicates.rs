@@ -705,3 +705,21 @@ fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::Pa
     }
     root
 }
+
+/// "Why this copy" never claims an export happened (none may have yet) and next to "Nothing is deleted" it
+/// does not call the other copies "reclaimable": they are simply not copied again.
+#[gpui_kit::test]
+fn group_composition_wording_promises_no_export_or_deletion(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = detail(&view, &mut cx);
+    let rows = duplicates::group_composition(&d);
+    let text: Vec<&str> = rows.iter().map(|(_, what)| what.as_str()).collect();
+    assert!(text[0].contains("the copy export takes") || text[0].contains("export takes both"));
+    assert!(
+        text.iter()
+            .all(|t| !t.contains("exported") && !t.contains("reclaimable")),
+        "{text:?}"
+    );
+    assert!(text.last().unwrap().contains("not copied again"), "{text:?}");
+}
