@@ -123,6 +123,7 @@ impl QueueStore for CatalogQueueStore {
                 &key.provider,
                 &key.model,
                 key.schema_version,
+                key.prompt_version,
             ),
         )
     }
@@ -414,6 +415,30 @@ pub fn enqueue(
     Ok(added)
 }
 
+/// Contents whose newest result came from an older prompt than [`ps_llm::PROMPT_VERSION`]. They are kept and
+/// shown as such; a prompt change never queues them again by itself (ai-queue "Prompt upgrades are explicit").
+pub fn older_prompt_contents(catalog: &Catalog) -> Result<u64, ps_catalog::CatalogError> {
+    Ok(catalog
+        .read()
+        .ai_older_prompt_contents(ps_llm::PROMPT_VERSION)?
+        .len() as u64)
+}
+
+/// The user asked to re-describe the results of older prompts: queue those contents again (pending, attempts
+/// reset). Nothing is sent until the queue starts; the queue then describes each once with the current
+/// prompt, and the new result replaces the old one for the same provider and model. Returns the number queued.
+pub fn redescribe_older_prompts(catalog: &Catalog) -> Result<u64, ps_catalog::CatalogError> {
+    let digests = catalog
+        .read()
+        .ai_older_prompt_contents(ps_llm::PROMPT_VERSION)?;
+    if digests.is_empty() {
+        return Ok(0);
+    }
+    catalog
+        .writer()
+        .ai_requeue(digests, queue_priority(true, None, None))
+}
+
 /// Queue counts and run state straight from the catalog (no provider, nothing sent).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AiStatus {
@@ -440,6 +465,9 @@ pub struct AiResultInfo {
     pub provider: String,
     pub model: String,
     pub schema_version: u32,
+    pub prompt_version: u32,
+    /// From an older prompt than the queue sends now (kept; `ai redescribe` queues it again).
+    pub older_prompt: bool,
     pub latency_ms: u64,
     pub insight: ImageInsight,
 }
@@ -512,6 +540,8 @@ pub fn results(
             provider: row.provider,
             model: row.model,
             schema_version: row.schema_version,
+            prompt_version: row.prompt_version,
+            older_prompt: row.prompt_version < ps_llm::PROMPT_VERSION,
             latency_ms: row.latency_ms,
             insight,
         });

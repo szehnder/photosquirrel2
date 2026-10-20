@@ -24,6 +24,7 @@
 - [x] 2.6 Per-content results and provenance; verify `scenario_ai_queue_duplicates_analyzed_once` and `scenario_ai_queue_result_records_provenance`
 - [x] 2.7 Retries; verify `scenario_ai_queue_failed_item_retried_twice`
 - [x] 2.8 Progress snapshot and CLI `ai` commands; verify `scenario_ai_queue_queue_progress_reported` and `scenario_ai_queue_cli_starts_queue` (deferred to integration: progress snapshot done in `AiQueue::progress`; CLI owned by headless-cli) (`ai start|pause|status|results|providers|test` in photosquirrel-cli; `scenario_ai_queue_queue_progress_reported`, `scenario_ai_queue_cli_starts_queue`)
+- [x] 2.9 Prompt upgrades are explicit: results keep their prompt version, v1 results stay (shown "prompt v1 (older)" in the AI Review detail, the inspector and `ai results`) and are never re-queued on their own; `ai redescribe` and the AI Review "Re-describe older results" button queue them without starting the queue, and the queue then re-describes a pending item whose result is from an older prompt (`ResultKey::prompt_version`); verify `scenario_ai_queue_older_prompt_results_kept` and `scenario_ai_queue_re_describe_with_current_prompt`
 
 ## 3. Review UI
 

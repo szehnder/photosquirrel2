@@ -249,12 +249,43 @@ pub fn results(ctx: &Ctx, limit: u64) -> Result<()> {
         }
         for x in r {
             println!(
-                "{} ({} files) {}/{}: {}",
+                "{} ({} files) {}/{} prompt v{}{}: {}",
                 &x.content[..12],
                 x.files.len(),
                 x.provider,
                 x.model,
+                x.prompt_version,
+                if x.older_prompt { " (older)" } else { "" },
                 serde_json::to_string(&x.insight).unwrap_or_default()
+            );
+        }
+    })
+}
+
+#[derive(serde::Serialize)]
+struct RedescribeOut {
+    queued: u64,
+    prompt_version: u32,
+}
+
+/// `ai redescribe`: queue the results of older prompts again (explicit; nothing is sent here).
+pub fn redescribe(ctx: &Ctx) -> Result<()> {
+    let svc = ctx.service()?;
+    let queued = ai::redescribe_older_prompts(svc.engine().catalog())?;
+    let out = RedescribeOut {
+        queued,
+        prompt_version: ps_llm::PROMPT_VERSION,
+    };
+    emit(ctx.json, "ai redescribe", &out, |o| {
+        if o.queued == 0 {
+            println!(
+                "every insight is from the current prompt (v{})",
+                o.prompt_version
+            );
+        } else {
+            println!(
+                "queued {} photos described with an older prompt for prompt v{}; run `photosquirrel-cli ai start` to describe them",
+                o.queued, o.prompt_version
             );
         }
     })

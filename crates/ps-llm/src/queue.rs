@@ -33,11 +33,15 @@ pub struct QueueItem {
 }
 
 /// Results are unique per content, provider, model and schema version (spec "One result per content").
+/// `prompt_version` is the prompt this queue sends: a pending item whose stored result came from an older
+/// prompt is described again (it is pending only when the user asked to re-describe it; older results are
+/// never queued again on their own, ai-queue "Prompt upgrades are explicit").
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ResultKey {
     pub provider: String,
     pub model: String,
     pub schema_version: u32,
+    pub prompt_version: u32,
 }
 
 /// Item counts by state.
@@ -59,7 +63,7 @@ pub trait QueueStore: Send + Sync {
     fn claim_next(&self) -> Option<QueueItem>;
     /// Return a claimed item to pending without spending an attempt (paused before sending).
     fn release(&self, item: &QueueItem);
-    /// A result for this content and key exists already.
+    /// A result for this content and key exists already, from this prompt version or a newer one.
     fn has_result(&self, content: &ContentId, key: &ResultKey) -> bool;
     /// Store the insight and mark the item done.
     fn complete(&self, item: &QueueItem, described: &Described);
@@ -202,6 +206,7 @@ impl AiQueue {
             provider: describer.provider().name().to_owned(),
             model: describer.provider().configured_model().to_owned(),
             schema_version: describer.prompt().schema_version,
+            prompt_version: describer.prompt().version,
         };
         let concurrency = cfg.concurrency.max(1);
         let limiter = RateLimiter::new(cfg.requests_per_minute);
@@ -547,6 +552,7 @@ impl QueueStore for MemoryStore {
                 && r.provenance.provider == key.provider
                 && (key.model.is_empty() || r.provenance.model == key.model)
                 && r.provenance.schema_version == key.schema_version
+                && r.provenance.prompt_version >= key.prompt_version
         })
     }
 

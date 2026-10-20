@@ -448,3 +448,47 @@ fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::Pa
     }
     root
 }
+
+/// Results of an older prompt are kept and marked; re-describing them is a button that queues them and sends
+/// nothing by itself (ai-queue "Prompt upgrades are explicit").
+#[gpui_kit::test]
+fn older_prompt_results_offer_a_re_describe_that_only_queues(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, view, mut cx) = open_ai(cx, &data);
+    let c = photo_contents(&backend, 2);
+    // `record` stores prompt v1, older than the current prompt.
+    record(
+        &backend,
+        c[0],
+        &insight(SceneCategory::Nature, 0, 0, true),
+        1_000,
+    );
+    record(
+        &backend,
+        c[1],
+        &insight(SceneCategory::Food, 0, 0, true),
+        2_000,
+    );
+    settle(&view, &mut cx);
+    assert!(view.read_with(&cx, |v, _| {
+        v.items().unwrap().iter().all(|i| i.older_prompt())
+    }));
+    assert!(exists("ai-review-redescribe", &mut cx));
+    click("ai-review-redescribe", &mut cx);
+    settle(&view, &mut cx);
+    let notice = view.read_with(&cx, |v, _| v.notice().map(str::to_owned));
+    assert!(
+        notice
+            .as_deref()
+            .is_some_and(|n| n.starts_with("2 photos queued")),
+        "{notice:?}"
+    );
+    let s = ps_service::ai::status(backend.catalog().unwrap()).unwrap();
+    assert_eq!(
+        (s.pending, s.state.as_str()),
+        (2, "paused"),
+        "queued, not started"
+    );
+    // The old results stay until the queue describes them again.
+    assert_eq!(view.read_with(&cx, |v, _| v.items().unwrap().len()), 2);
+}

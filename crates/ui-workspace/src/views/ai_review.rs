@@ -544,6 +544,26 @@ impl AiReviewView {
         );
     }
 
+    /// Queue the photos described with an older prompt again (ai-queue "Prompt upgrades are explicit"): nothing
+    /// is sent until the queue starts.
+    pub fn redescribe_older(&mut self, cx: &mut Context<'_, Self>) {
+        self.run(
+            cx,
+            |s| s.ai_redescribe_older(),
+            |this, queued, cx| {
+                this.notice = Some(if queued == 0 {
+                    "Every result is from the current prompt.".to_owned()
+                } else {
+                    format!(
+                        "{} photos queued for the current prompt. Start the queue to describe them again.",
+                        format_count(queued)
+                    )
+                });
+                this.reload(cx);
+            },
+        );
+    }
+
     pub fn pause_queue(&mut self, cx: &mut Context<'_, Self>) {
         self.run(
             cx,
@@ -731,6 +751,10 @@ impl AiReviewView {
             .as_ref()
             .is_some_and(|i| i.iter().any(InsightItem::is_demo));
         let count = self.items.as_ref().map_or(0, |i| i.len());
+        let older = self
+            .items
+            .as_ref()
+            .is_some_and(|i| i.iter().any(InsightItem::older_prompt));
         v_flex()
             .flex_none()
             .px(Tokens::space(5.0))
@@ -819,6 +843,17 @@ impl AiReviewView {
                             .child(div().size(Tokens::dot_size()).rounded_full().bg(pill_fg))
                             .child(pill_text),
                     )
+                    .when(older, |d| {
+                        d.child(action_button(
+                            "ai-review-redescribe",
+                            "Re-describe older results",
+                            Some(IconName::RotateCw),
+                            None,
+                            Tone::Quiet,
+                            cx,
+                            |this, _, cx| this.redescribe_older(cx),
+                        ))
+                    })
                     .child(action_button(
                         "ai-review-test",
                         "Test connection",
@@ -1379,9 +1414,11 @@ impl AiReviewView {
                     .text_size(Tokens::text_2xs())
                     .text_color(colors.text_muted)
                     .child(format!(
-                        "{} · {} · {} ms · {}",
+                        "{} · {} · prompt v{}{} · {} ms · {}",
                         i.provider,
                         i.model,
+                        i.prompt_version,
+                        if i.older_prompt() { " (older)" } else { "" },
                         i.latency_ms,
                         date_of(i.at_ms)
                     )),

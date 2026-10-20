@@ -43,6 +43,10 @@ pub trait ReviewSource: Send + Sync + 'static {
     /// Start (or resume) the queue for the configured provider; refuses a hosted one without consent.
     fn ai_start(&self, settings: &Settings, secrets: &Secrets) -> anyhow::Result<u64>;
     fn ai_pause(&self) -> anyhow::Result<()>;
+    /// Queue the results of older prompts again (explicit; sends nothing until the queue starts).
+    fn ai_redescribe_older(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
 }
 
 /// [`ReviewSource`] over the catalog behind a [`CatalogBackend`].
@@ -198,6 +202,11 @@ impl ReviewSource for CatalogReview {
             anyhow::bail!("the AI queue could not be created");
         };
         Ok(svc.start(false)?)
+    }
+    fn ai_redescribe_older(&self) -> anyhow::Result<u64> {
+        Ok(ps_service::ai::redescribe_older_prompts(
+            self.backend.catalog()?,
+        )?)
     }
     fn ai_pause(&self) -> anyhow::Result<()> {
         match self.ai.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {

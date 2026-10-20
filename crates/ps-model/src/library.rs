@@ -192,6 +192,11 @@ pub struct InsightDetail {
     pub provider: String,
     pub model: String,
     pub at_ms: i64,
+    /// The prompt version that produced it.
+    pub prompt_version: u32,
+    /// Produced by an older prompt than the one the queue sends now: kept and shown, re-described only when
+    /// the user asks (ai-queue "Prompt upgrades are explicit").
+    pub older_prompt: bool,
     /// Recorded demo data (screenshots), not a real model's answer.
     pub demo: bool,
 }

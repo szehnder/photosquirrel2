@@ -262,6 +262,8 @@ enum AiCommand {
         #[arg(long, default_value_t = 50)]
         limit: u64,
     },
+    /// Queue the photos described with an older prompt again. Sends nothing; `ai start` describes them.
+    Redescribe,
 }
 
 #[derive(Subcommand, Debug)]
@@ -369,6 +371,7 @@ fn run(cli: Cli) -> Result<()> {
             AiCommand::Pause => cmd::ai::pause(&ctx),
             AiCommand::Status => cmd::ai::status(&ctx),
             AiCommand::Results { limit } => cmd::ai::results(&ctx, limit),
+            AiCommand::Redescribe => cmd::ai::redescribe(&ctx),
         },
         Command::Doctor => cmd::doctor::run(&ctx),
         Command::Fixtures { command } => match command {

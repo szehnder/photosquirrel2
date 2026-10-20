@@ -276,6 +276,8 @@ pub struct InsightItem {
     pub model: String,
     pub at_ms: i64,
     pub latency_ms: u64,
+    /// The prompt version that produced the result.
+    pub prompt_version: u32,
     /// What the AI said.
     pub ai: ImageInsight,
     /// With the user's corrections (used for filters, the inspector and export).
@@ -287,6 +289,11 @@ pub struct InsightItem {
 impl InsightItem {
     pub fn is_demo(&self) -> bool {
         self.provider == DEMO_PROVIDER
+    }
+
+    /// Described with an older prompt than the queue sends now (kept; re-described only on request).
+    pub fn older_prompt(&self) -> bool {
+        self.prompt_version < ps_llm::PROMPT_VERSION
     }
 }
 
@@ -415,6 +422,7 @@ pub fn items(
             model: row.model,
             at_ms: row.at_ms,
             latency_ms: row.latency_ms,
+            prompt_version: row.prompt_version,
             corrected: correction.fields().into_iter().map(str::to_owned).collect(),
             ai,
             effective,
@@ -710,7 +718,7 @@ pub fn seed_demo(catalog: &Catalog, n: usize) -> Result<usize> {
             provider: DEMO_PROVIDER.into(),
             model: "demo-vision".into(),
             schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
-            prompt_version: 1,
+            prompt_version: ps_llm::PROMPT_VERSION,
             insight: serde_json::to_string(&demo_insight(i)).unwrap_or_default(),
             latency_ms: 900 + (i as u64 * 37) % 700,
             requests: 1,

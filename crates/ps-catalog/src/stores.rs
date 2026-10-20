@@ -203,6 +203,26 @@ impl Writer {
         })
     }
 
+    /// Queue contents again (an explicit re-describe): pending with no attempts spent, keeping a queued item's
+    /// priority (new rows get `priority`). In-flight items are left alone. Returns the rows changed or added.
+    pub fn ai_requeue(&self, digests: Vec<[u8; 32]>, priority: i64) -> Result<u64> {
+        self.exec(move |c| {
+            let now = now_ms();
+            let mut n = 0;
+            for d in &digests {
+                n += c
+                    .prepare_cached(
+                        "INSERT INTO ai_queue (content_id, priority, enqueued_at, updated_at) VALUES (?1, ?2, ?3, ?3)
+                         ON CONFLICT (content_id) DO UPDATE SET state = 0, attempts = 0, last_error = NULL,
+                            updated_at = ?3
+                         WHERE state <> 1",
+                    )?
+                    .execute(params![&d[..], priority, now])? as u64;
+            }
+            Ok(n)
+        })
+    }
+
     /// Start-up recovery: in-flight and deferred items become pending again; a `running` queue becomes
     /// `paused` (spec "Survives restarts": the queue is paused after a restart).
     pub fn ai_recover(&self) -> Result<()> {
@@ -380,30 +400,61 @@ impl Readers {
         })
     }
 
-    /// A result exists for this content, provider, model (empty: any model) and schema version.
+    /// A result exists for this content, provider, model (empty: any model) and schema version, from prompt
+    /// version `min_prompt_version` or newer.
     pub fn ai_has_result(
         &self,
         content: &ContentId,
         provider: &str,
         model: &str,
         schema_version: u32,
+        min_prompt_version: u32,
     ) -> Result<bool> {
         self.with(|c| {
             Ok(c.prepare_cached(
                 "SELECT 1 FROM ai_result WHERE content_id = ?1 AND provider = ?2
-                    AND (?3 = '' OR model = ?3) AND schema_version = ?4 LIMIT 1",
+                    AND (?3 = '' OR model = ?3) AND schema_version = ?4 AND prompt_version >= ?5 LIMIT 1",
             )?
             .query_row(
                 params![
                     &content.digest[..],
                     provider,
                     model,
-                    i64::from(schema_version)
+                    i64::from(schema_version),
+                    i64::from(min_prompt_version)
                 ],
                 |_| Ok(()),
             )
             .optional()?
             .is_some())
+        })
+    }
+
+    /// Contents whose newest result came from a prompt older than `current` (re-describe candidates).
+    pub fn ai_older_prompt_contents(&self, current: u32) -> Result<Vec<[u8; 32]>> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT content_id, prompt_version FROM ai_result ORDER BY content_id, at DESC",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut last: Option<[u8; 32]> = None;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                let rusqlite::types::ValueRef::Blob(d) = r.get_ref(0)? else {
+                    continue;
+                };
+                let Ok(digest) = <[u8; 32]>::try_from(d) else {
+                    continue;
+                };
+                if last == Some(digest) {
+                    continue;
+                }
+                last = Some(digest);
+                if r.get::<_, i64>(1)? < i64::from(current) {
+                    out.push(digest);
+                }
+            }
+            Ok(out)
         })
     }
 

@@ -357,3 +357,127 @@ fn scenario_ai_queue_queue_survives_restart() {
     let s = status(&catalog).unwrap();
     assert_eq!((s.done, s.results), (50, 50));
 }
+
+/// Scan the tiny corpus and describe every keeper once with the current prompt; then mark `n` results as
+/// coming from prompt v1 (the PROMPT_VERSION before the pets/animals wording change).
+fn described_with_v1_results(
+    tmp: &Path,
+    n: usize,
+) -> (
+    ScanService,
+    Arc<Catalog>,
+    MockServer,
+    ProviderConfig,
+    Vec<ContentId>,
+) {
+    let root = tmp.join("corpus");
+    let w = DirWriter::new(&root).unwrap();
+    ps_fixtures::generate_with(5, Preset::Small, tiny(), &w).unwrap();
+    let svc = ScanService::open(&tmp.join("data"), ScanOptions::default()).unwrap();
+    for d in ["drive-a", "drive-b", "drive-c"] {
+        svc.add_source(&root.join(d)).unwrap();
+    }
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    let catalog = svc.engine().catalog().clone();
+    let server = MockServer::with_handler(|_| ok_reply());
+    let cfg = cfg_for(&server.url());
+    {
+        let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader());
+        ai.start(false).unwrap();
+        assert!(ai.wait_idle(Duration::from_secs(60)));
+    }
+    // Results stored alone (a RAW+JPEG pair's two contents share one request and one time).
+    let all = catalog.read().ai_results(10_000).unwrap();
+    let rows: Vec<_> = all
+        .iter()
+        .filter(|r| all.iter().filter(|o| o.at_ms == r.at_ms).count() == 1)
+        .take(n)
+        .cloned()
+        .collect();
+    assert_eq!(rows.len(), n);
+    let mut old = Vec::new();
+    for row in rows {
+        assert_eq!(row.prompt_version, ps_llm::PROMPT_VERSION);
+        old.push(row.content);
+        catalog
+            .writer()
+            .ai_complete(ps_catalog::AiResultRow {
+                prompt_version: 1,
+                ..row
+            })
+            .unwrap();
+    }
+    (svc, catalog, server, cfg, old)
+}
+
+#[test]
+fn scenario_ai_queue_older_prompt_results_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_svc, catalog, server, cfg, old) = described_with_v1_results(tmp.path(), 3);
+    let sent = server.request_count();
+    let results = status(&catalog).unwrap().results;
+    // A queue with the current prompt starts again: the v1 results are kept, nothing is re-sent.
+    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader());
+    assert_eq!(ai.start(false).unwrap(), 0);
+    assert!(ai.wait_idle(Duration::from_secs(30)));
+    assert_eq!(
+        server.request_count(),
+        sent,
+        "older results are not re-queued"
+    );
+    assert_eq!(status(&catalog).unwrap().results, results);
+    assert_eq!(ps_service::ai::older_prompt_contents(&catalog).unwrap(), 3);
+    // Shown as described with an older prompt.
+    let store = ps_service::insights::InsightStore::for_catalog(&catalog);
+    let items = ps_service::insights::items(
+        &catalog,
+        &store,
+        &ps_service::insights::InsightFilter::default(),
+        1_000,
+    )
+    .unwrap();
+    for c in &old {
+        let item = items
+            .iter()
+            .find(|i| i.content == c.to_hex())
+            .expect("listed");
+        assert_eq!(item.prompt_version, 1);
+        assert!(item.older_prompt());
+    }
+    assert!(
+        items
+            .iter()
+            .filter(|i| !old.iter().any(|c| c.to_hex() == i.content))
+            .all(|i| !i.older_prompt())
+    );
+    let r = ps_service::ai::results(&catalog, 1_000).unwrap();
+    assert_eq!(r.iter().filter(|x| x.older_prompt).count(), 3);
+}
+
+#[test]
+fn scenario_ai_queue_re_describe_with_current_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_svc, catalog, server, cfg, old) = described_with_v1_results(tmp.path(), 3);
+    let sent = server.request_count();
+    // The explicit request queues exactly the older results and sends nothing by itself.
+    assert_eq!(
+        ps_service::ai::redescribe_older_prompts(&catalog).unwrap(),
+        3
+    );
+    let s = status(&catalog).unwrap();
+    assert_eq!(s.pending, 3);
+    let ai = AiService::with_loader(catalog.clone(), cfg.clone(), qc(&cfg), fixed_loader());
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(server.request_count(), sent, "nothing sent before start");
+    ai.start(false).unwrap();
+    assert!(ai.wait_idle(Duration::from_secs(60)));
+    assert_eq!(server.request_count(), sent + 3, "each once");
+    let r = catalog.read();
+    for c in &old {
+        let row = r.ai_result_for(c).unwrap().expect("result");
+        assert_eq!(row.prompt_version, ps_llm::PROMPT_VERSION);
+    }
+    assert_eq!(ps_service::ai::older_prompt_contents(&catalog).unwrap(), 0);
+    assert_eq!(status(&catalog).unwrap().pending, 0);
+}

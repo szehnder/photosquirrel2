@@ -730,6 +730,8 @@ impl Library {
             provider: row.provider,
             model: row.model,
             at_ms: row.at_ms,
+            prompt_version: row.prompt_version,
+            older_prompt: row.prompt_version < ps_llm::PROMPT_VERSION,
         }))
     }
 

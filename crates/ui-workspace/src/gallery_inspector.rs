@@ -586,9 +586,11 @@ impl GalleryInspector {
             ))
             .child({
                 let provenance = format!(
-                    "{} · {} · {}",
+                    "{} · {} · prompt v{}{} · {}",
                     i.provider,
                     i.model,
+                    i.prompt_version,
+                    if i.older_prompt { " (older)" } else { "" },
                     crate::views::review_kit::date_of(i.at_ms)
                 );
                 h_flex()

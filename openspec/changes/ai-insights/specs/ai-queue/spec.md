@@ -46,6 +46,17 @@ Results SHALL be stored per content identity, so byte-identical copies are descr
 - **WHEN** the queue runs with "include non-keepers" on a group of 3 byte-identical copies
 - **THEN** exactly one request is sent and all 3 copies show the same insight
 
+### Requirement: Prompt upgrades are explicit
+Each result SHALL record the prompt version that produced it. When the prompt version changes, results from older prompts SHALL be kept, SHALL be shown as described with an older prompt, and SHALL NOT be queued or sent again on their own; re-describing them with the current prompt SHALL be an explicit user action (the AI Review view or `photosquirrel-cli ai redescribe`) that queues them without starting the queue.
+
+#### Scenario: Older prompt results kept
+- **WHEN** the catalog holds results from prompt version 1 and the queue is started with the current prompt version 2
+- **THEN** no request is sent for those photos, their results are kept, and the review view and CLI show them as described with an older prompt
+
+#### Scenario: Re-describe with current prompt
+- **WHEN** the user asks to re-describe the 3 results from an older prompt and then starts the queue
+- **THEN** nothing is sent before the start, exactly 3 requests are sent after it, and the new results record the current prompt version
+
 ### Requirement: Provenance stored
 Each result SHALL record provider, model, schema version, request latency and time.
 
