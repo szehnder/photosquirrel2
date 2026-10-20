@@ -404,6 +404,112 @@ impl Scene {
     }
 }
 
+/// The sky of an outdoor scene, read back from its colours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sky {
+    Blue,
+    Sunset,
+    Overcast,
+    Night,
+}
+
+/// The ground of a scene, read back from its colours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ground {
+    Grass,
+    Sand,
+    Water,
+    Snow,
+    Rock,
+    /// Indoor floor.
+    Floor,
+}
+
+/// What a scene shows (the shapes it draws, its sky and ground), so demo data can describe the image that was
+/// rendered from it instead of inventing a subject.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SceneSummary {
+    pub indoor: bool,
+    /// Person silhouettes, split by drawn size.
+    pub adults: u32,
+    pub children: u32,
+    pub buildings: u32,
+    pub trees: u32,
+    /// Plain ellipses (round shapes with no further detail).
+    pub round_shapes: u32,
+    /// `None` indoors.
+    pub sky: Option<Sky>,
+    pub ground: Ground,
+    pub hills: bool,
+    pub sun: bool,
+}
+
+/// A person this tall (in image heights) or taller reads as an adult.
+const ADULT_HEIGHT: f32 = 0.16;
+/// Shapes whose centre lies further out than this (image heights from the centre) are mostly out of frame.
+const IN_FRAME_X: f32 = 0.62;
+
+impl Scene {
+    /// What this scene shows ([`SceneSummary`]). Shapes centred outside the frame are not counted.
+    pub fn summary(&self) -> SceneSummary {
+        let mut s = SceneSummary {
+            indoor: self.indoor,
+            adults: 0,
+            children: 0,
+            buildings: 0,
+            trees: 0,
+            round_shapes: 0,
+            sky: (!self.indoor).then(|| sky_of(self.top, self.upper)),
+            ground: if self.indoor {
+                Ground::Floor
+            } else {
+                ground_of(self.far)
+            },
+            hills: !self.indoor && self.hill_amp > 0.09,
+            sun: self.sun.is_some(),
+        };
+        for sh in self.shapes.iter().filter(|sh| sh.cx.abs() <= IN_FRAME_X) {
+            match sh.kind {
+                ShapeKind::Person if sh.ry >= ADULT_HEIGHT => s.adults += 1,
+                ShapeKind::Person => s.children += 1,
+                ShapeKind::Building => s.buildings += 1,
+                ShapeKind::Tree => s.trees += 1,
+                ShapeKind::Ellipse => s.round_shapes += 1,
+            }
+        }
+        s
+    }
+}
+
+/// The sky palettes of [`Scene::random`], told apart by colour.
+fn sky_of(top: [f32; 3], upper: [f32; 3]) -> Sky {
+    let [r, g, b] = top;
+    if r < 45.0 && g < 55.0 && b < 95.0 {
+        Sky::Night
+    } else if (r - g).abs() < 12.0 && (r - b).abs() < 12.0 {
+        Sky::Overcast
+    } else if upper[0] > 215.0 && upper[2] < 135.0 {
+        Sky::Sunset
+    } else {
+        Sky::Blue
+    }
+}
+
+/// The ground palettes of [`Scene::random`], told apart by colour.
+fn ground_of([r, g, b]: [f32; 3]) -> Ground {
+    if r >= 195.0 && g >= 200.0 && b >= 205.0 {
+        Ground::Snow
+    } else if b > r + 15.0 && b > g {
+        Ground::Water
+    } else if g > r && g > b {
+        Ground::Grass
+    } else if r >= 165.0 && g >= 145.0 && b >= 95.0 {
+        Ground::Sand
+    } else {
+        Ground::Rock
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Noise
 

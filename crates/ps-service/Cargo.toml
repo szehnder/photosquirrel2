@@ -14,6 +14,8 @@ ps-dedup.workspace = true
 ps-llm.workspace = true
 ps-export.workspace = true
 ps-media.workspace = true
+# Demo AI insights describe the generated corpus scene of each image (insights::seed_demo_from).
+ps-fixtures.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 toml.workspace = true
@@ -28,7 +30,6 @@ anyhow.workspace = true
 tempfile.workspace = true
 ps-llm = { workspace = true, features = ["testing"] }
 serde_json.workspace = true
-ps-fixtures.workspace = true
 
 [lints]
 workspace = true

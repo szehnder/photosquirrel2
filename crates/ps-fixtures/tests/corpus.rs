@@ -852,3 +852,55 @@ fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::Pa
     }
     root
 }
+
+/// Demo insights describe the scene behind each image: the plan rebuilt from the truth's seed and preset maps
+/// every camera original and its derivatives to the scene it was rendered from, and each summary counts only
+/// shapes the scene drew. A truth that does not match its plan is refused.
+#[test]
+fn scenes_by_content_match_the_truth() {
+    let c = small();
+    let scenes =
+        ps_fixtures::plan::scenes_by_content(&c.truth).expect("the plan matches its truth");
+    let originals: Vec<_> = c
+        .truth
+        .files
+        .iter()
+        .filter(|f| f.category == Category::Original)
+        .collect();
+    assert!(!originals.is_empty());
+    for f in &originals {
+        let scene = scenes
+            .get(&f.content)
+            .unwrap_or_else(|| panic!("no scene for {}", f.path));
+        let s = scene.summary();
+        let drawn = |k: ps_fixtures::synth::ShapeKind| {
+            scene.shapes.iter().filter(|sh| sh.kind == k).count() as u32
+        };
+        assert!(s.adults + s.children <= drawn(ps_fixtures::synth::ShapeKind::Person));
+        assert!(s.buildings <= drawn(ps_fixtures::synth::ShapeKind::Building));
+        assert!(s.trees <= drawn(ps_fixtures::synth::ShapeKind::Tree));
+        assert_eq!(s.indoor, scene.indoor);
+        assert_eq!(s.sky.is_none(), scene.indoor);
+    }
+    // Derivatives of an original share its scene.
+    let by_group: BTreeMap<&str, &str> = originals
+        .iter()
+        .map(|f| (f.group.as_str(), f.content.as_str()))
+        .collect();
+    for f in c
+        .truth
+        .files
+        .iter()
+        .filter(|f| f.category == Category::Resized)
+    {
+        if let Some(orig) = by_group.get(f.group.as_str()) {
+            assert_eq!(scenes.get(&f.content), scenes.get(*orig), "{}", f.path);
+        }
+    }
+    let mut other = c.truth.clone();
+    other.seed += 1;
+    assert!(
+        ps_fixtures::plan::scenes_by_content(&other).is_none(),
+        "another seed's plan"
+    );
+}

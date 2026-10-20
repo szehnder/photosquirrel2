@@ -154,26 +154,33 @@ fn main() {
     let has_catalog = data_dir
         .as_deref()
         .is_some_and(|d| d.join(ps_service::scan::CATALOG_FILE).exists());
-    let backend: Arc<dyn LibraryBackend> =
-        match &data_dir {
-            Some(dir) => {
-                let backend = Arc::new(CatalogBackend::new(dir));
-                if let Some(n) = args.demo_ai_insights {
-                    match backend.catalog().map_err(|e| e.to_string()).and_then(|c| {
-                        ps_service::insights::seed_demo(c, n).map_err(|e| e.to_string())
-                    }) {
-                        Ok(n) => log::info!("stored {n} demo AI insights"),
-                        Err(e) => log::error!("demo AI insights: {e}"),
-                    }
+    let backend: Arc<dyn LibraryBackend> = match &data_dir {
+        Some(dir) => {
+            let backend = Arc::new(CatalogBackend::new(dir));
+            if let Some(n) = args.demo_ai_insights {
+                match backend.catalog().map_err(|e| e.to_string()).and_then(|c| {
+                    // A demo library (`photosquirrel-cli demo`) keeps its corpus beside the catalog: each
+                    // insight then describes the scene its image was rendered from.
+                    let corpus = dir.join("demo-corpus");
+                    ps_service::insights::seed_demo_from(
+                        c,
+                        n,
+                        corpus.is_dir().then_some(corpus.as_path()),
+                    )
+                    .map_err(|e| e.to_string())
+                }) {
+                    Ok(n) => log::info!("stored {n} demo AI insights"),
+                    Err(e) => log::error!("demo AI insights: {e}"),
                 }
-                if has_catalog {
-                    // Open the catalog and run the first queries while the window is created.
-                    backend.warm(startup_filters(&args).query());
-                }
-                backend
             }
-            None => Arc::new(EmptyBackend),
-        };
+            if has_catalog {
+                // Open the catalog and run the first queries while the window is created.
+                backend.warm(startup_filters(&args).query());
+            }
+            backend
+        }
+        None => Arc::new(EmptyBackend),
+    };
     // `--demo-scan`: a simulated scan engine for the Sources, Export and Reports views; the shell's source count
     // comes from it too, so the navigator and status bar agree with the Sources view.
     // The simulation mirrors the seeded catalog's sources, so every count on screen agrees.

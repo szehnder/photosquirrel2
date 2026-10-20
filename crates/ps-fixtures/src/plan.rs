@@ -395,6 +395,53 @@ struct Planner {
     wa_counter: u32,
 }
 
+/// The scene each true group (`truth.json` `group`) was rendered from: camera shots and scanned prints. Crops
+/// show only part of a scene and are left out. Demo data uses it to describe each image truthfully.
+pub fn scenes_by_group(plan: &Plan) -> std::collections::HashMap<String, Scene> {
+    plan.tasks
+        .iter()
+        .filter_map(|t| match t {
+            Task::Shot(s) => Some((s.group.clone(), s.scene.clone())),
+            Task::Scan(s) => Some((s.group.clone(), s.scene.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The scene behind each file of a generated corpus, keyed by the file's content (BLAKE3 hex, as in
+/// `truth.json`). The plan is rebuilt from the truth's seed and preset; `None` when it does not match the truth
+/// (a corpus generated with custom parameters), so callers never describe a file from the wrong scene. Crops are
+/// left out (they show part of a scene).
+pub fn scenes_by_content(
+    truth: &crate::truth::Truth,
+) -> Option<std::collections::HashMap<String, Scene>> {
+    use crate::truth::Category;
+    let preset = Preset::parse(&truth.preset)?;
+    let plan = plan(truth.seed, preset);
+    let groups = scenes_by_group(&plan);
+    // Every shot's original must be in the truth under the shot's group.
+    let originals: std::collections::HashSet<(&str, &str)> = truth
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.group.as_str()))
+        .collect();
+    let consistent = plan.tasks.iter().all(|t| match t {
+        Task::Shot(s) => originals.contains(&(s.path.as_str(), s.group.as_str())),
+        _ => true,
+    });
+    if !consistent {
+        return None;
+    }
+    Some(
+        truth
+            .files
+            .iter()
+            .filter(|f| f.category != Category::Crop && !f.category.is_junk())
+            .filter_map(|f| Some((f.content.clone(), groups.get(&f.group)?.clone())))
+            .collect(),
+    )
+}
+
 /// Build the plan for `seed` and `preset`.
 pub fn plan(seed: u64, preset: Preset) -> Plan {
     plan_with(seed, preset, preset.params())

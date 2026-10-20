@@ -783,6 +783,29 @@ impl AiReviewView {
             .as_ref()
             .is_some_and(|i| i.iter().any(InsightItem::is_demo));
         let count = self.items.as_ref().map_or(0, |i| i.len());
+        // Only recorded demo insights on screen: say so instead of naming the configured provider and model,
+        // which produced none of them.
+        let all_demo = count > 0
+            && self
+                .items
+                .as_ref()
+                .is_some_and(|i| i.iter().all(InsightItem::is_demo));
+        let source_line = if all_demo {
+            format!(
+                "Demo: recorded sample insights, not from {} · nothing was sent anywhere",
+                provider.label()
+            )
+        } else {
+            format!(
+                "{} · {model} · {}",
+                provider.label(),
+                if ps_service::ai::is_hosted(&settings.ai) {
+                    "previews are uploaded to it"
+                } else {
+                    "nothing leaves this computer"
+                }
+            )
+        };
         let older = self
             .items
             .as_ref()
@@ -839,15 +862,7 @@ impl AiReviewView {
                                     .text_size(Tokens::text_xs())
                                     .text_color(colors.text_muted)
                                     .child(Icon::new(IconName::Bot).size(Tokens::icon_sm()))
-                                    .child(format!(
-                                        "{} · {model} · {}",
-                                        provider.label(),
-                                        if ps_service::ai::is_hosted(&settings.ai) {
-                                            "previews are uploaded to it"
-                                        } else {
-                                            "nothing leaves this computer"
-                                        }
-                                    ))
+                                    .child(div().id("ai-review-source").test_support().child(source_line))
                                     .when_some(conn, |e, (fg, t)| {
                                         e.child(
                                             h_flex()

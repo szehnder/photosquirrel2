@@ -744,9 +744,206 @@ fn demo_insight(n: usize) -> ImageInsight {
     }
 }
 
+fn count_words(n: u32, one: &str, many: &str) -> String {
+    const WORDS: [&str; 7] = ["no", "one", "two", "three", "four", "five", "six"];
+    let word = WORDS.get(n as usize).copied().unwrap_or("several");
+    match n {
+        1 if one.starts_with(['a', 'e', 'i', 'o', 'u']) => format!("an {one}"),
+        1 => format!("a {one}"),
+        _ => format!("{word} {many}"),
+    }
+}
+
+/// A demo insight that describes what a synthetic corpus image really shows: the shapes its scene drew, its
+/// sky and its ground ([`ps_fixtures::synth::SceneSummary`]). `n` only varies the confidence.
+pub fn scene_insight(s: &ps_fixtures::synth::SceneSummary, n: usize) -> ImageInsight {
+    use SceneCategory::*;
+    use ps_fixtures::synth::{Ground, Sky};
+    let people = s.adults + s.children;
+    let mut things = Vec::new();
+    match (s.adults, s.children) {
+        (0, 0) => {}
+        (a, 0) => things.push(count_words(a, "adult", "adults")),
+        (0, c) => things.push(count_words(c, "child", "children")),
+        (a, c) => {
+            things.push(count_words(a, "adult", "adults"));
+            things.push(count_words(c, "child", "children"));
+        }
+    }
+    if s.buildings > 0 {
+        things.push(count_words(
+            s.buildings,
+            "building with rows of windows",
+            "buildings with rows of windows",
+        ));
+    }
+    if s.trees > 0 {
+        things.push(count_words(s.trees, "tree", "trees"));
+    }
+    // Round shapes overlap and hide each other: exact beyond two would over-count what is visible.
+    match s.round_shapes {
+        0 => {}
+        1 | 2 => things.push(count_words(s.round_shapes, "round shape", "round shapes")),
+        _ => things.push("several round shapes".to_owned()),
+    }
+    let ground = match s.ground {
+        Ground::Grass => "green grass",
+        Ground::Sand => "sandy ground",
+        Ground::Water => "blue water",
+        Ground::Snow => "snow",
+        Ground::Rock => "grey, rocky ground",
+        Ground::Floor => "a plain floor",
+    };
+    let sky = s.sky.map(|k| match k {
+        Sky::Blue => "a blue sky",
+        Sky::Sunset => "an orange sunset sky",
+        Sky::Overcast => "a grey, overcast sky",
+        Sky::Night => "a dark night sky",
+    });
+    let place = match (s.indoor, sky) {
+        (true, _) => "in a plain room".to_owned(),
+        (false, Some(sky)) if s.hills => format!("on hills of {ground} under {sky}"),
+        (false, Some(sky)) => format!("on {ground} under {sky}"),
+        (false, None) => format!("on {ground}"),
+    };
+    let subject = if things.is_empty() {
+        match (s.indoor, sky) {
+            (true, _) => "An empty, plain room".to_owned(),
+            (false, Some(sky)) if s.hills => format!("Rolling hills of {ground} under {sky}"),
+            (false, Some(sky)) => format!("Open {ground} under {sky}"),
+            (false, None) => format!("Open {ground}"),
+        }
+    } else {
+        let list = match things.len() {
+            1 => things[0].clone(),
+            k => format!("{} and {}", things[..k - 1].join(", "), things[k - 1]),
+        };
+        let mut c = list.chars();
+        let list = c
+            .next()
+            .map(|f| f.to_uppercase().chain(c).collect::<String>())
+            .unwrap_or_default();
+        format!("{list} {place}")
+    };
+    let only_round = s.round_shapes >= 2 && people == 0 && s.buildings == 0 && s.trees == 0;
+    let (category, also, is_photo) = if people >= 4 {
+        (Event, vec![People], true)
+    } else if people == 1 && s.buildings == 0 && s.trees == 0 && s.round_shapes == 0 {
+        (Portrait, vec![People], true)
+    } else if people > 0 {
+        let mut also = Vec::new();
+        if s.buildings > 0 {
+            also.push(Urban);
+        }
+        if s.trees > 0 || s.hills {
+            also.push(Nature);
+        }
+        (People, also, true)
+    } else if s.indoor && (s.buildings + s.trees + s.round_shapes) > 0 {
+        (Object, vec![], true)
+    } else if s.buildings > 0 {
+        (Urban, vec![Travel], true)
+    } else if s.trees > 0 {
+        (Nature, vec![Landscape], true)
+    } else if only_round && !s.indoor && !s.hills {
+        // Flat round shapes and nothing else: honestly, it looks like a graphic.
+        (Artwork, vec![], false)
+    } else if s.indoor {
+        (Other, vec![], true)
+    } else {
+        (Landscape, vec![Nature], true)
+    };
+    let subject = if category == Artwork {
+        format!("{subject}; flat shapes with no depth, more like a graphic than a photo")
+    } else {
+        subject
+    };
+    let mut tags: Vec<String> = Vec::new();
+    let mut tag = |t: &str| {
+        if !tags.iter().any(|x| x == t) {
+            tags.push(t.to_owned());
+        }
+    };
+    if people > 0 {
+        tag(if people == 1 { "person" } else { "people" });
+    }
+    if s.children > 0 {
+        tag("child");
+    }
+    if s.buildings > 0 {
+        tag("building");
+    }
+    if s.trees > 0 {
+        tag("tree");
+    }
+    match s.ground {
+        Ground::Grass => tag("grass"),
+        Ground::Sand => tag("sand"),
+        Ground::Water => tag("water"),
+        Ground::Snow => tag("snow"),
+        Ground::Rock => tag("rocks"),
+        Ground::Floor => tag("indoor"),
+    }
+    if s.hills {
+        tag("hills");
+    }
+    match s.sky {
+        Some(Sky::Sunset) => tag("sunset"),
+        Some(Sky::Night) => tag("night"),
+        Some(Sky::Overcast) => tag("overcast"),
+        Some(Sky::Blue) => tag("blue sky"),
+        None => {}
+    }
+    if s.sun && !matches!(s.sky, Some(Sky::Night)) {
+        tag("sun");
+    }
+    let setting = if s.indoor {
+        "indoor room".to_owned()
+    } else if s.buildings > 0 {
+        "outdoor street".to_owned()
+    } else {
+        format!(
+            "outdoor {}",
+            match s.ground {
+                Ground::Grass if s.hills => "hills",
+                Ground::Grass => "field",
+                Ground::Sand => "beach",
+                Ground::Water => "waterside",
+                Ground::Snow => "snowfield",
+                Ground::Rock | Ground::Floor => "rocky ground",
+            }
+        )
+    };
+    ImageInsight {
+        subject,
+        category,
+        also,
+        is_photo,
+        people: PeopleEstimate {
+            total: people,
+            adults: s.adults,
+            children: s.children,
+        },
+        pets: Vec::new(),
+        tags,
+        setting: Some(setting),
+        confidence: 0.78 + ((n * 7) % 18) as f32 / 100.0,
+    }
+}
+
 /// Store recorded demo insights for up to `n` analysed image keepers (provider [`DEMO_PROVIDER`]). For demos
-/// and screenshots without a live model; never used by the app on its own.
+/// and screenshots without a live model; never used by the app on its own. See [`seed_demo_from`].
 pub fn seed_demo(catalog: &Catalog, n: usize) -> Result<usize> {
+    seed_demo_from(catalog, n, None)
+}
+
+/// [`seed_demo`] for a library scanned from a generated corpus (`photosquirrel-cli demo`): with the corpus
+/// folder (its `truth.json`), each insight describes the scene its image was rendered from and only images
+/// with a known scene get one. Without it (or when the truth cannot be matched), generic demo insights.
+pub fn seed_demo_from(catalog: &Catalog, n: usize, corpus: Option<&Path>) -> Result<usize> {
+    let scenes = corpus
+        .and_then(|dir| ps_fixtures::Truth::read(dir).ok())
+        .and_then(|t| ps_fixtures::plan::scenes_by_content(&t));
     let r = catalog.read();
     let mut contents: Vec<ContentId> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -760,6 +957,7 @@ pub fn seed_demo(catalog: &Catalog, n: usize) -> Result<usize> {
                 ps_model::PhotoClass::Photo | ps_model::PhotoClass::LikelyPhoto
             )
             && f.media_kind() == Some(ps_model::MediaKind::Image)
+            && scenes.as_ref().is_none_or(|s| s.contains_key(&c.to_hex()))
             && seen.insert(c.digest)
         {
             contents.push(c);
@@ -773,7 +971,13 @@ pub fn seed_demo(catalog: &Catalog, n: usize) -> Result<usize> {
             model: "demo-vision".into(),
             schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
             prompt_version: ps_llm::PROMPT_VERSION,
-            insight: serde_json::to_string(&demo_insight(i)).unwrap_or_default(),
+            insight: serde_json::to_string(
+                &match scenes.as_ref().and_then(|s| s.get(&c.to_hex())) {
+                    Some(scene) => scene_insight(&scene.summary(), i),
+                    None => demo_insight(i),
+                },
+            )
+            .unwrap_or_default(),
             latency_ms: 900 + (i as u64 * 37) % 700,
             requests: 1,
             at_ms: now - (contents.len() - i) as i64 * 1_000,
@@ -803,6 +1007,81 @@ mod tests {
         assert_eq!(e.category, SceneCategory::Travel);
         assert_eq!(ai.category, SceneCategory::Landscape);
         assert_eq!(c.fields(), vec!["category"]);
+    }
+
+    #[test]
+    fn scene_insights_describe_what_was_drawn() {
+        use ps_fixtures::synth::{Ground, SceneSummary, Sky};
+        let base = SceneSummary {
+            indoor: false,
+            adults: 0,
+            children: 0,
+            buildings: 0,
+            trees: 0,
+            round_shapes: 0,
+            sky: Some(Sky::Blue),
+            ground: Ground::Grass,
+            hills: false,
+            sun: false,
+        };
+        let city = scene_insight(
+            &SceneSummary {
+                buildings: 1,
+                round_shapes: 2,
+                ..base.clone()
+            },
+            0,
+        );
+        assert_eq!(city.category, SceneCategory::Urban);
+        assert!(city.subject.contains("building"), "{}", city.subject);
+        assert!(!city.subject.contains("food") && !city.tags.contains(&"food".to_owned()));
+        assert_eq!(city.people.total, 0);
+        assert!(city.pets.is_empty(), "no animals are ever drawn");
+
+        let hills = scene_insight(
+            &SceneSummary {
+                hills: true,
+                ..base.clone()
+            },
+            1,
+        );
+        assert_eq!(hills.category, SceneCategory::Landscape);
+        assert_eq!(
+            hills.subject,
+            "Rolling hills of green grass under a blue sky"
+        );
+
+        let family = scene_insight(
+            &SceneSummary {
+                adults: 1,
+                children: 2,
+                trees: 1,
+                ..base.clone()
+            },
+            2,
+        );
+        assert_eq!(family.category, SceneCategory::People);
+        assert_eq!((family.people.adults, family.people.children), (1, 2));
+        assert!(
+            family
+                .subject
+                .starts_with("An adult, two children and a tree on green grass"),
+            "{}",
+            family.subject
+        );
+
+        let graphic = scene_insight(
+            &SceneSummary {
+                round_shapes: 3,
+                ..base
+            },
+            3,
+        );
+        assert!(!graphic.is_photo);
+        assert!(
+            suggestion_for(&graphic).is_some(),
+            "flat shapes only: a graphic suggestion"
+        );
     }
 
     #[test]
