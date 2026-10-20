@@ -73,7 +73,10 @@ pub struct UiState {
     pub navigator_width: f32,
     pub inspector_width: f32,
     pub navigator_open: bool,
+    /// The inspector on the photo views (Library, Excluded).
     pub inspector_open: bool,
+    /// The inspector on the other views, which show no photo in it: hidden by default.
+    pub work_inspector_open: bool,
     pub active_view: ViewId,
     pub library_mode: LibraryMode,
 }
@@ -87,6 +90,7 @@ impl Default for UiState {
             inspector_width: f32::from(Tokens::INSPECTOR_WIDTH),
             navigator_open: true,
             inspector_open: true,
+            work_inspector_open: false,
             active_view: ViewId::Library,
             library_mode: LibraryMode::Grid,
         }
@@ -94,6 +98,24 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// Whether the inspector shows on the active view.
+    pub fn inspector_shown(&self) -> bool {
+        if self.active_view.inspects_photos() {
+            self.inspector_open
+        } else {
+            self.work_inspector_open
+        }
+    }
+
+    /// Show or hide the inspector on the active view (photo views and the others remember it separately).
+    pub fn toggle_inspector(&mut self) {
+        if self.active_view.inspects_photos() {
+            self.inspector_open = !self.inspector_open;
+        } else {
+            self.work_inspector_open = !self.work_inspector_open;
+        }
+    }
+
     /// Clamp widths into their designed ranges (a hand-edited or stale file cannot break the layout).
     pub fn normalized(mut self) -> Self {
         let clamp = |v: f32, lo: Pixels, hi: Pixels, default: Pixels| {
@@ -232,6 +254,21 @@ mod tests {
             file.load().unwrap().inspector_width,
             f32::from(Tokens::INSPECTOR_MAX)
         );
+    }
+
+    #[test]
+    fn inspector_hidden_by_default_where_there_is_no_photo() {
+        let mut s = UiState::default();
+        assert!(s.inspector_shown(), "Library");
+        s.active_view = ViewId::Sources;
+        assert!(!s.inspector_shown());
+        s.toggle_inspector();
+        assert!(s.inspector_shown());
+        s.active_view = ViewId::Library;
+        assert!(s.inspector_shown(), "photo views keep their own state");
+        s.toggle_inspector();
+        s.active_view = ViewId::Export;
+        assert!(s.inspector_shown(), "work views share theirs");
     }
 
     #[test]

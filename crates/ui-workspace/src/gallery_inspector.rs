@@ -521,7 +521,6 @@ impl GalleryInspector {
             header
         };
         let text = ValueStyle::Text;
-        let mono = ValueStyle::Mono;
         v_flex()
             .id("inspector-ai")
             .test_support()
@@ -554,7 +553,7 @@ impl GalleryInspector {
                     i.ai.people.adults.to_string(),
                     e.people.adults != i.ai.people.adults,
                 )),
-                mono,
+                text,
                 cx,
             ))
             .child(row(
@@ -566,7 +565,7 @@ impl GalleryInspector {
                     i.ai.people.children.to_string(),
                     e.people.children != i.ai.people.children,
                 )),
-                mono,
+                text,
                 cx,
             ))
             .child(row("inspector-ai-pets", "Pets", pets, text, cx))
@@ -581,8 +580,8 @@ impl GalleryInspector {
             .child(row(
                 "inspector-ai-confidence",
                 "Confidence",
-                Some(format!("{:.0} %", e.confidence * 100.0)),
-                mono,
+                Some(format!("{:.0}%", e.confidence * 100.0)),
+                text,
                 cx,
             ))
             .child({
@@ -719,7 +718,7 @@ fn path_row(
     let shown = path
         .as_deref()
         .map(|p| crate::views::kit::display_path(Path::new(p)));
-    row_copying(id, label, shown, path, ValueStyle::Mono, cx)
+    row_copying(id, label, shown, path, ValueStyle::Text, cx)
 }
 
 /// A row showing `value` that copies `copy` on click.
@@ -767,10 +766,7 @@ fn row_copying(
                 .flex_1()
                 .min_w_0()
                 .font_family(style.font_family())
-                .text_size(match style {
-                    ValueStyle::Text => Tokens::text_sm(),
-                    ValueStyle::Mono => Tokens::text_mono(),
-                })
+                .text_size(Tokens::text_sm())
                 .text_color(if present {
                     colors.text
                 } else {
@@ -911,28 +907,28 @@ impl Render for GalleryInspector {
                         "inspector-multi-count",
                         "Items",
                         Some(format_count(s.count as u64)),
-                        ValueStyle::Mono,
+                        ValueStyle::Text,
                         cx,
                     ))
                     .child(row(
                         "inspector-multi-size",
                         "Total size",
                         Some(format_bytes(s.bytes)),
-                        ValueStyle::Mono,
+                        ValueStyle::Text,
                         cx,
                     ))
                     .child(row(
                         "inspector-multi-range",
                         "Captured",
                         Some(s.range_label()),
-                        ValueStyle::Mono,
+                        ValueStyle::Text,
                         cx,
                     ))
                     .child(row(
                         "inspector-multi-groups",
                         "Groups",
                         Some(format_count(s.groups as u64)),
-                        ValueStyle::Mono,
+                        ValueStyle::Text,
                         cx,
                     ));
             }
@@ -977,7 +973,6 @@ impl Render for GalleryInspector {
                                 ),
                         ),
                 );
-                let mono = ValueStyle::Mono;
                 let text = ValueStyle::Text;
                 // AI insight (ai-insights change): what is in the photo, advisory; corrections win.
                 body = body.child(self.ai_section(&d, cx));
@@ -1002,7 +997,7 @@ impl Render for GalleryInspector {
                         "inspector-size",
                         "Size",
                         Some(format_bytes(d.size)),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(row(
@@ -1016,7 +1011,7 @@ impl Render for GalleryInspector {
                         "inspector-dimensions",
                         "Dimensions",
                         d.dimensions.map(|(w, h)| format!("{w} × {h}")),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(section("Capture", cx))
@@ -1024,14 +1019,14 @@ impl Render for GalleryInspector {
                         "inspector-captured",
                         "Date",
                         d.captured.clone(),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(row(
                         "inspector-provenance",
                         "From",
                         d.capture_provenance.clone(),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(section("Camera", cx))
@@ -1054,22 +1049,22 @@ impl Render for GalleryInspector {
                         "inspector-exposure",
                         "Exposure",
                         d.exposure.clone(),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(row(
                         "inspector-fnumber",
                         "Aperture",
                         d.f_number.clone(),
-                        mono,
+                        text,
                         cx,
                     ))
-                    .child(row("inspector-iso", "ISO", d.iso.clone(), mono, cx))
+                    .child(row("inspector-iso", "ISO", d.iso.clone(), text, cx))
                     .child(row(
                         "inspector-focal",
                         "Focal length",
                         d.focal_length.clone(),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(section("Location", cx))
@@ -1078,7 +1073,7 @@ impl Render for GalleryInspector {
                         "GPS",
                         d.gps
                             .map(|g| format!("{:.6}, {:.6}", g.latitude, g.longitude)),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(section("Quality", cx))
@@ -1086,7 +1081,7 @@ impl Render for GalleryInspector {
                         "inspector-quality",
                         "JPEG quality",
                         d.quality.map(|q| format!("≈ {q}")),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(section("Identity", cx))
@@ -1094,7 +1089,7 @@ impl Render for GalleryInspector {
                         "inspector-hash",
                         "Content hash",
                         d.content_hash.clone(),
-                        mono,
+                        text,
                         cx,
                     ))
                     .child(section("Classification", cx))
@@ -1272,14 +1267,14 @@ impl Render for GalleryInspector {
                             )
                             .child(
                                 div()
-                                    .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                                    .font_family(ui_theme::fonts::UI_FONT_FAMILY)
                                     .text_size(Tokens::text_2xs())
                                     .text_color(colors.text_muted)
                                     .child(crate::views::kit::display_path(Path::new(&c.path))),
                             )
                             .child(
                                 div()
-                                    .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                                    .font_family(ui_theme::fonts::UI_FONT_FAMILY)
                                     .text_size(Tokens::text_2xs())
                                     .text_color(colors.text_faint)
                                     .child(format!(

@@ -251,6 +251,7 @@ impl Shell {
                 Ok(s) => Loadable::Ready(s.clone()),
                 Err(e) => Loadable::Failed(e.clone()),
             };
+            Self::publish_totals(&self.summary, cx);
         }
         cx.spawn_in(window, async move |this, cx| {
             let executor = cx.background_executor().clone();
@@ -265,6 +266,7 @@ impl Shell {
                     Ok(Err(e)) => Loadable::Failed(e),
                     Err(_) => Loadable::Failed("the service stopped".into()),
                 };
+                Self::publish_totals(&this.summary, cx);
                 cx.notify();
             });
             let interrupted = interrupted.wait(executor).await.ok().flatten();
@@ -277,6 +279,15 @@ impl Shell {
             });
         })
         .detach();
+    }
+
+    /// Share the Library's file count with the views (the Library toolbar shows it next to its item count).
+    fn publish_totals(summary: &Loadable<CatalogSummary>, cx: &mut App) {
+        if let Some(s) = summary.ready() {
+            cx.set_global(crate::views::library::LibraryTotals {
+                files: s.photos + s.videos,
+            });
+        }
     }
 
     /// Resume the interrupted run named in the banner.
@@ -467,7 +478,7 @@ impl Shell {
     pub fn toggle_panel(&mut self, side: Side, window: &mut Window, cx: &mut Context<'_, Self>) {
         match side {
             Side::Navigator => self.layout.navigator_open = !self.layout.navigator_open,
-            Side::Inspector => self.layout.inspector_open = !self.layout.inspector_open,
+            Side::Inspector => self.layout.toggle_inspector(),
         }
         self.schedule_save(window, cx);
         cx.notify();
@@ -483,7 +494,7 @@ impl Shell {
     ) {
         let total = window.viewport_size().width;
         let other = match side {
-            Side::Navigator if self.layout.inspector_open => px(self.layout.inspector_width),
+            Side::Navigator if self.layout.inspector_shown() => px(self.layout.inspector_width),
             Side::Inspector if self.layout.navigator_open => px(self.layout.navigator_width),
             _ => Pixels::ZERO,
         };

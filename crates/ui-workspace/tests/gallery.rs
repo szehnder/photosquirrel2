@@ -951,7 +951,7 @@ fn gallery_inspector_ai_section_shows_the_insight_as_a_suggestion(cx: &mut TestA
     );
     assert_eq!(
         label_of("inspector-ai-confidence", &mut cx).as_deref(),
-        Some("87 %")
+        Some("87%")
     );
     let prov = label_of("inspector-ai-provenance", &mut cx).unwrap();
     assert!(prov.starts_with("recorder · fixture-vision"), "{prov}");

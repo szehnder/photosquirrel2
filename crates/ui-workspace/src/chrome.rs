@@ -168,7 +168,7 @@ pub(crate) fn title_bar(
                     "title-toggle-inspector",
                     IconName::PanelRight,
                     "Toggle inspector",
-                    layout.inspector_open,
+                    layout.inspector_shown(),
                     cx,
                     |this, w, cx| this.toggle_panel(Side::Inspector, w, cx),
                 )),
@@ -515,7 +515,7 @@ pub(crate) fn body(
     };
     let banner = banner(shell, cx);
     let inspector = layout
-        .inspector_open
+        .inspector_shown()
         .then(|| shell.inspector_view(window, cx));
 
     h_flex()

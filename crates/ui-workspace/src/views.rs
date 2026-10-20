@@ -46,6 +46,14 @@ pub enum ViewId {
     Reports,
 }
 
+impl ViewId {
+    /// The view feeds the inspector a selected photo (Library, Excluded). The others show their details in
+    /// place (Duplicates, AI Review) or have no photo to inspect (Sources, Export, Reports).
+    pub fn inspects_photos(self) -> bool {
+        matches!(self, ViewId::Library | ViewId::Excluded)
+    }
+}
+
 /// Which part of the navigator an entry belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavGroup {

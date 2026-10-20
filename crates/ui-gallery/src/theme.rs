@@ -29,7 +29,7 @@ pub const SCROLLBAR_MIN_THUMB: f32 = 36.0;
 pub const SCROLLBAR_MARGIN: f32 = 3.0;
 pub const SCRUBBER_WIDTH: f32 = 58.0;
 pub const SCRUBBER_LABEL_PX: f32 = 10.5;
-pub const SCRUBBER_MIN_LABEL_GAP: f32 = 22.0;
+pub const SCRUBBER_MIN_LABEL_GAP: f32 = 30.0;
 pub const SCRUBBER_TICK: f32 = 8.0;
 
 /// Badges on tiles (stack count, video).

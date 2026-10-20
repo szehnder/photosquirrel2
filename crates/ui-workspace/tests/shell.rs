@@ -139,9 +139,13 @@ fn scenario_app_shell_window_layout_restored(tcx: &mut TestAppContext) {
     let restored = cx2.update(|_, cx| shell2.read(cx).layout().clone());
     assert_eq!(restored.active_view, ViewId::Duplicates);
     assert!((restored.inspector_width - saved_width).abs() < 0.5);
+    assert!(exists("view-duplicates", &mut cx2));
+    // Duplicates shows its details in place: no inspector there unless asked for.
+    assert!(!exists("inspector-panel", &mut cx2));
+    cx2.simulate_keystrokes("g");
+    cx2.run_until_parked();
     let width = bounds("inspector-panel", &mut cx2).size.width;
     assert!((width - after).abs() < px(1.0), "{width:?} vs {after:?}");
-    assert!(exists("view-duplicates", &mut cx2));
 }
 
 #[gpui_kit::test]

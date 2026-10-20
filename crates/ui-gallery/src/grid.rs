@@ -972,8 +972,7 @@ impl GalleryGrid {
             weight: FontWeight::SEMIBOLD,
             ..font.clone()
         };
-        let mut last_y = f32::NEG_INFINITY;
-        let mut labels: Vec<(f32, i32, bool)> = Vec::new();
+        let mut marks: Vec<(f32, i32, bool)> = Vec::new();
         let mut ticks = Vec::new();
         for m in model.timeline.years() {
             let y = m.index as f32 / count * h;
@@ -993,22 +992,19 @@ impl GalleryGrid {
                     colors.scrubber_tick
                 },
             ));
-            if y - last_y < SCRUBBER_MIN_LABEL_GAP {
-                // Too close to the previous label: the highlighted year wins the slot.
-                if strong && let Some(last) = labels.last_mut() {
-                    *last = (last.0, m.year, true);
-                }
-                continue;
-            }
-            last_y = y;
-            labels.push((y, m.year, strong));
+            marks.push((y, m.year, strong));
         }
+        let labels = thin_labels(&marks, SCRUBBER_MIN_LABEL_GAP);
         // The viewport's position.
         let pos_y = (self.scroll / self.layout(cx).max_scroll(h).max(1.0)) as f32 * (h - 2.0);
+        // Only over the tick column, so it never runs through a year label.
         ticks.push(fill(
             Bounds::new(
-                point(left + lpx(4.0), bounds.top() + lpx(pos_y)),
-                size(lpx(SCRUBBER_WIDTH - 8.0), lpx(2.0)),
+                point(
+                    left + lpx(SCRUBBER_WIDTH - SCRUBBER_TICK - 2.0),
+                    bounds.top() + lpx(pos_y),
+                ),
+                size(lpx(SCRUBBER_TICK + 2.0), lpx(2.0)),
             ),
             colors.selection.opacity(0.85),
         ));
@@ -1053,6 +1049,20 @@ impl GalleryGrid {
             }
         });
     }
+}
+
+/// The year labels to draw from `(y, year, highlighted)` marks in list order: highlighted years (the year at the
+/// top of the viewport, the hovered one) always, then every other year whose label keeps `gap` from each one
+/// already chosen, so labels never overlap.
+pub fn thin_labels(marks: &[(f32, i32, bool)], gap: f32) -> Vec<(f32, i32, bool)> {
+    let mut kept: Vec<(f32, i32, bool)> = marks.iter().copied().filter(|m| m.2).collect();
+    for m in marks.iter().filter(|m| !m.2) {
+        if kept.iter().all(|k| (k.0 - m.0).abs() >= gap) {
+            kept.push(*m);
+        }
+    }
+    kept.sort_by(|a, b| a.0.total_cmp(&b.0));
+    kept
 }
 
 impl Focusable for GalleryGrid {
@@ -1149,5 +1159,37 @@ impl Render for GalleryGrid {
                 )
                 .size_full(),
             )
+    }
+}
+
+#[cfg(test)]
+mod scrubber_label_tests {
+    use ::core::prelude::v1::test;
+
+    use super::thin_labels;
+
+    #[test]
+    fn labels_never_crowd_and_the_highlighted_year_keeps_its_place() {
+        let marks: Vec<(f32, i32, bool)> = vec![
+            (0.0, 2007, true),
+            (10.0, 2011, false),
+            (40.0, 2012, false),
+            (55.0, 2014, false),
+            (90.0, 2015, false),
+            (100.0, 2016, false),
+        ];
+        let labels = thin_labels(&marks, 30.0);
+        let years: Vec<i32> = labels.iter().map(|l| l.1).collect();
+        assert_eq!(years, vec![2007, 2012, 2015]);
+        for w in labels.windows(2) {
+            assert!(w[1].0 - w[0].0 >= 30.0, "{labels:?}");
+        }
+        // A highlighted year in a crowded spot is shown at its own position.
+        let mut marks2 = marks.clone();
+        marks2[0].2 = false;
+        marks2[3].2 = true;
+        let labels = thin_labels(&marks2, 30.0);
+        assert!(labels.contains(&(55.0, 2014, true)));
+        assert!(!labels.iter().any(|l| l.1 == 2012), "{labels:?}");
     }
 }

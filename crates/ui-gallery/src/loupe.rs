@@ -272,12 +272,17 @@ impl LoupeView {
         if pos.y < b.bottom() - lpx(FILMSTRIP_HEIGHT) {
             return None;
         }
+        let len = self.model.read(cx).len();
+        let (first, count, x0) = filmstrip_layout(
+            f32::from(b.left()),
+            f32::from(b.size.width),
+            self.index,
+            len,
+        );
         let pitch = FILMSTRIP_CELL + FILMSTRIP_GAP;
-        let center = f32::from(b.left() + b.size.width / 2.0);
-        let off = ((f32::from(pos.x) - center) / pitch).round() as isize;
-        let j = self.index as isize + off;
-        let len = self.model.read(cx).len() as isize;
-        (j >= 0 && j < len).then_some(j as usize)
+        let k = ((f32::from(pos.x) - x0) / pitch).floor();
+        (k >= 0.0 && (k as usize) < count && f32::from(pos.x) - x0 - k * pitch <= FILMSTRIP_CELL)
+            .then_some(first + k as usize)
     }
 
     fn on_mouse_down(
@@ -416,10 +421,13 @@ impl LoupeView {
             size(bounds.size.width, lpx(FILMSTRIP_HEIGHT)),
         );
         let pitch = FILMSTRIP_CELL + FILMSTRIP_GAP;
-        let half = (f32::from(bounds.size.width) / pitch / 2.0).ceil() as isize + 1;
-        let lo = (self.index as isize - half).max(0) as usize;
-        let hi = ((self.index as isize + half + 1).max(0) as usize).min(len);
-        let center = f32::from(bounds.left() + bounds.size.width / 2.0);
+        let (lo, count, x0) = filmstrip_layout(
+            f32::from(bounds.left()),
+            f32::from(bounds.size.width),
+            self.index,
+            len,
+        );
+        let hi = lo + count;
         let top = f32::from(strip.top()) + (FILMSTRIP_HEIGHT - FILMSTRIP_CELL) / 2.0;
         let range: Vec<usize> = (lo..hi).collect();
         let current = self.index;
@@ -429,7 +437,7 @@ impl LoupeView {
             m.request_pages(lo..hi.max(lo + 1).min(len.max(1)), cx);
             m.want(&range, &[], &[], 1, cx);
             for &j in &range {
-                let x = center + (j as f32 - current as f32) * pitch - FILMSTRIP_CELL / 2.0;
+                let x = x0 + (j - lo) as f32 * pitch;
                 let cell = Bounds::new(
                     point(lpx(x), lpx(top)),
                     size(lpx(FILMSTRIP_CELL), lpx(FILMSTRIP_CELL)),
@@ -576,5 +584,57 @@ impl Render for LoupeView {
                 )
                 .size_full(),
             )
+    }
+}
+
+/// The filmstrip's whole cells for a loupe `width` wide at `left`: `(first index, count, x of the first cell)`.
+/// As many whole cells as fit (with a margin) are shown, centred as a group; the current item sits in the
+/// middle where it can, and the window stops at the ends of the list instead of leaving an empty half.
+pub fn filmstrip_layout(left: f32, width: f32, index: usize, len: usize) -> (usize, usize, f32) {
+    let pitch = FILMSTRIP_CELL + FILMSTRIP_GAP;
+    let margin = 2.0 * pitch;
+    let fit = (((width - margin).max(0.0) + FILMSTRIP_GAP) / pitch)
+        .floor()
+        .max(1.0) as usize;
+    let count = fit.min(len);
+    let first = index
+        .saturating_sub(count / 2)
+        .min(len.saturating_sub(count));
+    let total = count as f32 * pitch - FILMSTRIP_GAP;
+    (first, count, left + (width - total) / 2.0)
+}
+
+#[cfg(test)]
+mod filmstrip_tests {
+    use ::core::prelude::v1::test;
+
+    use super::filmstrip_layout;
+    use crate::theme::{FILMSTRIP_CELL, FILMSTRIP_GAP};
+
+    #[test]
+    fn whole_cells_centred_and_clamped_at_the_ends() {
+        let pitch = FILMSTRIP_CELL + FILMSTRIP_GAP;
+        let width = 900.0;
+        // Near the start the window begins at item 0 instead of leaving an empty left half.
+        let (first, count, x0) = filmstrip_layout(100.0, width, 2, 500);
+        assert_eq!(first, 0);
+        assert!(count > 5);
+        let total = count as f32 * pitch - FILMSTRIP_GAP;
+        assert!(
+            (x0 - (100.0 + (width - total) / 2.0)).abs() < 0.01,
+            "centred"
+        );
+        assert!(
+            x0 >= 100.0 && x0 + total <= 100.0 + width,
+            "no cell is clipped"
+        );
+        // In the middle the current item is in the middle.
+        let (first, count, _) = filmstrip_layout(0.0, width, 250, 500);
+        assert_eq!(first + count / 2, 250);
+        // At the end the window stops at the last item.
+        let (first, count, _) = filmstrip_layout(0.0, width, 499, 500);
+        assert_eq!(first + count, 500);
+        // Fewer items than fit: all of them, centred.
+        assert_eq!(filmstrip_layout(0.0, width, 1, 3).1, 3);
     }
 }

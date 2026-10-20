@@ -439,8 +439,17 @@ impl LibraryView {
         let colors = *ui_theme::colors(cx);
         let m = self.model.read(cx);
         let count = m.len();
-        let loading = matches!(m.state, ui_gallery::model::ListState::Loading);
         let f = self.filters.clone();
+        // The navigator counts files; with stacks on and nothing filtered, say how many the items stand for.
+        let unfiltered = f.camera.is_none()
+            && f.gps.is_none()
+            && f.insight == InsightCriteria::default()
+            && f.dispositions.is_empty();
+        let files = match (f.stacks_off, unfiltered, f.kind) {
+            (false, true, None) => cx.try_global::<LibraryTotals>().map_or(0, |t| t.files),
+            _ => 0,
+        };
+        let loading = matches!(m.state, ui_gallery::model::ListState::Loading);
         let sort_label = match (f.sort.field, f.sort.descending) {
             (SortField::CaptureDate, false) => "Oldest first",
             (SortField::CaptureDate, true) => "Newest first",
@@ -663,7 +672,15 @@ impl LibraryView {
                 Some(MediaKind::Image) => "photos",
                 None => "items",
             };
-            format!("{} {noun}", format_count(count as u64))
+            if files > count as u64 {
+                format!(
+                    "{} {noun} · {} files",
+                    format_count(count as u64),
+                    format_count(files)
+                )
+            } else {
+                format!("{} {noun}", format_count(count as u64))
+            }
         };
         h_flex()
             .id("library-toolbar")
@@ -888,6 +905,17 @@ fn empty_state(cx: &App) -> impl IntoElement {
 
 // ---- Excluded view ---------------------------------------------------------------------------------
 
+/// Photos and videos in the Library (the navigator's count), from the shell's catalog summary.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LibraryTotals {
+    pub files: u64,
+}
+
+impl gpui_kit::Global for LibraryTotals {}
+
+/// Width of the Excluded list's File column (name and path, both shortened in the middle).
+const EXCLUDED_FILE_COLUMN: f32 = 440.0;
+
 pub struct ExcludedView {
     source: std::sync::Arc<dyn ui_gallery::source::GallerySource>,
     rows: Option<std::rc::Rc<Vec<ExcludedRow>>>,
@@ -1003,7 +1031,11 @@ impl Render for ExcludedView {
             .gap(Tokens::space(3.0))
             .border_b_1()
             .border_color(colors.border)
-            .child(div().w(Tokens::size(260.0)).child(eyebrow("File", cx)))
+            .child(
+                div()
+                    .w(Tokens::size(EXCLUDED_FILE_COLUMN))
+                    .child(eyebrow("File", cx)),
+            )
             .child(div().w(Tokens::size(120.0)).child(eyebrow("Class", cx)))
             .child(div().flex_1().child(eyebrow("Reasons", cx)));
         let list = uniform_list("excluded-rows", n, move |range, _, cx| {
@@ -1031,14 +1063,15 @@ impl Render for ExcludedView {
                         })
                         .child(
                             v_flex()
-                                .w(Tokens::size(260.0))
+                                .w(Tokens::size(EXCLUDED_FILE_COLUMN))
+                                .flex_none()
                                 .min_w_0()
                                 .child(
                                     div()
                                         .text_size(Tokens::text_sm())
                                         .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(r.name.clone()),
+                                        .whitespace_nowrap()
+                                        .child(crate::views::kit::middle_ellipsis(&r.name, 56)),
                                 )
                                 .child(
                                     div()
@@ -1046,9 +1079,12 @@ impl Render for ExcludedView {
                                         .text_size(Tokens::text_2xs())
                                         .text_color(colors.text_faint)
                                         .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(crate::views::kit::display_path(
-                                            std::path::Path::new(&r.path),
+                                        .whitespace_nowrap()
+                                        .child(crate::views::kit::middle_ellipsis(
+                                            &crate::views::kit::display_path(std::path::Path::new(
+                                                &r.path,
+                                            )),
+                                            72,
                                         )),
                                 ),
                         )
