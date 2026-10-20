@@ -8,4 +8,4 @@
 
 ## 2. Archive
 
-- [ ] 2.1 `cargo xtask ci` green; archive the change
+- [x] 2.1 `cargo xtask ci` green on a clean worktree of HEAD; every scenario mapped (`scenario_export_library_from_another_catalog_refused_as_a_source`); archived
