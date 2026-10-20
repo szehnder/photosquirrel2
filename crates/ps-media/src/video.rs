@@ -22,6 +22,9 @@ pub struct VideoInfo {
     pub frame_rate: Option<f32>,
     pub codec: Option<String>,
     pub gps: Option<GpsPosition>,
+    /// Apple ContentIdentifier (`com.apple.quicktime.content.identifier`): pairs a Live Photo video with its
+    /// still.
+    pub content_identifier: Option<String>,
     /// nom-exif could not parse the container (fields then come from our own box walk only).
     pub track_error: Option<String>,
 }
@@ -37,6 +40,7 @@ pub fn movie_info(buf: &[u8], moov: &BoxRef) -> VideoInfo {
         rotation: boxes.rotation,
         frame_rate: boxes.frame_rate,
         codec: boxes.codec,
+        content_identifier: crate::apple::quicktime_content_identifier(buf, moov),
         ..Default::default()
     };
 

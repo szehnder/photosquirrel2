@@ -218,3 +218,105 @@ fn dng_metadata_read() {
     assert_eq!(m.fields.camera_make.as_deref(), Some("FixtureCam"));
     assert_eq!(m.exposure, Some(URational { num: 1, den: 125 }));
 }
+
+/// An Apple maker note (`Apple iOS` header, big-endian IFD) holding tag 0x0011 ContentIdentifier.
+fn apple_maker_note(content_identifier: &str) -> Vec<u8> {
+    let mut v = content_identifier.as_bytes().to_vec();
+    v.push(0);
+    let mut note = b"Apple iOS\0\x00\x01MM".to_vec();
+    note.extend_from_slice(&2u16.to_be_bytes());
+    // 0x0001 MakerNoteVersion (SLONG 14), then 0x0011 ContentIdentifier (ASCII, stored after the IFD).
+    note.extend_from_slice(&[0x00, 0x01, 0x00, 0x09, 0, 0, 0, 1, 0, 0, 0, 14]);
+    let data_off = (16 + 2 * 12 + 4) as u32;
+    note.extend_from_slice(&0x0011u16.to_be_bytes());
+    note.extend_from_slice(&2u16.to_be_bytes());
+    note.extend_from_slice(&(v.len() as u32).to_be_bytes());
+    note.extend_from_slice(&data_off.to_be_bytes());
+    note.extend_from_slice(&0u32.to_be_bytes());
+    note.extend_from_slice(&v);
+    note
+}
+
+/// Export task 1.2: a Live Photo pair (an iPhone JPEG still and its MOV) carries one Apple ContentIdentifier
+/// in the still's maker note and in the movie's `com.apple.quicktime.content.identifier` key.
+#[test]
+fn live_photo_still_and_video_share_the_apple_content_identifier() {
+    let id = "5D2E7C1B-9A3F-4E60-8B1D-2C4F6A8E0B13";
+    let still = fx::jpeg_with_exif(
+        320,
+        240,
+        7,
+        85,
+        &fx::ExifSpec {
+            make: Some("Apple".into()),
+            model: Some("iPhone 12".into()),
+            date_time_original: Some("2021:07:04 18:30:00".into()),
+            maker_note: Some(apple_maker_note(id)),
+            ..Default::default()
+        },
+    );
+    let (_, m) = analyze(&still, "IMG_0001.JPG", None);
+    assert_eq!(m.fields.content_identifier.as_deref(), Some(id));
+    assert!(
+        m.fields
+            .all_tags
+            .iter()
+            .any(|(g, n, v)| g == "Apple" && n == "ContentIdentifier" && v == id)
+    );
+    let movie = ps_fixtures::video::write_video(&ps_fixtures::video::VideoSpec {
+        quicktime: true,
+        width: 1920,
+        height: 1440,
+        duration_ms: 2_800,
+        created_utc: 1_625_423_400,
+        make: Some("Apple".into()),
+        model: Some("iPhone 12".into()),
+        location: None,
+        content_identifier: Some(id.into()),
+        payload: 4_096,
+        seed: 7,
+    });
+    let (p, m) = analyze(&movie, "IMG_0001.MOV", None);
+    assert_eq!(p.format, Some(Format::Mov));
+    assert_eq!(m.fields.content_identifier.as_deref(), Some(id));
+    assert_eq!(m.fields.camera_model.as_deref(), Some("iPhone 12"));
+
+    // Other cameras and plain movies carry none.
+    let (_, canon) = analyze(
+        &fx::jpeg_with_exif(64, 48, 1, 80, &fx::ExifSpec::canon_5d()),
+        "c.jpg",
+        None,
+    );
+    assert_eq!(canon.fields.content_identifier, None);
+    let plain = ps_fixtures::video::write_video(&ps_fixtures::video::VideoSpec {
+        quicktime: true,
+        width: 640,
+        height: 480,
+        duration_ms: 1_000,
+        created_utc: 1_625_423_400,
+        make: None,
+        model: None,
+        location: None,
+        content_identifier: None,
+        payload: 1_024,
+        seed: 1,
+    });
+    assert_eq!(
+        analyze(&plain, "v.mov", None).1.fields.content_identifier,
+        None
+    );
+}
+
+/// A still whose ContentIdentifier is only in XMP (converters that drop the maker note keep it there).
+#[test]
+fn content_identifier_from_xmp() {
+    let id = "0F1E2D3C-4B5A-4978-8695-A4B3C2D1E0F9";
+    let xmp = format!(
+        "http://ns.adobe.com/xap/1.0/\0<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF><rdf:Description \
+         xmlns:apple-fi=\"http://ns.apple.com/faceinfo/1.0/\" apple-fi:ContentIdentifier=\"{id}\"/></rdf:RDF>\
+         </x:xmpmeta>"
+    );
+    let j = fx::insert_segment(&fx::jpeg(64, 48, 3, 80), 0xE1, xmp.as_bytes());
+    let (_, m) = analyze(&j, "x.jpg", None);
+    assert_eq!(m.fields.content_identifier.as_deref(), Some(id));
+}

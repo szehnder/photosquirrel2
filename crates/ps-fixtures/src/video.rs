@@ -20,6 +20,8 @@ pub struct VideoSpec {
     pub model: Option<String>,
     /// ISO 6709 location (`+37.7749-122.4194/`).
     pub location: Option<String>,
+    /// Apple ContentIdentifier (`com.apple.quicktime.content.identifier`) of a Live Photo video.
+    pub content_identifier: Option<String>,
     /// `mdat` payload size in bytes.
     pub payload: usize,
     pub seed: u64,
@@ -216,6 +218,9 @@ pub fn write_video(v: &VideoSpec) -> Vec<u8> {
     if let Some(l) = &v.location {
         items.push(("com.apple.quicktime.location.ISO6709", l.clone()));
     }
+    if let Some(id) = &v.content_identifier {
+        items.push(("com.apple.quicktime.content.identifier", id.clone()));
+    }
     items.push((
         "com.apple.quicktime.creationdate",
         format!("{}+00:00", &iso[..iso.len() - 1]),
@@ -248,6 +253,7 @@ mod tests {
             make: Some("Apple".into()),
             model: Some("iPhone 12".into()),
             location: None,
+            content_identifier: None,
             payload: 1000,
             seed: 1,
         });

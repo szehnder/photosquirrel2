@@ -4,6 +4,7 @@
 //! scanner) owns I/O scheduling. No function panics on malformed input: problems become error records or
 //! warnings.
 
+pub mod apple;
 pub mod bmff;
 pub mod classify;
 pub mod decode;

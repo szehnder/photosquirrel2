@@ -83,6 +83,7 @@ pub fn extract_metadata(bytes: &[u8], probe: &ProbeRecord, mtime: Option<SystemT
                 m.fields.camera_model = v.model.clone();
                 m.fields.software = v.software.clone();
                 m.fields.gps = v.gps;
+                m.fields.content_identifier = v.content_identifier.clone();
                 m.rotation_deg = Some(v.rotation);
                 container_date = v.creation;
                 push_tag(
@@ -113,6 +114,12 @@ pub fn extract_metadata(bytes: &[u8], probe: &ProbeRecord, mtime: Option<SystemT
                     v.frame_rate.map(|f| format!("{f:.3}")),
                 );
                 push_tag(&mut m.fields, "QuickTime", "Codec", v.codec);
+                push_tag(
+                    &mut m.fields,
+                    "QuickTime",
+                    "ContentIdentifier",
+                    v.content_identifier,
+                );
                 if let Some(e) = v.track_error {
                     m.warnings
                         .push(format!("video metadata partly unreadable: {e}"));
@@ -156,6 +163,13 @@ pub fn extract_metadata(bytes: &[u8], probe: &ProbeRecord, mtime: Option<SystemT
             }
             if f == Format::Jpeg {
                 m.fields.jpeg_quality = crate::quality::estimate(bytes);
+            }
+            // Live Photo still: the maker note's ContentIdentifier (set by apply_exif), else XMP's.
+            if m.fields.content_identifier.is_none()
+                && let Some(id) = crate::apple::xmp_content_identifier(bytes)
+            {
+                push_tag(&mut m.fields, "XMP", "ContentIdentifier", Some(id.clone()));
+                m.fields.content_identifier = Some(id);
             }
         }
         None => {}
@@ -344,6 +358,14 @@ fn apply_exif(mut iter: ExifIter, m: &mut Metadata, dates: &mut ExifDates) -> us
             (IfdKind::Exif, _, 0xA431) => f.camera_serial = text(),
             (IfdKind::Exif, _, 0x927C) => {
                 f.has_maker_notes = v.as_undefined().is_none_or(|b| !b.is_empty());
+                if let Some(id) = v
+                    .as_undefined()
+                    .and_then(crate::apple::maker_note_content_identifier)
+                {
+                    f.all_tags
+                        .push(("Apple".into(), "ContentIdentifier".into(), id.clone()));
+                    f.content_identifier = Some(id);
+                }
             }
             (IfdKind::Exif, _, 0x9003) => dates.original = entry_time(v),
             (IfdKind::Exif, _, 0x9004) => dates.create = entry_time(v),
