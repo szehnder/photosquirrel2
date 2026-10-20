@@ -347,7 +347,7 @@ impl Render for ReportsView {
                             .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
                             .text_size(Tokens::text_mono())
                             .text_color(colors.text_faint)
-                            .child(format!("Library: {}", data.library.display())),
+                            .child(format!("Library: {}", kit::display_path(&data.library))),
                     )
                     .child(
                         div()

@@ -247,10 +247,10 @@ fn scenario_scan_progress_stage_counts_shown(cx: &mut TestAppContext) {
         r.snap(|s| s.stages.discovered) == Some(1_000)
     });
     for (id, want) in [
-        ("stage-discovered", "Discovered 1000"),
+        ("stage-discovered", "Waiting 1000"),
         ("stage-probed", "Probed 600"),
         ("stage-analyzed", "Analyzed 400"),
-        ("stage-thumbed", "Thumbnailed 300"),
+        ("stage-thumbed", "Done 300"),
         ("stage-skipped", "Skipped 150"),
         ("stage-failed", "Failed 5"),
     ] {

@@ -30,10 +30,10 @@ pub fn device_label(d: DeviceClass) -> &'static str {
 
 fn stage_label(s: Stage) -> &'static str {
     match s {
-        Stage::Discovered => "Discovered",
+        Stage::Discovered => "Waiting",
         Stage::Probed => "Probed",
         Stage::Analyzed => "Analyzed",
-        Stage::Thumbed => "Thumbnailed",
+        Stage::Thumbed => "Done",
         Stage::Skipped => "Skipped",
         Stage::Failed => "Failed",
     }
@@ -374,7 +374,7 @@ fn summary_card(
 fn stages_card(s: &ProgressSnapshot, colors: &Colors, cx: &App) -> AnyElement {
     let total = s.stages.total().max(1);
     kit::card(cx)
-        .child(kit::card_title("Pipeline stages", cx))
+        .child(kit::card_title("Where every file is", cx))
         .children(Stage::ALL.into_iter().map(|st| {
             let n = s.stages.get(st);
             let fill = match st {

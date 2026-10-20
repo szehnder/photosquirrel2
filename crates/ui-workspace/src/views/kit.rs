@@ -292,6 +292,16 @@ pub fn format_duration(ms: u64) -> String {
     }
 }
 
+/// A path for display: the home folder shown as `~` ("~/Pictures/PhotoSquirrel Library").
+pub fn display_path(p: &std::path::Path) -> String {
+    let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+    match home.as_deref().and_then(|h| p.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => p.display().to_string(),
+    }
+}
+
 /// Shorten a long path in the middle ("Family/Photos/…/2019-08 Holiday").
 pub fn middle_ellipsis(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
@@ -395,6 +405,23 @@ mod tests {
     use ::core::prelude::v1::test;
 
     use super::*;
+
+    #[test]
+    fn home_paths_display_with_a_tilde() {
+        let home = directories::BaseDirs::new()
+            .unwrap()
+            .home_dir()
+            .to_path_buf();
+        let lib = home.join("Pictures").join("PhotoSquirrel Library");
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            display_path(&lib),
+            format!("~{sep}Pictures{sep}PhotoSquirrel Library")
+        );
+        assert_eq!(display_path(&home), "~");
+        let elsewhere = std::path::Path::new("/mnt/nas/photos");
+        assert_eq!(display_path(elsewhere), elsewhere.display().to_string());
+    }
 
     #[test]
     fn formatting() {

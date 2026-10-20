@@ -479,7 +479,7 @@ impl Render for ExportView {
         let library = self
             .library
             .as_ref()
-            .map(|l| l.display().to_string())
+            .map(|l| kit::display_path(l))
             .unwrap_or_default();
         let profiles = ExportProfile::ALL;
         let sel = profiles
@@ -624,7 +624,7 @@ impl Render for ExportView {
                                     "Copy {} files ({}) into {}?",
                                     format_count(p.files),
                                     kit::format_bytes(p.bytes),
-                                    p.library.display()
+                                    kit::display_path(&p.library)
                                 ),
                                 None => "Start the export?".into(),
                             }),

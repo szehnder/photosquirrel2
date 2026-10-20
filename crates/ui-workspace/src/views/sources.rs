@@ -351,10 +351,7 @@ impl SourcesView {
                                     .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
                                     .text_size(Tokens::text_mono())
                                     .text_color(colors.text_faint)
-                                    .child(kit::middle_ellipsis(
-                                        &row.root.display().to_string(),
-                                        72,
-                                    )),
+                                    .child(kit::middle_ellipsis(&kit::display_path(&row.root), 72)),
                             ),
                     )
                     .child(
