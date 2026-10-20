@@ -160,29 +160,51 @@ impl AiReviewView {
             editors_dirty: false,
             _poll: None,
         };
-        if crate::startup::StartupGrace::remaining(cx).is_some() {
-            this.load_now(window, cx);
-        } else {
+        let primed = crate::startup::StartupGrace::deadline(cx)
+            .is_some_and(|d| this.load_now(d, window, cx));
+        if !primed {
             this.reload(cx);
         }
         this.start_polling(cx);
         this
     }
 
-    fn load_now(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+    /// Load the status and the first page before the first frame (start-up grace only). The queries run on a
+    /// helper thread and are given up at `deadline`; `false` when they did not arrive in time.
+    fn load_now(
+        &mut self,
+        deadline: std::time::Instant,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
         let Some(src) = self.source.clone() else {
-            return;
+            return true;
         };
-        self.stamp = src.ai_stamp().ok();
-        self.status = src.ai_status().ok();
-        if let Ok(items) = src.ai_items(&self.filter, LIMIT) {
+        let filter = self.filter.clone();
+        let Some((stamp, status, items)) =
+            crate::startup::StartupGrace::within(deadline, move || {
+                (
+                    src.ai_stamp().ok(),
+                    src.ai_status().ok(),
+                    src.ai_items(&filter, LIMIT).ok(),
+                )
+            })
+        else {
+            return false;
+        };
+        self.stamp = stamp;
+        self.status = status;
+        if let Some(items) = items {
             for i in items.iter().take(14) {
-                self.images.prime_thumb(i.digest);
+                if std::time::Instant::now() < deadline {
+                    self.images.prime_thumb(i.digest);
+                }
             }
             self.selected = items.first().map(|i| i.content.clone());
             self.items = Some(Rc::new(items));
             self.sync_editors(window, cx);
         }
+        true
     }
 
     // ---- state for tests --------------------------------------------------------------------------------

@@ -254,9 +254,8 @@ impl DuplicatesView {
             // Dev-only: scripted screenshots of the suggestions panel (KDE gives agents one frame).
             this.tab = Tab::Suggestions;
         }
-        if crate::startup::StartupGrace::remaining(cx).is_some() {
-            this.load_now();
-        } else {
+        let primed = crate::startup::StartupGrace::deadline(cx).is_some_and(|d| this.load_now(d));
+        if !primed {
             this.reload(cx);
             this.reload_suggestions(cx);
         }
@@ -267,40 +266,59 @@ impl DuplicatesView {
         this
     }
 
-    /// Load the list, the first group and their thumbnails on this thread (start-up grace only, so the first
-    /// frame of a scripted launch already shows the review).
-    fn load_now(&mut self) {
+    /// Load the list, the first group, the suggestions and their thumbnails before the first frame (start-up
+    /// grace only, so the first frame of a scripted launch already shows the review). The queries run on a
+    /// helper thread and are given up at `deadline`; thumbnails are primed only while time is left. `false`
+    /// when nothing arrived in time (the caller then loads asynchronously).
+    fn load_now(&mut self, deadline: std::time::Instant) -> bool {
         let Some(src) = self.source.clone() else {
-            return;
+            return true;
         };
-        if let Ok(list) = src.groups(self.filter, self.sort) {
+        let (filter, sort) = (self.filter, self.sort);
+        let Some((list, detail, suggestions)) =
+            crate::startup::StartupGrace::within(deadline, move || {
+                let list = src.groups(filter, sort).ok();
+                let first = list.as_ref().and_then(|l| l.rows.first().map(|r| r.id));
+                let detail = first.and_then(|id| src.group(id).ok());
+                (list, detail, src.suggestions(500).ok())
+            })
+        else {
+            return false;
+        };
+        let in_time = || std::time::Instant::now() < deadline;
+        if let Some(list) = list {
             for r in list.rows.iter().take(16) {
-                if let Some(t) = r.thumb {
+                if let Some(t) = r.thumb
+                    && in_time()
+                {
                     self.images.prime_thumb(t);
                 }
             }
             self.selected = list.rows.first().map(|r| r.id);
             self.list = Some(Rc::new(list));
         }
-        if let Some(id) = self.selected
-            && let Ok(d) = src.group(id)
-        {
+        if let Some(d) = detail {
             for c in &d.cards {
-                if let Some(t) = c.thumb {
+                if let Some(t) = c.thumb
+                    && in_time()
+                {
                     self.images.prime_thumb(t);
                 }
             }
             self.focused = usize::from(d.members().len() > 1);
             self.detail = Some(d);
         }
-        if let Ok(s) = src.suggestions(500) {
+        if let Some(s) = suggestions {
             for c in s.iter().take(12) {
                 for t in [c.a.card.thumb, c.b.card.thumb].into_iter().flatten() {
-                    self.images.prime_thumb(t);
+                    if in_time() {
+                        self.images.prime_thumb(t);
+                    }
                 }
             }
             self.suggestions = Some(Rc::new(s));
         }
+        true
     }
 
     // ---- state for tests --------------------------------------------------------------------------------

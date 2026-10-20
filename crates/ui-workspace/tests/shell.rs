@@ -145,6 +145,21 @@ fn scenario_app_shell_window_layout_restored(tcx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn ui_state_is_saved_off_the_ui_thread_after_changes_settle(tcx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    init_app(tcx, Arc::new(FakeBackend::small_corpus()), Some(&dirs));
+    let (shell, mut cx) = open(tcx);
+    wait_loaded(&shell, &mut cx);
+    let file = dirs.data().join("ui-state.json");
+    let _ = std::fs::remove_file(&file);
+    cx.simulate_keystrokes("d");
+    cx.update(|window, cx| shell.update(cx, |s, cx| s.save_in_background(window, cx)));
+    cx.run_until_parked();
+    let text = std::fs::read_to_string(&file).expect("saved by the background task");
+    assert!(text.contains("duplicates"), "{text}");
+}
+
+#[gpui_kit::test]
 fn scenario_app_shell_shortcuts_switch_views(cx: &mut TestAppContext) {
     init_app(cx, Arc::new(FakeBackend::small_corpus()), None);
     let (shell, mut cx) = open(cx);

@@ -644,11 +644,27 @@ impl Shell {
         }
         self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(SAVE_DEBOUNCE).await;
-            let _ = this.update_in(cx, |this, window, cx| this.save_now(window, cx));
+            let _ = this.update_in(cx, |this, window, cx| this.save_in_background(window, cx));
         }));
     }
 
-    /// Write `ui-state.json` now (on close, and after changes settle).
+    /// Snapshot the layout now and write `ui-state.json` on a background thread (after changes settle).
+    pub fn save_in_background(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.save_task = None;
+        let Some(file) = self.ui_file.clone() else {
+            return;
+        };
+        let state = self.snapshot(window);
+        let ticket = file.ticket();
+        cx.background_spawn(async move {
+            if let Err(err) = file.save_ticketed(&state, ticket) {
+                log::warn!("could not save {}: {err}", file.path().display());
+            }
+        })
+        .detach();
+    }
+
+    /// Write `ui-state.json` now, on this thread (on close and quit, when the process may exit next).
     pub fn save_now(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.save_task = None;
         let Some(file) = self.ui_file.clone() else {

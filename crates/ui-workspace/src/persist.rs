@@ -119,16 +119,26 @@ impl UiState {
     }
 }
 
-/// Where the UI state lives.
+/// Where the UI state lives. Clones share a write ticket counter, so a debounced background save that finishes
+/// late never replaces a newer state (the synchronous save on quit).
 #[derive(Debug, Clone)]
 pub struct UiStateFile {
     path: PathBuf,
+    order: std::sync::Arc<WriteOrder>,
+}
+
+#[derive(Debug, Default)]
+struct WriteOrder {
+    next: std::sync::atomic::AtomicU64,
+    /// The newest ticket written so far (held while writing).
+    written: std::sync::Mutex<u64>,
 }
 
 impl UiStateFile {
     pub fn in_dir(data_dir: &Path) -> Self {
         Self {
             path: data_dir.join(FILE_NAME),
+            order: Default::default(),
         }
     }
 
@@ -161,8 +171,32 @@ impl UiStateFile {
         }
     }
 
+    /// A ticket for a state snapshotted now; pass it to [`UiStateFile::save_ticketed`].
+    pub fn ticket(&self) -> u64 {
+        self.order
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
+
     /// Write atomically (temp file + rename). Blocking: call from a background task or on close.
     pub fn save(&self, state: &UiState) -> std::io::Result<()> {
+        self.save_ticketed(state, self.ticket()).map(|_| ())
+    }
+
+    /// Write `state`, snapshotted under `ticket`, unless a newer ticket has been written already. Returns
+    /// `Ok(false)` when skipped as stale.
+    pub fn save_ticketed(&self, state: &UiState, ticket: u64) -> std::io::Result<bool> {
+        let mut written = self.order.written.lock().unwrap_or_else(|p| p.into_inner());
+        if ticket < *written {
+            return Ok(false);
+        }
+        self.write(state)?;
+        *written = ticket;
+        Ok(true)
+    }
+
+    fn write(&self, state: &UiState) -> std::io::Result<()> {
         let dir = self.path.parent().unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join(format!(".{FILE_NAME}.{}.tmp", std::process::id()));
@@ -198,6 +232,25 @@ mod tests {
             file.load().unwrap().inspector_width,
             f32::from(Tokens::INSPECTOR_MAX)
         );
+    }
+
+    #[test]
+    fn a_late_older_save_never_replaces_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = UiStateFile::in_dir(dir.path());
+        let old = UiState {
+            active_view: ViewId::Duplicates,
+            ..UiState::default()
+        };
+        let new = UiState {
+            active_view: ViewId::AiReview,
+            ..UiState::default()
+        };
+        let old_ticket = file.ticket();
+        let new_ticket = file.clone().ticket();
+        assert!(file.save_ticketed(&new, new_ticket).unwrap());
+        assert!(!file.save_ticketed(&old, old_ticket).unwrap());
+        assert_eq!(file.load().unwrap().active_view, ViewId::AiReview);
     }
 
     #[test]

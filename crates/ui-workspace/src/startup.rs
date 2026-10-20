@@ -45,6 +45,24 @@ impl StartupGrace {
         cx.try_global::<StartupGrace>()?.select
     }
 
+    /// Run `job` on a helper thread and wait for it until `deadline` at most. `None` when it did not finish in
+    /// time (its result is then dropped; the caller falls back to its asynchronous path). The calling (UI)
+    /// thread never runs the job itself, so a slow catalog cannot stall the first frame past the grace.
+    pub fn within<T: Send + 'static>(
+        deadline: Instant,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let left = deadline.checked_duration_since(Instant::now())?;
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("startup-grace".into())
+            .spawn(move || {
+                let _ = tx.send(job());
+            })
+            .ok()?;
+        rx.recv_timeout(left).ok()
+    }
+
     /// End the grace (after the first frame).
     pub fn end(cx: &mut App) {
         if let Some(g) = cx.try_global::<StartupGrace>() {
@@ -54,5 +72,25 @@ impl StartupGrace {
                 select,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn within_returns_fast_results_and_gives_up_at_the_deadline() {
+        let soon = Instant::now() + Duration::from_millis(500);
+        assert_eq!(StartupGrace::within(soon, || 7), Some(7));
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(50);
+        let slow = StartupGrace::within(deadline, || {
+            std::thread::sleep(Duration::from_millis(400));
+            1
+        });
+        assert_eq!(slow, None);
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert_eq!(StartupGrace::within(started, || 1), None, "past deadline");
     }
 }
