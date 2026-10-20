@@ -47,9 +47,10 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0041](0041-exclusive-catalog-owner-lock.md) | One owner process per catalog: an exclusive OS lock |
 | [0042](0042-interim-json-review-stores.md) | Interim JSON stores for review state and AI corrections |
 | [0043](0043-group-capture-date-for-export-filing.md) | Export files a keeper by the best capture date its duplicate group knows |
-| [0044](0044-export-replan-trusts-the-ledger.md) | An export re-plan trusts the ledger: size and modification time, no re-hash |
+| [0044](0044-export-replan-trusts-the-ledger.md) | An export re-plan trusts the ledger: size and modification time, no re-hash (budget amended by 0050) |
 | [0045](0045-sidecars-in-the-export-ledger.md) | XMP sidecars have export ledger rows |
 | [0046](0046-library-copies-changed-by-other-apps.md) | A library copy changed by another app stays the export of its photo |
 | [0047](0047-hosted-consent-bound-to-provider-and-host.md) | Hosted AI consent is bound to a provider and a host; no redirects |
 | [0048](0048-consent-binds-the-scheme-hosted-needs-https.md) | Hosted consent binds the scheme; hosted providers need HTTPS (extends 0047) |
 | [0049](0049-settings-file-ownership-and-external-edits.md) | The running app owns `settings.toml`; external consent withdrawals win (extends 0047) |
+| [0050](0050-export-replan-budget-with-sidecar-rows.md) | The export re-plan budget with sidecar ledger rows: 800 ms (amends 0044) |
