@@ -132,6 +132,28 @@ fn filtered_id_lists_over_1m() {
         ..query()
     };
     time("travel with people", &travel);
+    // A live AI queue: one new result (re-describing a content in place) is applied to the index, not rebuilt.
+    let cat = lib.catalog().expect("catalog").clone();
+    let first = cat
+        .read()
+        .ai_results(1)
+        .expect("results")
+        .pop()
+        .expect("a result");
+    cat.writer()
+        .ai_complete(ps_catalog::AiResultRow {
+            at_ms: ps_export::now_ms(),
+            ..first
+        })
+        .expect("store");
+    let before = lib.insight_index_stats();
+    time(
+        "children after one new insight (in-place update)",
+        &children,
+    );
+    let after = lib.insight_index_stats();
+    assert_eq!(after.full_builds, before.full_builds, "{after:?}");
+    assert_eq!(after.updates, before.updates + 1);
     let pending = GalleryQuery {
         dispositions: vec![Disposition::Pending],
         ..query()
@@ -447,4 +469,98 @@ fn stack_counts_and_members_leave_out_excluded_files() {
     assert_eq!(members.len(), usize::from(n - 1));
     assert_eq!(members[0], keeper);
     assert!(!members.contains(&excluded), "the expansion leaves it out");
+}
+
+/// A live AI queue must not make every filter query rebuild the 1M-item insight index (2.4 s): one new
+/// insight and one correction are applied in place, and the filtered list matches what a full build gives.
+#[test]
+fn a_new_insight_updates_the_insight_index_in_place() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let lib = synthetic_library(tmp.path(), 400);
+    let cat = lib.catalog().expect("catalog").clone();
+    assert_eq!(insights::seed_demo(&cat, 160).expect("seed"), 160);
+    let children = GalleryQuery {
+        insight: InsightCriteria {
+            children: true,
+            ..InsightCriteria::default()
+        },
+        stacks: false,
+        ..query()
+    };
+    assert_eq!(lib.id_list(&children).expect("list").len(), 60);
+    let s = lib.insight_index_stats();
+    assert_eq!((s.full_builds, s.updates), (1, 0));
+
+    // A photo the queue has not analysed yet gets an insight with children (demo kind 0).
+    let r = cat.read();
+    let mut fresh = None;
+    r.for_each_file(|f| {
+        if fresh.is_none()
+            && f.class == Some(ps_model::PhotoClass::Photo)
+            && let Some(c) = f.identity
+            && r.ai_result_for(&c).ok().flatten().is_none()
+        {
+            fresh = Some(c);
+        }
+    })
+    .expect("files");
+    let content = fresh.expect("an unanalysed photo");
+    let all = lib.id_list(&query()).expect("all");
+    let new_ids: Vec<ItemId> = r
+        .files_with_content(&content)
+        .expect("files")
+        .into_iter()
+        .filter_map(|f| ItemId::try_from(f).ok())
+        .filter(|id| all.ids.contains(id))
+        .collect();
+    assert!(!new_ids.is_empty());
+    cat.writer()
+        .ai_complete(ps_catalog::AiResultRow {
+            content,
+            provider: insights::DEMO_PROVIDER.into(),
+            model: "demo-vision".into(),
+            schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
+            prompt_version: 2,
+            insight: serde_json::to_string(&insights::sample_insight(0)).expect("json"),
+            latency_ms: 1,
+            requests: 1,
+            at_ms: ps_export::now_ms(),
+        })
+        .expect("store result");
+    let list = lib.id_list(&children).expect("list");
+    assert_eq!(list.len(), 60 + new_ids.len());
+    assert!(new_ids.iter().all(|id| list.ids.contains(id)));
+    let s = lib.insight_index_stats();
+    assert_eq!((s.full_builds, s.updates), (1, 1), "no full rebuild");
+    assert!(
+        s.last_update_contents <= 2,
+        "only the new row (and rows of the previous newest millisecond) are re-read: {s:?}"
+    );
+
+    // A correction (no children after all) is applied in place too.
+    lib.insight_store()
+        .expect("store")
+        .correct(
+            &content.to_hex(),
+            Correction {
+                people: Some(ps_model::PeopleEstimate {
+                    total: 1,
+                    adults: 1,
+                    children: 0,
+                }),
+                ..Correction::default()
+            },
+        )
+        .expect("correct");
+    let list = lib.id_list(&children).expect("list");
+    assert_eq!(list.len(), 60);
+    assert!(new_ids.iter().all(|id| !list.ids.contains(id)));
+    let s = lib.insight_index_stats();
+    assert_eq!(
+        (s.full_builds, s.updates, s.last_update_contents),
+        (1, 2, 1)
+    );
+    // No change: no work.
+    lib.id_list(&children).expect("list");
+    assert_eq!(lib.insight_index_stats().updates, 2);
 }

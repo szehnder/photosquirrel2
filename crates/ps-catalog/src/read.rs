@@ -188,10 +188,15 @@ impl Readers {
 
     /// Files sharing a content identity (exact duplicates, ADR-0011).
     pub fn files_with_content(&self, id: &ContentId) -> Result<Vec<FileId>> {
+        self.files_with_digest(&id.digest)
+    }
+
+    /// Files whose content digest is `digest` (any identity kind), in id order.
+    pub fn files_with_digest(&self, digest: &[u8; 32]) -> Result<Vec<FileId>> {
         self.with(|c| {
             let mut stmt =
                 c.prepare_cached("SELECT id FROM file WHERE content_id = ?1 ORDER BY id")?;
-            let rows = stmt.query_map([&id.digest[..]], |r| Ok(FileId(r.get(0)?)))?;
+            let rows = stmt.query_map([&digest[..]], |r| Ok(FileId(r.get(0)?)))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }

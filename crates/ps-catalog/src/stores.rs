@@ -424,6 +424,48 @@ impl Readers {
         })
     }
 
+    /// The content of every result row stored at or after `at_ms`, one entry per row (`ai_result_by_time`).
+    /// Incremental updates of the gallery's insight index (`ps_service::library`).
+    pub fn ai_result_contents_since(&self, at_ms: i64) -> Result<Vec<[u8; 32]>> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT content_id FROM ai_result INDEXED BY ai_result_by_time WHERE at >= ?1",
+            )?;
+            let mut rows = stmt.query([at_ms])?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                if let rusqlite::types::ValueRef::Blob(d) = r.get_ref(0)?
+                    && let Ok(d) = <[u8; 32]>::try_from(d)
+                {
+                    out.push(d);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// The newest insight JSON of each of `digests` that has a result, as `(digest, insight JSON)`.
+    pub fn ai_latest_insights_of(
+        &self,
+        digests: &[[u8; 32]],
+        mut f: impl FnMut([u8; 32], &str),
+    ) -> Result<()> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT insight FROM ai_result WHERE content_id = ?1 ORDER BY at DESC LIMIT 1",
+            )?;
+            for d in digests {
+                let mut rows = stmt.query([&d[..]])?;
+                if let Some(r) = rows.next()?
+                    && let rusqlite::types::ValueRef::Text(t) = r.get_ref(0)?
+                {
+                    f(*d, std::str::from_utf8(t).unwrap_or_default());
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// The newest result of every content, as `(digest, insight JSON)`, in content order: one pass over the
     /// table's primary key (gallery insight filters, `ps_service::library`).
     pub fn ai_latest_insights(&self, mut f: impl FnMut([u8; 32], &str)) -> Result<()> {

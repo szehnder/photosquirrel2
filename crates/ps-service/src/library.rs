@@ -9,8 +9,9 @@
 //! Filters the catalog cannot express in SQL are applied inside the catalog's ID-list scan as an
 //! [`ItemSet`] restriction ([`ps_catalog::Readers::id_list_within`]): AI insight criteria on the *effective*
 //! insight (stored result with the user's corrections from [`crate::insights`]), and completion-report
-//! dispositions (derived from the export ledger by [`crate::export`]). Both sets are cached and rebuilt when
-//! their inputs change (insight stamp; export or scan).
+//! dispositions (derived from the export ledger by [`crate::export`]). Both sets are cached. The insight index is
+//! updated in place for the contents whose result or correction changed (insight stamp); dispositions are
+//! rebuilt after an export or scan.
 //!
 //! [`synthetic`] builds an N-item synthetic catalog for the 1M-item budgets.
 
@@ -171,14 +172,60 @@ impl Facets {
     }
 }
 
-/// Effective insight facets of every analysed file, valid for one [`InsightStamp`].
+/// Effective insight facets of every analysed file, valid for one [`InsightStamp`]. Built once (a full pass over
+/// every result and every file: ~2.4 s on 1M), then updated in place for the contents whose result or correction
+/// changed, so a live AI queue never makes filtering rebuild it ([`Library::insight_matches`]).
 struct InsightIndex {
     stamp: InsightStamp,
     /// Distinct facets (few: most photos share a handful of combinations) and each file's index into them.
     facets: Vec<Facets>,
+    kinds: HashMap<Facets, u32>,
+    /// Sorted by item id.
     files: Vec<(ItemId, u32)>,
+    /// The corrections the index reflects (few; diffed against the store when its revision changes).
+    corrections: HashMap<[u8; 32], Correction>,
     /// The last criteria's matching files.
     last: Option<(InsightCriteria, Arc<ItemSet>)>,
+}
+
+impl InsightIndex {
+    fn kind(&mut self, f: Facets) -> u32 {
+        *self.kinds.entry(f).or_insert_with(|| {
+            self.facets.push(f);
+            self.facets.len() as u32 - 1
+        })
+    }
+
+    /// Point every file of a content at `kind` (`None`: the content has no readable insight any more).
+    fn set_files(&mut self, files: &[FileId], kind: Option<u32>) {
+        for f in files {
+            let Ok(id) = ItemId::try_from(*f) else {
+                continue;
+            };
+            match (self.files.binary_search_by_key(&id, |(x, _)| *x), kind) {
+                (Ok(p), Some(k)) => self.files[p].1 = k,
+                (Ok(p), None) => {
+                    self.files.remove(p);
+                }
+                (Err(p), Some(k)) => self.files.insert(p, (id, k)),
+                (Err(_), None) => {}
+            }
+        }
+    }
+}
+
+/// More changed contents than this between two filter queries: rebuild instead of updating.
+const INSIGHT_INDEX_MAX_UPDATE: usize = 20_000;
+
+/// How the gallery's insight index has been maintained (tests and benches).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InsightIndexStats {
+    /// Full builds (the first filter query, or a change too large or too odd to apply in place).
+    pub full_builds: u64,
+    /// In-place updates.
+    pub updates: u64,
+    /// Contents re-read by the last update.
+    pub last_update_contents: usize,
 }
 
 /// The library facade over one data directory.
@@ -194,6 +241,7 @@ pub struct Library {
     /// changes them ([`Library::forget_dispositions`]).
     dispositions: Mutex<Option<Arc<Dispositions>>>,
     insight_index: Mutex<Option<InsightIndex>>,
+    insight_index_stats: Mutex<InsightIndexStats>,
 }
 
 impl std::fmt::Debug for Library {
@@ -220,6 +268,7 @@ impl Library {
             sources: Mutex::new(None),
             dispositions: Mutex::new(None),
             insight_index: Mutex::new(None),
+            insight_index_stats: Mutex::new(InsightIndexStats::default()),
         }
     }
 
@@ -508,8 +557,14 @@ impl Library {
         let store = self.insight_store()?;
         let stamp = crate::insights::stamp(cat, store)?;
         let mut idx = lock(&self.insight_index);
-        if idx.as_ref().is_none_or(|i| i.stamp != stamp) {
+        let fresh = match idx.as_mut() {
+            Some(i) if i.stamp == stamp => true,
+            Some(i) => self.update_insight_index(i, stamp)?,
+            None => false,
+        };
+        if !fresh {
             *idx = Some(self.build_insight_index(stamp)?);
+            lock(&self.insight_index_stats).full_builds += 1;
         }
         let Some(index) = idx.as_mut() else {
             return Ok(Arc::new(ItemSet::new()));
@@ -531,14 +586,85 @@ impl Library {
         Ok(set)
     }
 
-    fn build_insight_index(&self, stamp: InsightStamp) -> Result<InsightIndex> {
-        let started = std::time::Instant::now();
-        let corrections: HashMap<[u8; 32], Correction> = self
+    /// How the insight index has been maintained so far.
+    pub fn insight_index_stats(&self) -> InsightIndexStats {
+        *lock(&self.insight_index_stats)
+    }
+
+    fn corrections_by_digest(&self) -> Result<HashMap<[u8; 32], Correction>> {
+        Ok(self
             .insight_store()?
             .corrections()
             .into_iter()
             .filter_map(|(hex, c)| Some((parse_digest(&hex)?, c)))
-            .collect();
+            .collect())
+    }
+
+    /// Bring `index` up to `stamp` by re-reading only the contents whose result or correction changed.
+    /// `false` when it cannot (results were removed, a new row carries an older time than the index, or too
+    /// much changed): the caller rebuilds.
+    fn update_insight_index(&self, index: &mut InsightIndex, stamp: InsightStamp) -> Result<bool> {
+        let started = std::time::Instant::now();
+        let old = index.stamp;
+        if stamp.results < old.results {
+            return Ok(false);
+        }
+        let r = self.catalog()?.read();
+        let mut changed: HashSet<[u8; 32]> = HashSet::new();
+        if (stamp.results, stamp.latest_ms) != (old.results, old.latest_ms) {
+            // Rows at or after the index's newest time: new results and results replaced in place (the same
+            // content, provider and model), plus the already indexed rows of that very millisecond.
+            let rows = r.ai_result_contents_since(old.latest_ms)?;
+            if (stamp.results - old.results) as usize > rows.len() {
+                return Ok(false);
+            }
+            changed.extend(rows);
+        }
+        if stamp.revision != old.revision {
+            let now = self.corrections_by_digest()?;
+            changed.extend(
+                now.iter()
+                    .filter(|(d, c)| index.corrections.get(*d) != Some(*c))
+                    .map(|(d, _)| *d),
+            );
+            changed.extend(index.corrections.keys().filter(|d| !now.contains_key(*d)));
+            index.corrections = now;
+        }
+        if changed.len() > INSIGHT_INDEX_MAX_UPDATE {
+            return Ok(false);
+        }
+        let digests: Vec<[u8; 32]> = changed.into_iter().collect();
+        let mut facets: HashMap<[u8; 32], Facets> = HashMap::with_capacity(digests.len());
+        let corrections = &index.corrections;
+        r.ai_latest_insights_of(&digests, |digest, json| {
+            if let Ok(ai) = serde_json::from_str::<ImageInsight>(json) {
+                let f = match corrections.get(&digest) {
+                    Some(c) => Facets::of(&c.apply(&ai)),
+                    None => Facets::of(&ai),
+                };
+                facets.insert(digest, f);
+            }
+        })?;
+        for d in &digests {
+            let kind = facets.get(d).map(|f| index.kind(*f));
+            index.set_files(&r.files_with_digest(d)?, kind);
+        }
+        index.stamp = stamp;
+        index.last = None;
+        let mut s = lock(&self.insight_index_stats);
+        s.updates += 1;
+        s.last_update_contents = digests.len();
+        log::debug!(
+            "insight index: updated {} contents in {:?}",
+            digests.len(),
+            started.elapsed()
+        );
+        Ok(true)
+    }
+
+    fn build_insight_index(&self, stamp: InsightStamp) -> Result<InsightIndex> {
+        let started = std::time::Instant::now();
+        let corrections = self.corrections_by_digest()?;
         // Content -> index of its (deduplicated) facets.
         let mut facets: Vec<Facets> = Vec::new();
         let mut kinds: HashMap<Facets, u32> = HashMap::new();
@@ -565,6 +691,7 @@ impl Library {
                 }
             })?;
         }
+        files.sort_unstable_by_key(|(id, _)| *id);
         log::debug!(
             "insight index: {} contents, {} files, {} kinds in {:?}",
             by_content.len(),
@@ -575,7 +702,9 @@ impl Library {
         Ok(InsightIndex {
             stamp,
             facets,
+            kinds,
             files,
+            corrections,
             last: None,
         })
     }
