@@ -415,3 +415,11 @@ window size) when the delay is long; focus can still move.
   `--command`, so frame one is not a loading card on the real backend either.
 - `PHOTOSQUIRREL_DISPLAY_HOME=D` (dev only; `cargo xtask screenshot` sets it for seeded surfaces) makes
   `kit::display_path` show paths under the scratch data folder as `~/...`, so captures carry no real home path.
+
+## Idle Sources screenshots and demo insights (second M3 gate fixes)
+- The Sources view on the real backend loaded its rows asynchronously, so a scripted capture without
+  `--demo-scan` was often "Reading sources…". `ScanMonitor::prime_within_startup_grace` now loads the sources and
+  the last run inside the start-up grace when the view is shown by `--command shell::ShowSources`.
+- `--demo-ai-insights N` on a `photosquirrel-cli demo` data folder describes each image from the scene it was
+  rendered from (`<data-dir>/demo-corpus/truth.json` -> `ps_fixtures::plan::scenes_by_content`), so the captions
+  in AI Review and the inspector match the thumbnails.

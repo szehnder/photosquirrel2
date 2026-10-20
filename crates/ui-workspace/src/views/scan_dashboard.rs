@@ -292,8 +292,22 @@ fn summary_card(
             cx,
         )
     });
+    // Which sources the run covered: its counts are theirs, not the whole catalog's.
+    let scanned: Vec<String> = o
+        .sources
+        .iter()
+        .filter_map(|id| m.names.get(id).cloned())
+        .collect();
+    let of = if scanned.is_empty() || scanned.len() == m.names.len() {
+        String::new()
+    } else {
+        format!(" of {}", scanned.join(", "))
+    };
     let title = match o.status {
-        RunStatus::Completed => format!("Scan complete in {}", kit::format_duration(o.elapsed_ms)),
+        RunStatus::Completed => format!(
+            "Scan complete{of} in {}",
+            kit::format_duration(o.elapsed_ms)
+        ),
         RunStatus::Cancelled => format!(
             "Scan cancelled after {} · you can resume it later",
             kit::format_duration(o.elapsed_ms)
@@ -354,7 +368,16 @@ fn summary_card(
                 .flex_wrap()
                 .gap(Tokens::space(6.0))
                 .child(kit::stat("summary-processed", "files processed", format_count(o.processed), cx))
-                .child(kit::stat("summary-photos", "photos in catalog", format_count(o.photos), cx))
+                .child(kit::stat(
+                    "summary-photos",
+                    match (of.is_empty(), scanned.len()) {
+                        (true, _) => "photos in catalog",
+                        (false, 1) => "photos on it",
+                        (false, _) => "photos on them",
+                    },
+                    format_count(o.photos),
+                    cx,
+                ))
                 .child(kit::stat("summary-videos", "videos", format_count(o.videos), cx))
                 .child(kit::stat(
                     "summary-groups",

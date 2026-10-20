@@ -796,6 +796,18 @@ fn section(title: &'static str, cx: &App) -> Div {
         .child(eyebrow(title, cx))
 }
 
+/// The exclude action's label. Excluding a duplicate group's keeper excludes the whole group (its copies follow
+/// the keeper, ADR-0023), so the label says how many files that is.
+pub fn exclude_label(d: &ItemDetail) -> String {
+    let keeper = d.copies.iter().any(|c| c.keeper && c.path == d.path);
+    let others = d.copies.iter().filter(|c| c.path != d.path).count();
+    match (keeper, others) {
+        (true, 1) => "Exclude this photo and its copy".to_owned(),
+        (true, n) if n > 1 => format!("Exclude this photo and its {n} copies"),
+        _ => "Exclude from Library".to_owned(),
+    }
+}
+
 fn action_chip(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -1162,7 +1174,7 @@ impl Render for GalleryInspector {
                         .child(Input::new(&self.reason).small())
                         .child(action_chip(
                             "inspector-exclude",
-                            "Exclude from Library",
+                            exclude_label(&d),
                             IconName::EyeOff,
                             false,
                             cx,
@@ -1420,5 +1432,47 @@ impl Render for GalleryInspector {
                     .child(body),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exclude_label;
+    use ps_model::ItemId;
+    use ps_model::library::{CopyInfo, ItemDetail};
+
+    fn copy(path: &str, keeper: bool) -> CopyInfo {
+        CopyInfo {
+            id: ItemId::default(),
+            source: "Laptop".into(),
+            path: path.into(),
+            dimensions: None,
+            size: 1,
+            join_reason: String::new(),
+            keeper,
+            online: true,
+            why_keeper: None,
+        }
+    }
+
+    /// Excluding a keeper takes its group's copies with it: the action says so.
+    #[test]
+    fn excluding_a_keeper_names_its_copies() {
+        let mut d = ItemDetail {
+            path: "/a/IMG_1.JPG".into(),
+            copies: vec![
+                copy("/a/IMG_1.JPG", true),
+                copy("/b/IMG_1.JPG", false),
+                copy("/c/IMG_1 (1).JPG", false),
+            ],
+            ..ItemDetail::default()
+        };
+        assert_eq!(exclude_label(&d), "Exclude this photo and its 2 copies");
+        d.copies.truncate(2);
+        assert_eq!(exclude_label(&d), "Exclude this photo and its copy");
+        d.path = "/b/IMG_1.JPG".into();
+        assert_eq!(exclude_label(&d), "Exclude from Library", "not the keeper");
+        d.copies.clear();
+        assert_eq!(exclude_label(&d), "Exclude from Library");
     }
 }

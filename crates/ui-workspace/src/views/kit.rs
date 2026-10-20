@@ -292,7 +292,8 @@ pub fn format_clock(ms: u64) -> String {
 pub fn format_duration(ms: u64) -> String {
     let s = ms / 1000;
     match s {
-        0..=59 => format!("{s} s"),
+        0 => "under 1 s".to_owned(),
+        1..=59 => format!("{s} s"),
         60..=3599 => format!("{} min {} s", s / 60, s % 60),
         _ => format!("{} h {} min", s / 3600, (s / 60) % 60),
     }
@@ -460,6 +461,7 @@ mod tests {
         assert_eq!(format_clock(372_000), "6:12");
         assert_eq!(format_clock(3_849_000), "1:04:09");
         assert_eq!(format_duration(724_000), "12 min 4 s");
+        assert_eq!(format_duration(400), "under 1 s");
         let m = middle_ellipsis("Family/Photos/2019/2019-08 Holiday in Portugal", 24);
         assert_eq!(m.chars().count(), 24);
         assert!(m.contains('…'));

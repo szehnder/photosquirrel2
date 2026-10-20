@@ -72,6 +72,9 @@ pub struct PlanPreview {
     pub examples: Vec<PlanRow>,
     /// Files not dated by their own metadata (ADR-0043): borrowed, file-name, sidecar and undated counts.
     pub date_note: Option<String>,
+    /// Files on the sources still pending against this library (the Reports view's "pending"), which the
+    /// planned keepers account for together with their duplicates. `None` when not known for this library.
+    pub pending_files: Option<u64>,
 }
 
 /// One planned file as the Export view lists it.
@@ -379,6 +382,16 @@ impl ScanBackend for CatalogBackend {
             blocker: plan.blocker().map(|b| b.to_string()),
             examples,
             date_note: plan.totals.dates.note(),
+            pending_files: {
+                // The same dispositions the Reports view and the Library's filter count, when this plan is for
+                // the library they are derived against (or before any export).
+                let last = scan.exports().last_library()?;
+                last.as_deref()
+                    .is_none_or(|l| l == plan.library_root.as_path())
+                    .then(|| self.disposition_matches(&[Disposition::Pending]))
+                    .and_then(|r| r.ok())
+                    .map(|s| s.len() as u64)
+            },
         })
     }
 
@@ -877,6 +890,7 @@ impl ScanBackend for DemoBackend {
             profile,
             sidecars: settings.sidecars,
             files: 12_418,
+            pending_files: Some(31_007),
             bytes,
             adopted: 37,
             collisions: 214,

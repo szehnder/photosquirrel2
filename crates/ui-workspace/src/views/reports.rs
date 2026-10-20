@@ -166,6 +166,12 @@ impl ReportsView {
     }
 }
 
+/// Why this count differs from the Library's Excluded view: a hidden file that belongs to a duplicate group
+/// (a cache thumbnail of a photo) is accounted for by its keeper here, as covered or pending.
+pub const EXCLUDED_NOTE: &str = "Excluded counts only files nothing else accounts for. The Library's Excluded \
+     view also lists hidden copies of photos (cache thumbnails, previews), which count here as covered or pending \
+     with their photo.";
+
 /// The source opened first: the first one with something left to do, else the first.
 fn first_open(d: &ReportData) -> Option<SourceId> {
     d.sources
@@ -359,6 +365,14 @@ impl Render for ReportsView {
             )
             .child(stacked(&data.totals, &colors))
             .child(legend)
+            .child(
+                div()
+                    .id("report-excluded-note")
+                    .test_support()
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text_muted)
+                    .child(EXCLUDED_NOTE),
+            )
             .child(
                 h_flex()
                     .w_full()

@@ -44,7 +44,9 @@ impl SourcesView {
         });
         if let Some(m) = &monitor {
             m.update(cx, |m, cx| {
-                m.refresh_sources(cx);
+                if !m.prime_within_startup_grace(cx) {
+                    m.refresh_sources(cx);
+                }
                 m.ensure_sampling(cx);
             });
         }

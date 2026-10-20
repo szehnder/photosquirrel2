@@ -293,6 +293,32 @@ impl ScanMonitor {
         .detach();
     }
 
+    /// Shown at start-up (`--command shell::ShowSources`): load the sources and the last run within the start-up
+    /// grace, so frame one is the list rather than "Reading sources…" (docs/gpui-notes.md). `false` when the
+    /// grace is over or the load did not finish in it; the caller then refreshes asynchronously.
+    pub fn prime_within_startup_grace(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        let Some(deadline) = crate::startup::StartupGrace::deadline(cx) else {
+            return false;
+        };
+        let backend = self.backend.clone();
+        let loaded = crate::startup::StartupGrace::within(deadline, move || {
+            (backend.sources(), backend.last_run())
+        });
+        let Some((rows, last)) = loaded else {
+            return false;
+        };
+        self.sources = match rows {
+            Ok(r) => Loadable::Ready(r),
+            Err(e) => Loadable::Failed(format!("{e:#}")),
+        };
+        if self.overview.is_none()
+            && let Ok(Some(o)) = last
+        {
+            self.overview = Some(o);
+        }
+        true
+    }
+
     pub fn refresh_sources(&mut self, cx: &mut Context<'_, Self>) {
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {

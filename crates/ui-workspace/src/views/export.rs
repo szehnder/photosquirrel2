@@ -432,15 +432,8 @@ impl ExportView {
                         "plan-files",
                         "files to copy",
                         format_count(plan.files),
-                        // The same arithmetic as the Export button.
-                        Some(if plan.adopted > 0 {
-                            format!(
-                                "+ {} already there (recorded, not copied)",
-                                format_count(plan.adopted)
-                            )
-                        } else {
-                            "none already there".to_owned()
-                        }),
+                        // The same arithmetic as the Export button; and how they relate to Reports' "pending".
+                        Some(plan_files_note(plan)),
                     ))
                     .child(tile(
                         "plan-bytes",
@@ -1211,9 +1204,31 @@ impl Render for ExportView {
     }
 }
 
+/// The note under "files to copy": how the planned copies relate to the files Reports counts as pending (one
+/// best copy accounts for all its duplicates), and how many are already in the library.
+pub fn plan_files_note(plan: &PlanPreview) -> String {
+    let mut parts = Vec::new();
+    if let Some(p) = plan.pending_files.filter(|p| *p > 0) {
+        parts.push(format!(
+            "the best copies of the {} pending {}",
+            format_count(p),
+            if p == 1 { "file" } else { "files" }
+        ));
+    }
+    if plan.adopted > 0 {
+        parts.push(format!(
+            "+ {} already there (recorded, not copied)",
+            format_count(plan.adopted)
+        ));
+    } else if parts.is_empty() {
+        parts.push("none already there".to_owned());
+    }
+    parts.join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LIBRARY_NAME, export_label, suggested_library};
+    use super::{LIBRARY_NAME, export_label, plan_files_note, suggested_library};
     use std::path::Path;
 
     #[test]
@@ -1226,6 +1241,44 @@ mod tests {
         assert_eq!(export_label(1, 0), "Copy 1 file");
         assert_eq!(export_label(0, 37), "Record 37 already there");
         assert_eq!(export_label(0, 0), "Nothing to copy");
+    }
+
+    /// Export's "files to copy" and Reports' "pending" differ (one best copy covers its duplicates); the note
+    /// says how they relate.
+    #[test]
+    fn plan_note_relates_copies_to_pending_files() {
+        let mut plan = crate::scan_backend::PlanPreview {
+            library: "/lib".into(),
+            profile: ps_model::ExportProfile::ApplePhotos,
+            sidecars: true,
+            files: 3,
+            bytes: 0,
+            adopted: 0,
+            collisions: 0,
+            sidecar_files: 0,
+            unavailable: 0,
+            unavailable_sources: Vec::new(),
+            already_exported: 0,
+            modified: 0,
+            free_bytes: None,
+            required_bytes: 0,
+            blocker: None,
+            examples: Vec::new(),
+            date_note: None,
+            pending_files: Some(11),
+        };
+        assert_eq!(
+            plan_files_note(&plan),
+            "the best copies of the 11 pending files"
+        );
+        plan.pending_files = None;
+        assert_eq!(plan_files_note(&plan), "none already there");
+        plan.pending_files = None;
+        plan.adopted = 2;
+        assert_eq!(
+            plan_files_note(&plan),
+            "+ 2 already there (recorded, not copied)"
+        );
     }
 
     #[test]
