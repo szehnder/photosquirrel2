@@ -14,6 +14,7 @@ pub mod junk;
 pub mod plan;
 pub mod preset;
 pub mod rng;
+pub mod shared;
 pub mod synth;
 pub mod tiff;
 pub mod truth;
@@ -26,6 +27,7 @@ pub mod media;
 pub use eval::{ResultGroup, Score};
 pub use generate::{GenerateError, generate, generate_with};
 pub use preset::{Params, Preset};
+pub use shared::{shared_corpus, shared_dir};
 pub use truth::{
     BurstVariant, Category, MustNotMerge, MustNotMergeKind, TRUTH_FILE, Truth, TruthFile,
 };

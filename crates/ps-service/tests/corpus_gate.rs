@@ -33,22 +33,22 @@ fn corpus(p: Preset) -> (PathBuf, Truth) {
     {
         return (shared, t);
     }
-    let root =
-        Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("corpus-gate-{}-42", p.as_str()));
-    if let Ok(t) = Truth::read(&root)
-        && matches(&t)
-    {
-        return (root, t);
-    }
-    let _ = std::fs::remove_dir_all(&root);
-    let t = Instant::now();
-    let w = DirWriter::new(&root).expect("corpus writer");
-    let truth = ps_fixtures::generate(42, p, &w).expect("generate");
-    eprintln!(
-        "generated the {} corpus in {:.1} s",
-        p.as_str(),
-        t.elapsed().as_secs_f64()
+    let root = ps_fixtures::shared_dir(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
+        &format!("corpus-gate-{}-42", p.as_str()),
+        |root| {
+            let t = Instant::now();
+            let w = DirWriter::new(root).expect("corpus writer");
+            ps_fixtures::generate(42, p, &w).expect("generate");
+            eprintln!(
+                "generated the {} corpus in {:.1} s",
+                p.as_str(),
+                t.elapsed().as_secs_f64()
+            );
+        },
     );
+    let truth = Truth::read(&root).expect("truth.json");
+    assert!(matches(&truth), "cached corpus at {}", root.display());
     (root, truth)
 }
 

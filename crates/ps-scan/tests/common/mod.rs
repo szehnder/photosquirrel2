@@ -50,23 +50,16 @@ pub fn corpus() -> &'static Corpus {
     C.get_or_init(|| {
         let p = preset();
         let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-        let root = base.join(format!("ps-scan-corpus-{}-{SEED}", p.as_str()));
-        if !root.join(ps_fixtures::TRUTH_FILE).exists() {
-            let tmp = base.join(format!(
-                "ps-scan-corpus-{}-{SEED}.tmp{}",
-                p.as_str(),
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&tmp);
-            let w = DirWriter::new(&tmp).expect("corpus writer");
-            let t = Instant::now();
-            ps_fixtures::generate(SEED, p, &w).expect("generate corpus");
-            eprintln!("generated the {p} corpus in {:?}", t.elapsed());
-            if std::fs::rename(&tmp, &root).is_err() {
-                // Another test binary won the race.
-                let _ = std::fs::remove_dir_all(&tmp);
-            }
-        }
+        let root = ps_fixtures::shared_dir(
+            &base,
+            &format!("ps-scan-corpus-{}-{SEED}", p.as_str()),
+            |root| {
+                let w = DirWriter::new(root).expect("corpus writer");
+                let t = Instant::now();
+                ps_fixtures::generate(SEED, p, &w).expect("generate corpus");
+                eprintln!("generated the {p} corpus in {:?}", t.elapsed());
+            },
+        );
         let truth = Truth::read(&root).expect("truth.json");
         Corpus { root, truth }
     })

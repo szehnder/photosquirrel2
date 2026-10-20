@@ -112,9 +112,13 @@ pub fn load(root: PathBuf, seed: u64, preset: Preset, dir: Option<tempfile::Temp
 pub fn small() -> &'static Corpus {
     static C: OnceLock<Corpus> = OnceLock::new();
     C.get_or_init(|| {
-        let root = shared_dir("dedup-corpus-small-42", |root| {
-            ps_fixtures::generate(42, Preset::Small, &DirWriter::new(root).unwrap()).unwrap();
-        });
+        let root = ps_fixtures::shared_dir(
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+            "dedup-corpus-small-42",
+            |root| {
+                ps_fixtures::generate(42, Preset::Small, &DirWriter::new(root).unwrap()).unwrap();
+            },
+        );
         load(root, 42, Preset::Small, None)
     })
 }
@@ -132,20 +136,4 @@ pub fn print_score(label: &str, s: &Score) {
         s.result_pairs,
         s.correct_pairs
     );
-}
-
-/// A fixture folder under the target dir, built once and reused by later runs and test binaries (a file lock
-/// keeps concurrent builders apart; a `<name>.complete` file beside it marks a finished build). Nothing is left in `/tmp`.
-fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::PathBuf {
-    let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-    std::fs::create_dir_all(root.parent().expect("parent")).expect("fixture base");
-    let lock = std::fs::File::create(root.with_extension("lock")).expect("fixture lock");
-    lock.lock().expect("lock the fixture");
-    let done = root.with_extension("complete");
-    if !done.is_file() {
-        let _ = std::fs::remove_dir_all(&root);
-        build(&root);
-        std::fs::write(&done, b"ok").expect("completion marker");
-    }
-    root
 }

@@ -45,17 +45,14 @@ fn json(o: &Output) -> Value {
 fn corpus() -> &'static Path {
     static C: OnceLock<PathBuf> = OnceLock::new();
     C.get_or_init(|| {
-        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-corpus-small-42");
-        if ps_fixtures::Truth::read(&root).is_err() {
-            let tmp = root.with_extension(format!("tmp{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            let w = ps_fixtures::DirWriter::new(&tmp).unwrap();
-            ps_fixtures::generate(42, ps_fixtures::Preset::Small, &w).unwrap();
-            if std::fs::rename(&tmp, &root).is_err() {
-                let _ = std::fs::remove_dir_all(&tmp);
-            }
-        }
-        root.canonicalize().unwrap()
+        ps_fixtures::shared_corpus(
+            Path::new(env!("CARGO_TARGET_TMPDIR")),
+            "cli-corpus-small-42",
+            42,
+            ps_fixtures::Preset::Small,
+        )
+        .canonicalize()
+        .unwrap()
     })
 }
 

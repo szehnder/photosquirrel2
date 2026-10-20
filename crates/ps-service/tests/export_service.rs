@@ -11,13 +11,15 @@ use ps_service::scan::{ScanOptions, ScanService};
 
 fn small_corpus() -> PathBuf {
     // Under CARGO_TARGET_TMPDIR, not the workspace's ./target, which need not exist (CARGO_TARGET_DIR elsewhere).
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("export-service-corpus-small-42");
-    if !ps_fixtures::Truth::read(&root).is_ok_and(|t| t.seed == 42 && t.preset == "small") {
-        let _ = std::fs::remove_dir_all(&root);
-        let w = ps_fixtures::DirWriter::new(&root).expect("writer");
-        ps_fixtures::generate(42, ps_fixtures::Preset::Small, &w).expect("generate");
-    }
-    root.canonicalize().expect("canonical corpus root")
+    // Built once across the binary's test threads and concurrent binaries (ps_fixtures::shared_corpus).
+    ps_fixtures::shared_corpus(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "export-service-corpus-small-42",
+        42,
+        ps_fixtures::Preset::Small,
+    )
+    .canonicalize()
+    .expect("canonical corpus root")
 }
 
 fn tree(root: &Path) -> Vec<(PathBuf, u64)> {

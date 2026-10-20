@@ -41,12 +41,12 @@ fn medium_or_small() -> PathBuf {
     if ps_fixtures::Truth::read(&m).is_ok() {
         return m.canonicalize().unwrap();
     }
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-interrupt-corpus-small-42");
-    if ps_fixtures::Truth::read(&root).is_err() {
-        let w = ps_fixtures::DirWriter::new(&root).unwrap();
-        ps_fixtures::generate(42, ps_fixtures::Preset::Small, &w).unwrap();
-    }
-    root
+    ps_fixtures::shared_corpus(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "cli-interrupt-corpus-small-42",
+        42,
+        ps_fixtures::Preset::Small,
+    )
 }
 
 /// Start a scan of the medium corpus (small when absent), interrupt it with SIGINT once files are being

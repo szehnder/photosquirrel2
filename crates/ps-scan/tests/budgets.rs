@@ -40,20 +40,9 @@ fn env_count(var: &str, release: usize, debug: usize) -> usize {
         })
 }
 
-/// A cached folder under the target directory, built once by `make` (into a temp name, then renamed).
+/// A cached folder under the target directory, built once by `make` (`ps_fixtures::shared_dir`).
 fn cached(name: &str, make: impl FnOnce(&Path)) -> PathBuf {
-    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let dir = base.join(name);
-    if !dir.join(".complete").exists() {
-        let tmp = base.join(format!("{name}.tmp{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).expect("mkdir");
-        make(&tmp);
-        std::fs::write(tmp.join(".complete"), b"").expect("marker");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::rename(&tmp, &dir).expect("rename");
-    }
-    dir
+    ps_fixtures::shared_dir(&PathBuf::from(env!("CARGO_TARGET_TMPDIR")), name, make)
 }
 
 /// Read every file once so the scan measures a warm cache.
@@ -141,7 +130,7 @@ fn scenario_incremental_rescan_no_change_rescan_under_4_s() {
     let id = e.add(&root);
     let first = e.scan(&[id]);
     completed(&first);
-    assert_eq!(first.stages.total() as usize, files + 1, "{first:?}"); // + the marker file
+    assert_eq!(first.stages.total() as usize, files, "{first:?}"); // the marker sits beside the tree
     warm(&root);
     let mut times = Vec::new();
     for _ in 0..3 {
@@ -150,7 +139,7 @@ fn scenario_incremental_rescan_no_change_rescan_under_4_s() {
         let s = e.scan(&[id]);
         times.push(t.elapsed());
         completed(&s);
-        assert_eq!(s.diff.unchanged as usize, files + 1);
+        assert_eq!(s.diff.unchanged as usize, files);
         assert_eq!(e.instr.open_count(), 0, "nothing read");
     }
     println!("no-change rescans of {files} files: {times:?}");
