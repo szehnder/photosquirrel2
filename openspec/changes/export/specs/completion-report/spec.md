@@ -8,7 +8,7 @@ library, covered by a better copy, deliberately excluded, still pending, unreada
 ## ADDED Requirements
 
 ### Requirement: Derived dispositions
-Every catalogued file SHALL have exactly one disposition derived from the catalog and the export ledger, never set by hand: exported (this file was copied out), covered (its group's keeper was exported), excluded (junk, graphic, cache without group, or user-excluded, with reason), pending (a keeper or candidate not yet exported), unreadable (failed after retries) or missing (gone from the source).
+Every catalogued file SHALL have exactly one disposition derived from the catalog and the export ledger, never set by hand: exported (this file was copied out), covered (its group's keeper was exported), excluded (junk, graphic, cache without group, user-excluded, or a copy in a group whose keeper the user excluded, with reason), pending (a keeper or candidate not yet exported), unreadable (failed after retries) or missing (gone from the source).
 
 #### Scenario: Dispositions derived after export
 - **WHEN** the small corpus is scanned and fully exported
@@ -17,6 +17,10 @@ Every catalogued file SHALL have exactly one disposition derived from the catalo
 #### Scenario: Covered requires exported keeper
 - **WHEN** a group's keeper has not been exported
 - **THEN** every member of that group is pending, not covered
+
+#### Scenario: Excluded keeper excludes its group
+- **WHEN** the user excludes the keeper of a duplicate group and the rest is exported
+- **THEN** every copy in that group is excluded by the user and none is pending
 
 ### Requirement: Ledger checks the library
 Exported and covered dispositions SHALL depend on the library copy still existing with its recorded size; a verify option SHALL re-hash library copies, and a missing or mismatching copy SHALL turn the affected files back to pending.

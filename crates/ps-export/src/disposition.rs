@@ -11,7 +11,9 @@
 //!   members `covered` (with the keeper's library path);
 //! - not in a group and its content has a valid library copy: `exported`;
 //! - gone from the source: `missing`; failed after retries: `unreadable`;
-//! - user-excluded, or (in no group) junk, graphic or a cache thumbnail: `excluded` with the reason;
+//! - user-excluded, a member of a group whose keeper the user excluded (the photo itself was excluded, every
+//!   copy goes with it; the export skips such groups), or (in no group) junk, graphic or a cache thumbnail:
+//!   `excluded` with the reason;
 //! - everything else (keepers and candidates not exported, members of groups whose keeper is not exported):
 //!   `pending`.
 
@@ -46,6 +48,7 @@ pub struct FileFacts {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupFacts {
     pub members: Vec<FileId>,
+    /// The keeper first, then its RAW+JPEG companion (ranking order).
     pub keeper_set: Vec<FileId>,
 }
 
@@ -134,6 +137,16 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
     // Group index and whether its keeper set is safely exported (with the keeper's path).
     let mut group_of: HashMap<FileId, usize> = HashMap::new();
     let mut keeper_path: Vec<Option<RelPath>> = Vec::with_capacity(facts.groups.len());
+    let excluded_keeper: Vec<bool> = facts
+        .groups
+        .iter()
+        .map(|g| {
+            g.keeper_set
+                .first()
+                .and_then(|k| by_id.get(k))
+                .is_some_and(|f| f.user_excluded)
+        })
+        .collect();
     for (gi, g) in facts.groups.iter().enumerate() {
         for m in &g.members {
             group_of.insert(*m, gi);
@@ -171,8 +184,11 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
                 return d(f, Disposition::Unreadable, None, None);
             }
             let in_group = group_of.contains_key(&f.file);
-            // A group member is never excluded by class: its group's keeper decides (pending until exported).
-            let reason = if f.user_excluded {
+            // A group member is never excluded by class: its group's keeper decides (pending until exported,
+            // excluded with it when the user excluded the keeper).
+            let reason = if f.user_excluded
+                || group_of.get(&f.file).is_some_and(|gi| excluded_keeper[*gi])
+            {
                 Some(ExclusionReason::UserExcluded)
             } else if in_group {
                 None

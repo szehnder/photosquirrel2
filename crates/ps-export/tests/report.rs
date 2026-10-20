@@ -286,3 +286,29 @@ fn scenario_completion_report_pending_blocks_badge() {
         }
     }
 }
+
+/// A group whose keeper the user excluded is not exported (the service leaves it out of the export input), and
+/// its other copies are excluded with it instead of staying pending forever.
+#[test]
+fn scenario_completion_report_excluded_keeper_excludes_its_group() {
+    let c = small_corpus();
+    let skip = grouped_unit(&corpus_model(c, &[], &[]));
+    let mut e = exported("exclkeeper", &[skip]);
+    let u = e.m.input.units[skip].clone();
+    let keeper = u.files[0].file;
+    for f in &mut e.m.files {
+        if f.file == keeper {
+            f.user_excluded = true;
+        }
+    }
+    let (d, _) = derive(&e, false);
+    for copy in &u.copies {
+        let x = d.iter().find(|x| x.file == copy.file).expect("file");
+        assert_eq!(x.disposition, Disposition::Excluded, "{:?}", copy.rel_path);
+        assert_eq!(x.reason, Some(ps_model::ExclusionReason::UserExcluded));
+    }
+    assert!(
+        d.iter().all(|x| x.disposition != Disposition::Pending),
+        "nothing left pending"
+    );
+}
