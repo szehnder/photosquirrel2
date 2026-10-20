@@ -1,6 +1,7 @@
 //! Enforces ADR-0003: core crates must not (transitively) depend on tokio or gpui-kit;
 //! I/O crates must not depend on gpui-kit. Also enforces ADR-0004 for the scanner: `ps-scan`'s sources
-//! contain no call that could create, write, rename, remove or re-permission a file.
+//! contain no call that could create, write, rename, remove or re-permission a file. And ADR-0027: UI crates
+//! reach the engine only through the `ps-service` facade, never by a direct dependency on an engine crate.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -19,6 +20,17 @@ const IO: &[&str] = &[
     "photosquirrel-cli",
 ];
 const UI: &[&str] = &["ui-theme", "ui-gallery", "ui-workspace", "photosquirrel"];
+/// Engine crates UI crates must not depend on directly (dev-dependencies for tests are fine).
+const BEHIND_FACADE: &[&str] = &["ps-catalog", "ps-scan", "ps-llm", "ps-export"];
+
+/// Direct dependencies of a UI crate that bypass the facade, as violation messages.
+pub fn facade_violations(krate: &str, direct: &[&str]) -> Vec<String> {
+    direct
+        .iter()
+        .filter(|d| BEHIND_FACADE.contains(d))
+        .map(|d| format!("UI crate `{krate}` must reach `{d}` through ps-service (ADR-0027)"))
+        .collect()
+}
 
 pub fn check(root: &Path) -> Result<()> {
     let out = Command::new("cargo")
@@ -71,6 +83,15 @@ pub fn check(root: &Path) -> Result<()> {
 
     let mut violations = read_only_violations(&root.join("crates/ps-scan/src"))?;
     for (name, id) in &members {
+        if UI.contains(&name.as_str()) {
+            let direct: Vec<&str> = deps
+                .get(id)
+                .into_iter()
+                .flatten()
+                .filter_map(|d| names.get(d).map(String::as_str))
+                .collect();
+            violations.extend(facade_violations(name, &direct));
+        }
         let forbidden: &[&str] = if CORE.contains(&name.as_str()) {
             &["tokio", "gpui-kit"]
         } else if IO.contains(&name.as_str()) {
@@ -192,6 +213,14 @@ mod tests {
         assert!(forbidden_calls("ok.rs", "OpenOptions::new().read(true).open(p)").is_empty());
         // Comments are not code.
         assert!(forbidden_calls("ok.rs", "// never fs::rename here").is_empty());
+    }
+
+    #[test]
+    fn ui_crates_must_not_depend_on_engine_crates() {
+        let v = facade_violations("ui-workspace", &["ps-service", "ps-catalog", "ps-model"]);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].contains("ps-catalog"));
+        assert!(facade_violations("photosquirrel", &["ps-service", "ps-media"]).is_empty());
     }
 
     #[test]

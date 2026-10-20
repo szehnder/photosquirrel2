@@ -153,7 +153,7 @@ fn main() {
 
     let has_catalog = data_dir
         .as_deref()
-        .is_some_and(|d| d.join(ps_catalog::CATALOG_FILE).exists());
+        .is_some_and(|d| d.join(ps_service::scan::CATALOG_FILE).exists());
     let backend: Arc<dyn LibraryBackend> =
         match &data_dir {
             Some(dir) => {

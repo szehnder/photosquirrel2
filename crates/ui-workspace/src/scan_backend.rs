@@ -208,10 +208,9 @@ impl ScanBackend for CatalogBackend {
         let scan = self.scan()?;
         let infos = scan.refresh_sources()?;
         let runs = scan.runs()?;
-        let reader = scan.engine().catalog().read();
         let mut out = Vec::with_capacity(infos.len());
         for s in infos {
-            let counts = reader.stage_counts(s.id)?;
+            let counts = scan.stage_counts(s.id)?;
             let files: u64 = counts.iter().map(|(_, n)| n).sum();
             let finished: u64 = counts
                 .iter()

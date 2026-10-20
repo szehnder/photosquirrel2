@@ -8,8 +8,8 @@
 
 use std::path::Path;
 
-pub use ps_catalog::RunRecord;
-pub use ps_model::{ProgressSnapshot, RunStatus, ScanRunId, SourceId, SourceStatus};
+pub use ps_catalog::{CATALOG_FILE, RunRecord};
+pub use ps_model::{ProgressSnapshot, RunStatus, ScanRunId, SourceId, SourceStatus, Stage};
 pub use ps_scan::{
     AddedSource, Confirmation, HashUpgradeReport, RunSummary, ScanError, ScanOptions, SourceInfo,
 };
@@ -136,6 +136,21 @@ impl ScanService {
     /// Every run, oldest first.
     pub fn runs(&self) -> Result<Vec<RunRecord>> {
         self.engine.runs()
+    }
+
+    /// How many of `source`'s files are at each pipeline stage (the Sources view's progress).
+    pub fn stage_counts(&self, source: SourceId) -> Result<Vec<(Stage, u64)>> {
+        Ok(self.engine.catalog().read().stage_counts(source)?)
+    }
+
+    /// The most recent run left `interrupted` (crash or cancel before the end), if any.
+    pub fn last_interrupted_run(&self) -> Result<Option<RunRecord>> {
+        Ok(self
+            .engine
+            .runs()?
+            .into_iter()
+            .rev()
+            .find(|r| r.status == RunStatus::Interrupted))
     }
 
     /// One run and its summary.

@@ -188,11 +188,7 @@ impl ReviewSource for CatalogReview {
     fn ai_pause(&self) -> anyhow::Result<()> {
         match self.ai.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             Some((_, svc)) => Ok(svc.pause()?),
-            None => Ok(self.backend.catalog()?.writer().ai_set_run(
-                ps_catalog::AiRunState::Paused,
-                None,
-                None,
-            )?),
+            None => Ok(ps_service::ai::mark_paused(self.backend.catalog()?)?),
         }
     }
 }

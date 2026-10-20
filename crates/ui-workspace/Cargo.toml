@@ -12,7 +12,6 @@ ui-theme.workspace = true
 ui-gallery.workspace = true
 ps-service.workspace = true
 ps-model.workspace = true
-ps-catalog.workspace = true
 ps-media.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
@@ -22,6 +21,8 @@ anyhow.workspace = true
 directories.workspace = true
 
 [dev-dependencies]
+# Tests seed and inspect catalogs directly; the code itself goes through ps-service (ADR-0027).
+ps-catalog.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 rusqlite.workspace = true

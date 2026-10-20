@@ -334,6 +334,12 @@ pub struct AiResultInfo {
 }
 
 /// Status from the catalog.
+/// Record the AI queue as paused when no queue runs in this process (the catalog keeps the state for the
+/// next start and for the status line).
+pub fn mark_paused(catalog: &Catalog) -> Result<(), ps_catalog::CatalogError> {
+    catalog.writer().ai_set_run(AiRunState::Paused, None, None)
+}
+
 pub fn status(catalog: &Catalog) -> Result<AiStatus, ps_catalog::CatalogError> {
     let r = catalog.read();
     let c = r.ai_counts()?;

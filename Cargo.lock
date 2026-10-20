@@ -5889,7 +5889,6 @@ dependencies = [
  "env_logger",
  "gpui-kit",
  "log",
- "ps-catalog",
  "ps-media",
  "ps-model",
  "ps-service",

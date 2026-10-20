@@ -87,11 +87,9 @@ impl LibraryBackend for CatalogBackend {
     }
 
     fn interrupted_run(&self) -> anyhow::Result<Option<InterruptedRun>> {
-        let runs = self.catalog()?.read().runs()?;
-        Ok(runs
-            .into_iter()
-            .rev()
-            .find(|r| r.status == RunStatus::Interrupted)
+        Ok(self
+            .scan()?
+            .last_interrupted_run()?
             .map(|r| InterruptedRun {
                 id: r.id,
                 label: format!("{} sources", r.sources.len()),
