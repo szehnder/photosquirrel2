@@ -393,3 +393,14 @@ window size) when the delay is long; focus can still move.
   view the previous capture left open.
 - First launch answers the catalog summary without opening (creating) a catalog, so frame one is the welcome
   view; anything that makes the summary slow again brings back an "Opening your catalog…" first frame.
+
+## Toolbars and tooltips (second M2 gate fixes)
+- A toolbar row of `flex_none` children overflows when narrow (inspector open) and the last child is clipped
+  by the panel edge. Put the optional controls (filter chips) in a `flex_1().min_w_0().flex_wrap()` group, keep
+  the must-see ones (count, sort) `flex_shrink_0` outside it, and give the row `min_h` instead of `h` so a
+  wrapped second line has room. Chips need `whitespace_nowrap` or their labels wrap inside the chip.
+- A plain text cell gets a hover tooltip with `.id(..)` (it must be stateful) and
+  `.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx))`;
+  use it where `text_ellipsis` cuts a value (the Excluded reasons column).
+- `max_h(window.viewport_size().height * 0.8)` caps an overlay sized in rems (the settings window) so it still
+  fits the minimum window size; its body scrolls.

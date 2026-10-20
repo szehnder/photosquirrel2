@@ -708,16 +708,23 @@ fn row(
     row_copying(id, label, value, copy, style, cx)
 }
 
-/// A path row: shown with the home folder as `~`, copied (and named for assistive technology) in full.
+/// Characters of a path the inspector's value column shows before shortening it in the middle.
+const PATH_CHARS: usize = 24;
+
+/// A path row: shown with the home folder as `~` and shortened in the middle (the file name stays readable, as
+/// in Excluded), copied (and named for assistive technology) in full.
 fn path_row(
     id: impl Into<SharedString>,
     label: &'static str,
     path: Option<String>,
     cx: &mut Context<'_, GalleryInspector>,
 ) -> AnyElement {
-    let shown = path
-        .as_deref()
-        .map(|p| crate::views::kit::display_path(Path::new(p)));
+    let shown = path.as_deref().map(|p| {
+        crate::views::kit::middle_ellipsis(
+            &crate::views::kit::display_path(Path::new(p)),
+            PATH_CHARS,
+        )
+    });
     row_copying(id, label, shown, path, ValueStyle::Text, cx)
 }
 
@@ -933,7 +940,12 @@ impl Render for GalleryInspector {
                     ));
             }
             Showing::One(d) => {
-                body = body.child(self.header_preview(cx)).child(
+                // The preview comes from the Library's page cache; an Excluded file is not in it, so rather than
+                // an empty frame there is no preview (its name, reasons and metadata follow).
+                if self.model.read(cx).summary_of(d.id).is_some() {
+                    body = body.child(self.header_preview(cx));
+                }
+                body = body.child(
                     v_flex()
                         .pt(Tokens::space(3.0))
                         .px(Tokens::space(1.0))

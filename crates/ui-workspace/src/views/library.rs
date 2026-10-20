@@ -498,7 +498,7 @@ impl LibraryView {
             let f = f.clone();
             let cams = self.cameras.clone();
             Button::new("library-camera")
-                .label(f.camera.clone().unwrap_or_else(|| "Any camera".into()))
+                .label(f.camera.clone().unwrap_or_else(|| "Camera".into()))
                 .compact()
                 .dropdown_caret(true)
                 .dropdown_menu(move |menu, _, _| {
@@ -641,7 +641,9 @@ impl LibraryView {
                 .test_support()
                 .role(Role::Button)
                 .aria_label(label)
-                .px(Tokens::space(2.5))
+                .flex_none()
+                .whitespace_nowrap()
+                .px(Tokens::space(2.0))
                 .h(Tokens::control_height())
                 .flex()
                 .items_center()
@@ -685,7 +687,8 @@ impl LibraryView {
         h_flex()
             .id("library-toolbar")
             .flex_none()
-            .h(Tokens::size(44.0))
+            .min_h(Tokens::size(44.0))
+            .py(Tokens::space(1.0))
             .px(Tokens::space(4.0))
             .gap(Tokens::space(1.0))
             .items_center()
@@ -697,67 +700,79 @@ impl LibraryView {
                     .id("library-count")
                     .test_support()
                     .aria_label(SharedString::from(count_label.clone()))
-                    .mr(Tokens::space(3.0))
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .mr(Tokens::space(1.5))
                     .text_size(Tokens::text_sm())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(colors.text_muted)
                     .child(count_label),
             )
-            .child(chip(
-                "filter-all",
-                "All",
-                f.kind.is_none(),
-                with(&|n| n.kind = None),
-            ))
-            .child(chip(
-                "filter-photos",
-                "Photos",
-                f.kind == Some(MediaKind::Image),
-                with(&|n| n.kind = Some(MediaKind::Image)),
-            ))
-            .child(chip(
-                "filter-videos",
-                "Videos",
-                f.kind == Some(MediaKind::Video),
-                with(&|n| n.kind = Some(MediaKind::Video)),
-            ))
+            // The filters take what is left and wrap onto a second line when narrow (inspector open), so the
+            // count and the sort menu always stay visible.
             .child(
-                div()
-                    .w(Tokens::BORDER)
-                    .h(Tokens::size(18.0))
-                    .mx(Tokens::space(1.5))
-                    .bg(colors.border),
+                h_flex()
+                    .id("library-filter-chips")
+                    .flex_1()
+                    .min_w_0()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(Tokens::space(1.0))
+                    .child(chip(
+                        "filter-all",
+                        "All",
+                        f.kind.is_none(),
+                        with(&|n| n.kind = None),
+                    ))
+                    .child(chip(
+                        "filter-photos",
+                        "Photos",
+                        f.kind == Some(MediaKind::Image),
+                        with(&|n| n.kind = Some(MediaKind::Image)),
+                    ))
+                    .child(chip(
+                        "filter-videos",
+                        "Videos",
+                        f.kind == Some(MediaKind::Video),
+                        with(&|n| n.kind = Some(MediaKind::Video)),
+                    ))
+                    .child(
+                        div()
+                            .w(Tokens::BORDER)
+                            .h(Tokens::size(18.0))
+                            .mx(Tokens::space(0.5))
+                            .bg(colors.border),
+                    )
+                    .child(camera_menu)
+                    .child(chip(
+                        "filter-gps",
+                        "Has location",
+                        f.gps == Some(true),
+                        with(&|n| {
+                            n.gps = if n.gps == Some(true) {
+                                None
+                            } else {
+                                Some(true)
+                            }
+                        }),
+                    ))
+                    .child(chip(
+                        "filter-stacks",
+                        "Stacks",
+                        !f.stacks_off,
+                        with(&|n| n.stacks_off = !n.stacks_off),
+                    ))
+                    .child(
+                        div()
+                            .w(Tokens::BORDER)
+                            .h(Tokens::size(18.0))
+                            .mx(Tokens::space(0.5))
+                            .bg(colors.border),
+                    )
+                    .child(ai_menu)
+                    .child(status_menu),
             )
-            .child(camera_menu)
-            .child(chip(
-                "filter-gps",
-                "Has location",
-                f.gps == Some(true),
-                with(&|n| {
-                    n.gps = if n.gps == Some(true) {
-                        None
-                    } else {
-                        Some(true)
-                    }
-                }),
-            ))
-            .child(chip(
-                "filter-stacks",
-                "Stacks",
-                !f.stacks_off,
-                with(&|n| n.stacks_off = !n.stacks_off),
-            ))
-            .child(
-                div()
-                    .w(Tokens::BORDER)
-                    .h(Tokens::size(18.0))
-                    .mx(Tokens::space(1.5))
-                    .bg(colors.border),
-            )
-            .child(ai_menu)
-            .child(status_menu)
-            .child(div().flex_1())
-            .child(sort_menu)
+            .child(div().flex_shrink_0().child(sort_menu))
             .into_any_element()
     }
 }
@@ -940,11 +955,20 @@ impl ExcludedView {
         if crate::startup::StartupGrace::remaining(cx).is_some()
             && let Ok(rows) = this.source.excluded()
         {
-            this.rows = Some(std::rc::Rc::new(rows));
+            this.set_rows(rows);
         } else {
             this.reload(cx);
         }
         this
+    }
+
+    /// New rows; with nothing selected yet the first row is, so the inspector shows a file and its reasons
+    /// instead of "No photo selected".
+    fn set_rows(&mut self, rows: Vec<ExcludedRow>) {
+        if self.selected.is_none() {
+            self.selected = rows.first().map(|r| r.id);
+        }
+        self.rows = Some(std::rc::Rc::new(rows));
     }
 
     pub fn reload(&mut self, cx: &mut Context<'_, Self>) {
@@ -955,7 +979,7 @@ impl ExcludedView {
         cx.spawn(async move |this, cx| {
             let rows = task.await;
             let _ = this.update(cx, |this, cx| {
-                this.rows = Some(std::rc::Rc::new(rows));
+                this.set_rows(rows);
                 cx.notify();
             });
         })
@@ -1009,8 +1033,7 @@ impl Render for ExcludedView {
                 div()
                     .id("excluded-count")
                     .test_support()
-                    .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
-                    .text_size(Tokens::text_xs())
+                    .text_size(Tokens::text_sm())
                     .text_color(colors.text_muted)
                     .child(match &rows {
                         Some(_) => format!("{} files set aside", format_count(n as u64)),
@@ -1095,16 +1118,25 @@ impl Render for ExcludedView {
                                 .text_color(colors.text_muted)
                                 .child(class_name(r.class)),
                         )
-                        .child(
+                        .child({
+                            // Long reasons are cut at the column edge; the tooltip has them in full.
+                            let reasons = SharedString::from(r.reasons.join(" · "));
+                            let tip = reasons.clone();
                             div()
+                                .id(("excluded-reasons", ix))
                                 .flex_1()
                                 .min_w_0()
                                 .text_size(Tokens::text_xs())
                                 .text_color(colors.text)
                                 .overflow_hidden()
+                                .whitespace_nowrap()
                                 .text_ellipsis()
-                                .child(r.reasons.join(" · ")),
-                        )
+                                .tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                        .build(window, cx)
+                                })
+                                .child(reasons)
+                        })
                 })
                 .collect()
         })
