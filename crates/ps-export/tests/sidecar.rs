@@ -76,7 +76,7 @@ fn sidecar_lists_insight_keywords_user_tags_and_provenance() {
     assert!(
         side.sources
             .iter()
-            .any(|p| p.ends_with("Pets/IMG_3000.JPG"))
+            .any(|p| p.replace('\\', "/").ends_with("Pets/IMG_3000.JPG"))
     );
 }
 
@@ -113,8 +113,16 @@ fn scenario_export_manifest_record_per_file() {
     for (r, u) in recs.iter().zip(&input.units) {
         assert_eq!(r.source_paths.len(), 2, "{r:?}");
         let _ = u;
-        assert!(r.source_paths.iter().any(|p| p.contains("drive-1/Backup/")));
-        assert!(r.source_paths.iter().any(|p| p.contains("drive-0/IMG_")));
+        assert!(
+            r.source_paths
+                .iter()
+                .any(|p| p.replace('\\', "/").contains("drive-1/Backup/"))
+        );
+        assert!(
+            r.source_paths
+                .iter()
+                .any(|p| p.replace('\\', "/").contains("drive-0/IMG_"))
+        );
         assert_eq!(r.full_hash.len(), 64);
         assert_eq!(r.profile, ExportProfile::GooglePhotos);
         assert!(!r.keeper_reasons.is_empty());
