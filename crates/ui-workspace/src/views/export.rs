@@ -151,6 +151,20 @@ impl ExportView {
                     Ok(p) => Loadable::Ready(p),
                     Err(e) => Loadable::Failed(format!("{e:#}")),
                 });
+            } else if let Some(deadline) = crate::startup::StartupGrace::deadline(cx)
+                && let Some(plan) = {
+                    let (b, lib, settings) = (b.clone(), lib.clone(), this.settings);
+                    crate::startup::StartupGrace::within(deadline, move || {
+                        b.export_plan(&lib, settings)
+                    })
+                }
+            {
+                // Shown at start-up (`--command shell::ShowExport`): a quick plan is in frame one; a slow one
+                // falls back to the asynchronous path below.
+                this.plan = Some(match plan {
+                    Ok(p) => Loadable::Ready(p),
+                    Err(e) => Loadable::Failed(format!("{e:#}")),
+                });
             } else {
                 this.replan(cx);
             }

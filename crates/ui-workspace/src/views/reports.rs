@@ -70,7 +70,21 @@ impl ReportsView {
                     Err(e) => Loadable::Failed(format!("{e:#}")),
                 };
             }
-            _ => this.refresh(cx),
+            Some(b) => {
+                // Shown at start-up: a quick report is in frame one (start-up grace); else asynchronously.
+                let early = crate::startup::StartupGrace::deadline(cx).and_then(|deadline| {
+                    crate::startup::StartupGrace::within(deadline, move || b.report(None, false))
+                });
+                match early {
+                    Some(Ok(d)) => {
+                        this.expanded = d.as_ref().and_then(|d| d.sources.first()).map(|s| s.id);
+                        this.data = Loadable::Ready(d);
+                    }
+                    Some(Err(e)) => this.data = Loadable::Failed(format!("{e:#}")),
+                    None => this.refresh(cx),
+                }
+            }
+            None => this.refresh(cx),
         }
         this
     }

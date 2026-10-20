@@ -69,9 +69,21 @@ const SURFACES: &[Surface] = &[
     },
     Surface {
         name: "sources",
-        caption: "Sources and the scan dashboard (simulated run)",
+        caption: "Sources and the scan dashboard (simulated run over the demo library's sources)",
         seeded: true,
         args: &["--demo-scan", "running", "--command", "shell::ShowSources"],
+    },
+    Surface {
+        name: "export",
+        caption: "Export plan of the demo library (two drives exported, a third scanned later)",
+        seeded: true,
+        args: &["--command", "shell::ShowExport"],
+    },
+    Surface {
+        name: "reports",
+        caption: "Completion report of the demo library",
+        seeded: true,
+        args: &["--command", "shell::ShowReports"],
     },
 ];
 
@@ -114,7 +126,8 @@ fn stamp() -> u64 {
         .unwrap_or_default()
 }
 
-/// Launch the app with `args` (on `data_dir` when given), capture after `delay`, let it exit.
+/// Launch the app with `args` (on `data_dir` when given), capture after `delay`, let it exit. Paths under the
+/// scratch data folder are shown as `~/...` (`PHOTOSQUIRREL_DISPLAY_HOME`), so captures carry no home path.
 fn shoot(
     bin: &Path,
     args: &[String],
@@ -128,6 +141,7 @@ fn shoot(
     app.args(["--exit-after", &format!("{exit_after}")]);
     if let Some(dir) = data_dir {
         app.arg("--data-dir").arg(dir);
+        app.env("PHOTOSQUIRREL_DISPLAY_HOME", dir);
     }
     app.args(args).stdout(Stdio::null());
     eprintln!("\n==> launch {} {:?}", bin.display(), args);

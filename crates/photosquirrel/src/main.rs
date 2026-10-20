@@ -176,10 +176,17 @@ fn main() {
         };
     // `--demo-scan`: a simulated scan engine for the Sources, Export and Reports views; the shell's source count
     // comes from it too, so the navigator and status bar agree with the Sources view.
+    // The simulation mirrors the seeded catalog's sources, so every count on screen agrees.
     let demo_scans = args.demo_scan.as_deref().map(|mode| {
-        Arc::new(ui_workspace::scan_backend::DemoBackend::screenshot(
+        let real = backend
+            .clone()
+            .scans()
+            .and_then(|b| b.sources().ok())
+            .unwrap_or_default();
+        Arc::new(ui_workspace::scan_backend::DemoBackend::screenshot_of(
             mode,
             ui_workspace::views::export::default_library(),
+            &real,
         ))
     });
     let backend: Arc<dyn LibraryBackend> = match &demo_scans {

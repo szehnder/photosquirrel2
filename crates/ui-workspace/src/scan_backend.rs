@@ -503,6 +503,8 @@ pub struct DemoBackend {
     pub pinned: Mutex<Option<ProgressSnapshot>>,
     /// Simulates a fresh app start after the run was interrupted: no live snapshot until the run is resumed.
     pub restarted: AtomicBool,
+    /// Source roots of the real catalog the simulation mirrors (screenshots of a seeded demo library).
+    pub roots: Mutex<HashMap<SourceId, PathBuf>>,
 }
 
 impl DemoBackend {
@@ -521,7 +523,73 @@ impl DemoBackend {
             export_blocks: AtomicBool::new(false),
             pinned: Mutex::new(None),
             restarted: AtomicBool::new(false),
+            roots: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// [`DemoBackend::screenshot`] mirroring a real catalog: the simulated run scans the catalog's own sources
+    /// (names, roots, file counts), so the Sources view agrees with the navigator and the status bar of the
+    /// same seeded library. Falls back to the scripted sources when `real` is empty.
+    pub fn screenshot_of(mode: &str, library: PathBuf, real: &[SourceRow]) -> Self {
+        use ps_service::scans::{FakeConfig, FakeSource};
+        if real.is_empty() {
+            return Self::screenshot(mode, library);
+        }
+        let devices = [
+            DeviceClass::SolidState,
+            DeviceClass::Rotational,
+            DeviceClass::Network,
+        ];
+        let sources: Vec<FakeSource> = real
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let s = FakeSource::new(r.id.0, &r.name, devices[i % 3], r.files.max(1));
+                if i == 0 {
+                    // The first drive is a rescan: most files unchanged.
+                    s.rescan(r.files / 8, r.files / 40, 1)
+                } else {
+                    s
+                }
+            })
+            .collect();
+        let work: u64 = real.iter().map(|r| r.files).sum::<u64>().max(1);
+        let config = FakeConfig {
+            sources,
+            // About three minutes of work, so the "running" state (100 s in) is a little past half way.
+            files_per_s: work as f64 / 170.0,
+            bytes_per_file: 600_000,
+            walk_ms: 6_000,
+            tick_ms: 100,
+            error_every: (work / 3).max(1),
+            skip_percent: 12,
+        };
+        let scan = FakeScanService::new(config);
+        let all: Vec<SourceId> = real.iter().map(|r| r.id).collect();
+        let backend = match mode {
+            "paused" => {
+                scan.start_at(&all, 100_000, RunStatus::Paused);
+                Self::new(scan)
+            }
+            "interrupted" => {
+                scan.start_at(&all, 64_000, RunStatus::Interrupted);
+                let b = Self::new(scan);
+                b.restarted.store(true, Ordering::SeqCst);
+                b
+            }
+            "complete" => {
+                scan.start_at(&all, 354_200, RunStatus::Running);
+                scan.advance(1_000);
+                Self::new(scan)
+            }
+            _ => {
+                scan.start_at(&all, 100_000, RunStatus::Running);
+                Self::new(scan)
+            }
+        };
+        *Self::lock(&backend.library) = Some(library);
+        *Self::lock(&backend.roots) = real.iter().map(|r| (r.id, r.root.clone())).collect();
+        backend
     }
 
     /// The scripted states of `photosquirrel --demo-scan MODE` (screenshots): three sources (an SSD rescan,
@@ -677,7 +745,10 @@ impl ScanBackend for DemoBackend {
             .map(|s| SourceRow {
                 id: s.id,
                 name: s.name.clone(),
-                root: demo_root(&s.name),
+                root: Self::lock(&self.roots)
+                    .get(&s.id)
+                    .cloned()
+                    .unwrap_or_else(|| demo_root(&s.name)),
                 online: s.online,
                 device: s.device,
                 last_scan_ms: Some(now_ms() - s.id.0 * 86_400_000 * 3),

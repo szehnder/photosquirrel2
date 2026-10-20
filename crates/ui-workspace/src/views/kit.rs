@@ -300,13 +300,21 @@ pub fn format_duration(ms: u64) -> String {
 
 /// A path for display: the home folder shown as `~` ("~/Pictures/PhotoSquirrel Library").
 pub fn display_path(p: &std::path::Path) -> String {
-    let home = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+    // Scripted screenshots run on a scratch data folder; `PHOTOSQUIRREL_DISPLAY_HOME` (dev only) shows paths
+    // under that folder as if it were the home folder, so captures carry no real home path.
+    let home = std::env::var_os(DISPLAY_HOME_ENV)
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()));
     match home.as_deref().and_then(|h| p.strip_prefix(h).ok()) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
         Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         None => p.display().to_string(),
     }
 }
+
+/// Dev-only: the folder [`display_path`] shows as `~` instead of the home folder (scripted screenshots).
+pub const DISPLAY_HOME_ENV: &str = "PHOTOSQUIRREL_DISPLAY_HOME";
 
 /// Shorten a long path in the middle ("Family/Photos/…/2019-08 Holiday").
 pub fn middle_ellipsis(s: &str, max: usize) -> String {

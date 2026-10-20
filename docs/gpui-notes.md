@@ -404,3 +404,14 @@ window size) when the delay is long; focus can still move.
   use it where `text_ellipsis` cuts a value (the Excluded reasons column).
 - `max_h(window.viewport_size().height * 0.8)` caps an overlay sized in rems (the settings window) so it still
   fits the minimum window size; its body scrolls.
+
+## One consistent demo library for screenshots (M3/M4 gate fixes)
+- `photosquirrel-cli --data-dir D demo` seeds the library every screenshot uses: the small corpus as three
+  sources ("Laptop", "Backup Drive", "Family NAS"); the first two are scanned and exported to
+  `D/PhotoSquirrel Library`, the third is scanned afterwards. So the navigator, status bar, Export plan, Reports
+  and (with `--demo-scan`, whose simulated run now mirrors the catalog's own sources) the Sources view show the
+  same counts.
+- Export and Reports load their plan and report inside the start-up grace (`StartupGrace::within`) when shown by
+  `--command`, so frame one is not a loading card on the real backend either.
+- `PHOTOSQUIRREL_DISPLAY_HOME=D` (dev only; `cargo xtask screenshot` sets it for seeded surfaces) makes
+  `kit::display_path` show paths under the scratch data folder as `~/...`, so captures carry no real home path.
