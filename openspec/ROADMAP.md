@@ -20,9 +20,11 @@ A milestone gate must pass before the next milestone starts. Gates are checked b
 | 12 | M2 | `duplicate-review` | duplicate-review | review groups, override keeper |
 | 13 | M3 AI | `ai-insights` | llm-providers, ai-queue, ai-review | recorded-fixture tests for each provider; live LM Studio smoke |
 | 14 | M4 Export | `export` | export, completion-report | export to temp library, idempotent re-export, hash verify |
-| 15 | M5 Release | `performance-budgets` | performance-budgets | all budgets measured; baseline recorded |
-| 16 | M5 | `release-packaging` | release-packaging | installers for every platform on a GitHub Release; README with screenshots |
-| 17 | M6 Cleanup | `quarantine-cleanup` | cleanup | move + undo round-trip proven on corpus |
+| 15 | M4 | `export-hardening` | export | another catalog's library refused as a source |
+| 16 | M5 Release | `settings-wiring` | settings | app and CLI scanners built from the same settings; pause on battery |
+| 17 | M5 | `performance-budgets` | performance-budgets | all budgets measured; baseline recorded |
+| 18 | M5 | `release-packaging` | release-packaging | installers for every platform on a GitHub Release; README with screenshots |
+| 19 | M6 Cleanup | `quarantine-cleanup` | cleanup | move + undo round-trip proven on corpus |
 
 ## Later (not v1; propose when needed)
 `similar-shots` (burst suggestions UI), `justified-layout`, `video-perceptual-dedup`, `face-clusters`,
