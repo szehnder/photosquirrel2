@@ -34,13 +34,13 @@
 
 ## 5. Budgets
 
-- [ ] 5.1 `--render-bench` and `perf-budgets.toml` entry `gallery-scroll-p95` (8.3 ms, app source, `render_p95`); verify `scenario_gallery_1m_scroll_p95_within_8_3_ms`
+- [x] 5.1 `--render-bench` and `perf-budgets.toml` entry `gallery-scroll-p95` (8.3 ms, app source, `render_p95`); verify `scenario_gallery_1m_scroll_p95_within_8_3_ms` (passed on the owner's desktop, 2026-10-20)
 - [x] 5.2 First gallery frame measurement and entry `first-gallery-frame` (600 ms); verify `scenario_gallery_first_gallery_frame_within_600_ms`
 
 ## 6. Verification
 
 - [x] 6.1 `cargo xtask ci` is green
-- [ ] 6.2 Gate: `cargo xtask bench --check` reports 1M-item scroll p95 <= 8.3 ms on the reference machine
+- [x] 6.2 Gate: `cargo xtask bench --check` reports 1M-item scroll p95 <= 8.3 ms on the reference machine (owner ran `scenario_gallery_1m_scroll_p95_within_8_3_ms` with `PHOTOSQUIRREL_GUI_TESTS=1`, release, 2026-10-20: passed)
 - [x] 6.3 `cargo xtask screenshot --all-surfaces` reviewed (grid, stacks, loupe, inspector, excluded) (deviation: `--all-surfaces` covers only the Library grid of these; grid, stacks, loupe, inspector, filters and Excluded were captured one by one with `cargo xtask screenshot` on the demo library and reviewed: `docs/screenshots/gallery-*.png`, toolbar also checked at 1280 px)
 - [x] 6.4 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 6.5 `openspec validate gallery --strict` passes
