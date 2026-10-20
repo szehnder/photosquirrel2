@@ -350,6 +350,56 @@ impl CopyHooks for DiskFullAt {
     }
 }
 
+/// ADR-0044: a re-plan trusts the ledger. With every keeper exported and nothing changed, planning again stats
+/// the library copies but reads none of them; a copy whose modification time changed with the same bytes is
+/// re-hashed once and still counts as exported.
+#[test]
+fn scenario_export_re_plan_reads_no_file_contents() {
+    const N: usize = 24;
+    let mut s = Sources::new("replan", 1);
+    let units: Vec<_> = (0..N)
+        .map(|i| {
+            unit(vec![s.add(
+                0,
+                &format!("DCIM/IMG_{i:04}.JPG"),
+                &bytes(300 + i as u64, 20_000),
+                1_500_000_000 + i as i64,
+                day(2019, 3, 1 + (i % 20) as u8),
+            )])
+        })
+        .collect();
+    let input = s.input(units);
+    let lib = s.library();
+    let mut ledger = MemoryLedger::new();
+    let r = run(&input, &lib, &mut ledger, &ExecConfig::default(), &NoHooks);
+    assert_eq!(r.copied as usize, N);
+    let rows = ledger.entries().expect("rows");
+    assert!(
+        rows.iter().all(|e| e.library_mtime_ns.is_some()),
+        "done rows record the copy's time"
+    );
+
+    let probe = CountingProbe::new(&lib);
+    let p = plan(&input, &rows, &lib, &probe, google()).expect("plan");
+    assert_eq!(p.totals.already_exported as usize, N);
+    assert_eq!((p.totals.files, p.totals.adopted), (0, 0));
+    assert_eq!(probe.reads(), 0, "no library file was read");
+
+    // A copy touched by another program (same bytes, new time) is re-hashed, alone, and still exported.
+    let touched = lib.join(rows[3].library_rel_path.to_path_buf());
+    set_mtime(&touched, 1_700_000_000);
+    let probe = CountingProbe::new(&lib);
+    let p = plan(&input, &rows, &lib, &probe, google()).expect("plan");
+    assert_eq!(p.totals.already_exported as usize, N);
+    assert_eq!(probe.reads(), 1);
+
+    // `--verify` re-hashes every recorded copy.
+    let probe = CountingProbe::new(&lib);
+    let p = plan(&input, &rows, &lib, &probe, google().with_verify(true)).expect("plan");
+    assert_eq!(p.totals.already_exported as usize, N);
+    assert_eq!(probe.reads(), N);
+}
+
 #[test]
 fn scenario_export_disk_full_stops_cleanly() {
     let mut s = Sources::new("diskfull", 1);

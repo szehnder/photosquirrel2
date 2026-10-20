@@ -211,6 +211,10 @@ struct ExportTarget {
     /// Never write XMP sidecars.
     #[arg(long)]
     no_sidecars: bool,
+    /// Re-hash every library copy the ledger records while planning (slow). By default a copy that still has
+    /// its recorded size and modification time is trusted without reading it.
+    #[arg(long)]
+    verify: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -400,7 +404,7 @@ fn settings(t: &ExportTarget) -> ps_export::ProfileSettings {
     if t.no_sidecars {
         s.sidecars = false;
     }
-    s
+    s.with_verify(t.verify)
 }
 
 fn main() -> ExitCode {

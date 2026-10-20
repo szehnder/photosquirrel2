@@ -1,6 +1,7 @@
 //! The export plan (dry run, ADR-0004, ADR-0022). Planning only reads: the ledger rows, the library folder
-//! (existence, sizes, hashes of same-size files for adoption) and the free space. Nothing is written until the
-//! user confirms and [`crate::execute`] runs the plan.
+//! (existence, sizes and times; hashes only of same-size files for adoption and of recorded copies whose time
+//! changed, ADR-0044) and the free space. Nothing is written until the user confirms and [`crate::execute`]
+//! runs the plan.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -10,9 +11,10 @@ use ps_model::{ContentId, FileId, LedgerEntry, LedgerState, RelPath, SourceId};
 use serde::Serialize;
 
 use crate::date::{DateOrigin, DateSource};
+use crate::disposition::CopyCheck;
 use crate::input::{ExportInput, KeeperFile, SourceInfo};
 use crate::layout::{MAX_SUFFIX, candidate, collision_key, folder_of, join, split_name};
-use crate::library::{Existing, LibraryProbe, normalize, partial_of};
+use crate::library::{Existing, LibraryProbe, check_copy, normalize, partial_of};
 use crate::pairs::bundles;
 use crate::profile::ProfileSettings;
 
@@ -285,7 +287,7 @@ impl Planner<'_> {
             } else {
                 Slot::Taken
             }),
-            Existing::File { size }
+            Existing::File { size, .. }
                 if size == f.size && self.probe.identical(rel, &f.content, size)? =>
             {
                 Ok(Slot::Identical)
@@ -367,15 +369,15 @@ pub fn plan(
             continue;
         }
 
-        // Keepers whose content is already in the library: a ledger row and the copy still there with the
-        // same bytes (size and content hash; a same-size file with other bytes is a collision, D7).
+        // Keepers whose content is already in the library: a `done` ledger row whose copy is still there. The
+        // row is trusted on the copy's size and recorded modification time; only a copy whose time changed
+        // (or every copy, with `verify_library`) is re-hashed (ADR-0044). A same-size file with other bytes is
+        // not this content (D7).
         let mut todo = Vec::new();
         for (u, f) in &all {
             let mut found = None;
             for e in done.get(&f.content).into_iter().flatten() {
-                if probe.existing(&e.library_rel_path)? == (Existing::File { size: e.size })
-                    && probe.identical(&e.library_rel_path, &f.content, e.size)?
-                {
+                if check_copy(probe, e, settings.verify_library)? == CopyCheck::Ok {
                     found = Some(e.library_rel_path.clone());
                     break;
                 }

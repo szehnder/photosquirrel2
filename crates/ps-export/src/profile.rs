@@ -11,6 +11,10 @@ pub struct ProfileSettings {
     pub sidecars: bool,
     /// Place a Live Photo still and its video in the still's folder with one stem.
     pub live_pairs_together: bool,
+    /// Re-hash every library copy the ledger records while planning (`--verify`); otherwise a copy with its
+    /// recorded size and modification time is trusted without reading it (ADR-0044).
+    #[serde(default)]
+    pub verify_library: bool,
 }
 
 impl ProfileSettings {
@@ -22,22 +26,30 @@ impl ProfileSettings {
                 profile,
                 sidecars: true,
                 live_pairs_together: true,
+                verify_library: false,
             },
             ExportProfile::GooglePhotos => Self {
                 profile,
                 sidecars: false,
                 live_pairs_together: false,
+                verify_library: false,
             },
             ExportProfile::Lightroom => Self {
                 profile,
                 sidecars: true,
                 live_pairs_together: false,
+                verify_library: false,
             },
         }
     }
 
     pub fn with_sidecars(mut self, on: bool) -> Self {
         self.sidecars = on;
+        self
+    }
+
+    pub fn with_verify(mut self, on: bool) -> Self {
+        self.verify_library = on;
         self
     }
 }

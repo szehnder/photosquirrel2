@@ -163,11 +163,21 @@ fn scenario_completion_report_verify_detects_altered_copy() {
     let mut bytes = fs::read(&path).expect("copy");
     bytes[100] ^= 0x55;
     fs::write(&path, bytes).expect("alter, same size");
+    // A changed modification time alone is enough for the quick check to re-hash it (ADR-0044).
+    let (d, _) = derive(&e, false);
+    assert_eq!(of(&d, keeper), Disposition::Pending);
+    // With its recorded time restored by hand, only verify can see it.
+    let recorded = row.library_mtime_ns.expect("time recorded");
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|f| f.set_modified(ps_export::copy::system_time(recorded)))
+        .expect("restore mtime");
     let (d, _) = derive(&e, false);
     assert_eq!(
         of(&d, keeper),
         Disposition::Exported,
-        "a stat check cannot see it"
+        "size and time unchanged: trusted without reading"
     );
     let (d, checks) = derive(&e, true);
     assert_eq!(of(&d, keeper), Disposition::Pending);

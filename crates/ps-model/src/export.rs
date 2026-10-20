@@ -90,6 +90,11 @@ pub struct LedgerEntry {
     pub profile: ExportProfile,
     /// Milliseconds since the Unix epoch.
     pub at_ms: i64,
+    /// Modification time (ns since the Unix epoch) of the library copy when it was recorded. With the size it
+    /// lets a re-plan trust the row without reading the copy (ADR-0044); `None` for rows recorded before
+    /// migration 9.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_mtime_ns: Option<i64>,
 }
 
 /// Why a file is `excluded` (ADR-0023).

@@ -98,3 +98,41 @@ fn ledger_suspect_migration_keeps_rows() {
         .expect("indexes");
     assert_eq!(idx, 2);
 }
+
+/// Migration 9 (ADR-0044) adds the library copy's modification time: older rows keep their values with no
+/// time, and new rows round-trip it through the writer and the reader.
+#[test]
+fn ledger_mtime_migration_keeps_rows_and_round_trips() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("catalog.db");
+    db::create_catalog_at_version(&path, db::LEDGER_MTIME_MIGRATION.version - 1).expect("catalog");
+    {
+        let conn = Connection::open(&path).expect("open");
+        conn.execute(
+            "INSERT INTO export_library (id, root_path, created_at) VALUES (1, ?1, 0)",
+            params![b"/lib".to_vec()],
+        )
+        .expect("library");
+        conn.execute(
+            "INSERT INTO export_ledger (library_id, content_id, identity_kind, full_hash, file_id,
+                 library_rel_path, size, state, profile, at)
+             VALUES (1, ?1, 0, ?1, 42, ?2, 10, 1, 'apple', 5)",
+            params![vec![7u8; 32], b"old.jpg".to_vec()],
+        )
+        .expect("row");
+    }
+    let cat = ps_catalog::Catalog::open_file(&path, Default::default()).expect("upgrade");
+    let rows = cat.read().ledger(1).expect("rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].size, rows[0].library_mtime_ns), (10, None));
+    let mut e = rows[0].clone();
+    e.library_rel_path = ps_model::RelPath::from_bytes(b"new.jpg".to_vec()).expect("rel");
+    e.library_mtime_ns = Some(1_600_000_000_123_456_789);
+    cat.writer().ledger_record(1, e).expect("record");
+    let rows = cat.read().ledger(1).expect("rows");
+    assert_eq!(
+        rows.iter().map(|r| r.library_mtime_ns).collect::<Vec<_>>(),
+        vec![Some(1_600_000_000_123_456_789), None]
+    );
+    cat.close().expect("close");
+}

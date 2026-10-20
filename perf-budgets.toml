@@ -135,3 +135,14 @@ max = 600.0
 unit = "ms"
 change = "gallery"
 source = { kind = "app", args = ["--synthetic-catalog", "1000000", "--measure-first-gallery-frame"], runs = 5 }
+
+# export (ADR-0044, ADR-0026). Re-plan of a library that already holds every keeper: 50,000 exported files in the
+# ledger with their size and modification time; the planner stats each copy and reads none (the Export view
+# re-plans on open and on every profile change). Median of 3 plans. Measured 187 ms (release, NVMe).
+[[budget]]
+name = "export-replan-50k"
+metric = "median"
+max = 500.0
+unit = "ms"
+change = "export"
+source = { kind = "test", package = "ps-export", test = "budgets", name = "replan_50k_exported_within_budget" }

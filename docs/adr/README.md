@@ -47,3 +47,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0041](0041-exclusive-catalog-owner-lock.md) | One owner process per catalog: an exclusive OS lock |
 | [0042](0042-interim-json-review-stores.md) | Interim JSON stores for review state and AI corrections |
 | [0043](0043-group-capture-date-for-export-filing.md) | Export files a keeper by the best capture date its duplicate group knows |
+| [0044](0044-export-replan-trusts-the-ledger.md) | An export re-plan trusts the ledger: size and modification time, no re-hash |

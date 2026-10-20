@@ -144,7 +144,16 @@ impl Ctx<'_> {
             state,
             profile: self.plan.settings.profile,
             at_ms: crate::now_ms(),
+            library_mtime_ns: None,
         }
+    }
+
+    /// The modification time of a library file now (recorded with `done` rows, ADR-0044).
+    fn library_mtime(&self, rel: &RelPath) -> Option<i64> {
+        std::fs::symlink_metadata(self.lib.path(rel))
+            .ok()
+            .filter(|m| m.file_type().is_file())
+            .and_then(|m| crate::library::mtime_ns_of(&m))
     }
 
     fn halt(&self, s: &mut Shared<'_>, why: StopReason) {
@@ -217,6 +226,7 @@ impl Ctx<'_> {
             date_source: Some(f.date_origin.describe()),
             date_from: f.date_origin.copy.and_then(|c| self.copy_path(f.unit, c)),
         };
+        let mtime = self.library_mtime(&f.target);
         let mut s = self.shared.lock();
         if let Err(e) = s.manifest.append(&rec) {
             // The copy is in place and verified; a manifest failure must not lose the ledger row.
@@ -227,7 +237,8 @@ impl Ctx<'_> {
                 error: format!("manifest: {e}"),
             });
         }
-        let e = self.entry(f, LedgerState::Done, Some(full));
+        let mut e = self.entry(f, LedgerState::Done, Some(full));
+        e.library_mtime_ns = mtime;
         if let Err(err) = s.ledger.record(&e) {
             self.halt(&mut s, StopReason::Ledger(err.to_string()));
         }

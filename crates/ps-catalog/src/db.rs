@@ -37,6 +37,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     EXPORT_MIGRATION,
     GALLERY_MIGRATION,
     LEDGER_SUSPECT_MIGRATION,
+    LEDGER_MTIME_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -74,6 +75,13 @@ pub const LEDGER_SUSPECT_MIGRATION: Migration = Migration {
     version: 8,
     name: "ledger_suspect",
     sql: include_str!("../migrations/0008_ledger_suspect.sql"),
+};
+
+/// Migration 9 (ADR-0044: the ledger records each library copy's modification time).
+pub const LEDGER_MTIME_MIGRATION: Migration = Migration {
+    version: 9,
+    name: "ledger_mtime",
+    sql: include_str!("../migrations/0009_ledger_mtime.sql"),
 };
 
 /// `thumbs.db` migrations.

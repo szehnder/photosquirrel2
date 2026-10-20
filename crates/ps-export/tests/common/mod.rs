@@ -435,3 +435,41 @@ fn shared_dir(name: &str, build: impl FnOnce(&std::path::Path)) -> std::path::Pa
     }
     root
 }
+
+/// A [`ps_export::FsLibrary`] that counts how often the planner reads a library file's contents
+/// ([`ps_export::LibraryProbe::identical`]) and stats one.
+pub struct CountingProbe {
+    pub inner: ps_export::FsLibrary,
+    pub reads: std::sync::atomic::AtomicUsize,
+    pub stats: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingProbe {
+    pub fn new(lib: &Path) -> Self {
+        Self {
+            inner: ps_export::FsLibrary::new(lib),
+            reads: Default::default(),
+            stats: Default::default(),
+        }
+    }
+
+    pub fn reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl ps_export::LibraryProbe for CountingProbe {
+    fn existing(&self, rel: &RelPath) -> io::Result<ps_export::Existing> {
+        self.stats.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.existing(rel)
+    }
+
+    fn identical(&self, rel: &RelPath, content: &ContentId, size: u64) -> io::Result<bool> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.identical(rel, content, size)
+    }
+
+    fn free_space(&self) -> io::Result<Option<u64>> {
+        self.inner.free_space()
+    }
+}

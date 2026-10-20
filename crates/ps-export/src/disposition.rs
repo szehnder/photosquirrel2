@@ -16,16 +16,15 @@
 //!   `pending`.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs::File;
 use std::path::Path;
 
 use ps_model::{
-    CompletionCounts, ContentId, ContentIdKind, Disposition, ExclusionReason, FileId, LedgerEntry,
-    LedgerState, PhotoClass, RelPath, SourceId,
+    CompletionCounts, ContentId, Disposition, ExclusionReason, FileId, LedgerEntry, LedgerState,
+    PhotoClass, RelPath, SourceId,
 };
 use serde::Serialize;
 
-use crate::library::full_hash_of;
+use crate::library::{FsLibrary, check_copy};
 
 /// One catalogued file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,40 +82,23 @@ pub struct FileDisposition {
     pub library_path: Option<RelPath>,
 }
 
-/// Check the library copy of every `done` row: exists with its recorded size; with `verify`, re-hash it.
+/// Check the library copy of every `done` row with [`check_copy`]: present with its recorded size (and, when
+/// recorded, modification time; a changed time re-hashes that copy); with `verify`, re-hash every copy. A copy
+/// that cannot be read counts as missing.
 pub fn check_library(
     library: &Path,
     ledger: &[LedgerEntry],
     verify: bool,
 ) -> HashMap<RelPath, CopyCheck> {
-    let mut out = HashMap::new();
-    for e in ledger.iter().filter(|e| e.state == LedgerState::Done) {
-        let path = e.library_rel_path.under(library);
-        let check = match std::fs::symlink_metadata(&path) {
-            Ok(m) if m.file_type().is_file() && m.len() == e.size => {
-                if verify {
-                    let expect = e.full_hash.or(match e.content.kind {
-                        ContentIdKind::Full => Some(e.content.digest),
-                        ContentIdKind::Sampled => None,
-                    });
-                    match (File::open(&path).and_then(full_hash_of), expect) {
-                        (Ok((h, _)), Some(x)) if h == x => CopyCheck::Ok,
-                        (Ok(_), None) => CopyCheck::Ok,
-                        _ => CopyCheck::HashMismatch,
-                    }
-                } else {
-                    CopyCheck::Ok
-                }
-            }
-            Ok(m) if m.file_type().is_file() => CopyCheck::SizeMismatch {
-                expected: e.size,
-                found: m.len(),
-            },
-            _ => CopyCheck::Missing,
-        };
-        out.insert(e.library_rel_path.clone(), check);
-    }
-    out
+    let probe = FsLibrary::new(library);
+    ledger
+        .iter()
+        .filter(|e| e.state == LedgerState::Done)
+        .map(|e| {
+            let check = check_copy(&probe, e, verify).unwrap_or(CopyCheck::Missing);
+            (e.library_rel_path.clone(), check)
+        })
+        .collect()
 }
 
 /// Derive every file's disposition (rules in the module docs). Output order follows `facts.files`.

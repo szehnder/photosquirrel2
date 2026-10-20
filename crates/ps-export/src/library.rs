@@ -9,7 +9,9 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
-use ps_model::{ContentId, ContentIdKind, RelPath};
+use ps_model::{ContentId, ContentIdKind, LedgerEntry, RelPath};
+
+use crate::disposition::CopyCheck;
 
 /// Suffix of in-flight copies.
 pub const PARTIAL_SUFFIX: &str = ".ps-partial";
@@ -20,12 +22,19 @@ pub enum Existing {
     Absent,
     File {
         size: u64,
+        /// Modification time, ns since the Unix epoch (`None` when the file system has none).
+        mtime_ns: Option<i64>,
     },
     /// A directory, symlink or special file: the name is taken.
     Other,
 }
 
 /// Read-only view of the library the planner consults. Tests substitute fakes.
+///
+/// [`LibraryProbe::existing`] only stats; [`LibraryProbe::identical`] reads the file's contents and is
+/// the expensive call: planning makes it only for adoption candidates (a same-size file at a target that the
+/// ledger does not know) and for ledger rows whose copy no longer has its recorded modification time
+/// ([`check_copy`], ADR-0044).
 pub trait LibraryProbe {
     fn existing(&self, rel: &RelPath) -> io::Result<Existing>;
     /// The file at `rel` has exactly this content (full BLAKE3, or the sampled identity for sampled ones).
@@ -56,7 +65,10 @@ impl FsLibrary {
 impl LibraryProbe for FsLibrary {
     fn existing(&self, rel: &RelPath) -> io::Result<Existing> {
         match fs::symlink_metadata(rel.under(&self.root)) {
-            Ok(m) if m.file_type().is_file() => Ok(Existing::File { size: m.len() }),
+            Ok(m) if m.file_type().is_file() => Ok(Existing::File {
+                size: m.len(),
+                mtime_ns: mtime_ns_of(&m),
+            }),
             Ok(_) => Ok(Existing::Other),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Existing::Absent),
             // A file where a folder is expected ("2011" is a file): the name is unusable.
@@ -82,6 +94,54 @@ impl LibraryProbe for FsLibrary {
     fn free_space(&self) -> io::Result<Option<u64>> {
         free_space(&self.root)
     }
+}
+
+/// Modification time of `m` in ns since the Unix epoch.
+pub fn mtime_ns_of(m: &fs::Metadata) -> Option<i64> {
+    let t = m.modified().ok()?;
+    Some(match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_nanos()).ok()?,
+        Err(e) => -i64::try_from(e.duration().as_nanos()).ok()?,
+    })
+}
+
+/// Check the library copy a `done` ledger row describes (ADR-0044), reading as little as possible:
+///
+/// - absent, or not a regular file: [`CopyCheck::Missing`];
+/// - another size: [`CopyCheck::SizeMismatch`] (nothing read);
+/// - `verify`: re-hash it ([`CopyCheck::Ok`] or [`CopyCheck::HashMismatch`]);
+/// - the recorded modification time still matches, or the row predates recorded times: trusted, nothing read;
+/// - the time changed but the size did not: re-hash this one file to decide.
+///
+/// The hash compared is the row's full BLAKE3 when recorded, else the catalog identity (full or sampled).
+pub fn check_copy(
+    probe: &dyn LibraryProbe,
+    e: &LedgerEntry,
+    verify: bool,
+) -> io::Result<CopyCheck> {
+    let (size, mtime_ns) = match probe.existing(&e.library_rel_path)? {
+        Existing::File { size, mtime_ns } => (size, mtime_ns),
+        Existing::Absent | Existing::Other => return Ok(CopyCheck::Missing),
+    };
+    if size != e.size {
+        return Ok(CopyCheck::SizeMismatch {
+            expected: e.size,
+            found: size,
+        });
+    }
+    let unchanged = match e.library_mtime_ns {
+        Some(recorded) => mtime_ns == Some(recorded),
+        None => true,
+    };
+    if unchanged && !verify {
+        return Ok(CopyCheck::Ok);
+    }
+    let expect = e.full_hash.map_or(e.content, ContentId::full);
+    Ok(if probe.identical(&e.library_rel_path, &expect, e.size)? {
+        CopyCheck::Ok
+    } else {
+        CopyCheck::HashMismatch
+    })
 }
 
 /// BLAKE3 of a whole reader and its length.

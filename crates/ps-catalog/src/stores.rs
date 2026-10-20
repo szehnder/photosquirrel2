@@ -619,6 +619,7 @@ fn ledger_row(r: &Row<'_>) -> Result<LedgerEntry> {
         state: LedgerState::from_code(r.get(6)?).ok_or_else(|| corrupt("ledger state"))?,
         profile: profile_from(&profile).ok_or_else(|| corrupt("export profile"))?,
         at_ms: r.get(8)?,
+        library_mtime_ns: r.get(9)?,
     })
 }
 
@@ -641,12 +642,13 @@ impl Writer {
         self.exec(move |c| {
             c.prepare_cached(
                 "INSERT INTO export_ledger (library_id, content_id, identity_kind, full_hash, file_id,
-                                            library_rel_path, size, state, profile, at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                            library_rel_path, size, state, profile, at, library_mtime_ns)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT (library_id, library_rel_path) DO UPDATE SET
                     content_id = excluded.content_id, identity_kind = excluded.identity_kind,
                     full_hash = excluded.full_hash, file_id = excluded.file_id, size = excluded.size,
-                    state = excluded.state, profile = excluded.profile, at = excluded.at",
+                    state = excluded.state, profile = excluded.profile, at = excluded.at,
+                    library_mtime_ns = excluded.library_mtime_ns",
             )?
             .execute(params![
                 library,
@@ -658,7 +660,8 @@ impl Writer {
                 entry.size as i64,
                 entry.state.code(),
                 entry.profile.as_str(),
-                entry.at_ms
+                entry.at_ms,
+                entry.library_mtime_ns
             ])?;
             Ok(())
         })
@@ -688,7 +691,8 @@ impl Readers {
     pub fn ledger(&self, library: i64) -> Result<Vec<LedgerEntry>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
-                "SELECT content_id, identity_kind, full_hash, file_id, library_rel_path, size, state, profile, at
+                "SELECT content_id, identity_kind, full_hash, file_id, library_rel_path, size, state, profile, at,
+                        library_mtime_ns
                  FROM export_ledger WHERE library_id = ?1 ORDER BY library_rel_path",
             )?;
             let mut rows = stmt.query([library])?;

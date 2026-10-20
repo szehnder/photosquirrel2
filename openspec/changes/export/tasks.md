@@ -50,3 +50,7 @@
 - [x] 7.2 Gate: export the small corpus to a temp library, re-export copies nothing, `report --verify` shows every drive 100% accounted for (small corpus via `photosquirrel-cli export run` then `report --verify`: all three drives 100% accounted for, re-export copies 0; also `export_small_corpus_reexport_copies_nothing_and_every_drive_is_accounted_for` in ps-service)
 - [x] 7.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 7.4 `openspec validate export --strict` passes
+
+## 8. M4 gate fixes
+
+- [x] 8.1 Re-plans trust the ledger (ADR-0044): ledger rows record the library copy's modification time (catalog migration 9); `ps_export::library::check_copy` (shared by the planner and `check_library`) trusts a copy with its recorded size and time, re-hashes only a copy whose time changed, and every copy with `--verify`; verify `scenario_export_re_plan_reads_no_file_contents` (counting probe: 0 reads for 24 exported files, 1 after touching one, 24 with verify) and the `export-replan-50k` budget (`ps-export/tests/budgets.rs`, <= 500 ms; measured 187 ms release on NVMe)
