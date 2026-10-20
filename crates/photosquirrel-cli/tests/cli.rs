@@ -594,7 +594,13 @@ fn scenario_ai_queue_cli_starts_queue() {
         &["--json", "ai", "results", "--limit", "1000"],
     ));
     let results = r["data"].as_array().unwrap();
-    assert_eq!(results.len() as u64, done);
+    // A RAW+JPEG pair is described once and its result stored for both contents, so there can be more results
+    // than requests, never fewer.
+    assert!(
+        results.len() as u64 >= done,
+        "{} results for {done}",
+        results.len()
+    );
     assert_eq!(results[0]["insight"]["category"], "people");
     assert!(results[0]["model"].as_str().is_some_and(|m| !m.is_empty()));
     assert_eq!(results[0]["provider"], "LM Studio (local)");
