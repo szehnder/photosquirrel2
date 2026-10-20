@@ -8,7 +8,7 @@ never repeats work and never sends anything without being started.
 ## ADDED Requirements
 
 ### Requirement: Nothing sent before start
-No photo SHALL be sent to any provider until the user starts the AI queue, and stopping or pausing it SHALL stop new requests. Changing the provider, the server address or the hosted consent SHALL pause a running queue.
+No photo SHALL be sent to any provider until the user starts the AI queue, and stopping or pausing it SHALL stop new requests. Changing the provider, the server address or the hosted consent SHALL pause a running queue, also when the change is made in `settings.toml` by another process: a queue started from the CLI SHALL re-check the file before each request, and the app's next settings save SHALL NOT restore a consent the file withdrew.
 
 #### Scenario: Nothing sent before start
 - **WHEN** a corpus is scanned and the application idles with a recording provider configured
@@ -21,6 +21,10 @@ No photo SHALL be sent to any provider until the user starts the AI queue, and s
 #### Scenario: Changing the destination pauses the queue
 - **WHEN** the queue is running and the user chooses another provider, edits the server address or withdraws consent
 - **THEN** the queue is paused, and an unrelated settings change leaves it running
+
+#### Scenario: Consent withdrawn in the settings file
+- **WHEN** a queue started from the CLI is running for a hosted provider and its consent is removed from `settings.toml` (or the server address there is changed), or the app saves its settings after such an edit
+- **THEN** the CLI queue pauses before its next request and sends nothing more, and the app's save keeps the consent withdrawn
 
 ### Requirement: Persisted queue order
 The queue SHALL be persisted in the catalog and SHALL process keepers of class photo or likely photo first, then other keepers, in capture-date order; non-keepers SHALL be included only when the user opts in.

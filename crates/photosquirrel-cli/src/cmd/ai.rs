@@ -143,6 +143,12 @@ pub fn start(ctx: &Ctx, include_non_keepers: bool) -> Result<()> {
     let settings = ctx.settings()?;
     let svc = ctx.service()?;
     let ai = AiService::from_settings(&svc, &settings, &Secrets::os())?;
+    // The settings file may change while this runs (the app, an editor): re-check it before every request and
+    // pause when the destination or consent changed (ADR-0049).
+    ai.set_send_gate(ps_service::ai::settings_file_gate(
+        ctx.settings_store()?,
+        &settings,
+    ));
     let queued = ai.start(include_non_keepers)?;
     log::info!("queued {queued} new items");
     let mut last = Instant::now() - Duration::from_secs(10);
@@ -171,6 +177,13 @@ pub fn start(ctx: &Ctx, include_non_keepers: bool) -> Result<()> {
         if ai.wait_idle(Duration::from_millis(200)) {
             break;
         }
+    }
+    if !paused && ai.state() == ps_service::ai::QueueState::Paused {
+        // The send gate stopped the queue: record the pause like a user pause.
+        ai.pause()?;
+        eprintln!(
+            "AI queue paused: the provider, server address or consent changed in the settings. Start it again to continue."
+        );
     }
     let st = ai.status()?;
     control::end(&data, Job::Ai);

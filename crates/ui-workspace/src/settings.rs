@@ -1,12 +1,16 @@
 //! The settings global: the user's [`Settings`] in memory, applied live (theme, motion, text size) and written
 //! to `settings.toml` in the background through `ps-service::settings`. Every change is validated first; an
 //! invalid change is returned as field errors and nothing is applied or written.
+//!
+//! The app owns the file while it runs (ADR-0049): each save re-reads it first, and when it changed on disk a
+//! consent the file no longer holds is withdrawn here too (and a running AI queue pauses); other values are the
+//! app's.
 
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::*;
 use ps_model::settings::{FieldError, Settings, ThemeSetting};
-use ps_service::settings::{Recovery, SettingsStore};
+use ps_service::settings::{Recovery, SaveBase, SettingsStore};
 use ui_theme::{Mode, ThemeChoice};
 
 pub struct AppSettings {
@@ -20,6 +24,8 @@ pub struct AppSettings {
     recovered: Option<Recovery>,
     /// The latest settings waiting to be written (the writer takes whatever is newest).
     pending_write: Arc<Mutex<Option<Settings>>>,
+    /// What we last loaded or saved, to notice edits made by others ([`SettingsStore::save_merged`]).
+    base: Arc<Mutex<SaveBase>>,
 }
 
 impl Global for AppSettings {}
@@ -35,12 +41,12 @@ fn theme_choice(t: ThemeSetting) -> ThemeChoice {
 impl AppSettings {
     /// Load from `store` (blocking: a small file, read once before the window opens) and apply.
     pub fn init(store: Option<SettingsStore>, theme_override: Option<ThemeSetting>, cx: &mut App) {
-        let (settings, recovered) = match &store {
+        let (settings, recovered, base) = match &store {
             Some(store) => {
-                let loaded = store.load();
-                (loaded.settings, loaded.recovered)
+                let (loaded, base) = store.load_tracked();
+                (loaded.settings, loaded.recovered, base)
             }
-            None => (Settings::default(), None),
+            None => (Settings::default(), None, SaveBase::default()),
         };
         cx.set_global(AppSettings {
             settings,
@@ -50,6 +56,7 @@ impl AppSettings {
             os_reduce_motion: false,
             recovered,
             pending_write: Arc::default(),
+            base: Arc::new(Mutex::new(base)),
         });
         Self::apply(cx);
     }
@@ -116,19 +123,39 @@ impl AppSettings {
         this.settings = next.clone();
         if let Some(store) = this.store.clone() {
             let pending = this.pending_write.clone();
+            let base = this.base.clone();
             *pending.lock().unwrap_or_else(|p| p.into_inner()) = Some(next);
-            cx.background_spawn(async move {
-                let latest = pending.lock().unwrap_or_else(|p| p.into_inner()).take();
-                if let Some(settings) = latest
-                    && let Err(err) = store.save(&settings)
-                {
-                    log::error!("could not save settings: {err}");
+            let write = cx.background_spawn(async move {
+                let latest = pending.lock().unwrap_or_else(|p| p.into_inner()).take()?;
+                let mut base = base.lock().unwrap_or_else(|p| p.into_inner());
+                match store.save_merged(&latest, &mut base) {
+                    // The file withdrew the consent we were about to write: adopt that in memory.
+                    Ok(saved) if saved.ai.consent != latest.ai.consent => latest.ai.consent,
+                    Ok(_) => None,
+                    Err(err) => {
+                        log::error!("could not save settings: {err}");
+                        None
+                    }
+                }
+            });
+            cx.spawn(async move |cx| {
+                if let Some(withdrawn) = write.await {
+                    cx.update(|cx| Self::withdraw_consent(&withdrawn, cx));
                 }
             })
             .detach();
         }
         Self::apply(cx);
         Ok(())
+    }
+
+    /// The settings file no longer holds `consent` (edited by hand or by another process while we ran): withdraw
+    /// it in memory too, which pauses a running AI queue (ADR-0049). A consent given again since stays.
+    pub fn withdraw_consent(consent: &ps_model::settings::HostedConsent, cx: &mut App) {
+        if Self::get(cx).ai.consent.as_ref() == Some(consent) {
+            log::warn!("AI consent was withdrawn in the settings file; the AI queue pauses");
+            let _ = Self::update(cx, |s| s.ai.consent = None);
+        }
     }
 
     /// The OS appearance changed (for `System`).

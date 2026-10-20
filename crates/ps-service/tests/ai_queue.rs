@@ -489,3 +489,102 @@ fn scenario_ai_queue_re_describe_with_current_prompt() {
     assert_eq!(status(&catalog).unwrap().pending, 0);
 }
 
+/// ADR-0049: `settings.toml` can change while a queue runs (another process, an editor). A CLI queue re-checks
+/// the file before every request and pauses when the destination or the consent changed there; the app's next
+/// save keeps a consent the file withdrew withdrawn.
+#[test]
+fn scenario_ai_queue_consent_withdrawn_in_the_settings_file() {
+    use ps_llm::queue::{AiQueue, MemoryStore};
+    use ps_model::settings::{ProviderId, Settings};
+    use ps_service::settings::SettingsStore;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let store = SettingsStore::in_dir(tmp.path().join("config"));
+
+    // 1. A CLI queue: the server address is changed in the file while it runs.
+    let server = MockServer::with_handler(|_| {
+        std::thread::sleep(Duration::from_millis(30));
+        ok_reply()
+    });
+    let cfg = cfg_for(&server.url());
+    let mut settings = Settings::default();
+    settings.ai.base_url = cfg.base_url.clone();
+    settings.ai.model = cfg.model.clone();
+    store.save(&settings).unwrap();
+    let items = Arc::new(MemoryStore::new());
+    for i in 0..40u8 {
+        let mut d = [0u8; 32];
+        d[0] = i;
+        items.enqueue(ContentId::full(d), i64::from(i));
+    }
+    let queue = AiQueue::new(
+        items,
+        Arc::new(|c: &ContentId| -> Result<PreviewJpeg, PreviewError> {
+            Ok(preview(u64::from(c.digest[0])))
+        }),
+        ps_llm::Describer::new(ps_llm::provider_for(cfg.clone()).unwrap()),
+        qc(&cfg),
+        ps_llm::LlmRuntime::shared().handle(),
+    );
+    queue.set_send_gate(ps_service::ai::settings_file_gate(store.clone(), &settings));
+    queue.start().unwrap();
+    let t = Instant::now();
+    while server.request_count() < 2 && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    store
+        .update(|s| s.ai.base_url = "http://127.0.0.1:9/v1".into())
+        .unwrap();
+    assert!(queue.wait_idle(Duration::from_secs(10)));
+    assert_eq!(
+        queue.state(),
+        QueueState::Paused,
+        "the file changed: paused"
+    );
+    let sent = server.request_count();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(server.request_count(), sent, "nothing more is sent");
+    assert!(sent < 40, "{sent} requests: stopped before the end");
+
+    // 2. A hosted provider: consent withdrawn in the file stops the next request.
+    let mut hosted = Settings::default();
+    hosted.ai.provider = ProviderId::Anthropic;
+    hosted.ai.base_url = ProviderId::Anthropic.default_base_url().into();
+    hosted.ai.consent = ps_service::ai::consent_for(&hosted.ai);
+    store.save(&hosted).unwrap();
+    let gate = ps_service::ai::settings_file_gate(store.clone(), &hosted);
+    assert!(gate(), "unchanged file: requests may go");
+    store.update(|s| s.ai.consent = None).unwrap();
+    assert!(!gate(), "consent withdrawn in the file: the queue pauses");
+    store
+        .update(|s| s.ai.consent = ps_service::ai::consent_for(&s.ai))
+        .unwrap();
+    assert!(gate());
+    store
+        .update(|s| s.ai.base_url = "https://proxy.example.com/v1".into())
+        .unwrap();
+    assert!(!gate(), "another address in the file");
+
+    // 3. The app: a save after the file withdrew consent does not restore it.
+    store.save(&hosted).unwrap();
+    let (loaded, mut base) = store.load_tracked();
+    let mut ours = loaded.settings.clone();
+    assert!(ours.ai.consent.is_some());
+    store.update(|s| s.ai.consent = None).unwrap(); // another process withdraws
+    ours.appearance.ui_font_size += 1.0; // the app saves an unrelated change
+    let saved = store.save_merged(&ours, &mut base).unwrap();
+    assert!(saved.ai.consent.is_none(), "consent stays withdrawn");
+    assert!(store.load().settings.ai.consent.is_none());
+    assert_eq!(saved.appearance.ui_font_size, ours.appearance.ui_font_size);
+    // Consent the app gives afterwards (the file unchanged since our save) is written.
+    ours.ai.consent = ps_service::ai::consent_for(&ours.ai);
+    let saved = store.save_merged(&ours, &mut base).unwrap();
+    assert!(saved.ai.consent.is_some());
+    // An unrelated edit in the file keeps the app's consent.
+    store
+        .update(|s| s.appearance.theme = ps_model::settings::ThemeSetting::Light)
+        .unwrap();
+    let saved = store.save_merged(&ours, &mut base).unwrap();
+    assert_eq!(saved.ai.consent, ours.ai.consent);
+    assert!(store.load().settings.ai.consent.is_some());
+}

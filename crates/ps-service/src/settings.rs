@@ -17,7 +17,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ps_model::settings::{FieldError, SETTINGS_VERSION, Settings};
+use ps_model::settings::{FieldError, HostedConsent, SETTINGS_VERSION, Settings};
 use ps_model::{ClassifierSettings, PhotoClass, ProbeRecord};
 
 pub const FILE_NAME: &str = "settings.toml";
@@ -176,6 +176,55 @@ impl SettingsStore {
         result.map_err(write_err)
     }
 
+    /// The file's contents now, to tell whether someone else changed it ([`SaveBase`]). `None`: no file.
+    fn disk_stamp(&self) -> Option<u64> {
+        std::fs::read(self.path()).ok().map(|b| stable_hash(&b))
+    }
+
+    /// [`Self::load`], plus the base a long-running owner (the app) later passes to [`Self::save_merged`].
+    pub fn load_tracked(&self) -> (Loaded, SaveBase) {
+        let stamp = self.disk_stamp();
+        let loaded = self.load();
+        let base = SaveBase {
+            settings: loaded.settings.clone(),
+            stamp,
+        };
+        (loaded, base)
+    }
+
+    /// Save `ours` for a process that keeps settings in memory (ADR-0049). The file is re-read first: when it
+    /// changed on disk since `base` (our last load or save), a consent that the file no longer holds is
+    /// withdrawn from `ours` too, so an edit made while the app runs cannot be undone by the app's next save and
+    /// consent is never resurrected. Every other value is the caller's. Returns what was written; `base` then
+    /// describes it.
+    pub fn save_merged(
+        &self,
+        ours: &Settings,
+        base: &mut SaveBase,
+    ) -> Result<Settings, SettingsError> {
+        let mut merged = ours.clone();
+        if self.disk_stamp() != base.stamp {
+            let disk = self.load().settings;
+            merged.ai.consent = merge_consent(
+                base.settings.ai.consent.as_ref(),
+                ours.ai.consent.as_ref(),
+                disk.ai.consent.as_ref(),
+            );
+            if merged.ai.consent != ours.ai.consent {
+                log::warn!(
+                    "{} changed while PhotoSquirrel was running and no longer holds the AI consent: consent withdrawn",
+                    self.path().display()
+                );
+            }
+        }
+        self.save(&merged)?;
+        *base = SaveBase {
+            settings: merged.clone(),
+            stamp: self.disk_stamp(),
+        };
+        Ok(merged)
+    }
+
     /// Load, apply `edit`, save. Returns the saved settings; on a validation error nothing is written.
     pub fn update(&self, edit: impl FnOnce(&mut Settings)) -> Result<Settings, SettingsError> {
         let mut settings = self.load().settings;
@@ -183,6 +232,36 @@ impl SettingsStore {
         self.save(&settings)?;
         Ok(settings)
     }
+}
+
+/// What a long-running owner last loaded or saved, and a hash of the file's bytes at that moment
+/// ([`SettingsStore::save_merged`]).
+#[derive(Debug, Clone, Default)]
+pub struct SaveBase {
+    settings: Settings,
+    stamp: Option<u64>,
+}
+
+/// Three-way merge of the hosted consent (ADR-0049): `base` is what we last read or wrote, `ours` the value in
+/// memory, `disk` the file now. When the file changed the consent, the result keeps consent only where both
+/// sides agree; otherwise ours stands. Consent is never added by the merge, only kept or withdrawn.
+fn merge_consent(
+    base: Option<&HostedConsent>,
+    ours: Option<&HostedConsent>,
+    disk: Option<&HostedConsent>,
+) -> Option<HostedConsent> {
+    if disk == base || disk == ours {
+        ours.cloned()
+    } else {
+        None
+    }
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    // FNV-1a: only compares two reads of the same small file.
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// Bring older files up to the current version. Version 1 kept hosted consent as a bare `hosted_consent`

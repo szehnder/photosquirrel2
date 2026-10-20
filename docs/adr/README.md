@@ -52,3 +52,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0046](0046-library-copies-changed-by-other-apps.md) | A library copy changed by another app stays the export of its photo |
 | [0047](0047-hosted-consent-bound-to-provider-and-host.md) | Hosted AI consent is bound to a provider and a host; no redirects |
 | [0048](0048-consent-binds-the-scheme-hosted-needs-https.md) | Hosted consent binds the scheme; hosted providers need HTTPS (extends 0047) |
+| [0049](0049-settings-file-ownership-and-external-edits.md) | The running app owns `settings.toml`; external consent withdrawals win (extends 0047) |

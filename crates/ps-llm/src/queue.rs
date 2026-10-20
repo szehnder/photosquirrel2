@@ -136,6 +136,11 @@ impl QueueConfig {
     }
 }
 
+/// Asked (on a blocking thread) right before each request is sent: `false` pauses the queue and the request
+/// is not sent. The CLI uses it to re-read `settings.toml`, so a consent withdrawn or a destination changed in
+/// the file stops a running queue (ADR-0049).
+pub type SendGate = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Why the queue did not start.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StartError {
@@ -181,6 +186,7 @@ struct Inner {
     finished_at: Mutex<VecDeque<Instant>>,
     changed: Notify,
     rt: tokio::runtime::Handle,
+    gate: Mutex<Option<SendGate>>,
 }
 
 /// The AI queue. Cheap to clone.
@@ -233,6 +239,7 @@ impl AiQueue {
                 finished_at: Mutex::new(VecDeque::new()),
                 changed: Notify::new(),
                 rt,
+                gate: Mutex::new(None),
             }),
         }
     }
@@ -260,6 +267,11 @@ impl AiQueue {
             self.inner.rt.spawn(run(inner));
         }
         Ok(())
+    }
+
+    /// Install the check made before every request ([`SendGate`]).
+    pub fn set_send_gate(&self, gate: SendGate) {
+        *lock(&self.inner.gate) = Some(gate);
     }
 
     /// Stop starting new requests; in-flight requests finish and are stored.
@@ -403,7 +415,19 @@ async fn process(inner: &Arc<Inner>, item: QueueItem) {
         }
     };
     inner.limiter.acquire().await;
-    if !inner.running.load(Ordering::SeqCst) {
+    let gate = lock(&inner.gate).clone();
+    let allowed = match gate {
+        Some(gate) => blocking(move || gate()).await.unwrap_or(false),
+        None => true,
+    };
+    if !allowed && inner.running.swap(false, Ordering::SeqCst) {
+        log::warn!(
+            "{}: the AI destination or consent changed in the settings; the AI queue is paused",
+            inner.cfg.provider_name
+        );
+        inner.changed.notify_waiters();
+    }
+    if !allowed || !inner.running.load(Ordering::SeqCst) {
         let store = inner.store.clone();
         blocking(move || store.release(&item)).await;
         return;

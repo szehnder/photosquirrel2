@@ -82,6 +82,29 @@ pub fn destination_fingerprint(ai: &Ai) -> (ProviderId, Option<String>, bool) {
     (ai.provider, destination_host(ai), consent_covers(ai))
 }
 
+/// A [`ps_llm::queue::SendGate`] for a queue started from `at_start` (ADR-0049): before each request it
+/// re-reads `store`'s file and allows the request only while the provider, the destination and the consent
+/// coverage are what they were at start and the consent still covers a hosted destination. Withdrawing consent
+/// or changing the address in `settings.toml` therefore pauses a CLI `ai start` before its next request.
+pub fn settings_file_gate(
+    store: crate::settings::SettingsStore,
+    at_start: &Settings,
+) -> ps_llm::queue::SendGate {
+    let expected = destination_fingerprint(&at_start.ai);
+    Arc::new(move || {
+        let now = store.load().settings;
+        let ok = destination_fingerprint(&now.ai) == expected
+            && (!is_hosted(&now.ai) || consent_covers(&now.ai));
+        if !ok {
+            log::warn!(
+                "{}: the AI provider, address or consent changed",
+                store.path().display()
+            );
+        }
+        ok
+    })
+}
+
 /// Run "Test connection" for the configured provider, blocking the calling (non-UI) thread.
 pub fn test_connection(settings: &Settings, secrets: &Secrets) -> TestReport {
     let (cfg, _) = provider_config(settings, secrets);
@@ -671,6 +694,11 @@ impl AiService {
             Some(self.model.clone()),
         )?;
         Ok(added)
+    }
+
+    /// Check `gate` before every request; a `false` pauses the queue ([`settings_file_gate`]).
+    pub fn set_send_gate(&self, gate: ps_llm::queue::SendGate) {
+        self.queue.set_send_gate(gate);
     }
 
     /// Stop starting new requests (in-flight ones finish and are stored).
