@@ -19,11 +19,15 @@ An export SHALL first produce a plan listing each keeper not yet exported to the
 - **THEN** the plan reports the shortfall and the export cannot be started
 
 ### Requirement: Dated library layout
-Files SHALL be placed at `<library>/<YYYY>/<YYYY-MM-DD>/<original file name>` using the capture date; files whose date comes only from the file modification time SHALL be placed under `<library>/Undated/<YYYY>/<YYYY-MM-DD>/` using that time.
+Files SHALL be placed at `<library>/<YYYY>/<YYYY-MM-DD>/<original file name>` using the capture date (a keeper named like a copy, such as `Copy of IMG_5437.JPG`, takes the cleaner name another copy in its group has); files whose date comes only from the file modification time SHALL be placed under `<library>/Undated/<YYYY>/<YYYY-MM-DD>/` using that time.
 
 #### Scenario: Dated file placed by capture date
 - **WHEN** a keeper named `IMG_0042.JPG` captured on 2011-08-14 is exported
 - **THEN** it is copied to `<library>/2011/2011-08-14/IMG_0042.JPG`
+
+#### Scenario: Copy-named keeper gets the clean name
+- **WHEN** the keeper of a group is named `Copy of IMG_5437.JPG` and another copy in the group is named `IMG_5437.JPG`
+- **THEN** it is copied to `<library>/<YYYY>/<YYYY-MM-DD>/IMG_5437.JPG`
 
 #### Scenario: Undated file placed in Undated
 - **WHEN** a keeper without any capture date and modified on 2009-02-03 is exported

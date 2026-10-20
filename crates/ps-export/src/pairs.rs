@@ -100,6 +100,7 @@ fn key(f: &KeeperFile) -> (i64, Vec<u8>, Vec<u8>) {
         .parent()
         .map(|p| p.into_bytes())
         .unwrap_or_default();
-    let (stem, _) = split_name(f.name());
+    // Pairing is about the source files: their own names, not a cleaner library name.
+    let (stem, _) = split_name(f.rel_path.file_name());
     (f.source.0, folder, stem.to_ascii_lowercase())
 }

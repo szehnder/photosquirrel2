@@ -234,6 +234,7 @@ impl<'a> Exports<'a> {
                 content_identifier: meta
                     .as_ref()
                     .and_then(|m| m.fields.content_identifier.clone()),
+                library_name: None,
             })
         };
         let copy_ref = |id: FileId| -> Option<CopyRef> {
@@ -282,12 +283,27 @@ impl<'a> Exports<'a> {
             }
             let mut ids: Vec<FileId> = vec![g.keeper];
             ids.extend(set.iter().copied().filter(|f| *f != g.keeper));
-            let files: Vec<KeeperFile> = ids
+            let mut files: Vec<KeeperFile> = ids
                 .iter()
                 .filter_map(|f| keeper_file(*f, &members))
                 .collect();
             if files.is_empty() {
                 continue;
+            }
+            // A lone still image keeper named like a copy ("Copy of IMG_5437.JPG") is filed under the cleaner
+            // name another copy in its group has. Live Photo candidates and RAW+JPEG sets keep their names,
+            // whose stems pair them.
+            if let [k] = files.as_mut_slice()
+                && k.content_identifier.is_none()
+                && k.kind() == Some(ps_model::MediaKind::Image)
+                && k.format != Some(ps_model::Format::Heic)
+            {
+                let names: Vec<&[u8]> = members
+                    .iter()
+                    .filter_map(|m| recs.get(m))
+                    .map(|(rec, _)| rec.key.path.file_name())
+                    .collect();
+                k.library_name = ps_export::layout::cleaner_name(k.rel_path.file_name(), &names);
             }
             let (insight, user_tags, description) = insight(g.keeper);
             units.push(ExportUnit {

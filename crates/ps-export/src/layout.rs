@@ -56,6 +56,48 @@ pub fn candidate(stem: &[u8], ext: &[u8], n: u32) -> Vec<u8> {
     out
 }
 
+/// A cleaner library name for `name` (bytes) when another copy of the same photo is called that: the keeper
+/// "Copy of IMG_5437.JPG", "IMG_5437 copy.JPG", "IMG_5437 - Copy.JPG" or "IMG_5437 (1).JPG" becomes
+/// "IMG_5437.JPG" if one of `others` has that name (ASCII case-insensitive; the other copy's spelling is used).
+/// `None` when the name is already clean or no copy has the cleaner name.
+pub fn cleaner_name(name: &[u8], others: &[&[u8]]) -> Option<Vec<u8>> {
+    let (stem, ext) = split_name(name);
+    let mut s = stem.to_vec();
+    loop {
+        let lower = s.to_ascii_lowercase();
+        let next: Option<Vec<u8>> = if lower.starts_with(b"copy of ") {
+            Some(s[8..].to_vec())
+        } else if let Some(cut) = [&b" - copy"[..], b" copy", b"-copy", b"_copy"]
+            .iter()
+            .find(|suffix| lower.ends_with(suffix))
+        {
+            Some(s[..s.len() - cut.len()].to_vec())
+        } else if lower.ends_with(b")")
+            && let Some(open) = lower.iter().rposition(|b| *b == b'(')
+            && open >= 1
+            && lower[open - 1] == b' '
+            && (1..=2).contains(&(lower.len() - open - 2))
+            && lower[open + 1..lower.len() - 1]
+                .iter()
+                .all(u8::is_ascii_digit)
+        {
+            Some(s[..open - 1].to_vec())
+        } else {
+            None
+        };
+        let n = next.filter(|n| !n.is_empty())?;
+        let mut candidate = n.clone();
+        candidate.extend_from_slice(ext);
+        if let Some(found) = others
+            .iter()
+            .find(|o| o.eq_ignore_ascii_case(&candidate) && !o.eq_ignore_ascii_case(name))
+        {
+            return Some(found.to_vec());
+        }
+        s = n;
+    }
+}
+
 /// `folder/name` as a library-relative path. `None` when the name is not a single path component.
 pub fn join(folder: &str, name: &[u8]) -> Option<RelPath> {
     if name.is_empty() || name.contains(&b'/') || name == b"." || name == b".." {
@@ -93,6 +135,34 @@ mod tests {
         assert_eq!(candidate(b"IMG_0001", b".JPG", 1), b"IMG_0001.JPG");
         assert_eq!(candidate(b"IMG_0001", b".JPG", 2), b"IMG_0001 (2).JPG");
         assert!(join("2011/2011-08-14", b"..").is_none());
+        let others: [&[u8]; 2] = [b"IMG_5437.JPG", b"Copy of IMG_5437.JPG"];
+        assert_eq!(
+            cleaner_name(b"Copy of IMG_5437.JPG", &others).as_deref(),
+            Some(&b"IMG_5437.JPG"[..])
+        );
+        for n in [
+            &b"IMG_5437 copy.JPG"[..],
+            b"IMG_5437 - Copy.JPG",
+            b"IMG_5437 (1).JPG",
+        ] {
+            assert_eq!(
+                cleaner_name(n, &[b"img_5437.jpg"]).as_deref(),
+                Some(&b"img_5437.jpg"[..]),
+                "{}",
+                String::from_utf8_lossy(n)
+            );
+        }
+        assert_eq!(
+            cleaner_name(b"IMG_5437.JPG", &others),
+            None,
+            "already clean"
+        );
+        assert_eq!(
+            cleaner_name(b"Copy of IMG_9.JPG", &others),
+            None,
+            "no copy has the clean name"
+        );
+        assert_eq!(cleaner_name(b"Holiday (2019).JPG", &[b"Holiday.JPG"]), None);
         assert!(join("2011/2011-08-14", b"a/b").is_none());
     }
 }

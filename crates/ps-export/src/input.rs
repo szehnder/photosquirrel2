@@ -39,11 +39,18 @@ pub struct KeeperFile {
     pub date_origin: DateOrigin,
     /// Apple ContentIdentifier pairing a Live Photo still with its video.
     pub content_identifier: Option<String>,
+    /// The name to give the library copy when it differs from the source name: a keeper called
+    /// "Copy of IMG_5437.JPG" whose group also has "IMG_5437.JPG" is filed under the cleaner name
+    /// ([`crate::layout::cleaner_name`]). `None`: the source name.
+    pub library_name: Option<Vec<u8>>,
 }
 
 impl KeeperFile {
+    /// The file name in the library (before any collision suffix).
     pub fn name(&self) -> &[u8] {
-        self.rel_path.file_name()
+        self.library_name
+            .as_deref()
+            .unwrap_or_else(|| self.rel_path.file_name())
     }
 
     pub fn kind(&self) -> Option<MediaKind> {

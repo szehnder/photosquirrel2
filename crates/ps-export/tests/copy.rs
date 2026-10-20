@@ -481,6 +481,7 @@ fn kill_input(dir: &Path) -> ExportInput {
                 undated: false,
                 date_origin: ps_export::DateOrigin::OWN_EXIF,
                 content_identifier: None,
+                library_name: None,
             }])
         })
         .collect();

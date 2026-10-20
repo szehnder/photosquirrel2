@@ -496,3 +496,40 @@ mod naming {
         }
     }
 }
+
+/// A keeper named like a copy ("Copy of IMG_5437.JPG") whose group also has "IMG_5437.JPG" is filed under
+/// the cleaner name (`layout::cleaner_name`, applied by the service); its bytes still come from its own path.
+#[test]
+fn scenario_export_copy_named_keeper_gets_the_clean_name() {
+    let mut s = Sources::new("cleanname", 1);
+    let mut keeper = s.add(
+        0,
+        "Downloads/Copy of IMG_5437.JPG",
+        &bytes(5437, 30_000),
+        0,
+        day(2019, 9, 1),
+    );
+    let small = s.add(
+        0,
+        "Phone/IMG_5437.JPG",
+        &bytes(5438, 9_000),
+        0,
+        day(2019, 9, 1),
+    );
+    keeper.library_name = ps_export::layout::cleaner_name(
+        keeper.rel_path.file_name(),
+        &[keeper.rel_path.file_name(), small.rel_path.file_name()],
+    );
+    let mut u = unit(vec![keeper.clone()]);
+    u.copies.push(ps_export::CopyRef {
+        file: small.file,
+        source: small.source,
+        rel_path: small.rel_path.clone(),
+    });
+    let input = s.input(vec![u]);
+    let lib = s.library();
+    let p = plan(&input, &[], &lib, &FsLibrary::new(&lib), google()).expect("plan");
+    assert_eq!(targets(&p), vec!["2019/2019-09-01/IMG_5437.JPG"]);
+    let f = p.files().next().expect("file");
+    assert!(f.source_path.ends_with("Downloads/Copy of IMG_5437.JPG"));
+}

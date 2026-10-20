@@ -51,6 +51,7 @@ fn replan_50k_exported_within_budget() {
             undated: false,
             date_origin: ps_export::DateOrigin::OWN_EXIF,
             content_identifier: None,
+            library_name: None,
         };
         let target = ps_export::layout::join(&ps_export::layout::folder_of(&k), name.as_bytes())
             .expect("target");
