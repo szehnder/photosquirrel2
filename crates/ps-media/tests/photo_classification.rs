@@ -137,10 +137,13 @@ fn scenario_photo_classification_thumbs_db_neighbour_is_cache() {
     let p = ps_media::probe_path(&jp);
     let hints = FolderHints::from_dir(dir.path());
     assert!(hints.has_thumbs_db);
-    let (c, _) = classify_with(&p, &jp, &ClassifierSettings::default(), hints);
+    // The scanner classifies by the path relative to the source root (the temp dir's own location, e.g.
+    // `AppData\Local\Temp` on Windows, is not part of it).
+    let rel = Path::new("photo.jpg");
+    let (c, _) = classify_with(&p, rel, &ClassifierSettings::default(), hints);
     assert_eq!(c, PhotoClass::ThumbnailCache);
     assert_eq!(
-        classify(&p, &jp, &ClassifierSettings::default()).0,
+        classify(&p, rel, &ClassifierSettings::default()).0,
         PhotoClass::LikelyPhoto
     );
 }
