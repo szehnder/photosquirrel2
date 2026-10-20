@@ -40,6 +40,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     LEDGER_MTIME_MIGRATION,
     LEDGER_SIDECARS_MIGRATION,
     AI_RESULT_SEQ_MIGRATION,
+    LIBRARY_VERIFIED_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -98,6 +99,13 @@ pub const AI_RESULT_SEQ_MIGRATION: Migration = Migration {
     version: 11,
     name: "ai_result_seq",
     sql: include_str!("../migrations/0011_ai_result_seq.sql"),
+};
+
+/// Migration 12 (`export_library.verified_at`: when the library's copies were last re-hashed).
+pub const LIBRARY_VERIFIED_MIGRATION: Migration = Migration {
+    version: 12,
+    name: "library_verified_at",
+    sql: include_str!("../migrations/0012_library_verified_at.sql"),
 };
 
 /// `thumbs.db` migrations.

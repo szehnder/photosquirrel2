@@ -4,7 +4,7 @@
 //! Removing a source only forgets its catalog records; the confirmation says so (ADR-0004).
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -460,20 +460,7 @@ impl SourcesView {
     }
 }
 
-/// "today", "yesterday", "3 days ago", "on 2024-05-02".
-fn ago(ms: i64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(ms);
-    let days = (now - ms).max(0) / 86_400_000;
-    match days {
-        0 => "today".into(),
-        1 => "yesterday".into(),
-        2..=60 => format!("{days} days ago"),
-        _ => format!("{} months ago", days / 30),
-    }
-}
+use crate::views::kit::ago;
 
 impl Render for SourcesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {

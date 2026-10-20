@@ -283,6 +283,8 @@ struct SourceOut {
 struct ReportOut {
     library: PathBuf,
     verified: bool,
+    /// When the library's copies were last re-hashed (ms since the Unix epoch); absent: never.
+    verified_at_ms: Option<i64>,
     totals: CountsOut,
     sources: Vec<SourceOut>,
     mismatches: Vec<(String, ps_export::CopyCheck)>,
@@ -335,6 +337,7 @@ fn report_out(
     Ok(ReportOut {
         library: c.library,
         verified: c.verified,
+        verified_at_ms: c.verified_at_ms,
         totals: counts(&total),
         sources,
         mismatches: c

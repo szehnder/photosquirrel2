@@ -85,6 +85,8 @@ impl Ledger for CatalogLedger {
 pub struct Completion {
     pub library: PathBuf,
     pub verified: bool,
+    /// When this library's copies were last re-hashed (this report, if `verified`); `None`: never.
+    pub verified_at_ms: Option<i64>,
     pub report: CompletionReport,
     /// Totals over every source: files and bytes per disposition.
     pub totals: ps_model::CompletionCounts,
@@ -484,6 +486,24 @@ impl<'a> Exports<'a> {
             None => self.last_library()?.ok_or(ExportError::NoLibrary)?,
         };
         let (files, d, checks) = self.dispositions(&lib, verify)?;
+        let key = path_to_bytes(&lib);
+        let record = || -> Result<Option<ps_catalog::LibraryRecord>> {
+            Ok(self
+                .catalog()
+                .read()
+                .export_libraries()?
+                .into_iter()
+                .find(|l| l.root == key))
+        };
+        if verify
+            && !self.catalog().is_observer()
+            && let Some(l) = record()?
+        {
+            self.catalog()
+                .writer()
+                .export_library_verified(l.id, ps_export::now_ms())?;
+        }
+        let verified_at_ms = record()?.and_then(|l| l.verified_at_ms);
         let report = ps_export::report(&files, &d, &checks);
         let mut totals = ps_model::CompletionCounts::default();
         for (f, x) in files.iter().zip(&d) {
@@ -492,6 +512,7 @@ impl<'a> Exports<'a> {
         Ok(Completion {
             library: lib,
             verified: verify,
+            verified_at_ms,
             report,
             totals,
         })

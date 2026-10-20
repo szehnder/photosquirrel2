@@ -18,7 +18,7 @@ use ui_theme::{Colors, Tokens};
 use crate::actions::ShowReports;
 use crate::assets::IconName;
 use crate::inspector::format_count;
-use crate::scan_backend::{ExportOutcome, PlanPreview, SharedScanBackend};
+use crate::scan_backend::{ExportOutcome, PLAN_ROWS_LIMIT, PlanPreview, SharedScanBackend};
 use crate::service::Loadable;
 use crate::views::kit::{self, Tone};
 use crate::views::scan::ScanHub;
@@ -49,6 +49,25 @@ pub fn profile_blurb(p: ExportProfile) -> &'static str {
     }
 }
 
+/// Rows of "Where files go" shown before "Show all".
+pub const PLAN_ROWS_SHOWN: usize = 4;
+
+/// The Export button's label: what will be copied, and the identical files already there that are only
+/// recorded ("Copy 12,418 files + 37 already there").
+pub fn export_label(files: u64, adopted: u64) -> String {
+    let copy = if files == 1 {
+        "Copy 1 file".to_owned()
+    } else {
+        format!("Copy {} files", format_count(files))
+    };
+    match (files, adopted) {
+        (0, 0) => "Nothing to copy".into(),
+        (0, a) => format!("Record {} already there", format_count(a)),
+        (_, 0) => copy,
+        (_, a) => format!("{copy} + {} already there", format_count(a)),
+    }
+}
+
 /// Where the export is.
 #[derive(Clone)]
 pub enum ExportPhase {
@@ -74,6 +93,8 @@ pub struct ExportView {
     pub settings: ProfileSettings,
     pub plan: Option<Loadable<PlanPreview>>,
     pub phase: ExportPhase,
+    /// "Where files go" lists every planned file (up to the limit), not just the first few.
+    pub show_all_rows: bool,
     plan_task: Option<Task<()>>,
     run_task: Option<Task<()>>,
 }
@@ -133,6 +154,7 @@ impl ExportView {
             settings: settings_for(profile, app.as_ref()),
             plan: None,
             phase: ExportPhase::Review,
+            show_all_rows: false,
             plan_task: None,
             run_task: None,
         };
@@ -410,15 +432,14 @@ impl ExportView {
                         "plan-files",
                         "files to copy",
                         format_count(plan.files),
-                        // The Export button counts both, so the sum is shown here.
+                        // The same arithmetic as the Export button.
                         Some(if plan.adopted > 0 {
                             format!(
-                                "+ {} in place = {} to export",
-                                format_count(plan.adopted),
-                                format_count(plan.files + plan.adopted)
+                                "+ {} already there (recorded, not copied)",
+                                format_count(plan.adopted)
                             )
                         } else {
-                            "none already in place".to_owned()
+                            "none already there".to_owned()
                         }),
                     ))
                     .child(tile(
@@ -426,12 +447,6 @@ impl ExportView {
                         "to copy",
                         kit::format_bytes(plan.bytes),
                         Some(format!("{} sidecars", format_count(plan.sidecar_files))),
-                    ))
-                    .child(tile(
-                        "plan-collisions",
-                        "name collisions",
-                        format_count(plan.collisions),
-                        Some("renamed with (2), (3)…".into()),
                     ))
                     .child(tile(
                         "plan-already",
@@ -518,49 +533,167 @@ impl ExportView {
                         )),
                 )
             })
+            .into_any_element()
+    }
+
+    /// Below the action: what the plan will do with names, changed copies and dates, and where files go.
+    fn plan_details(
+        &self,
+        plan: &PlanPreview,
+        colors: &Colors,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let any = plan.collisions > 0
+            || !plan.examples.is_empty()
+            || plan.modified > 0
+            || self.settings.recopy_modified
+            || plan.date_note.is_some();
+        any.then(|| {
+            kit::card(cx)
+                .id("export-plan-details")
+                .test_support()
+            .when(plan.collisions > 0, |d| {
+                d.child(
+                    h_flex()
+                        .id("plan-collisions")
+                        .test_support()
+                        .aria_label(SharedString::from(format!(
+                            "{} name collisions",
+                            plan.collisions
+                        )))
+                        .w_full()
+                        .gap(Tokens::space(2.0))
+                        .items_center()
+                        .p(Tokens::space(2.5))
+                        .rounded(Tokens::RADIUS_MD)
+                        .bg(Colors::tint(colors.info, 0.08))
+                        .text_size(Tokens::text_sm())
+                        .text_color(colors.text)
+                        .child(
+                            Icon::new(IconName::Info)
+                                .size(Tokens::icon_sm())
+                                .text_color(colors.info),
+                        )
+                        .child(div().flex_1().min_w_0().child(format!(
+                            "{} files share a name with another photo of the same day. They are saved as \
+                             \"name (2)\", \"name (3)\"…, so nothing is ever overwritten.",
+                            format_count(plan.collisions)
+                        ))),
+                )
+            })
             .when(!plan.examples.is_empty(), |d| {
+                let total = (plan.files + plan.adopted) as usize;
+                let shown = if self.show_all_rows {
+                    plan.examples.len()
+                } else {
+                    plan.examples.len().min(PLAN_ROWS_SHOWN)
+                };
+                let more = total.saturating_sub(shown);
+                let listed_all = plan.examples.len() >= total;
+                let rows = plan.examples[..shown].iter().map(|r| {
+                    h_flex()
+                        .w_full()
+                        .gap(Tokens::space(2.0))
+                        .items_center()
+                        .text_size(Tokens::text_mono())
+                        .child(
+                            div()
+                                .flex_none()
+                                .px(Tokens::space(1.5))
+                                .rounded(Tokens::RADIUS_SM)
+                                .bg(colors.raised)
+                                .text_size(Tokens::text_2xs())
+                                .text_color(colors.text_muted)
+                                .whitespace_nowrap()
+                                .child(r.source.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                                .text_color(colors.text_muted)
+                                .child(r.name.clone()),
+                        )
+                        .child(
+                            Icon::new(IconName::ArrowRight)
+                                .size(Tokens::icon_sm())
+                                .text_color(colors.text_faint),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                                .text_color(colors.text)
+                                .child(r.target.clone()),
+                        )
+                });
                 d.child(
                     v_flex()
+                        .id("plan-rows")
+                        .test_support()
                         .w_full()
                         .gap(Tokens::space(1.0))
                         .child(
-                            div()
-                                .text_size(Tokens::text_xs())
-                                .text_color(colors.text_faint)
-                                .child("Where files go"),
-                        )
-                        .children(plan.examples.iter().map(|(from, to)| {
                             h_flex()
                                 .w_full()
-                                .gap(Tokens::space(2.0))
-                                .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
-                                .text_size(Tokens::text_mono())
+                                .items_center()
                                 .child(
                                     div()
                                         .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .text_color(colors.text_muted)
-                                        .child(from.clone()),
+                                        .text_size(Tokens::text_xs())
+                                        .text_color(colors.text_faint)
+                                        .child("Where files go"),
                                 )
-                                .child(
-                                    Icon::new(IconName::ArrowRight)
-                                        .size(Tokens::icon_sm())
-                                        .text_color(colors.text_faint),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .text_color(colors.text)
-                                        .child(to.clone()),
-                                )
-                        })),
+                                .when(more > 0 || self.show_all_rows, |h| {
+                                    let all = self.show_all_rows;
+                                    h.child(kit::button(
+                                        "plan-show-all",
+                                        if all {
+                                            "Show fewer".to_owned()
+                                        } else if listed_all {
+                                            format!("Show all {}", format_count(total as u64))
+                                        } else {
+                                            format!(
+                                                "Show the first {}",
+                                                format_count(PLAN_ROWS_LIMIT as u64)
+                                            )
+                                        },
+                                        None,
+                                        Tone::Ghost,
+                                        kit::on(cx.listener(move |this, _, _, cx| {
+                                            this.show_all_rows = !all;
+                                            cx.notify();
+                                        })),
+                                        cx,
+                                    ))
+                                }),
+                        )
+                        .child(
+                            v_flex()
+                                .id("plan-rows-list")
+                                .w_full()
+                                .gap(Tokens::space(1.0))
+                                .when(self.show_all_rows, |l| {
+                                    l.max_h(Tokens::size(260.0)).overflow_y_scroll()
+                                })
+                                .children(rows),
+                        )
+                        .when(!self.show_all_rows && more > 0, |d| {
+                            d.child(
+                                div()
+                                    .text_size(Tokens::text_xs())
+                                    .text_color(colors.text_faint)
+                                    .child(format!("… and {} more", format_count(more as u64))),
+                            )
+                        }),
                 )
             })
             .when(plan.modified > 0 || self.settings.recopy_modified, |d| {
@@ -624,7 +757,8 @@ impl ExportView {
                         .child(note),
                 )
             })
-            .into_any_element()
+                .into_any_element()
+        })
     }
 }
 
@@ -771,10 +905,16 @@ impl Render for ExportView {
         };
 
         let plan = self.plan.as_ref().and_then(Loadable::ready).cloned();
+        let details = match (&plan, &self.phase) {
+            (Some(p), ExportPhase::Review | ExportPhase::Confirming) => {
+                self.plan_details(p, &colors, cx)
+            }
+            _ => None,
+        };
         let action: AnyElement = match self.phase.clone() {
             ExportPhase::Review => {
                 let label = match &plan {
-                    Some(p) => format!("Export {} files", format_count(p.files + p.adopted)),
+                    Some(p) => export_label(p.files, p.adopted),
                     None => "Export".into(),
                 };
                 h_flex()
@@ -810,6 +950,14 @@ impl Render for ExportView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text)
                             .child(match &p {
+                                Some(p) if p.adopted > 0 => format!(
+                                    "Copy {} files ({}) into {}? {} identical files already there are \
+                                     recorded without copying.",
+                                    format_count(p.files),
+                                    kit::format_bytes(p.bytes),
+                                    kit::display_path(&p.library),
+                                    format_count(p.adopted)
+                                ),
                                 Some(p) => format!(
                                     "Copy {} files ({}) into {}?",
                                     format_count(p.files),
@@ -1058,14 +1206,27 @@ impl Render for ExportView {
             .child(setup)
             .child(plan_el)
             .child(action)
+            .children(details)
             .into_any_element()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LIBRARY_NAME, suggested_library};
+    use super::{LIBRARY_NAME, export_label, suggested_library};
     use std::path::Path;
+
+    #[test]
+    fn export_label_spells_out_the_arithmetic() {
+        assert_eq!(
+            export_label(12_418, 37),
+            "Copy 12,418 files + 37 already there"
+        );
+        assert_eq!(export_label(3, 0), "Copy 3 files");
+        assert_eq!(export_label(1, 0), "Copy 1 file");
+        assert_eq!(export_label(0, 37), "Record 37 already there");
+        assert_eq!(export_label(0, 0), "Nothing to copy");
+    }
 
     #[test]
     fn default_library_prefers_pictures_then_home_never_tmp() {

@@ -78,7 +78,7 @@ fn confirming_the_export_starts_it(cx: &mut TestAppContext) {
     });
     assert_eq!(
         label("export-confirm", &mut cx).as_deref(),
-        Some("Export 12,455 files")
+        Some("Copy 12,418 files + 37 already there")
     );
     click("export-confirm", &mut cx);
     wait(&mut cx, "the confirmation", |cx| {

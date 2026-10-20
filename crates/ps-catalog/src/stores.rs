@@ -613,6 +613,8 @@ pub struct LibraryRecord {
     pub root: Vec<u8>,
     pub volume_uuid: Option<String>,
     pub created_at_ms: i64,
+    /// When every copy was last re-hashed (migration 12); `None`: never.
+    pub verified_at_ms: Option<i64>,
 }
 
 fn profile_from(s: &str) -> Option<ExportProfile> {
@@ -658,6 +660,15 @@ impl Writer {
         })
     }
 
+    /// Record that every copy of library `id` was re-hashed at `at_ms`.
+    pub fn export_library_verified(&self, id: i64, at_ms: i64) -> Result<()> {
+        self.exec(move |c| {
+            c.prepare_cached("UPDATE export_library SET verified_at = ?2 WHERE id = ?1")?
+                .execute(params![id, at_ms])?;
+            Ok(())
+        })
+    }
+
     /// Insert or replace the ledger row at `entry.library_rel_path`; committed when this returns.
     pub fn ledger_record(&self, library: i64, entry: LedgerEntry) -> Result<()> {
         self.exec(move |c| {
@@ -696,7 +707,7 @@ impl Readers {
     pub fn export_libraries(&self) -> Result<Vec<LibraryRecord>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
-                "SELECT id, root_path, volume_uuid, created_at FROM export_library ORDER BY id",
+                "SELECT id, root_path, volume_uuid, created_at, verified_at FROM export_library ORDER BY id",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok(LibraryRecord {
@@ -704,6 +715,7 @@ impl Readers {
                     root: r.get(1)?,
                     volume_uuid: r.get(2)?,
                     created_at_ms: r.get(3)?,
+                    verified_at_ms: r.get(4)?,
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

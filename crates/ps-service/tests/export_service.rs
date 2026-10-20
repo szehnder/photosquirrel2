@@ -364,3 +364,26 @@ fn scenario_export_sidecar_contains_ai_keywords() {
         side.subjects
     );
 }
+
+/// A verified report records when the library was last re-hashed; later quick reports still say when.
+#[test]
+fn verify_records_when_the_library_was_last_rehashed() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).expect("open");
+    let library = tmp.path().join("Library");
+    svc.exports().library_id(&library).expect("register");
+    let ex = svc.exports();
+    assert_eq!(
+        ex.completion(Some(&library), false)
+            .expect("report")
+            .verified_at_ms,
+        None
+    );
+    let before = ps_export::now_ms();
+    let v = ex
+        .completion(Some(&library), true)
+        .expect("verified report");
+    assert!(v.verified_at_ms.is_some_and(|t| t >= before));
+    let later = ex.completion(Some(&library), false).expect("report");
+    assert_eq!(later.verified_at_ms, v.verified_at_ms);
+}

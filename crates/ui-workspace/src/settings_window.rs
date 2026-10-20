@@ -767,6 +767,9 @@ impl Render for SettingsWindow {
                             .child(
                                 Input::new(&self.search)
                                     .aria_label("Search settings")
+                                    // The field keeps its plain border when focused: a calm search box, not
+                                    // an accent ring competing with the selected section.
+                                    .focus_bordered(false)
                                     .prefix(
                                         Icon::new(IconName::Search)
                                             .size(Tokens::icon_sm())
@@ -813,13 +816,35 @@ impl Render for SettingsWindow {
                     )
                     .child(
                         div()
-                            .id("settings-body")
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
-                            .px(Tokens::space(6.0))
-                            .pb(Tokens::space(6.0))
-                            .child(body),
+                            .relative()
+                            .child(
+                                div()
+                                    .id("settings-body")
+                                    .size_full()
+                                    .overflow_y_scroll()
+                                    .px(Tokens::space(6.0))
+                                    .pb(Tokens::space(6.0))
+                                    .child(body),
+                            )
+                            // A scroll cue: the last lines fade into the panel edge, so a section that
+                            // continues below reads as scrollable. It covers only the bottom padding when
+                            // scrolled to the end.
+                            .child(
+                                div()
+                                    .id("settings-scroll-cue")
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .h(Tokens::space(6.0))
+                                    .bg(linear_gradient(
+                                        180.0,
+                                        linear_color_stop(colors.overlay.opacity(0.0), 0.0),
+                                        linear_color_stop(colors.overlay, 1.0),
+                                    )),
+                            ),
                     ),
             )
     }

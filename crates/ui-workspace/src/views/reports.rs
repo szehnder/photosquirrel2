@@ -64,7 +64,7 @@ impl ReportsView {
             Some(b) if ScanHub::synchronous(cx) => {
                 this.data = match b.report(None, false) {
                     Ok(d) => {
-                        this.expanded = d.as_ref().and_then(|d| d.sources.first()).map(|s| s.id);
+                        this.expanded = d.as_ref().and_then(first_open);
                         Loadable::Ready(d)
                     }
                     Err(e) => Loadable::Failed(format!("{e:#}")),
@@ -77,7 +77,7 @@ impl ReportsView {
                 });
                 match early {
                     Some(Ok(d)) => {
-                        this.expanded = d.as_ref().and_then(|d| d.sources.first()).map(|s| s.id);
+                        this.expanded = d.as_ref().and_then(first_open);
                         this.data = Loadable::Ready(d);
                     }
                     Some(Err(e)) => this.data = Loadable::Failed(format!("{e:#}")),
@@ -112,8 +112,7 @@ impl ReportsView {
                 this.data = match r {
                     Ok(d) => {
                         if this.expanded.is_none() {
-                            this.expanded =
-                                d.as_ref().and_then(|d| d.sources.first()).map(|s| s.id);
+                            this.expanded = d.as_ref().and_then(first_open);
                         }
                         Loadable::Ready(d)
                     }
@@ -167,6 +166,15 @@ impl ReportsView {
     }
 }
 
+/// The source opened first: the first one with something left to do, else the first.
+fn first_open(d: &ReportData) -> Option<SourceId> {
+    d.sources
+        .iter()
+        .find(|s| !s.counts.fully_accounted())
+        .or_else(|| d.sources.first())
+        .map(|s| s.id)
+}
+
 /// A stacked bar of the six dispositions with 2 px surface gaps (dataviz spacers).
 fn stacked(c: &CompletionCounts, colors: &Colors) -> Div {
     let total = c.total_files().max(1) as f32;
@@ -181,6 +189,11 @@ fn stacked(c: &CompletionCounts, colors: &Colors) -> Div {
                     .h_full()
                     .flex_basis(relative(0.0))
                     .flex_grow(n as f32 / total)
+                    // What is still to do never disappears into a hairline next to thousands of exports.
+                    .when(
+                        matches!(d, Disposition::Pending | Disposition::Unreadable),
+                        |seg| seg.min_w(Tokens::size(10.0)),
+                    )
                     .rounded(Tokens::RADIUS_SM)
                     .bg(disposition_color(d, colors))
             })
@@ -384,6 +397,18 @@ impl Render for ReportsView {
                                     colors.text_muted,
                                     colors.raised,
                                 )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("report-verified-at")
+                            .test_support()
+                            .flex_none()
+                            .text_size(Tokens::text_xs())
+                            .text_color(colors.text_faint)
+                            .child(match data.verified_at_ms {
+                                Some(ms) => format!("Last verified by hash {}", kit::ago(ms)),
+                                None => "Never verified by hash".to_owned(),
                             }),
                     ),
             )
@@ -669,14 +694,21 @@ fn count_chip(
         .h(Tokens::size(22.0))
         .items_center()
         .rounded(Tokens::RADIUS_SM)
+        .border_1()
+        .border_color(if n > 0 {
+            colors.border_strong
+        } else {
+            colors.border
+        })
         .bg(colors.raised)
         .text_size(Tokens::text_xs())
         .text_color(colors.text_muted)
         .when(n > 0, |el| {
             el.cursor_pointer()
-                .hover(|el| el.bg(colors.hover))
+                .hover(|el| el.bg(colors.hover).border_color(colors.accent))
                 .on_click(on_click)
         })
+        .when(n == 0, |el| el.opacity(0.6))
         .child(
             div()
                 .size(Tokens::dot_size())
@@ -685,6 +717,13 @@ fn count_chip(
         )
         .child(div().text_color(colors.text).child(format_count(n)))
         .child(disposition_label(d).to_lowercase())
+        .when(n > 0, |el| {
+            el.child(
+                Icon::new(IconName::ChevronRight)
+                    .size(Tokens::icon_sm())
+                    .text_color(colors.text_faint),
+            )
+        })
         .into_any_element()
 }
 
@@ -724,7 +763,11 @@ fn folder_table(
                 .children(Disposition::ALL.map(|d| head(disposition_label(d))))
                 .child(div().w(Tokens::size(150.0)).flex_none()),
         );
-    for (i, f) in folders.iter().enumerate() {
+    // Folders with something left to do first; ids keep the folder's index.
+    let mut order: Vec<usize> = (0..folders.len()).collect();
+    order.sort_by_key(|&k| folders[k].counts.fully_accounted());
+    for i in order {
+        let f = &folders[i];
         let folder = f.folder.clone();
         let mut row = h_flex()
             .id(SharedString::from(format!(

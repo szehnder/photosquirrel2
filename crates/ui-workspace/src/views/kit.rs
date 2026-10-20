@@ -313,6 +313,21 @@ pub fn display_path(p: &std::path::Path) -> String {
     }
 }
 
+/// "today", "yesterday", "3 days ago", "4 months ago".
+pub fn ago(ms: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(ms);
+    let days = (now - ms).max(0) / 86_400_000;
+    match days {
+        0 => "today".into(),
+        1 => "yesterday".into(),
+        2..=60 => format!("{days} days ago"),
+        _ => format!("{} months ago", days / 30),
+    }
+}
+
 /// Dev-only: the folder [`display_path`] shows as `~` instead of the home folder (scripted screenshots).
 pub const DISPLAY_HOME_ENV: &str = "PHOTOSQUIRREL_DISPLAY_HOME";
 

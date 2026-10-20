@@ -185,3 +185,29 @@ fn ledger_sidecars_migration_marks_old_rows_as_files() {
         "kind codes are checked"
     );
 }
+
+/// Migration 12: a library's last verification time, `None` until recorded.
+#[test]
+fn library_verified_at_round_trips() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("catalog.db");
+    db::create_catalog_at_version(&path, db::LIBRARY_VERIFIED_MIGRATION.version - 1)
+        .expect("catalog");
+    let cat = ps_catalog::Catalog::open_file(&path, Default::default()).expect("upgrade");
+    let id = cat
+        .writer()
+        .export_library(b"/lib".to_vec(), None)
+        .expect("library");
+    assert_eq!(
+        cat.read().export_libraries().expect("libs")[0].verified_at_ms,
+        None
+    );
+    cat.writer()
+        .export_library_verified(id, 1234)
+        .expect("verified");
+    assert_eq!(
+        cat.read().export_libraries().expect("libs")[0].verified_at_ms,
+        Some(1234)
+    );
+    cat.close().expect("close");
+}

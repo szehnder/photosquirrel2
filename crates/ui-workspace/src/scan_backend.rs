@@ -67,11 +67,35 @@ pub struct PlanPreview {
     pub required_bytes: u64,
     /// Why the export cannot start (insufficient space), if it cannot.
     pub blocker: Option<String>,
-    /// A few planned copies (source path -> library path) to show where things go.
-    pub examples: Vec<(String, String)>,
+    /// Planned copies (source, file name, library path) to show where things go, at most
+    /// [`PLAN_ROWS_LIMIT`]; `files` + `adopted` says how many there are in all.
+    pub examples: Vec<PlanRow>,
     /// Files not dated by their own metadata (ADR-0043): borrowed, file-name, sidecar and undated counts.
     pub date_note: Option<String>,
 }
+
+/// One planned file as the Export view lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanRow {
+    /// The source's name ("Laptop").
+    pub source: String,
+    pub name: String,
+    /// Library-relative target.
+    pub target: String,
+}
+
+impl PlanRow {
+    pub fn new(source: &str, name: &str, target: &str) -> Self {
+        Self {
+            source: source.into(),
+            name: name.into(),
+            target: target.into(),
+        }
+    }
+}
+
+/// Planned files listed by "Where files go" (the rest is counted).
+pub const PLAN_ROWS_LIMIT: usize = 500;
 
 /// How an export run ended.
 #[derive(Clone, Debug, PartialEq)]
@@ -117,6 +141,8 @@ pub struct ReportData {
     pub mismatch_rows: Vec<(String, String)>,
     /// Library copies were re-hashed (verify), not only checked for existence and size.
     pub verified: bool,
+    /// When the copies were last re-hashed; `None`: never.
+    pub verified_at_ms: Option<i64>,
 }
 
 /// One file behind a disposition count (Reports drill-down).
@@ -321,22 +347,18 @@ impl ScanBackend for CatalogBackend {
         unavailable_sources.sort();
         let examples = plan
             .files()
-            .take(6)
-            .map(|f| {
-                let src = input
+            .take(PLAN_ROWS_LIMIT)
+            .map(|f| PlanRow {
+                source: input
                     .source(f.source)
                     .map(|s| s.name.clone())
-                    .unwrap_or_default();
-                (
-                    format!(
-                        "{src}/{}",
-                        f.source_path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default()
-                    ),
-                    f.target.display().into_owned(),
-                )
+                    .unwrap_or_default(),
+                name: f
+                    .source_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                target: f.target.display().into_owned(),
             })
             .collect();
         Ok(PlanPreview {
@@ -416,6 +438,7 @@ impl ScanBackend for CatalogBackend {
                 .map(|(p, check)| (p.display().into_owned(), copy_check_label(*check)))
                 .collect(),
             verified: c.verified,
+            verified_at_ms: c.verified_at_ms,
             sources: c
                 .report
                 .sources
@@ -732,6 +755,7 @@ impl DemoBackend {
             mismatches: 0,
             mismatch_rows: Vec::new(),
             verified: false,
+            verified_at_ms: Some(now_ms() - 3 * 86_400_000),
         }
     }
 }
@@ -870,18 +894,17 @@ impl ScanBackend for DemoBackend {
                 )
             }),
             examples: vec![
-                (
-                    "Pictures/IMG_0042.JPG".into(),
-                    "2011/2011-08-14/IMG_0042.JPG".into(),
+                PlanRow::new("Pictures", "IMG_0042.JPG", "2011/2011-08-14/IMG_0042.JPG"),
+                PlanRow::new("Pictures", "DSC_1180.NEF", "2016/2016-05-02/DSC_1180.NEF"),
+                PlanRow::new(
+                    "NAS · Family",
+                    "IMG_0042.JPG",
+                    "2012/2012-12-24/IMG_0042 (2).JPG",
                 ),
-                (
-                    "Pictures/DSC_1180.NEF".into(),
-                    "2016/2016-05-02/DSC_1180.NEF".into(),
-                ),
-                (
-                    "Family/IMG_0042.JPG".into(),
-                    "2012/2012-12-24/IMG_0042 (2).JPG".into(),
-                ),
+                PlanRow::new("Pictures", "IMG_0051.JPG", "2011/2011-08-15/IMG_0051.JPG"),
+                PlanRow::new("NAS · Family", "IMG_2210.HEIC", "2019/2019-07-04/IMG_2210.HEIC"),
+                PlanRow::new("NAS · Family", "IMG_2210.MOV", "2019/2019-07-04/IMG_2210.MOV"),
+                PlanRow::new("Pictures", "DSC_1181.NEF", "2016/2016-05-02/DSC_1181.NEF"),
             ],
             date_note: ps_service::export_progress::DateTotals {
                 own: 11_977,
