@@ -267,3 +267,100 @@ fn scenario_export_library_refused_as_a_source() {
         "{err}"
     );
 }
+
+/// Sidecars through the real path (`Exports::input` from the catalog): a keeper whose stored AI result says
+/// "pets" with a dog, and whose user correction adds the tag "Rex", gets a sidecar with all three as subjects;
+/// a keeper with only a demo result gets no AI keywords at all.
+#[test]
+fn scenario_export_sidecar_contains_ai_keywords() {
+    use ps_catalog::AiResultRow;
+    use ps_service::insights::{Correction, DEMO_PROVIDER, InsightStore, sample_insight};
+
+    let corpus = small_corpus();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).expect("open");
+    svc.add_source(&corpus.join("drive-a")).expect("add");
+    svc.start(&[]).expect("start");
+    svc.wait().expect("scan");
+    let ex = svc.exports();
+    let input = ex.input().expect("input");
+    let singles: Vec<usize> = input
+        .units
+        .iter()
+        .enumerate()
+        .filter(|(_, u)| {
+            u.files.len() == 1 && u.files[0].kind() == Some(ps_model::MediaKind::Image)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let (pets, demo) = (singles[0], singles[1]);
+    let content = |u: usize| input.units[u].files[0].content;
+    let catalog = svc.engine().catalog();
+    let mut ai = sample_insight(1); // a dog: category pets, pets ["dog"]
+    ai.tags = vec!["rug".into()];
+    for (u, provider, insight) in [
+        (pets, "lm-studio", ai.clone()),
+        (demo, DEMO_PROVIDER, sample_insight(0)),
+    ] {
+        catalog
+            .writer()
+            .ai_complete(AiResultRow {
+                content: content(u),
+                provider: provider.into(),
+                model: "m".into(),
+                schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
+                prompt_version: ps_llm::PROMPT_VERSION,
+                insight: serde_json::to_string(&insight).expect("json"),
+                latency_ms: 1,
+                requests: 1,
+                at_ms: 1,
+            })
+            .expect("result");
+    }
+    InsightStore::for_catalog(catalog)
+        .correct(
+            &content(pets).to_hex(),
+            Correction {
+                tags: Some(vec!["Rex".into(), "rug".into()]),
+                ..Correction::default()
+            },
+        )
+        .expect("correction");
+
+    let library = tmp.path().join("Library");
+    let settings = profile_settings("lightroom").expect("profile");
+    let (plan, report) = ex
+        .run(
+            &library,
+            settings,
+            &ExecConfig::default(),
+            &AtomicBool::new(false),
+        )
+        .expect("export");
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let sidecar_of = |u: usize| {
+        let b = plan
+            .bundles
+            .iter()
+            .find(|b| b.units == [u])
+            .expect("bundle");
+        let rel = b.sidecar.as_ref().expect("sidecar planned");
+        ps_export::xmp::parse(&std::fs::read(rel.under(&library)).expect("sidecar")).expect("valid")
+    };
+    let side = sidecar_of(pets);
+    for k in ["pets", "dog", "Rex"] {
+        assert!(
+            side.subjects.iter().any(|s| s == k),
+            "{k} in {:?}",
+            side.subjects
+        );
+    }
+    assert_eq!(side.content_hash, content(pets).to_hex());
+    let side = sidecar_of(demo);
+    let demo_words = sample_insight(0).keywords();
+    assert!(
+        side.subjects.iter().all(|s| !demo_words.contains(s)),
+        "no demo keywords: {:?}",
+        side.subjects
+    );
+}

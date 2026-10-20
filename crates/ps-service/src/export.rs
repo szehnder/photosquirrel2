@@ -238,10 +238,33 @@ impl<'a> Exports<'a> {
                 rel_path: rec.key.path.clone(),
             })
         };
-        let insight = |id: FileId| -> Option<ImageInsight> {
-            let content = recs.get(&id)?.0.identity?;
-            let row = r.ai_result_for(&content).ok()??;
-            serde_json::from_str(&row.insight).ok()
+        // Sidecar content (ADR-0021, advisory): the effective insight, the AI result with the user's
+        // corrections from the AI review store, never a demo result. Only the catalog's owner opens the store
+        // (ADR-0042); an observer's dry run writes no sidecar and plans without it.
+        let store = (!self.catalog().is_observer())
+            .then(|| crate::insights::InsightStore::for_catalog(self.catalog()));
+        let corrections = store
+            .as_ref()
+            .map(crate::insights::InsightStore::corrections)
+            .unwrap_or_default();
+        let insight = |id: FileId| -> (Option<ImageInsight>, Vec<String>, Option<String>) {
+            let Some(content) = recs.get(&id).and_then(|(rec, _)| rec.identity) else {
+                return (None, Vec::new(), None);
+            };
+            let ai = r
+                .ai_result_for_except(&content, crate::insights::DEMO_PROVIDER)
+                .ok()
+                .flatten()
+                .and_then(|row| serde_json::from_str::<ImageInsight>(&row.insight).ok());
+            let correction = corrections.get(&content.to_hex());
+            match (ai, correction) {
+                (Some(ai), Some(c)) => (
+                    Some(c.apply(&ai)),
+                    c.tags.clone().unwrap_or_default(),
+                    c.subject.clone(),
+                ),
+                (ai, _) => (ai, Vec::new(), None),
+            }
         };
         let mut units = Vec::new();
         let mut grouped: HashSet<FileId> = HashSet::new();
@@ -260,14 +283,15 @@ impl<'a> Exports<'a> {
             if files.is_empty() {
                 continue;
             }
+            let (insight, user_tags, description) = insight(g.keeper);
             units.push(ExportUnit {
                 group: Some(GroupId(gid.0)),
                 files,
                 copies: members.iter().filter_map(|f| copy_ref(*f)).collect(),
                 keeper_reasons: g.reason_texts(),
-                insight: insight(g.keeper),
-                user_tags: Vec::new(),
-                description: None,
+                insight,
+                user_tags,
+                description,
             });
         }
         let mut singles: Vec<FileId> = recs
@@ -284,14 +308,15 @@ impl<'a> Exports<'a> {
             let Some(k) = keeper_file(id, &[]) else {
                 continue;
             };
+            let (insight, user_tags, description) = insight(id);
             units.push(ExportUnit {
                 group: None,
                 files: vec![k],
                 copies: copy_ref(id).into_iter().collect(),
                 keeper_reasons: vec!["the only copy".into()],
-                insight: insight(id),
-                user_tags: Vec::new(),
-                description: None,
+                insight,
+                user_tags,
+                description,
             });
         }
         Ok(ExportInput { sources, units })

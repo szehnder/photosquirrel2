@@ -32,8 +32,10 @@ fn export(
     (p, r)
 }
 
+/// The sidecar writer on a hand-built unit (the scenario itself goes through the catalog in
+/// `ps-service/tests/export_service.rs`).
 #[test]
-fn scenario_export_sidecar_contains_ai_keywords() {
+fn sidecar_lists_insight_keywords_user_tags_and_provenance() {
     let mut s = Sources::new("xmp", 1);
     let f = s.add(0, "Pets/IMG_3000.JPG", &bytes(70, 2000), 0, day(2020, 5, 5));
     let mut u = unit(vec![f.clone()]);

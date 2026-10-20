@@ -558,6 +558,24 @@ impl Readers {
         })
     }
 
+    /// The latest result of `content` not produced by `provider` (export sidecars skip demo results).
+    pub fn ai_result_for_except(
+        &self,
+        content: &ContentId,
+        provider: &str,
+    ) -> Result<Option<AiResultRow>> {
+        self.with(|c| {
+            Ok(c.prepare_cached(&format!(
+                "SELECT {RESULT_COLUMNS} FROM ai_result WHERE content_id = ?1 AND provider <> ?2
+                 ORDER BY at DESC LIMIT 1"
+            ))?
+            .query_row(params![&content.digest[..], provider], |r| {
+                result_row(r, codes::identity_kind(content.kind))
+            })
+            .optional()?)
+        })
+    }
+
     /// The stored queue run state, provider and model.
     pub fn ai_run(&self) -> Result<Option<(AiRunState, Option<String>, Option<String>)>> {
         self.with(|c| {
