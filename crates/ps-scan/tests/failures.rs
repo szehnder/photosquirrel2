@@ -209,3 +209,47 @@ fn scenario_scanning_recent_lists_bounded() {
         assert_eq!(files[&p.path.display().into_owned()].stage, Stage::Thumbed);
     }
 }
+
+/// ADR-0055: a truncated or corrupt JPEG is recorded as an analysis failure, never hashed with grey padding
+/// (where a damaged full-size copy could group with its intact derivatives and win keeper on pixel count).
+#[test]
+fn truncated_and_corrupt_jpegs_are_failed_not_hashed() {
+    use ps_fixtures::media as fx;
+    let _cores = shared();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tmp.path().join("card");
+    std::fs::create_dir_all(&root).expect("mkdir");
+    let full = fx::jpeg(2400, 1800, 21, 90);
+    std::fs::write(root.join("intact.jpg"), &full).expect("write");
+    std::fs::write(
+        root.join("truncated.jpg"),
+        fx::truncate(&full, full.len() * 99 / 100),
+    )
+    .expect("write");
+    let sos = full
+        .windows(2)
+        .position(|w| w == [0xFF, 0xDA])
+        .expect("SOS");
+    let mut garbage = full[..sos + 14].to_vec();
+    garbage.extend_from_slice(&fx::random_bytes(5 * 1024, 4));
+    std::fs::write(root.join("garbage.jpg"), garbage).expect("write");
+    let e = env();
+    let id = e.add(&root);
+    completed(&e.scan(&[id]));
+    let files = e.files(id);
+    let intact = &files["intact.jpg"];
+    assert_eq!(intact.stage, Stage::Thumbed);
+    assert!(intact.hashes.is_some(), "the intact copy is hashed");
+    for name in ["truncated.jpg", "garbage.jpg"] {
+        let f = &files[name];
+        assert_eq!(f.stage, Stage::Failed, "{name}");
+        assert!(f.hashes.is_none(), "{name} is not hashed");
+        let errors = e.readers().file_errors(f.id).expect("errors");
+        assert!(
+            errors
+                .first()
+                .is_some_and(|x| x.message.contains("analysis failed")),
+            "{name}: {errors:?}"
+        );
+    }
+}

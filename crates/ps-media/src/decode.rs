@@ -1,5 +1,5 @@
-//! Downscaled decodes (ADR-0010, ADR-0017, ADR-0054): JPEG DCT scaling via mozjpeg (libjpeg-turbo; jpeg-decoder
-//! for CMYK and as the fallback), full JPEG decodes via
+//! Downscaled decodes (ADR-0010, ADR-0017, ADR-0054, ADR-0055, ADR-0056): JPEG DCT scaling via mozjpeg
+//! (libjpeg-turbo; jpeg-decoder for CMYK, corrupt or truncated files and as the fallback), full JPEG decodes via
 //! zune-jpeg, PNG/TIFF/WebP/GIF/BMP via `image`, RAW only through embedded previews (never demosaiced),
 //! HEIC via libheif behind the `heic` feature. Orientation is applied once, on the decoded buffer.
 
@@ -118,6 +118,53 @@ pub fn decode_jpeg(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), Decod
         .unwrap_or_else(|| Err(DecodeError::Failed("JPEG decoder failure".into())))
 }
 
+/// Progressive JPEG coefficient memory (ADR-0056). Every decoder (libjpeg, jpeg-decoder, zune-jpeg) buffers a
+/// progressive image's full-resolution DCT coefficients, 2 bytes each, before it can output a row, whatever the
+/// output scale: a 250 MP 4:4:4 progressive file needs 1.5 GB. Above [`PROGRESSIVE_SERIAL_BYTES`] a decode
+/// waits for any other such decode in the process, so 15 analysis workers cannot each hold one at once; above
+/// [`PROGRESSIVE_MAX_BYTES`] it is refused (hostile headers claim gigapixel frames in a few bytes).
+pub const PROGRESSIVE_SERIAL_BYTES: u64 = 128 * 1024 * 1024;
+/// See [`PROGRESSIVE_SERIAL_BYTES`].
+pub const PROGRESSIVE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// How a JPEG decode may use memory, decided from its frame header alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JpegMemoryPlan {
+    /// Sequential, or progressive with a small coefficient buffer: decode on the calling worker.
+    Parallel,
+    /// A large progressive coefficient buffer: decode, but one such decode at a time per process.
+    Serialized,
+    /// The coefficient buffer would exceed [`PROGRESSIVE_MAX_BYTES`]: refuse (analysis failed).
+    TooLarge,
+}
+
+/// Upper bound of the coefficient memory a progressive frame needs: every component at full resolution
+/// (4:4:4; subsampled chroma needs less), 64 coefficients of 2 bytes per 8x8 block, blocks rounded up.
+pub fn progressive_coefficient_bytes(width: u32, height: u32, components: u32) -> u64 {
+    let blocks = u64::from(width.div_ceil(8)) * u64::from(height.div_ceil(8));
+    blocks * 64 * 2 * u64::from(components)
+}
+
+/// The memory plan of a frame (see [`JpegMemoryPlan`]).
+pub fn jpeg_memory_plan(
+    width: u32,
+    height: u32,
+    components: u32,
+    progressive: bool,
+) -> JpegMemoryPlan {
+    if !progressive {
+        return JpegMemoryPlan::Parallel;
+    }
+    match progressive_coefficient_bytes(width, height, components) {
+        b if b > PROGRESSIVE_MAX_BYTES => JpegMemoryPlan::TooLarge,
+        b if b > PROGRESSIVE_SERIAL_BYTES => JpegMemoryPlan::Serialized,
+        _ => JpegMemoryPlan::Parallel,
+    }
+}
+
+/// Held for the whole of a [`JpegMemoryPlan::Serialized`] decode.
+static LARGE_PROGRESSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), DecodeError> {
     let mut dec = jpeg_decoder::Decoder::new(Cursor::new(bytes));
     dec.set_max_decoding_buffer_size(MAX_DECODE_BYTES);
@@ -130,6 +177,26 @@ fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), Dec
     if w == 0 || h == 0 {
         return Err(DecodeError::Failed("zero JPEG dimensions".into()));
     }
+    let components = match info.pixel_format {
+        jpeg_decoder::PixelFormat::L8 | jpeg_decoder::PixelFormat::L16 => 1,
+        jpeg_decoder::PixelFormat::RGB24 => 3,
+        jpeg_decoder::PixelFormat::CMYK32 => 4,
+    };
+    let progressive = info.coding_process == jpeg_decoder::CodingProcess::DctProgressive;
+    let _serial = match jpeg_memory_plan(w, h, components, progressive) {
+        JpegMemoryPlan::Parallel => None,
+        JpegMemoryPlan::Serialized => Some(
+            LARGE_PROGRESSIVE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ),
+        JpegMemoryPlan::TooLarge => {
+            return Err(DecodeError::Failed(format!(
+                "progressive JPEG too large to decode ({w}x{h}, {} MB of coefficients)",
+                progressive_coefficient_bytes(w, h, components) / (1024 * 1024)
+            )));
+        }
+    };
     let denom = choose_denominator(w, h, min_long);
     if denom == 1
         && matches!(
@@ -148,11 +215,11 @@ fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), Dec
             jpeg_decoder::PixelFormat::RGB24 | jpeg_decoder::PixelFormat::L8
         )
         && (w as usize) * (h as usize) * 3 <= MAX_DECODE_BYTES
-        && let Some(img) = contain(|| decode_mozjpeg_scaled(bytes, denom))
-            .and_then(Result::ok)
-            .filter(|i| (i.width, i.height) == (w.div_ceil(denom), h.div_ceil(denom)))
+        && let Ok(img) = decode_mozjpeg_scaled(bytes, denom)
+        && (img.width, img.height) == (w.div_ceil(denom), h.div_ceil(denom))
     {
-        // DCT-scaled decode: libjpeg-turbo's entropy decoder and reduced IDCTs (ADR-0054).
+        // DCT-scaled decode: libjpeg-turbo's entropy decoder and reduced IDCTs (ADR-0054). Corrupt or
+        // truncated data makes it fail (ADR-0055), and jpeg-decoder below decides, as before mozjpeg.
         return Ok((img, denom));
     }
     let (sw, sh) = if denom > 1 {
@@ -202,11 +269,73 @@ fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), Dec
     ))
 }
 
-/// A DCT-scaled (1/`denom`) RGB decode through mozjpeg's libjpeg-turbo core, on the calling thread. Grayscale
-/// sources are expanded to RGB by libjpeg. Errors unwind out of libjpeg; callers wrap this in [`contain`].
-fn decode_mozjpeg_scaled(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeError> {
+/// Why a strict libjpeg decode stopped.
+enum LibjpegStop {
+    /// `error_exit`: libjpeg cannot continue.
+    Fatal,
+    /// `emit_message` with a negative level: libjpeg would carry on with made-up data (grey padding after a
+    /// premature end, skipped garbage before a marker, a resync after a corrupt restart interval).
+    Warning,
+}
+
+/// A libjpeg error manager that unwinds on fatal errors and on every warning (ADR-0055). The mozjpeg crate's
+/// default one silences warnings, so a truncated or corrupt file "decodes" with grey padding: a damaged
+/// full-size copy could then group with its intact derivatives and win keeper on pixel count.
+#[allow(unsafe_code)]
+fn strict_error_mgr() -> mozjpeg_sys::jpeg_error_mgr {
+    // SAFETY: `jpeg_error_mgr` is a plain C struct of integers, pointers and optional function pointers, for
+    // which all-zero is valid; `jpeg_std_error` then fills in libjpeg's defaults (message tables are statics,
+    // so the struct can move). Both callbacks below only unwind, which the `unwinding` build of mozjpeg-sys
+    // supports for `error_exit` already, and `emit_message` is called from the same libjpeg frames.
+    unsafe {
+        let mut err: mozjpeg_sys::jpeg_error_mgr = std::mem::zeroed();
+        mozjpeg_sys::jpeg_std_error(&mut err);
+        err.error_exit = Some(strict_error_exit);
+        err.emit_message = Some(strict_emit_message);
+        err
+    }
+}
+
+extern "C-unwind" fn strict_error_exit(_cinfo: &mut mozjpeg_sys::jpeg_common_struct) {
+    std::panic::resume_unwind(Box::new(LibjpegStop::Fatal));
+}
+
+extern "C-unwind" fn strict_emit_message(
+    _cinfo: &mut mozjpeg_sys::jpeg_common_struct,
+    msg_level: std::os::raw::c_int,
+) {
+    if msg_level < 0 {
+        std::panic::resume_unwind(Box::new(LibjpegStop::Warning));
+    }
+}
+
+/// A DCT-scaled (1/`denom`) RGB decode through mozjpeg's libjpeg-turbo core, on the calling thread
+/// (ADR-0054). Grayscale sources are expanded to RGB by libjpeg. Any libjpeg error or warning (truncated or
+/// corrupt data) is a failure (ADR-0055); the caller then falls back to jpeg-decoder. Public for tests that
+/// check intact files take this path.
+#[doc(hidden)]
+pub fn decode_mozjpeg_scaled(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        mozjpeg_strict(bytes, denom)
+    })) {
+        Ok(r) => r,
+        Err(stop) => Err(DecodeError::Failed(
+            match stop.downcast_ref::<LibjpegStop>() {
+                Some(LibjpegStop::Warning) => "corrupt or truncated JPEG data",
+                Some(LibjpegStop::Fatal) => "libjpeg error",
+                None => "JPEG decoder failure",
+            }
+            .into(),
+        )),
+    }
+}
+
+fn mozjpeg_strict(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeError> {
     let failed = |e: std::io::Error| DecodeError::Failed(e.to_string());
-    let mut d = mozjpeg::Decompress::new_mem(bytes).map_err(failed)?;
+    let mut d = mozjpeg::Decompress::builder()
+        .with_err(strict_error_mgr())
+        .from_mem(bytes)
+        .map_err(failed)?;
     d.scale((8 / denom.clamp(1, 8)) as u8);
     let mut started = d.rgb().map_err(failed)?;
     let (width, height) = (started.width() as u32, started.height() as u32);
@@ -214,6 +343,7 @@ fn decode_mozjpeg_scaled(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeErr
     if data.len() != width as usize * height as usize * 3 {
         return Err(DecodeError::Failed("short JPEG decode".into()));
     }
+    // Reads up to EOI: a missing EOI or trailing scan data warns, and so fails.
     started.finish().map_err(failed)?;
     Ok(RgbImage {
         width,

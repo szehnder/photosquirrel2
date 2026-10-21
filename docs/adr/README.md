@@ -58,3 +58,5 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0052](0052-hidden-folders-scanned-by-default.md) | Hidden folders are scanned by default |
 | [0053](0053-power-source-probe-without-dependencies.md) | Power source probe: platform calls, no dependency |
 | [0054](0054-dct-scaled-jpeg-decodes-via-mozjpeg.md) | DCT-scaled JPEG decodes via mozjpeg (libjpeg-turbo core, plain C; amends 0017) |
+| [0055](0055-corrupt-jpegs-fall-back-to-jpeg-decoder.md) | Corrupt or truncated JPEGs leave the mozjpeg path for jpeg-decoder (amends 0054) |
+| [0056](0056-progressive-jpeg-coefficient-memory.md) | Progressive JPEG coefficient memory: serialize large decodes, refuse hostile ones |
