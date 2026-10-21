@@ -54,3 +54,6 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0048](0048-consent-binds-the-scheme-hosted-needs-https.md) | Hosted consent binds the scheme; hosted providers need HTTPS (extends 0047) |
 | [0049](0049-settings-file-ownership-and-external-edits.md) | The running app owns `settings.toml`; external consent withdrawals win (extends 0047) |
 | [0050](0050-export-replan-budget-with-sidecar-rows.md) | The export re-plan budget with sidecar ledger rows: 800 ms (amends 0044) |
+| [0051](0051-reclassification-from-stored-probe-facts.md) | Re-classification from stored probe facts (catalog migration 13) |
+| [0052](0052-hidden-folders-scanned-by-default.md) | Hidden folders are scanned by default |
+| [0053](0053-power-source-probe-without-dependencies.md) | Power source probe: platform calls, no dependency |
