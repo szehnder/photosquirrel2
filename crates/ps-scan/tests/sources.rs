@@ -29,7 +29,10 @@ fn scenario_sources_add_a_source() {
     let list = e.s().sources().expect("sources");
     assert_eq!(list.len(), 1);
     let s = &list[0];
-    assert_eq!(s.root, std::fs::canonicalize(&root).expect("canonical"));
+    assert_eq!(
+        s.root,
+        ps_model::path::simplify_canonical(std::fs::canonicalize(&root).expect("canonical"))
+    );
     assert_eq!(s.status, SourceStatus::Online);
     let total: u64 = truth_under(c, "drive-a").map(|(_, f)| f.size).sum();
     assert_eq!(s.total_bytes, Some(total));
@@ -120,7 +123,10 @@ fn scenario_sources_remounted_drive_relinked() {
     let s = e.s().relink_source(id, &new_root).expect("relink");
     assert_eq!(s.id, id);
     assert_eq!(s.status, SourceStatus::Online);
-    assert_eq!(s.root, std::fs::canonicalize(&new_root).expect("canonical"));
+    assert_eq!(
+        s.root,
+        ps_model::path::simplify_canonical(std::fs::canonicalize(&new_root).expect("canonical"))
+    );
     e.instr.reset();
     let summary = e.scan(&[id]);
     completed(&summary);
@@ -162,7 +168,8 @@ fn scenario_sources_wrong_drive_rejected() {
     assert_eq!(s.status, SourceStatus::Offline);
     assert_eq!(
         s.root,
-        std::fs::canonicalize(tmp.path()).expect("c").join("drive")
+        ps_model::path::simplify_canonical(std::fs::canonicalize(tmp.path()).expect("c"))
+            .join("drive")
     );
 }
 

@@ -19,6 +19,7 @@ fn small_corpus() -> PathBuf {
         ps_fixtures::Preset::Small,
     )
     .canonicalize()
+    .map(ps_model::path::simplify_canonical)
     .expect("canonical corpus root")
 }
 
