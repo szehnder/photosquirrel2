@@ -10,6 +10,7 @@
 //! - [`review`]: duplicate review list, member cards, review state, suggestion dismissal (`duplicate-review`).
 //! - [`insights`]: AI review: effective insights, corrections, filters, advisory suggestions (`ai-insights`).
 //! - [`library`]: the gallery's ID lists, pages, thumbnails, previews and inspector detail (`gallery`).
+//! - [`power`]: pause scans on battery power (ADR-0053).
 
 pub mod ai;
 pub mod export;
@@ -18,6 +19,7 @@ pub mod groups;
 pub mod insights;
 pub mod json_store;
 pub mod library;
+pub mod power;
 pub mod review;
 pub mod scan;
 pub mod scans;

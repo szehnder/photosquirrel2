@@ -244,6 +244,8 @@ pub struct Library {
     data_dir: PathBuf,
     engine: OnceLock<std::result::Result<Arc<ScanService>, String>>,
     settings: Mutex<AppliedSettings>,
+    /// Pause on battery (`general.pause_on_battery`, ADR-0053).
+    power: Arc<crate::power::PowerWatch>,
     insights: OnceLock<InsightStore>,
     /// Start-up warm-up ([`Library::warm`]): the first summary and list, handed to the first caller.
     warm: Mutex<Option<Arc<Warm>>>,
@@ -275,6 +277,7 @@ impl Library {
             data_dir: data_dir.to_path_buf(),
             engine: OnceLock::new(),
             settings: Mutex::new(AppliedSettings::default()),
+            power: Arc::default(),
             insights: OnceLock::new(),
             warm: Mutex::new(None),
             previews: Mutex::new(None),
@@ -323,6 +326,7 @@ impl Library {
             .as_ref()
             .map_err(|e| anyhow::anyhow!("could not open the catalog: {e}"))?;
         self.sync_engine_options(engine);
+        self.power.ensure_started(engine);
         Ok(engine)
     }
 
@@ -352,17 +356,34 @@ impl Library {
                 .map_or(PREVIEW_CACHE_BYTES, crate::settings::preview_cache_bytes);
             applied.settings = Some(settings.clone());
             applied.revision += 1;
+            self.power.set_enabled(settings.general.pause_on_battery);
             if let Some(Ok(engine)) = self.engine.get() {
                 engine
                     .engine()
                     .update_options(|o| crate::settings::apply_scan_settings(settings, o));
                 applied.engine_revision = applied.revision;
+                self.power.ensure_started(engine);
             }
             before != crate::settings::preview_cache_bytes(settings)
         };
         if cap_changed {
             *lock(&self.previews) = None;
         }
+    }
+
+    /// Why the active scan is paused for power, if it is (`general.pause_on_battery`): for the dashboard.
+    pub fn power_pause(&self) -> Option<crate::power::PowerPause> {
+        self.power.note()
+    }
+
+    /// Use another power source and poll interval for pause-on-battery (tests). Call before the engine opens
+    /// or the setting is first turned on.
+    pub fn set_power_source(
+        &self,
+        source: Arc<dyn crate::power::PowerSource>,
+        poll: std::time::Duration,
+    ) {
+        self.power.set_source(source, poll);
     }
 
     /// The preview cache cap in force.
