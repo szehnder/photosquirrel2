@@ -284,9 +284,9 @@ fn capture(out: &Path) -> Result<()> {
 }
 
 /// Make the PhotoSquirrel window the active one through a KWin script, so `spectacle -a` captures it even
-/// when the user has clicked elsewhere during a long delay. Best effort: without `qdbus`, the window is
+/// when the user has clicked elsewhere during a long delay (and the render bench gets frames). Best effort: without `qdbus`, the window is
 /// active anyway unless focus moved.
-fn kde_activate_app() {
+pub(crate) fn kde_activate_app() {
     let Some(qdbus) = ["qdbus6", "qdbus"].into_iter().find(|b| has(b)) else {
         return;
     };

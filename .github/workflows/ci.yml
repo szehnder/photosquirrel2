@@ -34,11 +34,17 @@ jobs:
       - name: cargo xtask ci
         run: cargo xtask ci
 
-  perf:
-    name: Performance budgets (relative to main)
+  bench-regressions:
+    name: Performance budgets (relative to the parent commit)
+    needs: linux
     runs-on: ubuntu-24.04
+    env:
+      # Base and head share one target dir, so the base build reuses the compiled dependencies.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: System dependencies for GPUI
         run: |
           sudo apt-get update
@@ -48,27 +54,23 @@ jobs:
         with:
           toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@v2
-      # Pull requests compare with the newest baseline saved by a main run (ADR-0026). Runners differ from the
-      # reference machine, so only relative regressions are checked, never the absolute budgets.
-      - name: Restore the main baseline
-        if: github.event_name == 'pull_request'
-        uses: actions/cache/restore@v4
-        with:
-          path: perf-baseline.json
-          key: perf-baseline-${{ github.sha }}
-          restore-keys: perf-baseline-
-      - name: Check budgets (relative)
-        if: github.event_name == 'pull_request'
-        run: cargo xtask bench --check --ci
-      - name: Record the baseline
-        if: github.event_name == 'push'
-        run: cargo xtask bench --ci --update-baseline
-      - name: Save the baseline
-        if: github.event_name == 'push'
-        uses: actions/cache/save@v4
-        with:
-          path: perf-baseline.json
-          key: perf-baseline-${{ github.sha }}
+      # ADR-0026: runners differ from the reference machine (whose baseline is the committed perf-baseline.json)
+      # and from each other, so CI measures the base commit (the PR base, or the previous main) on this same
+      # runner first, then checks the head for relative regressions (>15%) only, without app (window) budgets.
+      - name: Measure the base commit
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "no base commit; the check below only proves every budget still measures"; exit 0
+          fi
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE"
+          cd "$RUNNER_TEMP/base"
+          rm -f perf-baseline.json
+          cargo xtask bench --ci --update-baseline || true
+          cp perf-baseline.json "$GITHUB_WORKSPACE/perf-baseline-ci.json" || true
+      - name: Check the head against the base (relative)
+        run: cargo xtask bench --check --ci --baseline perf-baseline-ci.json
 
   build:
     name: Build and test (${{ matrix.os }})
