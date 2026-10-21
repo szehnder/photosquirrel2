@@ -69,6 +69,9 @@ jobs:
           rm -f perf-baseline.json
           cargo xtask bench --ci --update-baseline || true
           cp perf-baseline.json "$GITHUB_WORKSPACE/perf-baseline-ci.json" || true
+          # The base checkout is newer on disk than the head's sources, and cargo fingerprints path crates by
+          # mtime: touch the head so every workspace crate (and xtask) is rebuilt from the head's code.
+          find "$GITHUB_WORKSPACE" -path "$GITHUB_WORKSPACE/target" -prune -o -type f \( -name '*.rs' -o -name Cargo.toml \) -print0 | xargs -0 touch
       - name: Check the head against the base (relative)
         run: cargo xtask bench --check --ci --baseline perf-baseline-ci.json
 
