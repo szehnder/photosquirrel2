@@ -8,9 +8,12 @@
 //!   `--render-bench`). These open windows, so they need a display and are skipped by `--ci`.
 //!
 //! `--check` compares each measurement with its absolute budget (locally) and with `perf-baseline.json`
-//! (more than [`REGRESSION`] slower fails). `--ci` checks only the relative regressions and skips app
-//! measurements: CI runners are noisy and have no display. `--update-baseline` writes the measurements as the
-//! new baseline.
+//! (more than [`REGRESSION`] slower fails); a selected budget that printed no measurement fails too. `--ci`
+//! checks only the relative regressions and skips app measurements: CI runners are noisy, differ from the
+//! reference machine and have no display. `--update-baseline` merges the measurements into the baseline
+//! (budgets not measured keep their values); with `--check` it writes only when the check passed, so the
+//! comparison is always against the previous baseline. `--baseline <file>` uses another baseline file (CI keeps
+//! its runner baseline apart from the committed reference-machine `perf-baseline.json`).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -99,9 +102,10 @@ pub enum Mode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Violation(pub String);
 
-/// Compare measurements with budgets and the baseline. Pure, so it is tested without running anything.
+/// Compare measurements with the selected budgets and the baseline. Pure, so it is tested without running
+/// anything. A budget without a measurement is a violation: a source that silently stops printing must fail.
 pub fn evaluate(
-    budgets: &[Budget],
+    budgets: &[&Budget],
     measured: &BTreeMap<String, Measurement>,
     baseline: &Baseline,
     mode: Mode,
@@ -109,6 +113,12 @@ pub fn evaluate(
     let mut out = Vec::new();
     for b in budgets {
         let Some(m) = measured.get(&b.name) else {
+            out.push(Violation(format!(
+                "{}: no measurement (its {} source printed no `measure {}=` line)",
+                b.name,
+                b.source.kind(),
+                b.name
+            )));
             continue;
         };
         if mode == Mode::Local && m.value > b.max {
@@ -134,6 +144,63 @@ pub fn evaluate(
         }
     }
     out
+}
+
+/// The budgets a run measures: those named by `only` (all when empty), without app (window) measurements in
+/// CI mode. Unknown names are an error, so a typo does not pass as "all budgets met".
+pub fn select<'a>(budgets: &'a [Budget], only: &[String], mode: Mode) -> Result<Vec<&'a Budget>> {
+    if let Some(unknown) = only.iter().find(|n| !budgets.iter().any(|b| &b.name == *n)) {
+        bail!("no budget named {unknown:?} in perf-budgets.toml (see `cargo xtask bench --list`)");
+    }
+    Ok(budgets
+        .iter()
+        .filter(|b| only.is_empty() || only.contains(&b.name))
+        .filter(|b| !(mode == Mode::Ci && matches!(b.source, Source::App { .. })))
+        .collect())
+}
+
+/// Merge `measured` into `baseline`: measured budgets get their new values, the others keep theirs.
+pub fn merge_baseline(baseline: &mut Baseline, measured: &BTreeMap<String, Measurement>) {
+    for (name, m) in measured {
+        baseline.values.insert(name.clone(), m.value);
+    }
+}
+
+/// One line per budget for `--list`: name, metric, bound, unit, owning change and how it is measured.
+pub fn list_lines(budgets: &[Budget]) -> Vec<String> {
+    budgets
+        .iter()
+        .map(|b| {
+            format!(
+                "{:<26} {:<6} <= {:>7} {:<2}  {:<17} {}",
+                b.name,
+                b.metric,
+                b.max,
+                b.unit,
+                b.change,
+                b.source.describe()
+            )
+        })
+        .collect()
+}
+
+impl Source {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Source::Test { .. } => "test",
+            Source::Criterion { .. } => "criterion",
+            Source::App { .. } => "app",
+        }
+    }
+
+    /// Where the measurement comes from, for `--list` and docs/performance.md.
+    pub fn describe(&self) -> String {
+        match self {
+            Source::Test { package, test, .. } => format!("test {package}/{test}"),
+            Source::Criterion { package, bench, id } => format!("criterion {package}/{bench} {id}"),
+            Source::App { args, .. } => format!("app {}", args.join(" ")),
+        }
+    }
 }
 
 /// `measure <name>=<value> <unit>` lines in `output`.
@@ -177,27 +244,21 @@ pub struct Options {
     pub update_baseline: bool,
     /// Only these budgets (all when empty).
     pub only: Vec<String>,
+    /// The baseline file (default: [`BASELINE_FILE`] at the workspace root).
+    pub baseline: Option<std::path::PathBuf>,
 }
 
 pub fn run(root: &Path, opts: Options) -> Result<()> {
     let text = std::fs::read_to_string(root.join("perf-budgets.toml"))?;
     let budgets: Budgets = toml::from_str(&text).context("parsing perf-budgets.toml")?;
     if opts.list || !(opts.check || opts.update_baseline) {
-        for b in &budgets.budget {
-            println!(
-                "{:<28} {:<7} <= {:>8} {:<3} ({})",
-                b.name, b.metric, b.max, b.unit, b.change
-            );
+        for line in list_lines(&budgets.budget) {
+            println!("{line}");
         }
         return Ok(());
     }
     let mode = if opts.ci { Mode::Ci } else { Mode::Local };
-    let selected: Vec<&Budget> = budgets
-        .budget
-        .iter()
-        .filter(|b| opts.only.is_empty() || opts.only.contains(&b.name))
-        .filter(|b| !(opts.ci && matches!(b.source, Source::App { .. })))
-        .collect();
+    let selected = select(&budgets.budget, &opts.only, mode)?;
 
     let mut measured = BTreeMap::new();
     let needs_app = selected
@@ -236,41 +297,42 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         }
     }
 
-    let baseline_path = root.join(BASELINE_FILE);
-    if opts.update_baseline {
-        let mut baseline: Baseline = read_baseline(&baseline_path)?;
-        for (name, m) in &measured {
-            baseline.values.insert(name.clone(), m.value);
+    let baseline_path = opts
+        .baseline
+        .clone()
+        .unwrap_or_else(|| root.join(BASELINE_FILE));
+    let mut baseline = read_baseline(&baseline_path)?;
+    if opts.check {
+        let violations = evaluate(&selected, &measured, &baseline, mode);
+        for v in &violations {
+            eprintln!("FAIL {}", v.0);
         }
+        if !violations.is_empty() {
+            bail!(
+                "{} budget check(s) failed{}",
+                violations.len(),
+                if opts.update_baseline {
+                    "; baseline not updated"
+                } else {
+                    ""
+                }
+            );
+        }
+        let scope = if mode == Mode::Ci {
+            "within 15% of the baseline"
+        } else {
+            "met"
+        };
+        println!("all {} budgets {scope}", measured.len());
+    }
+    if opts.update_baseline {
+        merge_baseline(&mut baseline, &measured);
         std::fs::write(
             &baseline_path,
             serde_json::to_string_pretty(&baseline)? + "\n",
         )?;
         println!("wrote {}", baseline_path.display());
-        if !opts.check {
-            return Ok(());
-        }
     }
-    let baseline = read_baseline(&baseline_path)?;
-    let violations = evaluate(&budgets.budget, &measured, &baseline, mode);
-    let missing: Vec<&str> = selected
-        .iter()
-        .filter(|b| !measured.contains_key(&b.name))
-        .map(|b| b.name.as_str())
-        .collect();
-    for v in &violations {
-        eprintln!("FAIL {}", v.0);
-    }
-    if !missing.is_empty() {
-        eprintln!("FAIL no measurement for: {}", missing.join(", "));
-    }
-    if !violations.is_empty() || !missing.is_empty() {
-        bail!(
-            "{} budget check(s) failed",
-            violations.len() + missing.len()
-        );
-    }
-    println!("all {} budgets met", measured.len());
     Ok(())
 }
 
@@ -381,13 +443,24 @@ mod tests {
             max,
             unit: "ms".into(),
             change: "x".into(),
+            source: Source::Test {
+                package: "p".into(),
+                test: "t".into(),
+                name: "n".into(),
+            },
+        }
+    }
+
+    fn app_budget(name: &str, max: f64) -> Budget {
+        Budget {
             source: Source::App {
-                args: vec![],
+                args: vec!["--measure-startup".into()],
                 runs: 1,
                 measure: None,
                 seeded: false,
                 render_p95: false,
             },
+            ..budget(name, max)
         }
     }
 
@@ -398,35 +471,215 @@ mod tests {
             .collect()
     }
 
+    fn workspace_budgets() -> Vec<Budget> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let text = std::fs::read_to_string(root.join("perf-budgets.toml")).unwrap();
+        toml::from_str::<Budgets>(&text).unwrap().budget
+    }
+
+    /// The eleven ADR-0026 budgets: name and upper bound, in the unit the budgets file uses (throughput as
+    /// time per unit: 50k rows/s = 20 us/row, 150 files/s = 6.67 ms/file).
+    const ADR_0026: [(&str, f64, &str); 11] = [
+        ("gallery-scroll-p95", 8.3, "ms"),
+        ("first-gallery-frame", 600.0, "ms"),
+        ("cold-start", 400.0, "ms"),
+        ("idle-rss", 250.0, "MB"),
+        ("catalog-insert", 20.0, "us"),
+        ("catalog-id-list-1m", 300.0, "ms"),
+        ("rescan-nochange-100k", 4.0, "s"),
+        ("scan-analysis-12mp", 6.67, "ms"),
+        ("phash-dhash-per-image", 0.3, "ms"),
+        ("near-dup-lookup-p95", 1.0, "ms"),
+        ("control-latency-p95", 250.0, "ms"),
+    ];
+
+    #[test]
+    fn scenario_performance_budgets_all_adr_budgets_defined() {
+        let budgets = workspace_budgets();
+        for (name, max, unit) in ADR_0026 {
+            let found: Vec<&Budget> = budgets.iter().filter(|b| b.name == name).collect();
+            assert_eq!(found.len(), 1, "exactly one entry for {name}");
+            let b = found[0];
+            assert!(
+                b.max > 0.0 && (b.max - max).abs() < 1e-9,
+                "{name}: bound {} != {max}",
+                b.max
+            );
+            assert_eq!(b.unit, unit, "{name}");
+            assert!(!b.change.is_empty(), "{name} names its owning change");
+            match &b.source {
+                Source::Test {
+                    package,
+                    test,
+                    name,
+                } => {
+                    assert!(!package.is_empty() && !test.is_empty() && !name.is_empty())
+                }
+                Source::Criterion { package, bench, id } => {
+                    assert!(!package.is_empty() && !bench.is_empty() && !id.is_empty())
+                }
+                Source::App { args, runs, .. } => assert!(!args.is_empty() && *runs > 0),
+            }
+        }
+        let mut names: Vec<&str> = budgets.iter().map(|b| b.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), budgets.len(), "budget names are unique");
+        assert!(budgets.iter().all(|b| b.max > 0.0));
+    }
+
+    #[test]
+    fn scenario_performance_budgets_list_shows_every_budget() {
+        let budgets = workspace_budgets();
+        let lines = list_lines(&budgets);
+        assert_eq!(lines.len(), budgets.len(), "one line per budget");
+        for (line, b) in lines.iter().zip(&budgets) {
+            assert!(line.starts_with(&b.name), "{line}");
+            assert!(
+                line.contains(&format!("<= {:>7} {:<2}", b.max, b.unit)),
+                "bound and unit: {line}"
+            );
+            assert!(line.contains(&b.change), "owning change: {line}");
+        }
+    }
+
+    #[test]
+    fn scenario_performance_budgets_absolute_budget_exceeded_fails() {
+        let b = budget("cold-start", 400.0);
+        let m = measured(&[("cold-start", 450.0)]);
+        let v = evaluate(&[&b], &m, &Baseline::default(), Mode::Local);
+        assert_eq!(v.len(), 1, "{v:?}");
+        let msg = &v[0].0;
+        assert!(
+            msg.contains("cold-start") && msg.contains("450") && msg.contains("400"),
+            "{msg}"
+        );
+        let ok = measured(&[("cold-start", 380.0)]);
+        assert!(evaluate(&[&b], &ok, &Baseline::default(), Mode::Local).is_empty());
+    }
+
+    #[test]
+    fn scenario_performance_budgets_missing_measurement_fails() {
+        let (a, b) = (budget("catalog-insert", 20.0), budget("idle-rss", 250.0));
+        let m = measured(&[("catalog-insert", 15.0)]);
+        for mode in [Mode::Local, Mode::Ci] {
+            let v = evaluate(&[&a, &b], &m, &Baseline::default(), mode);
+            assert_eq!(v.len(), 1, "{v:?}");
+            assert!(
+                v[0].0.contains("idle-rss") && v[0].0.contains("no measurement"),
+                "{v:?}"
+            );
+        }
+    }
+
     #[test]
     fn scenario_performance_budgets_regression_detected() {
-        let budgets = [budget("graphson_decode_10mb", 60.0), budget("steady", 60.0)];
+        let (slow, steady) = (budget("graphson_decode_10mb", 60.0), budget("steady", 60.0));
         let mut baseline = Baseline::default();
         baseline.values.insert("graphson_decode_10mb".into(), 40.0);
         baseline.values.insert("steady".into(), 40.0);
         // 20% slower than the baseline, still inside the absolute budget.
         let m = measured(&[("graphson_decode_10mb", 48.0), ("steady", 42.0)]);
-        let v = evaluate(&budgets, &m, &baseline, Mode::Ci);
-        assert_eq!(v.len(), 1, "{v:?}");
-        let msg = &v[0].0;
-        assert!(
-            msg.contains("graphson_decode_10mb"),
-            "names the benchmark: {msg}"
-        );
-        assert!(
-            msg.contains("48.00") && msg.contains("40.00"),
-            "both values: {msg}"
-        );
-        assert!(msg.contains("20%"), "{msg}");
+        for mode in [Mode::Ci, Mode::Local] {
+            let v = evaluate(&[&slow, &steady], &m, &baseline, mode);
+            assert_eq!(v.len(), 1, "{v:?}");
+            let msg = &v[0].0;
+            assert!(
+                msg.contains("graphson_decode_10mb"),
+                "names the benchmark: {msg}"
+            );
+            assert!(
+                msg.contains("48.00") && msg.contains("40.00"),
+                "both values: {msg}"
+            );
+            assert!(msg.contains("20%"), "{msg}");
+        }
     }
 
     #[test]
-    fn absolute_budgets_apply_locally_only() {
-        let budgets = [budget("cold_start_first_frame", 300.0)];
-        let m = measured(&[("cold_start_first_frame", 450.0)]);
-        let none = Baseline::default();
-        assert_eq!(evaluate(&budgets, &m, &none, Mode::Local).len(), 1);
-        assert!(evaluate(&budgets, &m, &none, Mode::Ci).is_empty());
+    fn scenario_performance_budgets_ci_mode_checks_regressions_only() {
+        let b = budget("scan-analysis-12mp", 6.67);
+        let mut baseline = Baseline::default();
+        baseline.values.insert("scan-analysis-12mp".into(), 20.0);
+        // A CI runner: far above the reference machine's absolute bound, 10% above its own baseline.
+        let m = measured(&[("scan-analysis-12mp", 22.0)]);
+        assert!(evaluate(&[&b], &m, &baseline, Mode::Ci).is_empty());
+        assert_eq!(evaluate(&[&b], &m, &baseline, Mode::Local).len(), 1);
+
+        let budgets = vec![
+            budget("catalog-insert", 20.0),
+            app_budget("cold-start", 400.0),
+        ];
+        let ci: Vec<&str> = select(&budgets, &[], Mode::Ci)
+            .unwrap()
+            .iter()
+            .map(|b| b.name.as_str())
+            .collect();
+        assert_eq!(
+            ci,
+            ["catalog-insert"],
+            "app window measurements are not run"
+        );
+        assert_eq!(select(&budgets, &[], Mode::Local).unwrap().len(), 2);
+        let only = select(&budgets, &["cold-start".into()], Mode::Ci).unwrap();
+        assert!(only.is_empty());
+        assert!(select(&budgets, &["cold-strat".into()], Mode::Local).is_err());
+    }
+
+    #[test]
+    fn scenario_performance_budgets_baseline_update_writes_values() {
+        let mut baseline = Baseline::default();
+        for (i, (name, _, _)) in ADR_0026.iter().enumerate() {
+            baseline.values.insert((*name).into(), i as f64 + 1.0);
+        }
+        let before = baseline.values.clone();
+        merge_baseline(
+            &mut baseline,
+            &measured(&[("cold-start", 210.0), ("idle-rss", 190.0)]),
+        );
+        assert_eq!(baseline.values.len(), 11);
+        assert_eq!(baseline.values["cold-start"], 210.0);
+        assert_eq!(baseline.values["idle-rss"], 190.0);
+        let unchanged = before
+            .iter()
+            .filter(|(n, v)| baseline.values.get(*n) == Some(*v))
+            .count();
+        assert_eq!(unchanged, 9, "the other nine keep their values");
+        // And it round-trips through the file format.
+        let json = serde_json::to_string_pretty(&baseline).unwrap();
+        let back: Baseline = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.values, baseline.values);
+    }
+
+    #[test]
+    fn scenario_performance_budgets_all_budgets_within_limits() {
+        // The committed baseline is the recorded output of `cargo xtask bench --check --update-baseline` on the
+        // reference machine (docs/performance.md); `--update-baseline` writes it only after a passing check.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let baseline = read_baseline(&root.join(BASELINE_FILE)).unwrap();
+        let budgets = workspace_budgets();
+        for b in &budgets {
+            let v = baseline.values.get(&b.name).copied();
+            let v = v.unwrap_or_else(|| panic!("{} has no recorded measurement", b.name));
+            assert!(
+                v <= b.max,
+                "{}: recorded {v} {} exceeds {} {}",
+                b.name,
+                b.unit,
+                b.max,
+                b.unit
+            );
+        }
+        let selected: Vec<&Budget> = budgets.iter().collect();
+        let as_measured: BTreeMap<String, Measurement> = baseline
+            .values
+            .iter()
+            .map(|(n, v)| (n.clone(), Measurement { value: *v }))
+            .collect();
+        assert!(evaluate(&selected, &as_measured, &Baseline::default(), Mode::Local).is_empty());
+        for (name, _, _) in ADR_0026 {
+            assert!(baseline.values.contains_key(name), "{name} recorded");
+        }
     }
 
     #[test]
@@ -438,13 +691,5 @@ mod tests {
         let render = "  frame interval ms: p50=6.94 p95=7.10 p99=7.5 max=9.0";
         assert_eq!(parse_render_p95(render), Some(7.10));
         assert_eq!(median(vec![3.0, 1.0, 2.0]), Some(2.0));
-    }
-
-    #[test]
-    fn budgets_file_parses_with_sources() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let text = std::fs::read_to_string(root.join("perf-budgets.toml")).unwrap();
-        let budgets: Budgets = toml::from_str(&text).unwrap();
-        assert!(budgets.budget.iter().all(|b| b.max > 0.0));
     }
 }

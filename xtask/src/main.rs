@@ -64,9 +64,12 @@ enum Cmd {
         /// CI mode: relative regressions only, no app (window) measurements.
         #[arg(long)]
         ci: bool,
-        /// Write the measurements to perf-baseline.json.
+        /// Merge the measurements into the baseline (after a passing check, when combined with --check).
         #[arg(long)]
         update_baseline: bool,
+        /// Baseline file to compare with and update (default: perf-baseline.json).
+        #[arg(long, value_name = "FILE")]
+        baseline: Option<PathBuf>,
         /// Only these budgets (repeatable).
         #[arg(long = "only", value_name = "BUDGET")]
         only: Vec<String>,
@@ -117,6 +120,7 @@ fn main() -> Result<()> {
             check,
             ci,
             update_baseline,
+            baseline,
             only,
         } => bench::run(
             &root,
@@ -126,6 +130,7 @@ fn main() -> Result<()> {
                 ci,
                 update_baseline,
                 only,
+                baseline,
             },
         ),
         Cmd::Screenshot {

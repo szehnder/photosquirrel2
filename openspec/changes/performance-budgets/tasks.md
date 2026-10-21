@@ -5,17 +5,17 @@
 
 ## 1. Budgets file
 
-- [ ] 1.1 Audit `perf-budgets.toml` against ADR-0026 and add any missing entry; verify `scenario_performance_budgets_all_adr_budgets_defined`
-- [ ] 1.2 `bench --list` prints owner change; verify `scenario_performance_budgets_list_shows_every_budget`
-- [ ] 1.3 Replace the `App` source's `connection` field with `seeded`; verify `cargo test -p xtask` compiles and passes
+- [x] 1.1 Audit `perf-budgets.toml` against ADR-0026 and add any missing entry; verify `scenario_performance_budgets_all_adr_budgets_defined`
+- [x] 1.2 `bench --list` prints owner change; verify `scenario_performance_budgets_list_shows_every_budget`
+- [x] 1.3 Replace the `App` source's `connection` field with `seeded`; verify `cargo test -p xtask` compiles and passes
 
 ## 2. Checks
 
-- [ ] 2.1 Absolute and missing-measurement failures; verify `scenario_performance_budgets_absolute_budget_exceeded_fails` and `scenario_performance_budgets_missing_measurement_fails`
-- [ ] 2.2 Regression detection; verify `scenario_performance_budgets_regression_detected`
-- [ ] 2.3 CI mode; verify `scenario_performance_budgets_ci_mode_checks_regressions_only`
-- [ ] 2.4 Baseline merge on update; verify `scenario_performance_budgets_baseline_update_writes_values`
-- [ ] 2.5 Coverage enforcement; verify `scenario_performance_budgets_missing_scenario_test`
+- [x] 2.1 Absolute and missing-measurement failures; verify `scenario_performance_budgets_absolute_budget_exceeded_fails` and `scenario_performance_budgets_missing_measurement_fails`
+- [x] 2.2 Regression detection; verify `scenario_performance_budgets_regression_detected`
+- [x] 2.3 CI mode; verify `scenario_performance_budgets_ci_mode_checks_regressions_only`
+- [x] 2.4 Baseline merge on update; verify `scenario_performance_budgets_baseline_update_writes_values`
+- [x] 2.5 Coverage enforcement; verify `scenario_performance_budgets_missing_scenario_test`
 
 ## 3. Measurement and baseline
 

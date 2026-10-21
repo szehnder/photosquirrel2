@@ -2,6 +2,11 @@
 # CI checks relative regressions (>15%) against perf-baseline.json. All budgets are lower-is-better.
 # `change` names the OpenSpec change that adds the measurement; `source` says how `cargo xtask bench --check`
 # measures it (see xtask/src/bench.rs). Budgets are added by the changes that introduce the measured code.
+# The eleven ADR-0026 budgets: gallery-scroll-p95, first-gallery-frame, cold-start, idle-rss, catalog-insert,
+# catalog-id-list-1m, rescan-nochange-100k, scan-analysis-12mp, phash-dhash-per-image, near-dup-lookup-p95 and
+# control-latency-p95. The others (near-dup-index-build, analysis-decode-thumb, dedup-regroup-1k-of-1m,
+# export-replan-50k) are component budgets owned by their change and guarded the same way. docs/performance.md
+# describes the reference machine and how to measure.
 
 # content-hashing (ADR-0012, ADR-0026). Criterion benches for exploration: `cargo bench -p ps-hash --bench hashing`.
 [[budget]]
