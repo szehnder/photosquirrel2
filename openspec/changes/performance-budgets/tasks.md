@@ -16,6 +16,7 @@
 - [x] 2.3 CI mode; verify `scenario_performance_budgets_ci_mode_checks_regressions_only`
 - [x] 2.4 Baseline merge on update; verify `scenario_performance_budgets_baseline_update_writes_values`
 - [x] 2.5 Coverage enforcement; verify `scenario_performance_budgets_missing_scenario_test`
+- [x] 2.6 Noise floor: a regression must also exceed 5% of the bound (ADR-0057); verify `scenario_performance_budgets_small_difference_is_noise`
 
 ## 3. Measurement and baseline
 

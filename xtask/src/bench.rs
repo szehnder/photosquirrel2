@@ -8,7 +8,7 @@
 //!   `--render-bench`). These open windows, so they need a display and are skipped by `--ci`.
 //!
 //! `--check` compares each measurement with its absolute budget (locally) and with `perf-baseline.json`
-//! (more than [`REGRESSION`] slower fails); a selected budget that printed no measurement fails too. `--ci`
+//! (more than [`REGRESSION`] slower, by more than [`NOISE_FLOOR`] of the bound, fails); a selected budget that printed no measurement fails too. `--ci`
 //! checks only the relative regressions and skips app measurements: CI runners are noisy, differ from the
 //! reference machine and have no display. In CI a budget that looks regressed is measured again
 //! ([`CI_REMEASURES`] times) and its best run counts; `--best-of <n>` measures every budget `n` times and keeps
@@ -28,8 +28,17 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// A measurement this much above its baseline is a regression.
+/// A measurement this much above its baseline is a regression...
 pub const REGRESSION: f64 = 0.15;
+/// ...when it is also above the baseline by more than this share of the budget's bound (ADR-0057): runners
+/// vary run to run by more than 15% on budgets far below their bound (control latency measured 53-84 ms on
+/// the same code against 250 ms), and a difference that small is noise, not a regression.
+pub const NOISE_FLOOR: f64 = 0.05;
+
+/// Whether `value` regressed from `base` for budget `b`: see [`REGRESSION`] and [`NOISE_FLOOR`].
+pub fn is_regression(b: &Budget, base: f64, value: f64) -> bool {
+    base > 0.0 && value > base * (1.0 + REGRESSION) && value - base > b.max * NOISE_FLOOR
+}
 pub const BASELINE_FILE: &str = "perf-baseline.json";
 
 #[derive(Debug, Deserialize)]
@@ -133,18 +142,18 @@ pub fn evaluate(
             )));
         }
         if let Some(&base) = baseline.values.get(&b.name)
-            && base > 0.0
-            && m.value > base * (1.0 + REGRESSION)
+            && is_regression(b, base, m.value)
         {
             out.push(Violation(format!(
-                "{}: {:.2} {} is {:.0}% worse than the baseline {:.2} {} (limit {:.0}%)",
+                "{}: {:.2} {} is {:.0}% worse than the baseline {:.2} {} (limit {:.0}%, and more than {:.0}% of the budget)",
                 b.name,
                 m.value,
                 b.unit,
                 (m.value / base - 1.0) * 100.0,
                 base,
                 b.unit,
-                REGRESSION * 100.0
+                REGRESSION * 100.0,
+                NOISE_FLOOR * 100.0
             )));
         }
     }
@@ -167,7 +176,7 @@ pub fn select<'a>(budgets: &'a [Budget], only: &[String], mode: Mode) -> Result<
 /// How many times `--check --ci` re-measures a budget that looks regressed before it counts as one.
 pub const CI_REMEASURES: usize = 2;
 
-/// The selected budgets more than [`REGRESSION`] above their baseline.
+/// The selected budgets that regressed from their baseline ([`is_regression`]).
 pub fn regressed<'a>(
     budgets: &[&'a Budget],
     measured: &BTreeMap<String, Measurement>,
@@ -180,7 +189,7 @@ pub fn regressed<'a>(
             let base = baseline.values.get(&b.name).copied().unwrap_or(0.0);
             measured
                 .get(&b.name)
-                .is_some_and(|m| base > 0.0 && m.value > base * (1.0 + REGRESSION))
+                .is_some_and(|m| is_regression(b, base, m.value))
         })
         .collect()
 }
@@ -402,7 +411,7 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
             );
         }
         let scope = if mode == Mode::Ci {
-            "within 15% of the baseline"
+            "within 15% of the baseline (or within the noise floor)"
         } else {
             "met"
         };
@@ -697,8 +706,24 @@ mod tests {
     }
 
     #[test]
+    fn scenario_performance_budgets_small_difference_is_noise() {
+        // CI run 39644751071: base 53.11 ms, head 61.95 ms against a 250 ms bound. 17% worse, but 8.8 ms is
+        // under 5% of the bound (12.5 ms).
+        let b = budget("control-latency-p95", 250.0);
+        let mut baseline = Baseline::default();
+        baseline.values.insert("control-latency-p95".into(), 53.11);
+        for mode in [Mode::Ci, Mode::Local] {
+            let noisy = measured(&[("control-latency-p95", 61.95)]);
+            assert!(evaluate(&[&b], &noisy, &baseline, mode).is_empty());
+            assert!(regressed(&[&b], &noisy, &baseline).is_empty());
+            let slow = measured(&[("control-latency-p95", 70.0)]);
+            assert_eq!(evaluate(&[&b], &slow, &baseline, mode).len(), 1);
+        }
+    }
+
+    #[test]
     fn ci_remeasures_only_regressed_budgets_and_keeps_the_best_run() {
-        let (a, b, c) = (budget("a", 100.0), budget("b", 100.0), budget("c", 100.0));
+        let (a, b, c) = (budget("a", 20.0), budget("b", 20.0), budget("c", 20.0));
         let mut baseline = Baseline::default();
         baseline.values.insert("a".into(), 10.0);
         baseline.values.insert("b".into(), 10.0);

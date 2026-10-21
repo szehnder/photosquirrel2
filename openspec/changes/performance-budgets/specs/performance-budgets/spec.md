@@ -30,11 +30,15 @@ The local check SHALL measure every selected budget and fail, naming the budget,
 - **THEN** the check fails and names that budget
 
 ### Requirement: Regressions caught
-A measurement more than 15% worse than the recorded baseline SHALL fail the check in both local and CI modes.
+A measurement more than 15% worse than the recorded baseline, and worse by more than 5% of the budget's bound, SHALL fail the check in both local and CI modes (ADR-0057).
 
 #### Scenario: Regression detected
 - **WHEN** a measurement of 48 ms is evaluated against a baseline of 40 ms in CI mode
 - **THEN** the check fails with a message naming the benchmark, both values and 20%
+
+#### Scenario: Small difference is noise
+- **WHEN** a measurement of 61.95 ms is evaluated against a baseline of 53.11 ms for a 250 ms budget
+- **THEN** the check passes, because the 8.84 ms difference is under 5% of the bound, and a measurement of 70 ms fails
 
 ### Requirement: CI mode
 CI mode SHALL check only relative regressions and SHALL skip measurements that need a window or display.

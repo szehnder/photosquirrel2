@@ -54,7 +54,7 @@ the measured value in the budget's unit, the bound, and how long the measurement
 listed as `FAIL <budget>: ...`:
 
 - `... exceeds the budget of ...`: above the absolute bound (local mode only).
-- `... is N% worse than the baseline ...`: more than 15% above `perf-baseline.json` (both modes).
+- `... is N% worse than the baseline ...`: more than 15% above `perf-baseline.json`, and above it by more than 5% of the budget's bound (both modes; ADR-0057).
 - `... no measurement ...`: the source printed no `measure <budget>=<value> <unit>` line (a test that failed
   before measuring, or an app that did not draw its first frame). This always fails.
 

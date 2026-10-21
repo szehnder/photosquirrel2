@@ -60,3 +60,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0054](0054-dct-scaled-jpeg-decodes-via-mozjpeg.md) | DCT-scaled JPEG decodes via mozjpeg (libjpeg-turbo core, plain C; amends 0017) |
 | [0055](0055-corrupt-jpegs-fall-back-to-jpeg-decoder.md) | Corrupt or truncated JPEGs leave the mozjpeg path for jpeg-decoder (amends 0054) |
 | [0056](0056-progressive-jpeg-coefficient-memory.md) | Progressive JPEG coefficient memory: serialize large decodes, refuse hostile ones |
+| [0057](0057-regression-noise-floor.md) | Regressions must also exceed 5% of the budget's bound (amends 0026) |
