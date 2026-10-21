@@ -11,11 +11,14 @@
 //! (more than [`REGRESSION`] slower fails); a selected budget that printed no measurement fails too. `--ci`
 //! checks only the relative regressions and skips app measurements: CI runners are noisy, differ from the
 //! reference machine and have no display. In CI a budget that looks regressed is measured again
-//! ([`CI_REMEASURES`] times) and its best run counts. `--update-baseline` merges the measurements into the
-//! baseline (budgets not measured keep their values); with `--check` it writes only when the check passed, so
-//! the comparison is always against the previous baseline. `--baseline <file>` uses another baseline file (CI
+//! ([`CI_REMEASURES`] times) and its best run counts; `--best-of <n>` measures every budget `n` times and keeps
+//! the best, which CI uses for the base commit so base and head get the same best-of-three policy (a noisy-high
+//! base would otherwise hide a regression). `--update-baseline` merges the measurements into the baseline
+//! (budgets not measured keep their values); with `--check` it writes only when the check passed, so the
+//! comparison is always against the previous baseline. `--baseline <file>` uses another baseline file (CI
 //! compares with the parent commit measured on the same runner, not with the committed reference-machine
-//! `perf-baseline.json`).
+//! `perf-baseline.json`). A check with `--ci` or `--baseline` fails when that file is missing, and lists the
+//! selected budgets it has no value for (a `::warning::` on GitHub Actions): those are compared with nothing.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -190,6 +193,16 @@ pub fn best_of(measured: &mut BTreeMap<String, Measurement>, name: &str, value: 
     m.value = m.value.min(value);
 }
 
+/// The selected budgets the baseline has no value for: nothing to compare them with (newly added budgets, or a
+/// base commit whose source printed nothing).
+pub fn missing_base<'a>(budgets: &[&'a Budget], baseline: &Baseline) -> Vec<&'a str> {
+    budgets
+        .iter()
+        .filter(|b| !baseline.values.get(&b.name).is_some_and(|v| *v > 0.0))
+        .map(|b| b.name.as_str())
+        .collect()
+}
+
 /// Merge `measured` into `baseline`: measured budgets get their new values, the others keep theirs.
 pub fn merge_baseline(baseline: &mut Baseline, measured: &BTreeMap<String, Measurement>) {
     for (name, m) in measured {
@@ -277,6 +290,8 @@ pub struct Options {
     pub only: Vec<String>,
     /// The baseline file (default: [`BASELINE_FILE`] at the workspace root).
     pub baseline: Option<std::path::PathBuf>,
+    /// Measure every selected budget this many times and keep the best (at least once).
+    pub best_of: usize,
 }
 
 pub fn run(root: &Path, opts: Options) -> Result<()> {
@@ -308,31 +323,53 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
             ]),
         )?;
     }
-    for b in &selected {
-        let started = Instant::now();
-        match measure(root, b) {
-            Ok(Some(value)) => {
-                eprintln!(
-                    "    {:<28} {:>10.2} {:<3}  (budget {} {}, {:.0} s)",
-                    b.name,
-                    value,
-                    b.unit,
-                    b.max,
-                    b.unit,
-                    started.elapsed().as_secs_f32()
-                );
-                measured.insert(b.name.clone(), Measurement { value });
-            }
-            Ok(None) => eprintln!("    {:<28} no measurement printed", b.name),
-            Err(err) => eprintln!("    {:<28} failed: {err:#}", b.name),
-        }
-    }
-
     let baseline_path = opts
         .baseline
         .clone()
         .unwrap_or_else(|| root.join(BASELINE_FILE));
-    let mut baseline = read_baseline(&baseline_path)?;
+    // Read before measuring, so a missing base fails in seconds, not after every measurement.
+    let mut baseline = if opts.check && (mode == Mode::Ci || opts.baseline.is_some()) {
+        read_baseline_required(&baseline_path)?
+    } else {
+        read_baseline(&baseline_path)?
+    };
+    for b in &selected {
+        for run in 0..opts.best_of.max(1) {
+            let started = Instant::now();
+            match measure(root, b) {
+                Ok(Some(value)) => {
+                    eprintln!(
+                        "    {:<28} {:>10.2} {:<3}  (budget {} {}, {:.0} s{})",
+                        b.name,
+                        value,
+                        b.unit,
+                        b.max,
+                        b.unit,
+                        started.elapsed().as_secs_f32(),
+                        if run > 0 { ", repeat" } else { "" }
+                    );
+                    best_of(&mut measured, &b.name, value);
+                }
+                Ok(None) => eprintln!("    {:<28} no measurement printed", b.name),
+                Err(err) => eprintln!("    {:<28} failed: {err:#}", b.name),
+            }
+        }
+    }
+
+    if opts.check {
+        let missing = missing_base(&selected, &baseline);
+        if !missing.is_empty() {
+            let msg = format!(
+                "{} has no value for {}: not compared (a new budget, or the base printed no measurement)",
+                baseline_path.display(),
+                missing.join(", ")
+            );
+            if std::env::var_os("GITHUB_ACTIONS").is_some() {
+                println!("::warning title=bench baseline::{msg}");
+            }
+            eprintln!("WARN {msg}");
+        }
+    }
     if opts.check && mode == Mode::Ci {
         // Shared runners are noisy: a budget that looks regressed is measured again, and its best run counts.
         for _ in 0..CI_REMEASURES {
@@ -382,12 +419,19 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
     Ok(())
 }
 
+/// The baseline at `path`; a missing file is an empty baseline (a first `--update-baseline`).
 fn read_baseline(path: &Path) -> Result<Baseline> {
     if !path.exists() {
         return Ok(Baseline::default());
     }
-    serde_json::from_str(&std::fs::read_to_string(path)?)
-        .with_context(|| format!("parsing {}", path.display()))
+    read_baseline_required(path)
+}
+
+/// The baseline at `path`; missing or unreadable is an error (a check against it would compare nothing).
+pub fn read_baseline_required(path: &Path) -> Result<Baseline> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the baseline {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 fn measure(root: &Path, b: &Budget) -> Result<Option<f64>> {
@@ -630,18 +674,18 @@ mod tests {
 
     #[test]
     fn scenario_performance_budgets_regression_detected() {
-        let (slow, steady) = (budget("graphson_decode_10mb", 60.0), budget("steady", 60.0));
+        let (slow, steady) = (budget("near-dup-index-build", 60.0), budget("steady", 60.0));
         let mut baseline = Baseline::default();
-        baseline.values.insert("graphson_decode_10mb".into(), 40.0);
+        baseline.values.insert("near-dup-index-build".into(), 40.0);
         baseline.values.insert("steady".into(), 40.0);
         // 20% slower than the baseline, still inside the absolute budget.
-        let m = measured(&[("graphson_decode_10mb", 48.0), ("steady", 42.0)]);
+        let m = measured(&[("near-dup-index-build", 48.0), ("steady", 42.0)]);
         for mode in [Mode::Ci, Mode::Local] {
             let v = evaluate(&[&slow, &steady], &m, &baseline, mode);
             assert_eq!(v.len(), 1, "{v:?}");
             let msg = &v[0].0;
             assert!(
-                msg.contains("graphson_decode_10mb"),
+                msg.contains("near-dup-index-build"),
                 "names the benchmark: {msg}"
             );
             assert!(
@@ -672,6 +716,33 @@ mod tests {
         best_of(&mut m, "a", 12.5);
         assert_eq!(m["a"].value, 11.2);
         assert!(evaluate(&[&a, &b], &m, &baseline, Mode::Ci).is_empty());
+    }
+
+    #[test]
+    fn missing_base_values_are_listed_and_a_missing_baseline_file_is_an_error() {
+        let (old, new) = (budget("catalog-insert", 20.0), budget("brand-new", 10.0));
+        let mut baseline = Baseline::default();
+        baseline.values.insert("catalog-insert".into(), 14.0);
+        assert_eq!(missing_base(&[&old, &new], &baseline), ["brand-new"]);
+        // A zero is no base either: regressions are relative to it.
+        baseline.values.insert("brand-new".into(), 0.0);
+        assert_eq!(missing_base(&[&old, &new], &baseline), ["brand-new"]);
+        baseline.values.insert("brand-new".into(), 8.0);
+        assert!(missing_base(&[&old, &new], &baseline).is_empty());
+
+        let path =
+            std::env::temp_dir().join(format!("perf-baseline-ci-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(read_baseline_required(&path).is_err(), "missing file");
+        assert!(
+            read_baseline(&path).unwrap().values.is_empty(),
+            "update-only runs start empty"
+        );
+        std::fs::write(&path, "not json").unwrap();
+        assert!(read_baseline_required(&path).is_err(), "unreadable file");
+        std::fs::write(&path, r#"{"values":{"catalog-insert":14.0}}"#).unwrap();
+        assert_eq!(read_baseline_required(&path).unwrap().values.len(), 1);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
@@ -733,13 +804,10 @@ mod tests {
     fn scenario_performance_budgets_all_budgets_within_limits() {
         // The committed baseline is the recorded output of `cargo xtask bench --check --update-baseline` on the
         // reference machine (docs/performance.md); `--update-baseline` writes it only after a passing check.
-        // Every recorded value is within its bound, and every budget measurable without a window is recorded.
-        // Window budgets need the owner's unlocked desktop; one not yet recorded is listed, and the release gate
-        // (performance-budgets task 4.2) stays open until it is.
+        // Every budget, window budgets included, is recorded (performance-budgets task 4.2) and within its bound.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let baseline = read_baseline(&root.join(BASELINE_FILE)).unwrap();
+        let baseline = read_baseline_required(&root.join(BASELINE_FILE)).unwrap();
         let budgets = workspace_budgets();
-        let mut pending = Vec::new();
         for b in &budgets {
             match baseline.values.get(&b.name) {
                 Some(&v) => assert!(
@@ -750,12 +818,12 @@ mod tests {
                     b.max,
                     b.unit
                 ),
-                None if matches!(b.source, Source::App { .. }) => pending.push(b.name.as_str()),
-                None => panic!("{} has no recorded measurement", b.name),
+                None => panic!(
+                    "{} ({} source) has no recorded measurement in {BASELINE_FILE}",
+                    b.name,
+                    b.source.kind()
+                ),
             }
-        }
-        if !pending.is_empty() {
-            eprintln!("window budgets not yet recorded on the reference machine: {pending:?}");
         }
         let recorded: Vec<&Budget> = budgets
             .iter()

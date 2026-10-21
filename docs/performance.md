@@ -75,9 +75,12 @@ Sources (`source.kind` in `perf-budgets.toml`):
 The `bench-regressions` job in `.github/workflows/ci.yml` runs after the full Linux CI job. Runners are not the
 reference machine and differ from one another (the same commit measured 17 ms and 54 ms for
 `near-dup-index-build` on two runs), so the job first measures the base commit (the pull request's base, or the
-previous head of main) on the same runner with `cargo xtask bench --ci --update-baseline`, then checks the head
-with `cargo xtask bench --check --ci --baseline perf-baseline-ci.json`: relative regressions above 15% only, no
-app (window) budgets, and a suspected regression re-measured twice with the best run counted. The committed
+previous head of main) on the same runner with `cargo xtask bench --ci --update-baseline --best-of 3`, then
+checks the head with `cargo xtask bench --check --ci --baseline perf-baseline-ci.json`: relative regressions above
+15% only, no app (window) budgets, and a suspected regression re-measured twice with the best run counted (the
+base gets the same best-of-three, so a noisy-high base does not hide a regression). A missing or unreadable base
+file fails the job; a budget the base has no value for (one new in the head) is listed as a warning. Before the
+head is built, every tracked file is touched, so `include_str!` inputs are rebuilt too. The committed
 `perf-baseline.json` is never compared with runner numbers.
 
 ## Budgets

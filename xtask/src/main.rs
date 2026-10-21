@@ -73,6 +73,9 @@ enum Cmd {
         /// Only these budgets (repeatable).
         #[arg(long = "only", value_name = "BUDGET")]
         only: Vec<String>,
+        /// Measure every selected budget N times and keep the best run.
+        #[arg(long, value_name = "N", default_value_t = 1)]
+        best_of: usize,
     },
     /// Launch the release app on a fresh data dir and capture its window to a PNG.
     Screenshot {
@@ -122,6 +125,7 @@ fn main() -> Result<()> {
             update_baseline,
             baseline,
             only,
+            best_of,
         } => bench::run(
             &root,
             bench::Options {
@@ -131,6 +135,7 @@ fn main() -> Result<()> {
                 update_baseline,
                 only,
                 baseline,
+                best_of,
             },
         ),
         Cmd::Screenshot {

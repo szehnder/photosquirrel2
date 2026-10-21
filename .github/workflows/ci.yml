@@ -57,21 +57,32 @@ jobs:
       # ADR-0026: runners differ from the reference machine (whose baseline is the committed perf-baseline.json)
       # and from each other, so CI measures the base commit (the PR base, or the previous main) on this same
       # runner first, then checks the head for relative regressions (>15%) only, without app (window) budgets.
+      # The base is measured best-of-3, the same policy the head gets for a suspected regression, so a noisy-high
+      # base cannot hide one. A base that produces no baseline file fails the job: comparing with nothing is not
+      # a pass. Budgets the base has no value for (new in the head) are listed as warnings.
       - name: Measure the base commit
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "no base commit; the check below only proves every budget still measures"; exit 0
+            echo "::warning title=bench baseline::no base commit; the check below only proves every budget still measures"
+            echo '{"values":{}}' > perf-baseline-ci.json
+            exit 0
           fi
           git worktree add --detach "$RUNNER_TEMP/base" "$BASE"
           cd "$RUNNER_TEMP/base"
           rm -f perf-baseline.json
-          cargo xtask bench --ci --update-baseline || true
-          cp perf-baseline.json "$GITHUB_WORKSPACE/perf-baseline-ci.json" || true
+          # A base older than --best-of measures once (warned): only the first push with it.
+          if cargo xtask bench --help | grep -- --best-of >/dev/null; then best="--best-of 3"; else
+            best=""; echo "::warning title=bench baseline::the base has no --best-of; measured once"; fi
+          cargo xtask bench --ci --update-baseline $best
+          test -s perf-baseline.json || { echo "::error title=bench baseline::the base wrote no perf-baseline.json"; exit 1; }
+          cp perf-baseline.json "$GITHUB_WORKSPACE/perf-baseline-ci.json"
           # The base checkout is newer on disk than the head's sources, and cargo fingerprints path crates by
-          # mtime: touch the head so every workspace crate (and xtask) is rebuilt from the head's code.
-          find "$GITHUB_WORKSPACE" -path "$GITHUB_WORKSPACE/target" -prune -o -type f \( -name '*.rs' -o -name Cargo.toml \) -print0 | xargs -0 touch
+          # mtime: touch every tracked file of the head (sources, manifests and include_str!/include_bytes!
+          # inputs such as migrations/*.sql) so every workspace crate and xtask is rebuilt from the head.
+          cd "$GITHUB_WORKSPACE"
+          git ls-files -z | xargs -0 touch
       - name: Check the head against the base (relative)
         run: cargo xtask bench --check --ci --baseline perf-baseline-ci.json
 
