@@ -14,8 +14,9 @@ use crate::ClassifierSettings;
 
 /// Current `settings_version`. Bump with a migration in `ps-service::settings` when a field changes meaning.
 /// Version 2 (ADR-0047): hosted consent is `ai.consent`, bound to a provider and a host; version 1's
-/// `ai.hosted_consent = true` is ignored (consent must be given again).
-pub const SETTINGS_VERSION: u32 = 2;
+/// `ai.hosted_consent = true` is ignored (consent must be given again). Version 3 (ADR-0052):
+/// `scanning.include_hidden` defaults to on; version 2's value was never honoured and becomes `true`.
+pub const SETTINGS_VERSION: u32 = 3;
 
 /// Everything the user can set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -208,7 +209,7 @@ pub struct Scanning {
     pub poster_frame_tool: Option<PathBuf>,
     /// Cap of the 2048 px preview cache in GB (ADR-0016).
     pub preview_cache_gb: f64,
-    /// Scan hidden folders (dot-folders) too.
+    /// Scan hidden folders (dot-folders) too (ADR-0052: on by default).
     pub include_hidden: bool,
 }
 
@@ -218,7 +219,7 @@ impl Default for Scanning {
             classifier: ClassifierSettings::default(),
             poster_frame_tool: None,
             preview_cache_gb: 4.0,
-            include_hidden: false,
+            include_hidden: true,
         }
     }
 }

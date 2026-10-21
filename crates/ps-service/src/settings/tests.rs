@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use ps_model::settings::{ProviderId, ThemeSetting};
-use ps_model::{CameraSignals, Dimensions, Format, MediaKind};
 
 use super::*;
 use crate::secrets::{MemoryBackend, Secrets, default_account};
@@ -33,7 +32,7 @@ fn scenario_settings_settings_persist_across_restart() {
     assert_eq!(cli.path(), app.path());
     // Human-readable and versioned.
     let text = std::fs::read_to_string(app.path()).unwrap();
-    assert!(text.contains("settings_version = 2"), "{text}");
+    assert!(text.contains("settings_version = 3"), "{text}");
     assert!(text.contains("theme = \"light\""), "{text}");
 }
 
@@ -177,81 +176,6 @@ fn unknown_and_missing_keys_are_tolerated() {
     assert_eq!(s.scanning.preview_cache_gb, 4.0);
 }
 
-/// A stand-in for `ps_media::classify` that applies the ADR-0015 size rule to stored probe fields.
-fn size_rule(probe: &ProbeRecord, _: &Path, s: &ClassifierSettings) -> PhotoClass {
-    let Some(d) = probe.display else {
-        return PhotoClass::Junk;
-    };
-    if probe.camera.is_camera_exif() {
-        return PhotoClass::Photo;
-    }
-    if d.short_edge() < s.min_side_px || d.pixels() < s.min_pixels {
-        PhotoClass::Junk
-    } else {
-        PhotoClass::LikelyPhoto
-    }
-}
-
-fn stored(name: &str, w: u32, h: u32, settings: &ClassifierSettings) -> StoredClassification {
-    let mut probe = ProbeRecord::empty(50_000);
-    probe.format = Some(Format::Jpeg);
-    probe.stored = Some(Dimensions {
-        width: w,
-        height: h,
-    });
-    probe.display = probe.stored;
-    probe.camera = CameraSignals::default();
-    assert_eq!(probe.kind(), Some(MediaKind::Image));
-    let path = PathBuf::from(format!("/source/{name}.jpg"));
-    let class = size_rule(&probe, &path, settings);
-    StoredClassification {
-        path,
-        probe,
-        class,
-        classifier_hash: settings.stable_hash(),
-    }
-}
-
-#[test]
-fn scenario_settings_threshold_change_reclassifies() {
-    let old = ClassifierSettings::default();
-    let mut rows = vec![
-        stored("icon", 64, 64, &old),
-        stored("small-150", 150, 1000, &old),
-        stored("small-180", 1200, 180, &old),
-        stored("photo", 4000, 3000, &old),
-    ];
-    assert_eq!(rows[1].class, PhotoClass::Junk);
-    assert_eq!(rows[2].class, PhotoClass::Junk);
-
-    // The user lowers the minimum side to 100 px (and the pixel floor with it, so the side rule decides).
-    let mut new = old.clone();
-    new.min_side_px = 100;
-    new.min_pixels = 10_000;
-    assert_ne!(new.stable_hash(), old.stable_hash());
-    // `classify` gets stored records and paths that do not exist: there is nothing to read.
-    let changed = reclassify_stale(&mut rows, &new, size_rule);
-    let names: Vec<_> = changed
-        .iter()
-        .map(|c| c.path.file_stem().unwrap().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(names, vec!["small-150", "small-180"]);
-    assert!(
-        changed
-            .iter()
-            .all(|c| c.from == PhotoClass::Junk && c.to == PhotoClass::LikelyPhoto)
-    );
-    assert_eq!(rows[0].class, PhotoClass::Junk, "64 px stays junk");
-    assert!(rows.iter().all(|r| r.classifier_hash == new.stable_hash()));
-    assert!(
-        !rows[1].path.exists(),
-        "no file content was available to read"
-    );
-
-    // Unchanged settings: nothing to do on the next rescan.
-    assert!(reclassify_stale(&mut rows, &new, |_, _, _| unreachable!()).is_empty());
-}
-
 /// ADR-0047: consent is stored bound to a provider and a host and round-trips; a version-1 file's bare
 /// `hosted_consent = true` is not taken as consent for anything.
 #[test]
@@ -303,4 +227,21 @@ fn removed_keys_are_tolerated() {
     let loaded = store.load();
     assert!(loaded.recovered.is_none());
     assert_eq!(loaded.settings.ai.max_concurrent_requests, 3);
+}
+
+/// ADR-0052: hidden folders are scanned by default, and a version-2 file's never-honoured `false` becomes
+/// `true`; from version 3 on the user's choice stands.
+#[test]
+fn hidden_folders_default_on_and_v2_files_migrate() {
+    let dir = temp();
+    let store = SettingsStore::in_dir(dir.path());
+    assert!(store.load().settings.scanning.include_hidden);
+    std::fs::write(
+        store.path(),
+        "settings_version = 2\n[scanning]\ninclude_hidden = false\n",
+    )
+    .unwrap();
+    assert!(store.load().settings.scanning.include_hidden);
+    store.update(|s| s.scanning.include_hidden = false).unwrap();
+    assert!(!store.load().settings.scanning.include_hidden);
 }

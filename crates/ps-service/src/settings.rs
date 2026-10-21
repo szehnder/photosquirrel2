@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ps_model::settings::{FieldError, HostedConsent, SETTINGS_VERSION, Settings};
-use ps_model::{ClassifierSettings, PhotoClass, ProbeRecord};
+
+use crate::scan::ScanOptions;
 
 pub const FILE_NAME: &str = "settings.toml";
 pub const CONFIG_DIR_ENV: &str = "PHOTOSQUIRREL_CONFIG_DIR";
@@ -274,6 +275,15 @@ fn migrate(mut settings: Settings) -> Settings {
             settings.settings_version
         );
     }
+    if settings.settings_version < 3 && !settings.scanning.include_hidden {
+        // ADR-0052: the old `false` default was never honoured (every scan walked hidden folders); keep
+        // scanning what was scanned.
+        log::info!(
+            "settings version {} -> 3: hidden folders stay included",
+            settings.settings_version
+        );
+        settings.scanning.include_hidden = true;
+    }
     if settings.settings_version > SETTINGS_VERSION {
         log::warn!(
             "settings were written by a newer PhotoSquirrel (version {}); unknown keys are ignored",
@@ -326,49 +336,35 @@ fn has_windows_executable_extension(path: &Path) -> bool {
     })
 }
 
-/// A probed file as the catalog stores it: probe fields, the class, and the classifier hash in force when it
-/// was classified.
-#[derive(Debug, Clone)]
-pub struct StoredClassification {
-    pub path: PathBuf,
-    pub probe: ProbeRecord,
-    pub class: PhotoClass,
-    pub classifier_hash: u64,
+/// Scanner options from the settings: the only place that maps settings to the scanner (the app's
+/// [`crate::library::Library`] and `photosquirrel-cli` both use it). Everything else takes the defaults.
+pub fn scan_options(settings: &Settings) -> ScanOptions {
+    let mut opts = ScanOptions::default();
+    apply_scan_settings(settings, &mut opts);
+    opts
 }
 
-/// One file whose class changed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Reclassified {
-    pub path: PathBuf,
-    pub from: PhotoClass,
-    pub to: PhotoClass,
+/// Write the settings' part of the scanner options into `opts`, keeping the rest (the file layer, device
+/// classes and test hooks): classifier thresholds and extra cache patterns, hidden folders, and the
+/// poster-frame tool (the configured one, else `ffmpeg` on `PATH`, else none).
+pub fn apply_scan_settings(settings: &Settings, opts: &mut ScanOptions) {
+    let s = &settings.scanning;
+    opts.classifier = s.classifier.clone();
+    opts.include_hidden = s.include_hidden;
+    opts.poster_tool = s
+        .poster_frame_tool
+        .clone()
+        .or_else(ps_media::poster::ffmpeg_on_path);
 }
 
-/// Re-classify unchanged files whose stored classifier hash differs from the current settings, from their
-/// **stored probe fields only**: `classify` gets the stored record, never a file handle, so no file content
-/// is read. Rows are updated in place (class and hash); returns the files whose class changed.
-///
-/// `classify` is `ps_media::classify` in the scanner; it is a parameter so this rule is testable on its own.
-pub fn reclassify_stale(
-    rows: &mut [StoredClassification],
-    settings: &ClassifierSettings,
-    classify: impl Fn(&ProbeRecord, &Path, &ClassifierSettings) -> PhotoClass,
-) -> Vec<Reclassified> {
-    let hash = settings.stable_hash();
-    let mut changed = Vec::new();
-    for row in rows.iter_mut().filter(|r| r.classifier_hash != hash) {
-        let class = classify(&row.probe, &row.path, settings);
-        if class != row.class {
-            changed.push(Reclassified {
-                path: row.path.clone(),
-                from: row.class,
-                to: class,
-            });
-            row.class = class;
-        }
-        row.classifier_hash = hash;
+/// The preview cache cap in bytes (`scanning.preview_cache_gb`, binary gigabytes as ADR-0016's 4 GB default).
+pub fn preview_cache_bytes(settings: &Settings) -> u64 {
+    let gb = settings.scanning.preview_cache_gb;
+    if gb.is_finite() && gb > 0.0 {
+        (gb * 1024.0 * 1024.0 * 1024.0) as u64
+    } else {
+        crate::library::PREVIEW_CACHE_BYTES
     }
-    changed
 }
 
 #[cfg(test)]

@@ -38,6 +38,7 @@ use ps_model::{
 use crate::export_progress::FileDisposition;
 use crate::insights::{Correction, DEMO_PROVIDER, InsightStamp, InsightStore};
 use crate::scan::{ScanOptions, ScanService};
+use ps_model::settings::Settings;
 
 /// Large previews: long edge and disk cache cap (ADR-0016).
 pub const PREVIEW_LONG_EDGE: u32 = 2048;
@@ -228,10 +229,21 @@ pub struct InsightIndexStats {
     pub last_update_contents: usize,
 }
 
+/// The settings the app applied ([`Library::apply_settings`]) and which of them the engine has.
+#[derive(Default)]
+struct AppliedSettings {
+    /// `None`: never applied; the engine uses the scanner defaults (tests, tools).
+    settings: Option<Settings>,
+    revision: u64,
+    /// The revision the open engine's options reflect.
+    engine_revision: u64,
+}
+
 /// The library facade over one data directory.
 pub struct Library {
     data_dir: PathBuf,
-    engine: OnceLock<std::result::Result<ScanService, String>>,
+    engine: OnceLock<std::result::Result<Arc<ScanService>, String>>,
+    settings: Mutex<AppliedSettings>,
     insights: OnceLock<InsightStore>,
     /// Start-up warm-up ([`Library::warm`]): the first summary and list, handed to the first caller.
     warm: Mutex<Option<Arc<Warm>>>,
@@ -262,6 +274,7 @@ impl Library {
         Self {
             data_dir: data_dir.to_path_buf(),
             engine: OnceLock::new(),
+            settings: Mutex::new(AppliedSettings::default()),
             insights: OnceLock::new(),
             warm: Mutex::new(None),
             previews: Mutex::new(None),
@@ -275,7 +288,7 @@ impl Library {
     /// A library over an already opened engine (tests with custom scan options, such as a slow device).
     pub fn with_service(data_dir: &Path, service: ScanService) -> Self {
         let l = Self::new(data_dir);
-        let _ = l.engine.set(Ok(service));
+        let _ = l.engine.set(Ok(Arc::new(service)));
         l
     }
 
@@ -290,15 +303,74 @@ impl Library {
         &self.data_dir
     }
 
-    /// The engine (opened on first use).
+    /// The engine (opened on first use, with the applied settings' scanner options).
     pub fn scan(&self) -> Result<&ScanService> {
-        self.engine
+        let engine = self
+            .engine
             .get_or_init(|| {
-                ScanService::open(&self.data_dir, ScanOptions::default())
+                let opts = {
+                    let mut applied = lock(&self.settings);
+                    applied.engine_revision = applied.revision;
+                    applied
+                        .settings
+                        .as_ref()
+                        .map_or_else(ScanOptions::default, crate::settings::scan_options)
+                };
+                ScanService::open(&self.data_dir, opts)
+                    .map(Arc::new)
                     .map_err(|e| format!("{e:#}"))
             })
             .as_ref()
-            .map_err(|e| anyhow::anyhow!("could not open the catalog: {e}"))
+            .map_err(|e| anyhow::anyhow!("could not open the catalog: {e}"))?;
+        self.sync_engine_options(engine);
+        Ok(engine)
+    }
+
+    /// Settings applied while the engine was opening reach it here.
+    fn sync_engine_options(&self, engine: &ScanService) {
+        let mut applied = lock(&self.settings);
+        if applied.engine_revision != applied.revision
+            && let Some(s) = &applied.settings
+        {
+            engine
+                .engine()
+                .update_options(|o| crate::settings::apply_scan_settings(s, o));
+            applied.engine_revision = applied.revision;
+        }
+    }
+
+    /// Apply the user's settings (the app calls this at start-up and after every change; it is cheap, but may
+    /// wait for a preview being made, so call it off the UI thread). Scanning settings reach the engine for
+    /// the next scan started, never a running one (ADR-0051); a new preview cache cap applies at once (the
+    /// cache is reopened, which evicts down to it).
+    pub fn apply_settings(&self, settings: &Settings) {
+        let cap_changed = {
+            let mut applied = lock(&self.settings);
+            let before = applied
+                .settings
+                .as_ref()
+                .map_or(PREVIEW_CACHE_BYTES, crate::settings::preview_cache_bytes);
+            applied.settings = Some(settings.clone());
+            applied.revision += 1;
+            if let Some(Ok(engine)) = self.engine.get() {
+                engine
+                    .engine()
+                    .update_options(|o| crate::settings::apply_scan_settings(settings, o));
+                applied.engine_revision = applied.revision;
+            }
+            before != crate::settings::preview_cache_bytes(settings)
+        };
+        if cap_changed {
+            *lock(&self.previews) = None;
+        }
+    }
+
+    /// The preview cache cap in force.
+    pub fn preview_cache_cap(&self) -> u64 {
+        lock(&self.settings)
+            .settings
+            .as_ref()
+            .map_or(PREVIEW_CACHE_BYTES, crate::settings::preview_cache_bytes)
     }
 
     pub fn catalog(&self) -> Result<&Arc<Catalog>> {
@@ -916,7 +988,8 @@ impl Library {
         let key = r.identity.map(|c| c.to_hex());
         let mut cache = lock(&self.previews);
         if cache.is_none() {
-            *cache = PreviewCache::open(&self.data_dir.join("previews"), PREVIEW_CACHE_BYTES).ok();
+            *cache =
+                PreviewCache::open(&self.data_dir.join("previews"), self.preview_cache_cap()).ok();
         }
         if let (Some(c), Some(k)) = (cache.as_mut(), key.as_deref())
             && let Some(bytes) = c.get(k)

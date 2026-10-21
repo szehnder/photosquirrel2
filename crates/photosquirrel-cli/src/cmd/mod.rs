@@ -46,18 +46,9 @@ impl Ctx {
         Ok(self.settings_store()?.load().settings)
     }
 
-    /// Scan options from the settings (classifier thresholds, poster-frame tool).
+    /// Scan options from the settings, built as the app builds them ([`ps_service::settings::scan_options`]).
     pub fn scan_options(&self) -> Result<ScanOptions> {
-        let s = self.settings()?;
-        Ok(ScanOptions {
-            classifier: s.scanning.classifier.clone(),
-            poster_tool: s
-                .scanning
-                .poster_frame_tool
-                .clone()
-                .or_else(ps_media::poster::ffmpeg_on_path),
-            ..ScanOptions::default()
-        })
+        Ok(ps_service::settings::scan_options(&self.settings()?))
     }
 
     /// The service over the catalog in the data folder, as its owner (exclusive lock, ADR-0005). Mutating
