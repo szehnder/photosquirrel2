@@ -104,7 +104,8 @@ mod macos {
     const UNLIMITED: f64 = -2.0;
 
     pub fn on_battery() -> bool {
-        IOPSGetTimeRemainingEstimate() != UNLIMITED
+        // Anything but "unlimited" (an estimate, or unknown while estimating) is battery.
+        (IOPSGetTimeRemainingEstimate() - UNLIMITED).abs() > 0.5
     }
 }
 
