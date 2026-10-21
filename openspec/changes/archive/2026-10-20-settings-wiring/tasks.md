@@ -16,4 +16,4 @@
 ## 3. Tests that test the real path
 
 - [x] 3.1 Rewrite `scenario_settings_threshold_change_reclassifies` to go settings file -> service rescan -> catalog (it tests a helper with hand-built input today)
-- [ ] 3.2 `cargo xtask ci` green; archive
+- [x] 3.2 `cargo xtask ci` green; archive
