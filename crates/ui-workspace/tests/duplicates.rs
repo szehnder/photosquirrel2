@@ -389,6 +389,13 @@ fn scenario_duplicate_review_override_survives_restart(cx: &mut TestAppContext) 
         app.update(|cx| cx.clear_globals());
         app.run_until_parked();
         drop(app);
+        // The service thread (and a startup-grace helper) are real threads: they drop their backend, and with
+        // it the catalog, only after finishing the job in hand once the last handle is gone. Wait for that.
+        let deadline =
+            std::time::Instant::now() + ps_fixtures::ci_slack(std::time::Duration::from_secs(5));
+        while lib.upgrade().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(
             lib.upgrade().is_none(),
             "the first session still holds the catalog"
