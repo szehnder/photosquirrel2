@@ -4,6 +4,7 @@
 *.profraw
 /.env
 .envrc
-perf-baseline.json
+# CI runners record their own baseline (perf-baseline.json is the committed reference-machine one).
+/perf-baseline-ci.json
 /corpus
 graphify-out/

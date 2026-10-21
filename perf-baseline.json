@@ -1,0 +1,18 @@
+{
+  "values": {
+    "analysis-decode-thumb": 37.46,
+    "catalog-id-list-1m": 127.425,
+    "catalog-insert": 14.797,
+    "cold-start": 258.9,
+    "control-latency-p95": 106.92,
+    "dedup-regroup-1k-of-1m": 27.884,
+    "export-replan-50k": 547.045,
+    "first-gallery-frame": 568.0,
+    "idle-rss": 209.6,
+    "near-dup-index-build": 139.9,
+    "near-dup-lookup-p95": 0.0151,
+    "phash-dhash-per-image": 0.1504,
+    "rescan-nochange-100k": 0.408,
+    "scan-analysis-12mp": 4.833
+  }
+}
