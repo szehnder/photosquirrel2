@@ -22,6 +22,17 @@ pub fn add_source(cat: &Catalog, root: &str) -> SourceId {
         .expect("add source")
 }
 
+/// Rows for the 1M-scale tests. `PHOTOSQUIRREL_TEST_SCALE=reduced` (the macOS and Windows CI jobs) uses a tenth:
+/// those runners write a 1M-row catalog in about an hour per test, and the scale and its budgets are checked
+/// on Linux, where `cargo xtask bench` measures them.
+pub fn scale_rows(full: u64) -> u64 {
+    if reduced_scale() { full / 10 } else { full }
+}
+
+pub fn reduced_scale() -> bool {
+    std::env::var("PHOTOSQUIRREL_TEST_SCALE").is_ok_and(|v| v == "reduced")
+}
+
 /// SplitMix64: deterministic pseudo-random values from an index.
 pub fn mix(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);

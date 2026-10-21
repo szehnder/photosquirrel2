@@ -179,12 +179,13 @@ fn scenario_catalog_keyset_page_of_512() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cat = Catalog::open(tmp.path()).expect("open");
     let src = add_source(&cat, "/mnt/a");
-    write_rows(&cat, src, 0..1_000_000, 2, full_row);
+    let rows = scale_rows(1_000_000);
+    write_rows(&cat, src, 0..rows, 2, full_row);
     let list = cat
         .read()
         .id_list(&Filter::default(), &Sort::default())
         .expect("list");
-    assert_eq!(list.len(), 1_000_000);
+    assert_eq!(list.len(), rows as usize);
     let mid = list.len() / 2;
     let window = &list.ids[mid..mid + 512];
     let page = cat.read().details(window).expect("page");
