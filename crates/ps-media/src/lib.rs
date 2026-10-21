@@ -21,7 +21,7 @@ pub mod tiff;
 pub mod util;
 pub mod video;
 
-pub use classify::{FolderHints, classify, classify_with};
+pub use classify::{FolderHints, class_facts, classify, classify_facts, classify_with};
 pub use decode::{DecodeError, Decoded, RgbImage, decode_for_analysis};
 pub use fs::{CountingReader, open_read_only, read_all};
 pub use metadata::extract_metadata;

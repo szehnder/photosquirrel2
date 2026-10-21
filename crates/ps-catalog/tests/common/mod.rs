@@ -74,6 +74,8 @@ pub fn probe_of(i: u64) -> ProbeResult {
         width: Some(4000),
         height: Some(3000),
         skip: class == PhotoClass::Junk,
+        facts: None,
+        classifier_hash: None,
     }
 }
 

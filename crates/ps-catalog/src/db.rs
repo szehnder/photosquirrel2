@@ -41,6 +41,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     LEDGER_SIDECARS_MIGRATION,
     AI_RESULT_SEQ_MIGRATION,
     LIBRARY_VERIFIED_MIGRATION,
+    CLASS_FACTS_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -106,6 +107,14 @@ pub const LIBRARY_VERIFIED_MIGRATION: Migration = Migration {
     version: 12,
     name: "library_verified_at",
     sql: include_str!("../migrations/0012_library_verified_at.sql"),
+};
+
+/// Migration 13 (ADR-0051: `file.class_facts` and `file.classifier_hash`, for re-classification without
+/// reading files).
+pub const CLASS_FACTS_MIGRATION: Migration = Migration {
+    version: 13,
+    name: "class_facts",
+    sql: include_str!("../migrations/0013_class_facts.sql"),
 };
 
 /// `thumbs.db` migrations.

@@ -17,7 +17,7 @@ use ps_model::{ContentId, ContentIdKind, DeviceClass, RelPath};
 
 use crate::control::Control;
 use crate::fs::SourceFs;
-use crate::walk::{WalkEntry, WalkError, walk};
+use crate::walk::{WalkEntry, WalkError, WalkOptions, walk};
 
 /// Most files sampled into a source fingerprint.
 pub const FINGERPRINT_SAMPLES: usize = 64;
@@ -249,7 +249,7 @@ pub struct Measured {
 /// Walk `root` and fingerprint it (read-only).
 pub fn measure(fs: &SourceFs, root: &Path) -> Result<Measured, WalkError> {
     let ctl = Control::new();
-    let w = walk(fs, root, &ctl, |_| {})?;
+    let w = walk(fs, root, WalkOptions::default(), &ctl, |_| {})?;
     let total_bytes = w.entries.iter().map(|e| e.stat.size).sum();
     let mut samples = Vec::new();
     for (rel, h) in choose_samples(&w.entries) {
@@ -301,7 +301,7 @@ pub fn check(
     }
     if paths.len() < wanted.len() {
         let ctl = Control::new();
-        let w = walk(fs, candidate, &ctl, |_| {})?;
+        let w = walk(fs, candidate, WalkOptions::default(), &ctl, |_| {})?;
         for e in &w.entries {
             let h = path_hash(&e.path);
             if wanted.contains(&h) {

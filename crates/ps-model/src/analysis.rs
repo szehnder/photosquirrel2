@@ -331,6 +331,46 @@ impl Default for ClassifierSettings {
     }
 }
 
+/// The probe facts the classifier reads (ADR-0015), kept per file in the catalog so a classifier settings
+/// change re-classifies an unchanged file without reading it again (ADR-0051). Short serde names: one row per
+/// file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClassFacts {
+    /// Content-detected format; `None`: unsupported.
+    #[serde(rename = "f", skip_serializing_if = "Option::is_none")]
+    pub format: Option<Format>,
+    /// Why the format is unsupported (when it is).
+    #[serde(rename = "u", skip_serializing_if = "Option::is_none")]
+    pub unsupported_reason: Option<String>,
+    /// The probe's error message, if it reported one.
+    #[serde(rename = "e", skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Stored pixel dimensions.
+    #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
+    pub stored: Option<Dimensions>,
+    /// Display dimensions, when they differ from the stored ones.
+    #[serde(rename = "d", skip_serializing_if = "Option::is_none")]
+    pub display: Option<Dimensions>,
+    /// Camera EXIF in the ADR-0015 sense.
+    #[serde(rename = "c", skip_serializing_if = "is_false")]
+    pub camera_exif: bool,
+    #[serde(rename = "p", skip_serializing_if = "is_false")]
+    pub has_palette: bool,
+    #[serde(rename = "a", skip_serializing_if = "is_false")]
+    pub has_alpha: bool,
+    /// Video duration from the probe window.
+    #[serde(rename = "vd", skip_serializing_if = "Option::is_none")]
+    pub video_duration_ms: Option<u64>,
+    /// The video carries make, model or a creation date.
+    #[serde(rename = "vm", skip_serializing_if = "is_false")]
+    pub video_camera_meta: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// One human-readable reason behind a classification (ADR-0015).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]

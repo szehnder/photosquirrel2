@@ -1,8 +1,9 @@
 //! Row and command payload types of the catalog.
 
 use ps_model::{
-    CaptureTime, ContentId, ContentIdKind, FileId, Format, MediaKind, Metadata, PerceptualHash,
-    PhotoClass, RelPath, RunStatus, ScanRunId, SourceId, SourceStatus, Stage, StatFingerprint,
+    CaptureTime, ClassFacts, ContentId, ContentIdKind, FileId, Format, MediaKind, Metadata,
+    PerceptualHash, PhotoClass, RelPath, RunStatus, ScanRunId, SourceId, SourceStatus, Stage,
+    StatFingerprint,
 };
 
 /// A file's natural key: its source and its path relative to the source root (ADR-0006).
@@ -57,6 +58,22 @@ pub struct ProbeResult {
     pub height: Option<u32>,
     /// Not worth a full read (junk): the stage becomes `skipped` instead of `probed`.
     pub skip: bool,
+    /// The probe facts the class was decided from and the classifier settings hash in force (ADR-0051), for
+    /// re-classification without reading the file. `None`: not known (synthetic rows).
+    pub facts: Option<ClassFacts>,
+    pub classifier_hash: Option<u64>,
+}
+
+/// A file's class decided again from its stored facts ([`crate::Command::Reclassify`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reclassification {
+    pub key: FileKey,
+    pub class: PhotoClass,
+    pub reasons: Vec<String>,
+    /// The classifier settings hash the class was decided under.
+    pub classifier_hash: u64,
+    /// A new stage (`probed` for a skipped file that is now a candidate); `None` keeps the stage.
+    pub stage: Option<Stage>,
 }
 
 impl ProbeResult {
@@ -161,6 +178,10 @@ pub struct FileRecord {
     pub missing_since_ms: Option<i64>,
     /// When the file was first catalogued (`None` for rows from before schema version 3).
     pub first_seen_ms: Option<i64>,
+    /// The classifier settings hash the class was decided under (ADR-0051). Read by
+    /// [`crate::Readers::source_files`] only (the rescan diff); `None` elsewhere and for rows probed before
+    /// schema version 13.
+    pub classifier_hash: Option<u64>,
 }
 
 /// One recorded failure of a file (`file_error` row).

@@ -4,7 +4,8 @@
 use std::path::{Component, Path};
 
 use ps_model::{
-    ClassReason, Classification, ClassifierSettings, Format, MediaKind, PhotoClass, ProbeRecord,
+    ClassFacts, ClassReason, Classification, ClassifierSettings, Format, MediaKind, PhotoClass,
+    ProbeRecord,
 };
 
 /// Facts about the file's folder that the scanner knows from listing it (no I/O here).
@@ -85,6 +86,24 @@ pub fn classify(
     classify_with(probe, path, settings, FolderHints::default())
 }
 
+/// The probe facts the classifier reads, to store beside the class (ADR-0051).
+pub fn class_facts(probe: &ProbeRecord) -> ClassFacts {
+    let video = probe.video.as_ref();
+    ClassFacts {
+        format: probe.format,
+        unsupported_reason: probe.unsupported_reason.clone(),
+        error: probe.error.as_ref().map(ToString::to_string),
+        stored: probe.stored,
+        display: probe.display.filter(|d| Some(*d) != probe.stored),
+        camera_exif: probe.camera.is_camera_exif(),
+        has_palette: probe.has_palette,
+        has_alpha: probe.has_alpha,
+        video_duration_ms: video.and_then(|v| v.duration_ms),
+        video_camera_meta: video
+            .is_some_and(|v| v.make.is_some() || v.model.is_some() || v.creation.is_some()),
+    }
+}
+
 /// Classify in the fixed ADR-0015 order: cache path, camera EXIF, video rules, graphic, size, likely photo.
 pub fn classify_with(
     probe: &ProbeRecord,
@@ -92,6 +111,18 @@ pub fn classify_with(
     settings: &ClassifierSettings,
     hints: FolderHints,
 ) -> (PhotoClass, Vec<ClassReason>) {
+    classify_facts(&class_facts(probe), path, settings, hints)
+}
+
+/// [`classify_with`] from stored [`ClassFacts`]: the same rules, no file access (re-classification after a
+/// settings change, ADR-0051).
+pub fn classify_facts(
+    facts: &ClassFacts,
+    path: &Path,
+    settings: &ClassifierSettings,
+    hints: FolderHints,
+) -> (PhotoClass, Vec<ClassReason>) {
+    let probe = facts;
     let Some(format) = probe.format else {
         let reason = probe
             .unsupported_reason
@@ -99,17 +130,13 @@ pub fn classify_with(
             .unwrap_or_else(|| "unrecognised content".into());
         let mut r = vec![ClassReason::Unsupported { reason }];
         if let Some(e) = &probe.error {
-            r.push(ClassReason::ProbeFailed {
-                message: e.to_string(),
-            });
+            r.push(ClassReason::ProbeFailed { message: e.clone() });
         }
         return (PhotoClass::Junk, r);
     };
     let mut extra = Vec::new();
     if let Some(e) = &probe.error {
-        extra.push(ClassReason::ProbeFailed {
-            message: e.to_string(),
-        });
+        extra.push(ClassReason::ProbeFailed { message: e.clone() });
         if probe.stored.is_none() {
             return (PhotoClass::Junk, extra);
         }
@@ -138,14 +165,13 @@ pub fn classify_with(
 
     let kind = format.kind();
     // 2. Camera EXIF (stills).
-    if kind == MediaKind::Image && probe.camera.is_camera_exif() {
+    if kind == MediaKind::Image && probe.camera_exif {
         return with(PhotoClass::Photo, vec![ClassReason::CameraExif]);
     }
 
     // 3. Videos.
     if kind == MediaKind::Video {
-        let v = probe.video.clone().unwrap_or_default();
-        if let Some(d) = v.duration_ms
+        if let Some(d) = probe.video_duration_ms
             && d < settings.min_video_duration_ms
         {
             return with(
@@ -167,7 +193,7 @@ pub fn classify_with(
                 }],
             );
         }
-        if v.make.is_some() || v.model.is_some() || v.creation.is_some() {
+        if probe.video_camera_meta {
             return with(PhotoClass::Photo, vec![ClassReason::CameraVideo]);
         }
         return with(

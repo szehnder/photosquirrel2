@@ -21,6 +21,9 @@ pub struct ScanOptions {
     /// Video poster-frame tool (ffmpeg). `None`: videos get placeholders. The tool opens source files itself
     /// (read-only) and is outside the instrumented file layer.
     pub poster_tool: Option<PathBuf>,
+    /// Walk hidden folders (names starting with `.`) too (ADR-0052: on by default, so nothing a source holds is
+    /// missed; `scanning.include_hidden` in settings).
+    pub include_hidden: bool,
     /// CPU workers: by default the cores minus one, leaving one for the UI (ADR-0009).
     pub cpu_threads: usize,
     /// Global cap on file buffers in flight (512 MB).
@@ -47,6 +50,7 @@ impl Default for ScanOptions {
         ScanOptions {
             classifier: ClassifierSettings::default(),
             poster_tool: None,
+            include_hidden: true,
             cpu_threads: default_cpu_threads(),
             memory_cap: DEFAULT_MEMORY_CAP,
             max_readers: MAX_READERS,
@@ -63,6 +67,9 @@ impl Default for ScanOptions {
 impl std::fmt::Debug for ScanOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScanOptions")
+            .field("classifier", &self.classifier)
+            .field("poster_tool", &self.poster_tool)
+            .field("include_hidden", &self.include_hidden)
             .field("cpu_threads", &self.cpu_threads)
             .field("memory_cap", &self.memory_cap)
             .field("max_readers", &self.max_readers)

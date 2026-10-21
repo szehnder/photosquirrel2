@@ -85,6 +85,29 @@ pub struct WalkOutput {
     pub errors: Vec<(String, String)>,
     /// Export libraries found inside the source and not walked (relative paths).
     pub libraries_skipped: Vec<String>,
+    /// Hidden folders (names starting with `.`) not walked because [`WalkOptions::include_hidden`] is off.
+    pub hidden_dirs_skipped: u64,
+}
+
+/// What a walk lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WalkOptions {
+    /// Walk folders whose names start with `.` (ADR-0052).
+    pub include_hidden: bool,
+}
+
+impl Default for WalkOptions {
+    fn default() -> Self {
+        Self {
+            include_hidden: true,
+        }
+    }
+}
+
+/// A hidden folder by name (`.thumbnails`, `.git`): Unix convention, which Windows and macOS sources follow
+/// for the folders that matter here.
+pub fn is_hidden_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().first() == Some(&b'.')
 }
 
 /// Why a walk stopped early.
@@ -105,6 +128,7 @@ impl From<Cancelled> for WalkError {
 pub fn walk(
     fs: &SourceFs,
     root: &Path,
+    options: WalkOptions,
     ctl: &Control,
     mut on_dir: impl FnMut(&str),
 ) -> Result<WalkOutput, WalkError> {
@@ -184,6 +208,10 @@ pub fn walk(
                 }
                 EntryKind::Dir => {
                     if e.name == QUARANTINE_DIR {
+                        continue;
+                    }
+                    if !options.include_hidden && is_hidden_name(&e.name) {
+                        out.hidden_dirs_skipped += 1;
                         continue;
                     }
                     subdirs.push((dir.join(&e.name), Some(child)));

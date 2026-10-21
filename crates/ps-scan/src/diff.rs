@@ -8,11 +8,18 @@
 //!   while they have fewer than [`MAX_ATTEMPTS`] attempts.
 //! - **missing**: in the catalog, not on disk -> marked missing (never deleted). Missing files with a content
 //!   identity are move candidates: a new path with the same identity takes over their row.
+//! - **re-classified**: an unchanged, finished file whose stored classifier hash differs from the run's
+//!   settings is classified again from its stored [`ps_model::ClassFacts`] (ADR-0051), without reading it. A
+//!   skipped file that becomes a candidate goes back to `probed` and is processed; every other stage is kept.
 
 use std::collections::HashMap;
 
-use ps_catalog::{FileKey, FileRow, Readers};
-use ps_model::{ContentId, DiffCounts, RelPath, SourceId, Stage, StageCounts, StatFingerprint};
+use ps_catalog::{FileKey, FileRow, Readers, Reclassification};
+use ps_media::FolderHints;
+use ps_model::{
+    ClassifierSettings, ContentId, DiffCounts, FileId, PhotoClass, RelPath, SourceId, Stage,
+    StageCounts, StatFingerprint,
+};
 
 use crate::walk::WalkEntry;
 
@@ -43,6 +50,9 @@ pub struct DiffOutput {
     pub upserts: Vec<FileRow>,
     /// Files that just went missing.
     pub newly_missing: Vec<FileKey>,
+    /// Unchanged files classified again under new classifier settings (every stale one, so its hash is
+    /// brought up to date; [`DiffCounts::reclassified`] counts those whose class changed).
+    pub reclassified: Vec<Reclassification>,
     /// Work, in walk order.
     pub todo: Vec<Todo>,
     /// Stage of every present file once the diff is applied.
@@ -56,12 +66,24 @@ pub struct DiffOutput {
     pub present: u64,
 }
 
-/// Merge-join `entries` (sorted by path) with the catalog rows of `source`.
+/// An unchanged file whose class was decided under other classifier settings.
+struct Stale {
+    id: FileId,
+    todo: Todo,
+    size: u64,
+    class: Option<PhotoClass>,
+}
+
+/// Merge-join `entries` (sorted by path) with the catalog rows of `source`. `classifier` and its
+/// `classifier_hash` are the run's settings (re-classification).
 pub fn diff(
     source: SourceId,
     entries: Vec<WalkEntry>,
     readers: &Readers,
+    classifier: &ClassifierSettings,
+    classifier_hash: u64,
 ) -> ps_catalog::Result<DiffOutput> {
+    let mut stale = Vec::new();
     let mut out = DiffOutput {
         present: entries.len() as u64,
         ..DiffOutput::default()
@@ -144,6 +166,15 @@ pub fn diff(
                         if unfinished {
                             out.todo.push(todo(r.stage, false));
                             out.bytes_to_process += w.stat.size;
+                        } else if matches!(r.stage, Stage::Thumbed | Stage::Skipped)
+                            && r.classifier_hash.is_some_and(|h| h != classifier_hash)
+                        {
+                            stale.push(Stale {
+                                id: r.id,
+                                todo: todo(r.stage, false),
+                                size: w.stat.size,
+                                class: r.class,
+                            });
                         }
                     }
                 }
@@ -151,6 +182,63 @@ pub fn diff(
             (Some(_), None) => unreachable!("handled by the missing arm"),
         }
     }
+    reclassify(
+        source,
+        stale,
+        readers,
+        classifier,
+        classifier_hash,
+        &mut out,
+    )?;
     out.todo.sort_by_key(|t| t.order);
     Ok(out)
+}
+
+/// Classify `stale` files again from their stored facts (no file access).
+fn reclassify(
+    source: SourceId,
+    stale: Vec<Stale>,
+    readers: &Readers,
+    classifier: &ClassifierSettings,
+    classifier_hash: u64,
+    out: &mut DiffOutput,
+) -> ps_catalog::Result<()> {
+    for chunk in stale.chunks(PAGE) {
+        let ids: Vec<FileId> = chunk.iter().map(|s| s.id).collect();
+        let facts = readers.class_facts(&ids)?;
+        for s in chunk {
+            let Some(f) = facts.get(&s.id) else {
+                continue;
+            };
+            let (class, reasons) = ps_media::classify_facts(
+                f,
+                &s.todo.path.to_path_buf(),
+                classifier,
+                FolderHints {
+                    has_thumbs_db: s.todo.thumbs_db_sibling,
+                },
+            );
+            if s.class != Some(class) {
+                out.counts.reclassified += 1;
+            }
+            let wakes = s.todo.stage == Stage::Skipped && class.is_candidate();
+            out.reclassified.push(Reclassification {
+                key: FileKey::new(source, s.todo.path.clone()),
+                class,
+                reasons: reasons.iter().map(ToString::to_string).collect(),
+                classifier_hash,
+                stage: wakes.then_some(Stage::Probed),
+            });
+            if wakes {
+                *out.stages.get_mut(Stage::Skipped) -= 1;
+                *out.stages.get_mut(Stage::Probed) += 1;
+                out.bytes_to_process += s.size;
+                out.todo.push(Todo {
+                    stage: Stage::Probed,
+                    ..s.todo.clone()
+                });
+            }
+        }
+    }
+    Ok(())
 }

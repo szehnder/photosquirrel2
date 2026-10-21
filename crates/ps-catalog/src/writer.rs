@@ -26,7 +26,8 @@ use ps_model::{
 
 use crate::error::{CatalogError, Result, WriteError, WriteErrors};
 use crate::model::{
-    AnalysisResult, FileFailure, FileKey, FileRow, NewSource, ProbeResult, Results, codes, now_ms,
+    AnalysisResult, FileFailure, FileKey, FileRow, NewSource, ProbeResult, Reclassification,
+    Results, codes, now_ms,
 };
 
 /// Batching parameters (ADR-0005 defaults).
@@ -59,6 +60,9 @@ pub enum Command {
     UpsertFiles(Vec<FileRow>),
     /// Probe results with stage `probed` (or `skipped`); clears any analysis results.
     Probed(Vec<(FileKey, ProbeResult)>),
+    /// New classes of unchanged files after a classifier settings change, decided from their stored
+    /// [`ps_model::ClassFacts`] without reading them (ADR-0051). Other results are kept.
+    Reclassify(Vec<Reclassification>),
     /// Analysis results with stage `analyzed`. The file must have been probed.
     Analyzed(Vec<(FileKey, Box<AnalysisResult>)>),
     /// Stage `thumbed`: the thumbnail is in `thumbs.db`. The file must be analyzed.
@@ -117,6 +121,7 @@ impl Command {
         match self {
             Command::UpsertFiles(_) => "upsert_files",
             Command::Probed(_) => "probed",
+            Command::Reclassify(_) => "reclassify",
             Command::Analyzed(_) => "analyzed",
             Command::Thumbed(_) => "thumbed",
             Command::Failed(_) => "failed",
@@ -532,6 +537,13 @@ impl WriterThread {
                     self.row(name, Some(k), |c| expect_one(set_probed(c, k, p)?, "unknown file"));
                 }
             }
+            Command::Reclassify(rows) => {
+                for r in &rows {
+                    self.row(name, Some(&r.key), |c| {
+                        expect_one(set_reclassified(c, r)?, "unknown or unprobed file")
+                    });
+                }
+            }
             Command::Analyzed(rows) => {
                 for (k, a) in &rows {
                     self.row(name, Some(k), |c| {
@@ -705,6 +717,8 @@ const PROBE_COLUMNS: &[(&str, &str)] = &[
     ("media_kind", "NULL"),
     ("width", "NULL"),
     ("height", "NULL"),
+    ("class_facts", "NULL"),
+    ("classifier_hash", "NULL"),
     ("attempts", "0"),
 ];
 
@@ -741,7 +755,8 @@ static PROBED_SQL: LazyLock<String> = LazyLock::new(|| {
         .collect();
     format!(
         "UPDATE file SET stage = ?3, class = ?4, reasons = ?5, format = ?6, media_kind = ?7, width = ?8,
-                height = ?9, kflags = (?4 | (coalesce(?7, 0) << 3) | (kflags & 16)), {}
+                height = ?9, class_facts = ?10, classifier_hash = ?11,
+                kflags = (?4 | (coalesce(?7, 0) << 3) | (kflags & 16)), {}
          WHERE source_id = ?1 AND rel_path = ?2",
         clear.join(", ")
     )
@@ -758,9 +773,10 @@ const ANALYZED_SQL: &str = "UPDATE file SET stage = 2,
 const INSERT_FULL_SQL: &str = "INSERT INTO file (source_id, rel_path, name, size, mtime_ns, file_index,
         stage, class, reasons, format, media_kind, width, height,
         content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_offset_min,
-        capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen)
+        capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen,
+        class_facts, classifier_hash)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26)
+            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28)
     ON CONFLICT (source_id, rel_path) DO NOTHING";
 
 fn upsert_file(c: &Connection, r: &FileRow) -> rusqlite::Result<()> {
@@ -869,11 +885,35 @@ fn insert_full(
         x.has_gps,
         x.metadata,
         now_ms(),
+        facts_json(p.facts.as_ref())?,
+        p.classifier_hash.map(|h| h as i64),
     ])
 }
 
 fn reasons_json(r: &[String]) -> rusqlite::Result<String> {
     serde_json::to_string(r).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
+fn facts_json(f: Option<&ps_model::ClassFacts>) -> rusqlite::Result<Option<String>> {
+    f.map(|f| {
+        serde_json::to_string(f).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    })
+    .transpose()
+}
+
+const RECLASSIFY_SQL: &str = "UPDATE file SET class = ?3, reasons = ?4, classifier_hash = ?5,
+        stage = coalesce(?6, stage), kflags = (?3 | (kflags & 24))
+    WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
+
+fn set_reclassified(c: &Connection, r: &Reclassification) -> rusqlite::Result<usize> {
+    c.prepare_cached(RECLASSIFY_SQL)?.execute(params![
+        r.key.source.0,
+        r.key.path.as_bytes(),
+        r.class.code(),
+        reasons_json(&r.reasons)?,
+        r.classifier_hash as i64,
+        r.stage.map(codes::stage),
+    ])
 }
 
 fn set_probed(c: &Connection, k: &FileKey, p: &ProbeResult) -> rusqlite::Result<usize> {
@@ -887,6 +927,8 @@ fn set_probed(c: &Connection, k: &FileKey, p: &ProbeResult) -> rusqlite::Result<
         p.media_kind().map(codes::kind),
         p.width,
         p.height,
+        facts_json(p.facts.as_ref())?,
+        p.classifier_hash.map(|h| h as i64),
     ])
 }
 

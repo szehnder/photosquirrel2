@@ -218,3 +218,80 @@ fn resumed_run_clears_its_end_time() {
     assert_eq!(r.status, RunStatus::Running);
     assert!(r.ended_at_ms.is_none());
 }
+
+/// ADR-0051 (migration 13): probe results keep the classifier facts and hash; `Reclassify` changes the class,
+/// reasons, hash and (optionally) the stage and nothing else; a changed fingerprint clears the facts.
+#[test]
+fn class_facts_are_stored_and_reclassify_keeps_other_results() {
+    use ps_model::{ClassFacts, Dimensions, Format, PhotoClass};
+
+    let tmp = tempfile::tempdir().expect("tmp");
+    let cat = Catalog::open(tmp.path()).expect("open");
+    let src = add_source(&cat, "/mnt/a");
+    let w = cat.writer();
+    let key = FileKey::new(src, path_of(1));
+    w.upsert_files(vec![discovered_row(src, 1)]).expect("w");
+    let facts = ClassFacts {
+        format: Some(Format::Jpeg),
+        stored: Some(Dimensions::new(150, 1000)),
+        ..ClassFacts::default()
+    };
+    let mut probe = probe_of(1);
+    probe.class = PhotoClass::Junk;
+    probe.skip = true;
+    probe.facts = Some(facts.clone());
+    probe.classifier_hash = Some(42);
+    w.submit(Command::Probed(vec![(key.clone(), probe)]))
+        .expect("w");
+    w.flush().expect("flush");
+    let rec = file(&cat, src, &path_of(1).display()).expect("row");
+    assert_eq!(rec.stage, Stage::Skipped);
+    let page = cat.read().source_files(src, None, 10).expect("page");
+    assert_eq!(page[0].classifier_hash, Some(42));
+    assert_eq!(
+        cat.read()
+            .class_facts(&[rec.id])
+            .expect("facts")
+            .get(&rec.id),
+        Some(&facts)
+    );
+
+    w.submit(Command::Reclassify(vec![ps_catalog::Reclassification {
+        key: key.clone(),
+        class: PhotoClass::LikelyPhoto,
+        reasons: vec!["no camera metadata".into()],
+        classifier_hash: 7,
+        stage: Some(Stage::Probed),
+    }]))
+    .expect("w");
+    w.flush().expect("flush");
+    let after = file(&cat, src, &path_of(1).display()).expect("row");
+    assert_eq!(after.class, Some(PhotoClass::LikelyPhoto));
+    assert_eq!(after.stage, Stage::Probed);
+    assert_eq!(after.reasons, vec!["no camera metadata".to_string()]);
+    assert_eq!(after.width, rec.width);
+    assert_eq!(
+        cat.read().source_files(src, None, 10).expect("page")[0].classifier_hash,
+        Some(7)
+    );
+    // The gallery's packed class flags follow the class.
+    assert_eq!(
+        cat.read()
+            .count(&ps_model::Filter {
+                classes: Some(vec![PhotoClass::LikelyPhoto]),
+                ..ps_model::Filter::default()
+            })
+            .expect("count"),
+        1
+    );
+
+    let mut changed = discovered_row(src, 1);
+    changed.stat.size += 1;
+    w.upsert_files(vec![changed]).expect("w");
+    w.flush().expect("flush");
+    assert!(cat.read().class_facts(&[rec.id]).expect("facts").is_empty());
+    assert_eq!(
+        cat.read().source_files(src, None, 10).expect("page")[0].classifier_hash,
+        None
+    );
+}

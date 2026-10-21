@@ -41,7 +41,7 @@ use crate::memory::{BufferPermit, ByteBudget};
 use crate::options::ScanOptions;
 use crate::progress::Progress;
 use crate::report::{RunSummary, SourceSummary};
-use crate::walk::{WalkError, walk};
+use crate::walk::{WalkError, WalkOptions, walk};
 
 /// Read chunk between cancel checks (1 MB).
 pub const CHUNK: usize = 1024 * 1024;
@@ -65,6 +65,7 @@ pub(crate) struct RunSource {
     pub lost: AtomicBool,
     pub symlinks_skipped: AtomicU64,
     pub walk_errors: AtomicU64,
+    pub hidden_dirs_skipped: AtomicU64,
 }
 
 /// Everything the threads of one run share.
@@ -81,6 +82,8 @@ pub(crate) struct RunCtx {
     pub retries_exhausted: AtomicU64,
     /// The post-scan regroup engine (shared by every run of the scanner).
     pub groups: Arc<crate::post::GroupEngine>,
+    /// `opts.classifier.stable_hash()`, stored with every class this run decides (ADR-0051).
+    pub classifier_hash: u64,
 }
 
 impl RunCtx {
@@ -222,6 +225,7 @@ fn summarize(ctx: &RunCtx, status: RunStatus, elapsed: Duration) -> RunSummary {
             incomplete: p.incomplete,
             symlinks_skipped: s.symlinks_skipped.load(Ordering::Relaxed),
             walk_errors: s.walk_errors.load(Ordering::Relaxed),
+            hidden_dirs_skipped: s.hidden_dirs_skipped.load(Ordering::Relaxed),
         })
         .collect();
     RunSummary {
@@ -250,7 +254,10 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
     if s.offline {
         return None;
     }
-    let w = match walk(&ctx.opts.fs, &s.root, &ctx.ctl, |d| {
+    let options = WalkOptions {
+        include_hidden: ctx.opts.include_hidden,
+    };
+    let w = match walk(&ctx.opts.fs, &s.root, options, &ctx.ctl, |d| {
         ctx.progress.set_dir(idx, 0, Some(d.to_owned()));
     }) {
         Ok(w) => w,
@@ -266,6 +273,15 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
         .store(w.symlinks_skipped, Ordering::Relaxed);
     s.walk_errors
         .store(w.errors.len() as u64, Ordering::Relaxed);
+    s.hidden_dirs_skipped
+        .store(w.hidden_dirs_skipped, Ordering::Relaxed);
+    if w.hidden_dirs_skipped > 0 {
+        log::info!(
+            "source {}: {} hidden folders not scanned (scanning.include_hidden is off)",
+            s.id,
+            w.hidden_dirs_skipped
+        );
+    }
     for (path, err) in &w.errors {
         if let Some(p) = RelPath::from_bytes(path.as_bytes().to_vec()) {
             ctx.progress.error(RecentError {
@@ -276,7 +292,13 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
             });
         }
     }
-    let mut d = match diff(s.id, w.entries, ctx.catalog.read()) {
+    let mut d = match diff(
+        s.id,
+        w.entries,
+        ctx.catalog.read(),
+        &ctx.opts.classifier,
+        ctx.classifier_hash,
+    ) {
         Ok(d) => d,
         Err(e) => {
             log::error!("scan run {}: diff of source {}: {e}", ctx.run, s.id);
@@ -285,6 +307,9 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
     };
     for chunk in std::mem::take(&mut d.upserts).chunks(UPSERT_CHUNK) {
         ctx.submit(Command::UpsertFiles(chunk.to_vec()));
+    }
+    for chunk in std::mem::take(&mut d.reclassified).chunks(UPSERT_CHUNK) {
+        ctx.submit(Command::Reclassify(chunk.to_vec()));
     }
     if !d.newly_missing.is_empty() {
         ctx.submit(Command::MarkMissing {
@@ -700,8 +725,9 @@ fn process_file(
         return;
     }
     let probe = ps_media::probe_bytes(&buf, size, Some(rel.as_path()));
-    let (class, reasons) = ps_media::classify_with(
-        &probe,
+    let facts = ps_media::class_facts(&probe);
+    let (class, reasons) = ps_media::classify_facts(
+        &facts,
         &rel,
         &ctx.opts.classifier,
         FolderHints {
@@ -716,6 +742,8 @@ fn process_file(
         width: probe.stored.map(|d| d.width),
         height: probe.stored.map(|d| d.height),
         skip,
+        facts: Some(facts),
+        classifier_hash: Some(ctx.classifier_hash),
     };
     ctx.submit(Command::Probed(vec![(
         FileKey::new(src.id, t.path.clone()),

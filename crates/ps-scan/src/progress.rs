@@ -66,6 +66,7 @@ struct Diff {
     missing: AtomicU64,
     returning: AtomicU64,
     moved: AtomicU64,
+    reclassified: AtomicU64,
 }
 
 impl Diff {
@@ -77,6 +78,7 @@ impl Diff {
             missing: self.missing.load(Ordering::Relaxed),
             returning: self.returning.load(Ordering::Relaxed),
             moved: self.moved.load(Ordering::Relaxed),
+            reclassified: self.reclassified.load(Ordering::Relaxed),
         }
     }
 
@@ -87,6 +89,7 @@ impl Diff {
         self.missing.store(d.missing, Ordering::Relaxed);
         self.returning.store(d.returning, Ordering::Relaxed);
         self.moved.store(d.moved, Ordering::Relaxed);
+        self.reclassified.store(d.reclassified, Ordering::Relaxed);
     }
 }
 

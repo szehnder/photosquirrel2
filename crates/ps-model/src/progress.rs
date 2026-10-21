@@ -129,6 +129,10 @@ pub struct DiffCounts {
     pub returning: u64,
     /// New paths re-identified by content as a missing file of the same source (counted in `new` too).
     pub moved: u64,
+    /// Unchanged files whose class changed under new classifier settings, decided from stored probe facts
+    /// without reading them (counted in `unchanged` too; ADR-0051).
+    #[serde(default)]
+    pub reclassified: u64,
 }
 
 impl DiffCounts {
@@ -139,6 +143,7 @@ impl DiffCounts {
         self.missing += o.missing;
         self.returning += o.returning;
         self.moved += o.moved;
+        self.reclassified += o.reclassified;
     }
 }
 

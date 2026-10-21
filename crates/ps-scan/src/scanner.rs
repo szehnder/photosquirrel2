@@ -109,7 +109,8 @@ impl ActiveRun {
 pub struct Scanner {
     catalog: Arc<Catalog>,
     thumbs: Arc<ThumbStore>,
-    opts: ScanOptions,
+    /// Read when a run starts ([`Scanner::set_options`] never reaches a running one).
+    opts: Mutex<ScanOptions>,
     active: Mutex<Option<Arc<ActiveRun>>>,
     recovered: Vec<ScanRunId>,
     groups: Arc<GroupEngine>,
@@ -119,7 +120,7 @@ impl std::fmt::Debug for Scanner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Scanner")
             .field("catalog", &self.catalog.path())
-            .field("opts", &self.opts)
+            .field("opts", &*self.opts.lock())
             .finish_non_exhaustive()
     }
 }
@@ -172,7 +173,7 @@ impl Scanner {
         Ok(Scanner {
             catalog,
             thumbs,
-            opts,
+            opts: Mutex::new(opts),
             active: Mutex::new(None),
             recovered: before,
             groups: Arc::new(GroupEngine::new()),
@@ -187,8 +188,20 @@ impl Scanner {
         &self.thumbs
     }
 
-    pub fn options(&self) -> &ScanOptions {
-        &self.opts
+    /// The options the next run starts with.
+    pub fn options(&self) -> ScanOptions {
+        self.opts.lock().clone()
+    }
+
+    /// Replace the options for runs started from now on (settings changes, ADR-0051). A running or paused run
+    /// keeps the options it started with; a resumed interrupted or cancelled run is a new start and gets these.
+    pub fn set_options(&self, opts: ScanOptions) {
+        *self.opts.lock() = opts;
+    }
+
+    /// Change some options for runs started from now on (see [`Scanner::set_options`]).
+    pub fn update_options(&self, f: impl FnOnce(&mut ScanOptions)) {
+        f(&mut self.opts.lock());
     }
 
     /// The post-scan regroup engine.
@@ -243,7 +256,7 @@ impl Scanner {
     /// Libraries are found by the catalog's registry and on disk (`.photosquirrel/manifest.jsonl`), so one made by
     /// another catalog is refused too.
     fn refuse_export_library(&self, root: &Path) -> Result<()> {
-        if let Some(library) = crate::walk::find_export_library(&self.opts.fs, root) {
+        if let Some(library) = crate::walk::find_export_library(&self.options().fs, root) {
             return Err(ScanError::ExportLibrary {
                 path: root.to_path_buf(),
                 library,
@@ -262,7 +275,7 @@ impl Scanner {
     }
 
     pub fn add_source(&self, path: &Path) -> Result<AddedSource> {
-        let meta = match self.opts.fs.metadata(path) {
+        let meta = match self.options().fs.metadata(path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(ScanError::SourceMissing(path.to_path_buf()));
@@ -311,9 +324,9 @@ impl Scanner {
         {
             return Err(ScanError::RunActive(a.run));
         }
-        let m = source::measure(&self.opts.fs, &root).map_err(|e| walk_err(&root, e))?;
+        let m = source::measure(&self.options().fs, &root).map_err(|e| walk_err(&root, e))?;
         let mut volume = m.volume.clone();
-        if let Some(f) = &self.opts.device_class {
+        if let Some(f) = &self.options().device_class {
             volume.class = f(&root);
         }
         let id = self.catalog.writer().add_source(NewSource {
@@ -344,7 +357,7 @@ impl Scanner {
     /// Whether a source's root is reachable and is the same volume it was.
     fn online(&self, r: &SourceRecord) -> bool {
         let root = path_from_bytes(&r.root);
-        if !self.opts.fs.metadata(&root).is_ok_and(|m| m.is_dir()) {
+        if !self.options().fs.metadata(&root).is_ok_and(|m| m.is_dir()) {
             return false;
         }
         // An empty mount point left behind by an unplugged drive is not the drive.
@@ -395,7 +408,12 @@ impl Scanner {
         if samples.is_empty() {
             return Err(ScanError::NoFingerprint(id));
         }
-        if !self.opts.fs.metadata(new_root).is_ok_and(|m| m.is_dir()) {
+        if !self
+            .options()
+            .fs
+            .metadata(new_root)
+            .is_ok_and(|m| m.is_dir())
+        {
             return Err(ScanError::SourceMissing(new_root.to_path_buf()));
         }
         let root = normalize_root(new_root).map_err(|e| ScanError::Io {
@@ -420,7 +438,7 @@ impl Scanner {
             }
             after = page.last().map(|f| f.key.path.clone());
         }
-        let check = source::check(&self.opts.fs, &root, &samples, &known)
+        let check = source::check(&self.options().fs, &root, &samples, &known)
             .map_err(|e| walk_err(&root, e))?;
         if !check.accepted() {
             return Err(ScanError::FingerprintMismatch {
@@ -571,6 +589,7 @@ impl Scanner {
     }
 
     fn spawn(&self, run: ScanRunId, records: Vec<SourceRecord>) -> Result<Arc<ActiveRun>> {
+        let opts = self.options();
         let mut sources = Vec::with_capacity(records.len());
         for r in &records {
             let root = path_from_bytes(&r.root);
@@ -586,7 +605,7 @@ impl Scanner {
                     status: SourceStatus::Online,
                 })?;
             }
-            let device = match &self.opts.device_class {
+            let device = match &opts.device_class {
                 Some(f) => f(&root),
                 None => source::volume_info(&root).class,
             };
@@ -598,6 +617,7 @@ impl Scanner {
                 lost: AtomicBool::new(false),
                 symlinks_skipped: AtomicU64::new(0),
                 walk_errors: AtomicU64::new(0),
+                hidden_dirs_skipped: AtomicU64::new(0),
             });
         }
         let ids: Vec<SourceId> = sources.iter().map(|s| s.id).collect();
@@ -605,14 +625,15 @@ impl Scanner {
             run,
             catalog: self.catalog.clone(),
             thumbs: self.thumbs.clone(),
-            opts: self.opts.clone(),
+            opts: opts.clone(),
             ctl: Arc::new(Control::new()),
             progress: Arc::new(Progress::new(run, &ids)),
-            budget: ByteBudget::new(self.opts.memory_cap),
+            budget: ByteBudget::new(opts.memory_cap),
             sources,
             changed_during_scan: AtomicU64::new(0),
             retries_exhausted: AtomicU64::new(0),
             groups: self.groups.clone(),
+            classifier_hash: opts.classifier.stable_hash(),
         });
         let thread = std::thread::Builder::new()
             .name(format!("ps-scan-run-{run}"))

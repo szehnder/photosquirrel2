@@ -394,6 +394,7 @@ impl FakeScanService {
                     missing: src.missing,
                     returning: 0,
                     moved: 0,
+                    reclassified: 0,
                 }
             };
             stages.add(&st);

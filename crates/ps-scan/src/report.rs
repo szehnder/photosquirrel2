@@ -19,6 +19,9 @@ pub struct SourceSummary {
     pub incomplete: bool,
     pub symlinks_skipped: u64,
     pub walk_errors: u64,
+    /// Hidden folders not walked because `scanning.include_hidden` is off (ADR-0052).
+    #[serde(default)]
+    pub hidden_dirs_skipped: u64,
 }
 
 /// What a run did. Stored in `scan_run.stats`.

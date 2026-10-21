@@ -71,6 +71,8 @@ fn row(source: ps_model::SourceId, i: u64) -> Option<FileRow> {
                 width: Some(6000),
                 height: Some(4000),
                 skip: false,
+                facts: None,
+                classifier_hash: None,
             },
             Box::new(AnalysisResult {
                 identity: ContentId::full(digest(i)),

@@ -160,14 +160,35 @@ impl Readers {
     ) -> Result<Vec<FileRecord>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(&format!(
-                "SELECT {FILE_COLUMNS} FROM file
+                "SELECT {FILE_COLUMNS}, classifier_hash FROM file
                  WHERE source_id = ?1 AND rel_path > ?2 ORDER BY rel_path LIMIT ?3"
             ))?;
             let after: &[u8] = after.map_or(&[], |p| p.as_bytes());
             let mut rows = stmt.query(params![source.0, after, limit as i64])?;
             let mut out = Vec::with_capacity(limit.min(4096));
             while let Some(r) = rows.next()? {
-                out.push(file_record(r)?);
+                let mut rec = file_record(r)?;
+                rec.classifier_hash = r.get::<_, Option<i64>>(24)?.map(|h| h as u64);
+                out.push(rec);
+            }
+            Ok(out)
+        })
+    }
+
+    /// The stored classifier facts of `ids` (ADR-0051); files without them (probed before schema version 13,
+    /// or never probed) are left out.
+    pub fn class_facts(&self, ids: &[FileId]) -> Result<HashMap<FileId, ps_model::ClassFacts>> {
+        self.with(|c| {
+            let values: Rc<Vec<Value>> = Rc::new(ids.iter().map(|i| Value::Integer(i.0)).collect());
+            let mut stmt = c.prepare_cached(
+                "SELECT id, class_facts FROM file WHERE id IN rarray(?1) AND class_facts IS NOT NULL",
+            )?;
+            let mut rows = stmt.query([values])?;
+            let mut out = HashMap::with_capacity(ids.len());
+            while let Some(r) = rows.next()? {
+                let json: String = r.get(1)?;
+                let facts = serde_json::from_str(&json).map_err(|e| corrupt(&e.to_string()))?;
+                out.insert(FileId(r.get(0)?), facts);
             }
             Ok(out)
         })
@@ -571,5 +592,6 @@ pub(crate) fn file_record(r: &Row<'_>) -> Result<FileRecord> {
         attempts: r.get(21)?,
         missing_since_ms: r.get(22)?,
         first_seen_ms: r.get(23)?,
+        classifier_hash: None,
     })
 }
