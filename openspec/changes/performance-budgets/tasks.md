@@ -26,7 +26,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 `cargo xtask ci` is green
+- [x] 4.1 `cargo xtask ci` is green
 - [ ] 4.2 Gate: all budgets measured on the reference machine and the baseline committed
-- [ ] 4.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
-- [ ] 4.4 `openspec validate performance-budgets --strict` passes
+- [x] 4.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
+- [x] 4.4 `openspec validate performance-budgets --strict` passes
