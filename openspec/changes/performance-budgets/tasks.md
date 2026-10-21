@@ -20,13 +20,13 @@
 ## 3. Measurement and baseline
 
 - [x] 3.1 Write `docs/performance.md` (reference machine, warm-cache procedure, how to read results); verify the file lists every budget name from `cargo xtask bench --list`
-- [ ] 3.2 Run the full check on the reference machine, fix or reopen owning changes for misses; verify `scenario_performance_budgets_all_budgets_within_limits` (recorded output of `cargo xtask bench --check`). Open: 14 of 15 budgets measured and met on 2026-10-21; `gallery-scroll-p95` unmeasured (desktop locked, render bench gets no frames)
+- [x] 3.2 Run the full check on the reference machine, fix or reopen owning changes for misses; verify `scenario_performance_budgets_all_budgets_within_limits` (recorded output of `cargo xtask bench --check`). All 15 budgets measured and met on 2026-10-21; `gallery-scroll-p95` (7.85 ms) recorded from an unlocked session
 - [x] 3.3 Record and commit `perf-baseline.json`; verify `cargo xtask bench --check --ci` passes against it
 - [x] 3.4 Add the `bench-regressions` job to `.github/workflows/ci.yml`; verify a green CI run on main (run 39590102361, green incl. bench-regressions)
 
 ## 4. Verification
 
 - [x] 4.1 `cargo xtask ci` is green
-- [ ] 4.2 Gate: all budgets measured on the reference machine and the baseline committed
+- [x] 4.2 Gate: all budgets measured on the reference machine and the baseline committed
 - [x] 4.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 4.4 `openspec validate performance-budgets --strict` passes

@@ -96,7 +96,7 @@ app (window) budgets, and a suspected regression re-measured twice with the best
 | `rescan-nochange-100k` | median <= 4 s | yes | scanning | 0.408 s |
 | `control-latency-p95` | p95 <= 250 ms | yes | scanning | 106.92 ms |
 | `dedup-regroup-1k-of-1m` | max <= 250 ms | component | duplicate-groups | 27.884 ms |
-| `gallery-scroll-p95` | p95 <= 8.3 ms | yes | gallery | not yet recorded (needs the unlocked desktop; see below) |
+| `gallery-scroll-p95` | p95 <= 8.3 ms | yes | gallery | 7.85 ms |
 | `first-gallery-frame` | median <= 600 ms | yes | gallery | 568 ms |
 | `export-replan-50k` | median <= 800 ms | component | export | 547.045 ms |
 
@@ -105,9 +105,7 @@ average below 2). Repeated runs on this machine vary by up to about 60% for the 
 budgets and 10-25% for the I/O-bound ones (catalog, export re-plan), so compare a regression with a second
 run before acting on it; CI re-measures a suspected regression twice and keeps the best run.
 
-`gallery-scroll-p95` was not recorded with this baseline: the desktop session was locked during the run, and
-Wayland sends no frames to the render bench's window then (it reports "frames stalled" and prints no
-measurement, which fails the check). The gallery change verified it on the owner's desktop on 2026-10-20.
-Record it from an unlocked session with
-`cargo xtask bench --check --update-baseline --only gallery-scroll-p95`; the release gate (performance-budgets
-task 4.2) stays open until it is in `perf-baseline.json`.
+`gallery-scroll-p95` needs a visible window: Wayland sends no frames to the render bench while the desktop
+session is locked (it reports "frames stalled" and prints no measurement, which fails the check). It was
+recorded separately from an unlocked session on 2026-10-21 with
+`cargo xtask bench --check --update-baseline --only gallery-scroll-p95` (7.85 ms against 8.3 ms).
