@@ -125,6 +125,10 @@ impl LibraryBackend for CatalogBackend {
         Ok(())
     }
 
+    fn apply_settings(&self, settings: &ps_model::settings::Settings) {
+        self.lib.apply_settings(settings);
+    }
+
     fn add_source(&self, path: PathBuf) -> anyhow::Result<()> {
         let scan = self.scan()?;
         let added = scan.add_source(&path)?;

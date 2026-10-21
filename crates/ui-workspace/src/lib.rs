@@ -94,6 +94,8 @@ pub fn init(config: ShellConfig, cx: &mut App) {
     keymap::bind_default_keys(cx);
     register_commands(cx);
     AppSettings::init(config.settings, config.theme_override, cx);
+    let engine = config.backend.clone();
+    AppSettings::set_listener(Arc::new(move |s| engine.apply_settings(s)), cx);
     ui_gallery::init(cx);
     crate::views::library::register(cx);
     crate::views::scan::register(cx);

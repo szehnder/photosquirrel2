@@ -86,6 +86,9 @@ pub trait LibraryBackend: Send + Sync + 'static {
     fn review(self: Arc<Self>) -> Option<Arc<dyn crate::review_source::ReviewSource>> {
         None
     }
+    /// The user's settings, at start-up and after every Scanning or General change (called off the UI
+    /// thread). Scanning settings apply to the next scan started, never a running one.
+    fn apply_settings(&self, _settings: &ps_model::settings::Settings) {}
 }
 
 /// An empty library with no engine behind it (until the catalog facade lands).

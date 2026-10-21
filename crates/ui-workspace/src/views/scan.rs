@@ -82,6 +82,8 @@ pub struct ScanMonitor {
     sampling: Option<Task<()>>,
     /// The run whose end was last handled (summary fetched), so repeated wake-ups do no work.
     ended: Option<ScanRunId>,
+    /// Why the run is paused for power, or that mains power is back (`general.pause_on_battery`).
+    pub power_note: Option<String>,
 }
 
 impl ScanMonitor {
@@ -107,6 +109,7 @@ impl ScanMonitor {
             strip,
             sampling: None,
             ended: None,
+            power_note: None,
         };
         this.refresh_sources(cx);
         this.refresh_last_run(cx);
@@ -188,8 +191,13 @@ impl ScanMonitor {
         self.sampling = Some(cx.spawn(async move |this, cx| {
             loop {
                 let b = backend.clone();
-                let snap = cx.background_spawn(async move { b.snapshot() }).await;
-                let Ok(active) = this.update(cx, |m, cx| m.apply(snap, cx)) else {
+                let (snap, note) = cx
+                    .background_spawn(async move { (b.snapshot(), b.power_note()) })
+                    .await;
+                let Ok(active) = this.update(cx, |m, cx| {
+                    m.set_power_note(note, cx);
+                    m.apply(snap, cx)
+                }) else {
                     return;
                 };
                 if !active {
@@ -202,6 +210,14 @@ impl ScanMonitor {
                 m.run_ended(cx);
             });
         }));
+    }
+
+    /// Store the power note (re-renders only on change).
+    pub fn set_power_note(&mut self, note: Option<String>, cx: &mut Context<'_, Self>) {
+        if self.power_note != note {
+            self.power_note = note;
+            cx.notify();
+        }
     }
 
     /// Store a snapshot; returns whether the run is still active.

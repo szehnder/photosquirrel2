@@ -214,7 +214,16 @@ fn run_card(m: &DashboardModel<'_>, s: &ProgressSnapshot, colors: &Colors, cx: &
                                         kit::format_bytes(s.bytes_read)
                                     )
                                 }),
-                        ),
+                        )
+                        .children(m.monitor.power_note.clone().map(|note| {
+                            div()
+                                .id("scan-power-note")
+                                .test_support()
+                                .aria_label(SharedString::from(note.clone()))
+                                .text_size(Tokens::text_sm())
+                                .text_color(colors.warning)
+                                .child(note)
+                        })),
                 )
                 .children(controls),
         )

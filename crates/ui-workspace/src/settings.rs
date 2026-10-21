@@ -26,7 +26,13 @@ pub struct AppSettings {
     pending_write: Arc<Mutex<Option<Settings>>>,
     /// What we last loaded or saved, to notice edits made by others ([`SettingsStore::save_merged`]).
     base: Arc<Mutex<SaveBase>>,
+    /// Told the settings (off the UI thread) at installation and after every Scanning or General change: the
+    /// library engine applies them to its next scan ([`Self::set_listener`]).
+    listener: Option<SettingsListener>,
 }
+
+/// Receives the settings after a change that the engine needs (scanning, general).
+pub type SettingsListener = Arc<dyn Fn(&Settings) + Send + Sync>;
 
 impl Global for AppSettings {}
 
@@ -57,8 +63,24 @@ impl AppSettings {
             recovered,
             pending_write: Arc::default(),
             base: Arc::new(Mutex::new(base)),
+            listener: None,
         });
         Self::apply(cx);
+    }
+
+    /// Install the engine's listener and tell it the current settings now (on a background thread).
+    pub fn set_listener(listener: SettingsListener, cx: &mut App) {
+        let this = cx.global_mut::<AppSettings>();
+        this.listener = Some(listener);
+        let settings = this.settings.clone();
+        Self::notify_listener(settings, cx);
+    }
+
+    fn notify_listener(settings: Settings, cx: &mut App) {
+        if let Some(listener) = cx.global::<AppSettings>().listener.clone() {
+            cx.background_spawn(async move { listener(&settings) })
+                .detach();
+        }
     }
 
     pub fn get(cx: &App) -> &Settings {
@@ -102,6 +124,8 @@ impl AppSettings {
         if !errors.is_empty() {
             return Err(errors);
         }
+        let engine_changed =
+            next.scanning != this.settings.scanning || next.general != this.settings.general;
         // A new AI destination (provider, server address or consent) pauses a running queue before anything
         // more is sent (ADR-0047). The pause writes the catalog: off the UI thread.
         if ps_service::ai::destination_fingerprint(&next.ai)
@@ -144,6 +168,10 @@ impl AppSettings {
                 }
             })
             .detach();
+        }
+        if engine_changed {
+            // Scanning settings reach the engine for the next scan started, never a running one.
+            Self::notify_listener(Self::get(cx).clone(), cx);
         }
         Self::apply(cx);
         Ok(())

@@ -186,6 +186,10 @@ pub trait ScanBackend: Send + Sync + 'static {
     fn resume_run(&self, run: ScanRunId) -> anyhow::Result<()>;
     /// The active (or last) run's progress. Cheap; sampled at most every 100 ms.
     fn snapshot(&self) -> Option<ProgressSnapshot>;
+    /// Why the active run is paused for power (`general.pause_on_battery`), for the dashboard.
+    fn power_note(&self) -> Option<String> {
+        None
+    }
     /// The summary of a run that has ended.
     fn overview(&self, run: ScanRunId) -> anyhow::Result<Option<RunOverview>>;
     /// The last run that ended (for the dashboard's summary when idle).
@@ -311,6 +315,10 @@ impl ScanBackend for CatalogBackend {
 
     fn snapshot(&self) -> Option<ProgressSnapshot> {
         self.scan().ok()?.snapshot()
+    }
+
+    fn power_note(&self) -> Option<String> {
+        self.power_pause().map(|p| p.message().to_owned())
     }
 
     fn overview(&self, run: ScanRunId) -> anyhow::Result<Option<RunOverview>> {
