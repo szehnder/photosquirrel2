@@ -57,3 +57,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0051](0051-reclassification-from-stored-probe-facts.md) | Re-classification from stored probe facts (catalog migration 13) |
 | [0052](0052-hidden-folders-scanned-by-default.md) | Hidden folders are scanned by default |
 | [0053](0053-power-source-probe-without-dependencies.md) | Power source probe: platform calls, no dependency |
+| [0054](0054-dct-scaled-jpeg-decodes-via-mozjpeg.md) | DCT-scaled JPEG decodes via mozjpeg (libjpeg-turbo core, plain C; amends 0017) |

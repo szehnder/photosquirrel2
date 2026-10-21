@@ -1,4 +1,5 @@
-//! Downscaled decodes (ADR-0010, ADR-0017): JPEG DCT scaling via jpeg-decoder, full JPEG decodes via
+//! Downscaled decodes (ADR-0010, ADR-0017, ADR-0054): JPEG DCT scaling via mozjpeg (libjpeg-turbo; jpeg-decoder
+//! for CMYK and as the fallback), full JPEG decodes via
 //! zune-jpeg, PNG/TIFF/WebP/GIF/BMP via `image`, RAW only through embedded previews (never demosaiced),
 //! HEIC via libheif behind the `heic` feature. Orientation is applied once, on the decoded buffer.
 
@@ -141,6 +142,19 @@ fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), Dec
             return Ok((img, 1));
         }
     }
+    if denom > 1
+        && matches!(
+            info.pixel_format,
+            jpeg_decoder::PixelFormat::RGB24 | jpeg_decoder::PixelFormat::L8
+        )
+        && (w as usize) * (h as usize) * 3 <= MAX_DECODE_BYTES
+        && let Some(img) = contain(|| decode_mozjpeg_scaled(bytes, denom))
+            .and_then(Result::ok)
+            .filter(|i| (i.width, i.height) == (w.div_ceil(denom), h.div_ceil(denom)))
+    {
+        // DCT-scaled decode: libjpeg-turbo's entropy decoder and reduced IDCTs (ADR-0054).
+        return Ok((img, denom));
+    }
     let (sw, sh) = if denom > 1 {
         dec.scale(w.div_ceil(denom) as u16, h.div_ceil(denom) as u16)
             .map_err(|e| DecodeError::Failed(e.to_string()))?
@@ -186,6 +200,26 @@ fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), Dec
         },
         denom,
     ))
+}
+
+/// A DCT-scaled (1/`denom`) RGB decode through mozjpeg's libjpeg-turbo core, on the calling thread. Grayscale
+/// sources are expanded to RGB by libjpeg. Errors unwind out of libjpeg; callers wrap this in [`contain`].
+fn decode_mozjpeg_scaled(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeError> {
+    let failed = |e: std::io::Error| DecodeError::Failed(e.to_string());
+    let mut d = mozjpeg::Decompress::new_mem(bytes).map_err(failed)?;
+    d.scale((8 / denom.clamp(1, 8)) as u8);
+    let mut started = d.rgb().map_err(failed)?;
+    let (width, height) = (started.width() as u32, started.height() as u32);
+    let data = started.read_scanlines::<u8>().map_err(failed)?;
+    if data.len() != width as usize * height as usize * 3 {
+        return Err(DecodeError::Failed("short JPEG decode".into()));
+    }
+    started.finish().map_err(failed)?;
+    Ok(RgbImage {
+        width,
+        height,
+        data,
+    })
 }
 
 fn decode_zune(bytes: &[u8]) -> Result<RgbImage, DecodeError> {

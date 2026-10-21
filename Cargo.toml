@@ -39,6 +39,9 @@ futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp"] }
 zune-jpeg = "0.5"
 jpeg-decoder = { version = "0.3", default-features = false }
+# libjpeg-turbo-derived DCT-scaled decodes, plain C built by `cc` (no nasm, no cmake; ADR-0054).
+mozjpeg = { version = "0.10", default-features = false }
+mozjpeg-sys = { version = "2", default-features = false, features = ["unwinding", "parallel"] }
 fast_image_resize = "6"
 nom-exif = "3.8"
 imagesize = "0.14"

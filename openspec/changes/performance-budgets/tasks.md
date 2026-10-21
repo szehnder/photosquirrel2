@@ -1,7 +1,7 @@
 # Tasks
 
 ## 0. Carried over from scanning
-- [ ] 0.1 Bring `scan-analysis-12mp` within 6.67 ms/file (7.42 ms measured at M1 re-review; profile: 1/4-scale JPEG decode ~37 ms CPU per 12 MP file). Options: SIMD decoder with DCT scaling (libjpeg-turbo; new ADR), buffer reuse to cut sys time, workers sized to physical cores. Verify `scenario_scanning_analysis_throughput_within_budget` and `cargo xtask bench --check --only scan-analysis-12mp`
+- [x] 0.1 Bring `scan-analysis-12mp` within 6.67 ms/file (7.42 ms measured at M1 re-review; profile: 1/4-scale JPEG decode ~37 ms CPU per 12 MP file). Options: SIMD decoder with DCT scaling (libjpeg-turbo; new ADR), buffer reuse to cut sys time, workers sized to physical cores. Verify `scenario_scanning_analysis_throughput_within_budget` and `cargo xtask bench --check --only scan-analysis-12mp`
 
 ## 1. Budgets file
 

@@ -37,6 +37,48 @@ fn analysis_decode_picks_smallest_scale_reaching_512() {
 }
 
 #[test]
+fn scaled_decodes_match_the_full_decode_for_colour_and_grey() {
+    // DCT-scaled decodes go through mozjpeg (ADR-0054); they must agree with a full decode averaged down.
+    let (w, h) = (1600u32, 1200u32);
+    let rgb = fx::photo_rgb(w, h, 9);
+    let colour = fx::encode_jpeg(&rgb, w, h, 92);
+    let grey: Vec<u8> = rgb.as_chunks::<3>().0.iter().map(|p| p[1]).collect();
+    let mut grey_jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut grey_jpeg, 92)
+        .encode(&grey, w, h, image::ExtendedColorType::L8)
+        .expect("encode grey");
+    for (bytes, is_grey) in [(colour, false), (grey_jpeg, true)] {
+        let (full, d1) = decode_jpeg(&bytes, u32::MAX).expect("full decode");
+        let (quarter, d4) = decode_jpeg(&bytes, 300).expect("scaled decode");
+        assert_eq!((d1, d4), (1, 4));
+        assert_eq!((quarter.width, quarter.height), (w / 4, h / 4));
+        assert_eq!(quarter.data.len(), (w / 4 * h / 4 * 3) as usize);
+        let box4 = decode::resize_exact(&full, w / 4, h / 4, fast_image_resize::FilterType::Box);
+        let mean_diff = quarter
+            .data
+            .iter()
+            .zip(&box4.data)
+            .map(|(a, b)| f64::from(a.abs_diff(*b)))
+            .sum::<f64>()
+            / quarter.data.len() as f64;
+        assert!(
+            mean_diff < 4.0,
+            "grey={is_grey}: mean difference {mean_diff:.2}"
+        );
+        if is_grey {
+            assert!(
+                quarter
+                    .data
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .all(|p| p[0] == p[1] && p[1] == p[2])
+            );
+        }
+    }
+}
+
+#[test]
 fn scenario_thumbnails_thumbnail_long_edge_is_384() {
     let j = fx::jpeg(4000, 3000, 2, 85);
     let (t, origin) = make_thumbnail(&j, &probe(&j)).expect("thumb");
