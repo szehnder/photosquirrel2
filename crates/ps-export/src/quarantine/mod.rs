@@ -102,6 +102,8 @@ pub enum SkipReason {
     UnsafeFolder(String),
     /// The file system offers no atomic no-replace move (ADR-0062): refused rather than risk an overwrite.
     NoSafeMove(String),
+    /// The system refused the move for lack of permission (a read-only folder, another user's file).
+    PermissionDenied(String),
     /// A read or rename failed.
     Io(String),
 }
@@ -127,6 +129,9 @@ impl SkipReason {
             SkipReason::NoSafeMove(s) => format!(
                 "not moved: the drive cannot rename without risking an overwrite ({s}); nothing was changed"
             ),
+            SkipReason::PermissionDenied(s) => {
+                format!("not moved: permission denied ({s}); nothing was changed")
+            }
             SkipReason::Io(s) => s.clone(),
         }
     }

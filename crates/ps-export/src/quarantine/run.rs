@@ -367,6 +367,8 @@ fn move_one(
                 MoveError::Occupied(_) => SkipReason::QuarantineOccupied,
                 MoveError::CrossVolume => SkipReason::CrossVolume,
                 MoveError::Unsupported(s) => SkipReason::NoSafeMove(s),
+                MoveError::SourceGone => SkipReason::SourceMissing,
+                MoveError::PermissionDenied(s) => SkipReason::PermissionDenied(s),
                 MoveError::Io(e) => SkipReason::Io(io_text("rename", &source, &e)),
             };
             skip(m, reason, journal, catalog)

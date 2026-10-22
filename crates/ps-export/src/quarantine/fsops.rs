@@ -43,8 +43,78 @@ pub enum MoveError {
          a plain rename could overwrite a file that appears at the target"
     )]
     Unsupported(String),
+    /// The file is no longer at its path (removed or renamed since it was checked).
+    #[error("the file is no longer at its path")]
+    SourceGone,
+    /// The system refused the move for lack of permission (`EACCES`, `EPERM`): a read-only folder, a file
+    /// owned by another user, an immutable file.
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
     #[error(transparent)]
     Io(#[from] io::Error),
+}
+
+/// `errno` of `e` is `x`.
+#[cfg(unix)]
+fn errno_is(e: &io::Error, x: rustix::io::Errno) -> bool {
+    e.raw_os_error() == Some(x.raw_os_error())
+}
+
+/// Different owners for the file and the folder it is moved into (Unix uid). Linux refuses to hard-link a
+/// file the caller does not own with `EPERM` when `fs.protected_hardlinks` is on.
+#[cfg(unix)]
+fn foreign_owner(from: &Path, to: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let dir = to.parent().unwrap_or(Path::new("."));
+    match (fs::symlink_metadata(from), fs::symlink_metadata(dir)) {
+        (Ok(f), Ok(d)) => f.uid() != d.uid(),
+        _ => false,
+    }
+}
+
+/// Why a rename (`link = false`) or a `link` (`link = true`) of `from` to `to` failed. The file is still at
+/// `from` (or gone from it: [`MoveError::SourceGone`]); nothing here ever retries with a plain rename.
+///
+/// - `EEXIST`: [`MoveError::Occupied`]; `EXDEV`: [`MoveError::CrossVolume`].
+/// - `ENOENT` with `from` gone: [`MoveError::SourceGone`] (otherwise a folder on the way to `to` is gone: I/O).
+/// - `EPERM` from `link` on a file we own: [`MoveError::Unsupported`], since file systems without hard links
+///   (FAT, exFAT, some shares) answer `EPERM`; on a file another user owns it is a permission problem
+///   (`protected_hardlinks`). Every other `EACCES` / `EPERM`: [`MoveError::PermissionDenied`].
+/// - `ENOTSUP` / `EOPNOTSUPP` / `ENOSYS` from `link`: [`MoveError::Unsupported`].
+/// - Anything else: [`MoveError::Io`].
+fn move_failure(e: io::Error, from: &Path, to: &Path, link: bool) -> MoveError {
+    if e.kind() == io::ErrorKind::AlreadyExists {
+        return MoveError::Occupied(to.to_path_buf());
+    }
+    if is_cross_device(&e) {
+        return MoveError::CrossVolume;
+    }
+    if e.kind() == io::ErrorKind::NotFound {
+        return match fs::symlink_metadata(from) {
+            Err(g) if g.kind() == io::ErrorKind::NotFound => MoveError::SourceGone,
+            _ => MoveError::Io(e),
+        };
+    }
+    #[cfg(unix)]
+    {
+        use rustix::io::Errno;
+        if link && errno_is(&e, Errno::PERM) && !foreign_owner(from, to) {
+            return MoveError::Unsupported(format!("the file system refused a hard link: {e}"));
+        }
+        if link
+            && (errno_is(&e, Errno::NOTSUP)
+                || errno_is(&e, Errno::OPNOTSUPP)
+                || errno_is(&e, Errno::NOSYS))
+        {
+            return MoveError::Unsupported(e.to_string());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = link;
+    if e.kind() == io::ErrorKind::PermissionDenied {
+        return MoveError::PermissionDenied(e.to_string());
+    }
+    MoveError::Io(e)
 }
 
 /// `ERROR_NOT_SAME_DEVICE` on Windows, `EXDEV` elsewhere.
@@ -80,7 +150,7 @@ pub fn move_no_replace(from: &Path, to: &Path) -> Result<RenameMethod, MoveError
                     to.display()
                 );
             }
-            Err(e) => return Err(MoveError::Io(e.into())),
+            Err(e) => return Err(move_failure(e.into(), from, to, false)),
         }
     }
     #[cfg(windows)]
@@ -109,7 +179,7 @@ mod windows {
 
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
-    use super::{MoveError, RenameMethod, is_cross_device};
+    use super::{MoveError, RenameMethod};
 
     /// `ERROR_FILE_EXISTS`, `ERROR_ALREADY_EXISTS`.
     const EXISTS: [i32; 2] = [80, 183];
@@ -130,10 +200,8 @@ mod windows {
         let e = io::Error::last_os_error();
         if e.raw_os_error().is_some_and(|c| EXISTS.contains(&c)) {
             Err(MoveError::Occupied(to.to_path_buf()))
-        } else if is_cross_device(&e) {
-            Err(MoveError::CrossVolume)
         } else {
-            Err(MoveError::Io(e))
+            Err(super::move_failure(e, from, to, false))
         }
     }
 }
@@ -163,13 +231,8 @@ pub fn link_then_unlink(
         )));
     }
     before_link();
-    match fs::hard_link(from, to) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            return Err(MoveError::Occupied(to.to_path_buf()));
-        }
-        Err(e) if is_cross_device(&e) => return Err(MoveError::CrossVolume),
-        Err(e) => return Err(MoveError::Unsupported(e.to_string())),
+    if let Err(e) = fs::hard_link(from, to) {
+        return Err(move_failure(e, from, to, true));
     }
     // Both names must now be the file we checked; otherwise nothing is removed (the file stays at `from`,
     // and the extra name at `to` is reported for the user to look at).
@@ -378,6 +441,90 @@ mod tests {
         fs::create_dir(d.path().join("dir")).expect("dir");
         assert!(link_then_unlink(&d.path().join("dir"), &d.path().join("dir2"), &|| {}).is_err());
         assert!(d.path().join("dir").is_dir() && !d.path().join("dir2").exists());
+    }
+
+    /// A failed link or rename says why: source gone, permission, or a file system without the operation;
+    /// never "unsupported" for an ordinary error.
+    #[cfg(unix)]
+    #[test]
+    fn move_failures_are_classified() {
+        use rustix::io::Errno;
+        let d = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        let err = |x: Errno| io::Error::from_raw_os_error(x.raw_os_error());
+        // `a` does not exist yet.
+        assert!(matches!(
+            move_failure(err(Errno::NOENT), &a, &b, true),
+            MoveError::SourceGone
+        ));
+        fs::write(&a, b"photo").expect("a");
+        // The file is there: a folder on the way to the target is what is missing.
+        assert!(matches!(
+            move_failure(err(Errno::NOENT), &a, &b, true),
+            MoveError::Io(_)
+        ));
+        for link in [true, false] {
+            let r = move_failure(err(Errno::ACCESS), &a, &b, link);
+            assert!(matches!(r, MoveError::PermissionDenied(_)), "{r:?}");
+            assert!(matches!(
+                move_failure(err(Errno::EXIST), &a, &b, link),
+                MoveError::Occupied(_)
+            ));
+            assert!(matches!(
+                move_failure(err(Errno::XDEV), &a, &b, link),
+                MoveError::CrossVolume
+            ));
+        }
+        // EPERM from link on our own file: hard links are not supported (FAT, exFAT); from a rename: permission.
+        let r = move_failure(err(Errno::PERM), &a, &b, true);
+        assert!(matches!(r, MoveError::Unsupported(_)), "{r:?}");
+        let r = move_failure(err(Errno::PERM), &a, &b, false);
+        assert!(matches!(r, MoveError::PermissionDenied(_)), "{r:?}");
+        for x in [Errno::NOTSUP, Errno::OPNOTSUPP, Errno::NOSYS] {
+            let r = move_failure(err(x), &a, &b, true);
+            assert!(matches!(r, MoveError::Unsupported(_)), "{x:?}: {r:?}");
+        }
+        let r = move_failure(err(Errno::IO), &a, &b, true);
+        assert!(matches!(r, MoveError::Io(_)), "{r:?}");
+    }
+
+    /// The source disappears right before the link: reported as gone, not as a file system without links.
+    #[cfg(unix)]
+    #[test]
+    fn source_gone_before_the_link_is_not_unsupported() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        fs::write(&a, b"photo").expect("a");
+        let gone = || fs::remove_file(&a).expect("remove");
+        let r = link_then_unlink(&a, &b, &gone);
+        assert!(matches!(r, Err(MoveError::SourceGone)), "{r:?}");
+        assert!(!b.exists());
+    }
+
+    /// A target folder the process may not write to: a permission error, and the file stays.
+    #[cfg(unix)]
+    #[test]
+    fn read_only_target_folder_is_a_permission_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().expect("tempdir");
+        let a = d.path().join("a");
+        let ro = d.path().join("ro");
+        fs::write(&a, b"photo").expect("a");
+        fs::create_dir(&ro).expect("ro");
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o555)).expect("chmod");
+        // Root ignores folder permissions: nothing to check then.
+        let probe = ro.join("probe");
+        if fs::write(&probe, b"").is_ok() {
+            let _ = fs::remove_file(&probe);
+            let _ = fs::set_permissions(&ro, fs::Permissions::from_mode(0o755));
+            return;
+        }
+        let b = ro.join("b");
+        for r in [link_then_unlink(&a, &b, &|| {}), move_no_replace(&a, &b)] {
+            assert!(matches!(r, Err(MoveError::PermissionDenied(_))), "{r:?}");
+        }
+        assert_eq!(fs::read(&a).expect("a"), b"photo");
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).expect("chmod back");
     }
 
     #[cfg(unix)]
