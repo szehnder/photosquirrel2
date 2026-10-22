@@ -390,6 +390,14 @@ impl Writer {
     }
 }
 
+/// One write error as a [`CatalogError::Write`].
+fn one_error(e: WriteError) -> CatalogError {
+    CatalogError::Write(WriteErrors {
+        errors: vec![e],
+        total: 1,
+    })
+}
+
 struct WriterThread {
     conn: Connection,
     config: WriterConfig,
@@ -407,7 +415,7 @@ impl WriterThread {
                 match rx.recv_deadline(self.batch_start + self.config.max_delay) {
                     Ok(m) => m,
                     Err(RecvTimeoutError::Timeout) => {
-                        self.commit();
+                        self.commit_batch();
                         continue;
                     }
                     Err(RecvTimeoutError::Disconnected) => break,
@@ -421,7 +429,7 @@ impl WriterThread {
             match msg {
                 Msg::Cmd(cmd) => self.apply(cmd),
                 Msg::Flush(ack) => {
-                    self.commit();
+                    self.commit_batch();
                     let _ = ack.send(std::mem::take(&mut self.errors));
                 }
                 Msg::Exec(f, reply) => {
@@ -443,7 +451,7 @@ impl WriterThread {
                 Msg::Shutdown => break,
             }
         }
-        self.commit();
+        self.commit_batch();
         if let Err(e) = self
             .conn
             .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))
@@ -452,60 +460,76 @@ impl WriterThread {
         }
     }
 
-    fn begin(&mut self) {
+    /// Start a batch unless one is open. A failed `BEGIN` is recorded (for the next flush) and returned.
+    fn begin(&mut self) -> std::result::Result<(), WriteError> {
         if self.in_tx {
-            return;
+            return Ok(());
         }
         match self.conn.execute_batch("BEGIN IMMEDIATE") {
             Ok(()) => {
                 self.in_tx = true;
                 self.rows = 0;
                 self.batch_start = Instant::now();
+                Ok(())
             }
-            Err(e) => self.error("begin", None, &e),
+            Err(e) => Err(self.error("begin", None, &e)),
         }
     }
 
-    fn commit(&mut self) {
+    /// Commit the batch in progress (if any). A failed `COMMIT`, or a transaction SQLite already rolled back
+    /// by itself (disk full, I/O error), means every row of the batch is lost: the error is recorded for the
+    /// next flush and returned, so a caller waiting on this commit ([`WriterThread::exec`]) fails too.
+    fn commit(&mut self) -> std::result::Result<(), WriteError> {
         if !self.in_tx {
-            return;
+            return Ok(());
         }
         self.in_tx = false;
+        let rows = std::mem::take(&mut self.rows);
         if self.conn.is_autocommit() {
-            // SQLite rolled the transaction back by itself (disk full, I/O error): the batch is lost.
-            self.error_msg(
+            return Err(self.error_msg(
                 "commit",
-                format!("batch of {} rows was rolled back by SQLite", self.rows),
-            );
-            return;
+                format!("batch of {rows} rows was rolled back by SQLite"),
+            ));
         }
         match self.conn.execute_batch("COMMIT") {
             Ok(()) => {
                 self.stats.commits.fetch_add(1, Ordering::Relaxed);
                 self.stats
                     .rows_committed
-                    .fetch_add(self.rows as u64, Ordering::Relaxed);
+                    .fetch_add(rows as u64, Ordering::Relaxed);
+                Ok(())
             }
             Err(e) => {
-                self.error("commit", None, &e);
+                let err = self.error("commit", None, &e);
                 let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
             }
         }
-        self.rows = 0;
     }
 
-    /// Run `f` inside the current batch and commit right away (callers wait for the result).
+    /// Commit the batch in progress, logging a failure (recorded for the next flush). For the batch timer,
+    /// flushes and shutdown, whose callers learn of a lost batch from the flush's errors.
+    fn commit_batch(&mut self) {
+        // Already logged and recorded by `commit`.
+        let _ = self.commit();
+    }
+
+    /// Run `f` inside the current batch and commit right away (callers wait for the result). Fails when the
+    /// commit fails: the rows `f` wrote are not in the catalog.
     fn immediate<T>(&mut self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
-        self.begin();
+        self.begin().map_err(one_error)?;
         let r = f(&self.conn);
         self.rows += 1;
-        self.commit();
-        Ok(r?)
+        let committed = self.commit();
+        let v = r?;
+        committed.map_err(one_error)?;
+        Ok(v)
     }
 
-    /// Run `f` atomically inside a savepoint of the current batch, then commit.
+    /// Run `f` atomically inside a savepoint of the current batch, then commit. `Ok` only once the commit
+    /// succeeded; a failed commit (or `BEGIN`) is an error even when `f` succeeded.
     fn exec(&mut self, f: ExecFn) -> Result<()> {
-        self.begin();
+        self.begin().map_err(one_error)?;
         let r = (|| -> rusqlite::Result<()> {
             self.conn.execute_batch("SAVEPOINT exec")?;
             match f(&self.conn) {
@@ -517,19 +541,22 @@ impl WriterThread {
             }
         })();
         self.rows += 1;
-        self.commit();
-        Ok(r?)
+        let committed = self.commit();
+        r?;
+        committed.map_err(one_error)
     }
 
-    /// [`WriterThread::exec`] in a transaction of its own, committed with `synchronous = FULL`.
+    /// [`WriterThread::exec`] in a transaction of its own, committed with `synchronous = FULL`. `Ok` only when
+    /// that commit succeeded (the cleanup journal's intent is then on disk, ADR-0064).
     fn exec_durable(&mut self, f: ExecFn) -> Result<()> {
-        self.commit();
+        // The batch in progress holds other producers' rows; a failure there is theirs (reported at their
+        // flush), and `f` still gets a transaction of its own.
+        self.commit_batch();
         if let Err(e) = self.conn.execute_batch("PRAGMA synchronous = FULL") {
             return Err(e.into());
         }
-        let commits = self.stats.commits.load(Ordering::Relaxed);
         let r = self.exec(f);
-        if self.stats.commits.load(Ordering::Relaxed) > commits {
+        if r.is_ok() {
             self.stats.durable_commits.fetch_add(1, Ordering::Relaxed);
         }
         if let Err(e) = self.conn.execute_batch("PRAGMA synchronous = NORMAL") {
@@ -538,22 +565,32 @@ impl WriterThread {
         r
     }
 
-    fn error(&mut self, command: &'static str, file: Option<&FileKey>, e: &rusqlite::Error) {
-        self.stats.errors.fetch_add(1, Ordering::Relaxed);
-        self.errors.push(WriteError {
+    /// Record a write error for the next flush; returns it.
+    fn error(
+        &mut self,
+        command: &'static str,
+        file: Option<&FileKey>,
+        e: &rusqlite::Error,
+    ) -> WriteError {
+        self.push_error(WriteError {
             command,
             file: file.cloned(),
             message: e.to_string(),
-        });
+        })
     }
 
-    fn error_msg(&mut self, command: &'static str, message: String) {
-        self.stats.errors.fetch_add(1, Ordering::Relaxed);
-        self.errors.push(WriteError {
+    fn error_msg(&mut self, command: &'static str, message: String) -> WriteError {
+        self.push_error(WriteError {
             command,
             file: None,
             message,
-        });
+        })
+    }
+
+    fn push_error(&mut self, e: WriteError) -> WriteError {
+        self.stats.errors.fetch_add(1, Ordering::Relaxed);
+        self.errors.push(e.clone());
+        e
     }
 
     /// Apply one row inside the current batch; commit when the batch is full.
@@ -563,13 +600,14 @@ impl WriterThread {
         file: Option<&FileKey>,
         f: impl FnOnce(&Connection) -> rusqlite::Result<()>,
     ) {
-        self.begin();
+        // A failed BEGIN is recorded; the row then runs (and commits) on its own, as before.
+        let _ = self.begin();
         if let Err(e) = f(&self.conn) {
             self.error(command, file, &e);
         }
         self.rows += 1;
         if self.rows >= self.config.max_rows {
-            self.commit();
+            self.commit_batch();
         }
     }
 
@@ -654,7 +692,7 @@ impl WriterThread {
                 });
                 if terminal {
                     // Keep the WAL from growing across runs (design: passive checkpoint after each run).
-                    self.commit();
+                    self.commit_batch();
                     let _ = self
                         .conn
                         .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));

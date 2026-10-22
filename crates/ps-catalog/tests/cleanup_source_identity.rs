@@ -170,3 +170,67 @@ fn cleanup_writes_are_committed_durably() {
         .unwrap();
     assert_eq!(cat.writer().stats().durable_commits - before, 3);
 }
+
+/// Make every commit that sets a move of `file` to `moving` fail: the trigger writes a row whose deferred
+/// foreign key is checked, and fails, at `COMMIT` (the writer connection has `foreign_keys = ON`). A real
+/// commit failure, without a hook in the writer.
+fn fail_commits_of_moving_intent(catalog_db: &std::path::Path, file: i64) {
+    let c = Connection::open(catalog_db).unwrap();
+    c.execute_batch(&format!(
+        "CREATE TABLE fault_parent (id INTEGER PRIMARY KEY);
+         CREATE TABLE fault_child (parent INTEGER REFERENCES fault_parent (id) DEFERRABLE INITIALLY DEFERRED);
+         CREATE TRIGGER fault_on_moving AFTER UPDATE OF state ON cleanup_move
+         WHEN NEW.state = 1 AND NEW.file_id = {file}
+         BEGIN INSERT INTO fault_child (parent) VALUES (42); END;"
+    ))
+    .unwrap();
+}
+
+/// A durable write whose commit fails is an error, not a silent success: the cleanup run would otherwise
+/// rename a file with no intent in the catalog. The writer stays usable afterwards.
+#[test]
+fn a_failed_durable_commit_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = {
+        let cat = Catalog::open(dir.path()).unwrap();
+        let lib = cat.writer().export_library(b"/lib".to_vec(), None).unwrap();
+        let s = cat.writer().add_source(new_source("/s")).unwrap();
+        let id = cat
+            .writer()
+            .cleanup_create_run(NewCleanupRun {
+                source: s,
+                source_added_at_ms: 0,
+                root: b"/s".to_vec(),
+                library_id: lib,
+                folder: None,
+                uid: "u".into(),
+                moves: Box::new(|id| vec![a_move(1, "a.jpg", id), a_move(2, "b.jpg", id)]),
+            })
+            .unwrap();
+        cat.close().unwrap();
+        id
+    };
+    fail_commits_of_moving_intent(&dir.path().join(ps_catalog::CATALOG_FILE), 1);
+    let cat = Catalog::open(dir.path()).unwrap();
+    let before = cat.writer().stats();
+    let r = cat
+        .writer()
+        .cleanup_set_move(id, FileId(1), MoveState::Moving, None);
+    assert!(
+        matches!(r, Err(ps_catalog::CatalogError::Write(_))),
+        "a failed commit must fail the write: {r:?}"
+    );
+    let after = cat.writer().stats();
+    assert_eq!(after.durable_commits, before.durable_commits);
+    assert_eq!(after.commits, before.commits);
+    let moves = cat.read().cleanup_moves(id).unwrap();
+    assert_eq!(moves[0].state, MoveState::Planned, "rolled back");
+    // Other writes still commit.
+    cat.writer()
+        .cleanup_set_move(id, FileId(2), MoveState::Moving, None)
+        .unwrap();
+    assert_eq!(
+        cat.read().cleanup_moves(id).unwrap()[1].state,
+        MoveState::Moving
+    );
+}

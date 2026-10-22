@@ -482,6 +482,52 @@ fn scenario_cleanup_crash_mid_run_is_recoverable() {
     assert_eq!(snapshot(&root), before);
 }
 
+/// The catalog intent of a move cannot be committed (the disk errors at `COMMIT`): the run stops before the
+/// rename, so no file is ever renamed without its intent on disk. The failure is real: a trigger writes a row
+/// whose deferred foreign key fails at `COMMIT`.
+#[test]
+fn run_stops_before_the_rename_when_the_intent_commit_fails() {
+    let env = Env::new("intent-commit");
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let (id, first) = {
+        let svc = env.open();
+        let plan = svc.cleanups().plan(SourceId(2), None, None).unwrap();
+        let id = plan.summary.unwrap().run.id;
+        // The run takes its moves in this order: the first one fails, nothing moves before it.
+        let raw = svc.engine().catalog().read().cleanup_moves(id).unwrap();
+        (id, raw[0].clone())
+    };
+    let c = rusqlite::Connection::open(env.data().join(ps_catalog::CATALOG_FILE)).unwrap();
+    c.execute_batch(&format!(
+        "CREATE TABLE fault_parent (id INTEGER PRIMARY KEY);
+         CREATE TABLE fault_child (parent INTEGER REFERENCES fault_parent (id) DEFERRABLE INITIALLY DEFERRED);
+         CREATE TRIGGER fault_on_moving AFTER UPDATE OF state ON cleanup_move
+         WHEN NEW.state = 1 AND NEW.file_id = {}
+         BEGIN INSERT INTO fault_child (parent) VALUES (42); END;",
+        first.file.0
+    ))
+    .unwrap();
+    drop(c);
+    let svc = env.open();
+    let r = svc.cleanups().run(
+        id,
+        RunOptions::default(),
+        &AtomicBool::new(false),
+        &RunProgress::default(),
+    );
+    assert!(r.is_err(), "the run must stop: {r:?}");
+    assert!(first.rel_path.under(&root).is_file(), "never renamed");
+    assert!(!first.quarantine_rel_path.under(&root).exists());
+    assert_eq!(snapshot(&root), before, "nothing moved");
+    let raw = svc.engine().catalog().read().cleanup_moves(id).unwrap();
+    assert!(
+        raw.iter().all(|m| m.state == MoveState::Planned),
+        "{:?}",
+        raw.iter().map(|m| m.state).collect::<Vec<_>>()
+    );
+}
+
 // ---- gate-review fixes (ADR-0062 to ADR-0066) ----
 
 /// Plan and run a cleanup of `source`; every planned file moved.
