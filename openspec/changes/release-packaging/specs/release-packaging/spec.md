@@ -29,7 +29,7 @@ Every package SHALL contain a `THIRD-PARTY-LICENSES` file generated from `Cargo.
 - **THEN** the notices list mozjpeg-sys under IJG, Zlib and BSD-3-Clause with each licence text, leave out PhotoSquirrel's own crates, and the check fails when one of the three is missing
 
 ### Requirement: LGPL source offer
-For every third-party component under an LGPL licence, `THIRD-PARTY-LICENSES` SHALL start with a section naming the component and version, stating that it is linked statically, and giving the location of its source, the location of the complete source of the release (its `v<version>` tag with `Cargo.lock` and the pinned toolchain) and the steps to relink against a modified copy; LGPL SHALL be accepted only for the components so covered; and the release SHALL attach each such component's source archive and fail without it.
+For every statically linked LGPL component, `THIRD-PARTY-LICENSES` SHALL open with a section giving where its source and the complete source of the release are and how to relink, LGPL SHALL be accepted only for components so covered, and the release SHALL attach each such component's source and fail without it.
 
 #### Scenario: LGPL components offer their source
 - **WHEN** the notices for a dependency graph with rawler under LGPL-2.1 are rendered and the licence configuration and release workflow are read
