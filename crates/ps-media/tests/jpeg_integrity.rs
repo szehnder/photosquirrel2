@@ -137,6 +137,29 @@ fn truncated_and_corrupt_jpegs_fail_as_jpeg_decoder_does() {
 }
 
 #[test]
+fn small_truncated_jpegs_fail_too() {
+    // Under 1023 px on the long edge analysis decodes at full size through zune-jpeg, not mozjpeg; it must not pad
+    // a truncated file either.
+    for (w, h) in [(640u32, 480u32), (800, 600), (1000, 750)] {
+        let j = fx::jpeg(w, h, 9, 85);
+        let p = probe_bytes(&j, j.len() as u64, None);
+        assert!(decode_for_analysis(&j, &p).is_ok(), "{w}x{h} intact");
+        for pct in [10usize, 50, 90, 99] {
+            let bad = fx::truncate(&j, j.len() * pct / 100);
+            assert!(
+                decode_jpeg(&bad, 512).is_err(),
+                "{w}x{h} truncated at {pct}%"
+            );
+            let p = probe_bytes(&bad, bad.len() as u64, None);
+            assert!(
+                decode_for_analysis(&bad, &p).is_err(),
+                "{w}x{h} truncated at {pct}%: no analysis decode"
+            );
+        }
+    }
+}
+
+#[test]
 fn large_progressive_jpegs_are_serialized_or_refused() {
     use decode::JpegMemoryPlan::{Parallel, Serialized, TooLarge};
     // Sequential decodes stream MCU rows: no whole-image buffer at any size.

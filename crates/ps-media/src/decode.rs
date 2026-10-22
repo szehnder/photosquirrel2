@@ -355,7 +355,10 @@ fn mozjpeg_strict(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeError> {
 fn decode_zune(bytes: &[u8]) -> Result<RgbImage, DecodeError> {
     use zune_jpeg::zune_core::colorspace::ColorSpace;
     use zune_jpeg::zune_core::options::DecoderOptions;
+    // Strict: lenient zune-jpeg zero-pads truncated or corrupt scan data and returns Ok, which would hash a damaged
+    // photo (ADR-0055). An error here falls back to jpeg-decoder, which decides as before ADR-0054.
     let opts = DecoderOptions::default()
+        .set_strict_mode(true)
         .jpeg_set_out_colorspace(ColorSpace::RGB)
         .set_max_width(65_535)
         .set_max_height(65_535);

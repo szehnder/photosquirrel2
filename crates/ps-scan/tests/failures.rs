@@ -226,6 +226,13 @@ fn truncated_and_corrupt_jpegs_are_failed_not_hashed() {
         fx::truncate(&full, full.len() * 99 / 100),
     )
     .expect("write");
+    // Small originals (old cameras, web exports) decode through zune-jpeg at full size: the same rule applies.
+    let small = fx::jpeg(800, 600, 22, 90);
+    std::fs::write(
+        root.join("small-truncated.jpg"),
+        fx::truncate(&small, small.len() * 99 / 100),
+    )
+    .expect("write");
     let sos = full
         .windows(2)
         .position(|w| w == [0xFF, 0xDA])
@@ -240,7 +247,7 @@ fn truncated_and_corrupt_jpegs_are_failed_not_hashed() {
     let intact = &files["intact.jpg"];
     assert_eq!(intact.stage, Stage::Thumbed);
     assert!(intact.hashes.is_some(), "the intact copy is hashed");
-    for name in ["truncated.jpg", "garbage.jpg"] {
+    for name in ["truncated.jpg", "small-truncated.jpg", "garbage.jpg"] {
         let f = &files[name];
         assert_eq!(f.stage, Stage::Failed, "{name}");
         assert!(f.hashes.is_none(), "{name} is not hashed");
