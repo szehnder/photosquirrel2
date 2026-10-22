@@ -88,6 +88,14 @@ pub fn diff(
         present: entries.len() as u64,
         ..DiffOutput::default()
     };
+    // Files a cleanup run moved into this source's quarantine folder (the scanner never walks it): accounted
+    // for, so counted as quarantined rather than missing, and never "found moved" to another path.
+    let quarantined: HashMap<RelPath, (u64, i64)> = readers
+        .quarantined_files()?
+        .into_iter()
+        .filter(|q| q.source == source)
+        .map(|q| (q.rel_path, (q.size, q.mtime_ns)))
+        .collect();
     let mut page = readers.source_files(source, None, PAGE)?;
     let mut pi = 0usize;
     let mut walk = entries.into_iter().peekable();
@@ -102,12 +110,19 @@ pub fn diff(
         match (rec, next) {
             (None, None) => break,
             (Some(r), w) if w.is_none_or(|w| r.key.path < w.path) => {
-                // In the catalog only: missing.
-                out.counts.missing += 1;
+                // In the catalog only: missing (or in the quarantine folder).
+                let in_quarantine = quarantined
+                    .get(&r.key.path)
+                    .is_some_and(|&(size, mtime)| size == r.stat.size && mtime == r.stat.mtime_ns);
+                if in_quarantine {
+                    out.counts.quarantined += 1;
+                } else {
+                    out.counts.missing += 1;
+                }
                 if r.missing_since_ms.is_none() {
                     out.newly_missing.push(r.key.clone());
                 }
-                if let Some(id) = r.identity {
+                if let Some(id) = r.identity.filter(|_| !in_quarantine) {
                     out.move_candidates
                         .entry(id)
                         .or_default()

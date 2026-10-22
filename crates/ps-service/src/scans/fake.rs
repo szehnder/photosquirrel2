@@ -395,6 +395,7 @@ impl FakeScanService {
                     returning: 0,
                     moved: 0,
                     reclassified: 0,
+                    quarantined: 0,
                 }
             };
             stages.add(&st);

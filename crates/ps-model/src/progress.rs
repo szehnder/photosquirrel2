@@ -123,7 +123,8 @@ pub struct DiffCounts {
     pub changed: u64,
     /// Fingerprint equal: no work (unless an earlier run left the file unfinished).
     pub unchanged: u64,
-    /// In the catalog but not on disk any more (kept, marked missing). Excludes files found moved.
+    /// In the catalog but not on disk any more (kept, marked missing). Excludes files found moved and files a
+    /// cleanup run moved into the quarantine folder (`quarantined`).
     pub missing: u64,
     /// Previously missing files that came back unchanged (counted in `unchanged` too).
     pub returning: u64,
@@ -133,6 +134,10 @@ pub struct DiffCounts {
     /// without reading them (counted in `unchanged` too; ADR-0051).
     #[serde(default)]
     pub reclassified: u64,
+    /// Not at their path because a cleanup run moved them into the source's quarantine folder (ADR-0034):
+    /// accounted for, not missing.
+    #[serde(default)]
+    pub quarantined: u64,
 }
 
 impl DiffCounts {
@@ -144,6 +149,7 @@ impl DiffCounts {
         self.returning += o.returning;
         self.moved += o.moved;
         self.reclassified += o.reclassified;
+        self.quarantined += o.quarantined;
     }
 }
 

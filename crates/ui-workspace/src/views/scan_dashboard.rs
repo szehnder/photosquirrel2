@@ -533,7 +533,15 @@ fn diff_card(s: &ProgressSnapshot, cx: &App) -> AnyElement {
                 .child(item("diff-unchanged", "unchanged", d.unchanged, colors.text_faint))
                 .child(item("diff-new", "new", d.new, colors.accent))
                 .child(item("diff-changed", "changed", d.changed, colors.info))
-                .child(item("diff-missing", "missing", d.missing, colors.warning)),
+                .child(item("diff-missing", "missing", d.missing, colors.warning))
+                .when(d.quarantined > 0, |row| {
+                    row.child(item(
+                        "diff-quarantined",
+                        "quarantined",
+                        d.quarantined,
+                        colors.accent_text,
+                    ))
+                }),
         )
         .into_any_element()
 }

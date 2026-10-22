@@ -179,7 +179,8 @@ fn foreground(ctx: &Ctx, svc: &ScanService, run: ScanRunId) -> Result<()> {
 
 fn print_summary(run: ScanRunId, s: &RunSummary) {
     println!(
-        "run {run} {}: {} files processed ({} read) in {}; {} new, {} changed, {} unchanged, {} missing, {} errors",
+        "run {run} {}: {} files processed ({} read) in {}; {} new, {} changed, {} unchanged, {} missing, {} \
+         quarantined, {} errors",
         s.status.as_str(),
         s.processed,
         bytes(s.bytes_read),
@@ -188,6 +189,7 @@ fn print_summary(run: ScanRunId, s: &RunSummary) {
         s.diff.changed,
         s.diff.unchanged,
         s.diff.missing,
+        s.diff.quarantined,
         s.errors
     );
     if let Some(g) = &s.grouping {

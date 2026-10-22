@@ -318,7 +318,10 @@ fn scenario_cleanup_quarantine_ignored_by_scanner() {
     assert_eq!(run_all(&svc, id).moved, plan.moves.len() as u64);
     let files_before = count_files(&svc);
     svc.start(&[SourceId(1)]).unwrap();
-    svc.wait().unwrap();
+    let rescan = svc.wait().unwrap();
+    // The rescan counts the moved files as quarantined, not missing.
+    assert_eq!(rescan.diff.missing, 0, "{:?}", rescan.diff);
+    assert_eq!(rescan.diff.quarantined, plan.moves.len() as u64);
     // Nothing under the quarantine folder is catalogued; the moved files are quarantined, not missing.
     let mut paths = Vec::new();
     svc.engine()
