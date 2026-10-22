@@ -1071,4 +1071,34 @@ mod tests {
             "LICENSE\nREADME.md\nTHIRD-PARTY-LICENSES.bak\n"
         ));
     }
+
+    #[test]
+    fn scenario_release_packaging_readme_screenshots_exist() {
+        let readme = fs::read_to_string(root().join("README.md")).expect("README.md");
+        let mut images = Vec::new();
+        for part in readme.split("](").skip(1) {
+            let target = part.split(')').next().unwrap_or_default();
+            if target.ends_with(".png") {
+                images.push(target.to_owned());
+            }
+        }
+        for image in &images {
+            assert!(
+                root().join(image).is_file(),
+                "README references missing {image}"
+            );
+        }
+        for view in ["gallery", "scan-dashboard", "duplicates", "export"] {
+            assert!(
+                images.iter().any(|i| i.contains(view)),
+                "README shows no {view} screenshot: {images:?}"
+            );
+        }
+        for promise in ["read-only", "copies", "telemetry"] {
+            assert!(
+                readme.contains(promise),
+                "README does not mention {promise}"
+            );
+        }
+    }
 }

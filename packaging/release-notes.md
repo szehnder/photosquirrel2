@@ -9,7 +9,8 @@ download the file for your system below.
 | Debian, Ubuntu (x64) | `PhotoSquirrel-{{version}}-linux-x86_64.deb` | `sudo apt install ./PhotoSquirrel-{{version}}-linux-x86_64.deb` |
 | Anything else | `.tar.gz` / `.zip` | Both programs, unpacked and ready to run |
 
-Every package contains the desktop app (`photosquirrel`) and the headless CLI (`photosquirrel-cli`). Each file has a
+Every package contains the desktop app (`photosquirrel`), the headless CLI (`photosquirrel-cli`) and the licence
+notices of the open-source components they include (`THIRD-PARTY-LICENSES`). Each file has a
 `.sha256` beside it; check it with `sha256sum -c <file>.sha256` (on macOS, `shasum -a 256 -c`).
 
 ### First launch

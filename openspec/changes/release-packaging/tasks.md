@@ -18,8 +18,8 @@
 
 ## 3. Documentation
 
-- [ ] 3.1 Generate screenshots with `cargo xtask screenshot --all-surfaces` on the synthetic corpus and copy the chosen ones to `docs/screenshots/`; verify the files exist
-- [ ] 3.2 Write `README.md`; verify `scenario_release_packaging_readme_screenshots_exist`
+- [x] 3.1 Generate screenshots with `cargo xtask screenshot --all-surfaces` on the synthetic corpus and copy the chosen ones to `docs/screenshots/`; verify the files exist (demo library, dark theme, all 14 captures reviewed: library -> `gallery-grid-dark.png`, sources -> `scan-dashboard-dark.png`, duplicates -> `duplicates-group-dark.png`, `export-dark.png`, `reports-dark.png`, `ai-review-dark.png`)
+- [x] 3.2 Write `README.md`; verify `scenario_release_packaging_readme_screenshots_exist`
 
 ## 4. Verification
 
