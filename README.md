@@ -130,8 +130,9 @@ photosquirrel-cli doctor                              # version, data folder, op
 
 In Reports, **Free up space** appears on every drive that has files whose best copy is already in your library
 (exported, or a duplicate of an exported photo); the drive does not have to be fully accounted for. It plans a
-cleanup of exactly those files, listed with where each would go, per folder, with the space it frees. Pending,
-excluded, unreadable and missing files are never included. Nothing moves until you confirm the plan.
+cleanup of exactly those files, listed with where each would go, per folder, with the space you can free. Pending,
+excluded, unreadable and missing files are never included. Nothing moves until you confirm the plan. A move stays
+on the same drive, so the space is only freed once you delete the quarantine folder yourself (see below).
 
 - Right before each move, the file is read and hashed again and its library copy re-verified. Anything that
   changed, or whose library copy is gone, stays where it is and is listed with the reason.

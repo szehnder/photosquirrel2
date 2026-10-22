@@ -58,8 +58,9 @@ enum Command {
         #[command(subcommand)]
         command: ExportCommand,
     },
-    /// Reclaim space: move already-exported or covered originals into a quarantine folder on the same drive,
-    /// re-verified first, journaled and undoable. Nothing is ever deleted.
+    /// Make space you can free: move already-exported or covered originals into a quarantine folder on the same
+    /// drive, re-verified first, journaled and undoable. Nothing is ever deleted; the space is freed only when
+    /// you delete the quarantine folder yourself (check `report --verify` first).
     Cleanup {
         #[command(subcommand)]
         command: CleanupCommand,

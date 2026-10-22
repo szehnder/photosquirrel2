@@ -1,5 +1,5 @@
 //! The Cleanup panel of the Reports view (change `quarantine-cleanup`, task 5.3; ADR-0024, ADR-0061): review
-//! a plan (what moves where, per folder, how much space it frees), an explicit confirmation, live progress,
+//! a plan (what moves where, per folder, how much space you can free), an explicit confirmation, live progress,
 //! and the history of runs with Undo.
 //!
 //! Nothing moves without the confirmation: "Move N files…" only opens it, and only its own button starts the
@@ -481,7 +481,7 @@ impl CleanupView {
                     ))
                     .child(kit::stat(
                         "cleanup-bytes",
-                        "Space freed on this drive",
+                        "Space you can free",
                         kit::format_bytes(r.planned_bytes),
                         cx,
                     ))
@@ -503,7 +503,7 @@ impl CleanupView {
                          photo (covered) are listed. Right before each move the file is re-read and hashed and its \
                          library copy re-verified; anything that changed stays where it is. Files are renamed into \
                          a quarantine folder on the same drive: nothing is copied, nothing is deleted, and Undo \
-                         puts everything back.",
+                         puts everything back. The space is freed only once you delete that folder yourself.",
                     ),
             )
             .child(
