@@ -14,7 +14,9 @@ and copies those best copies into one clean library folder ready for Apple Photo
 - **Export only copies.** Each best copy is copied into the library folder you choose, checked against its
   original by hash, and only then given its final name. Nothing in the library is ever overwritten; running the
   export again copies only what is new.
-- **Nothing is deleted.** There is no code path that deletes a file.
+- **Nothing of yours is deleted.** PhotoSquirrel never deletes or moves your source files or the finished copies
+  in your library. The only files it ever removes are ones it made itself: unfinished `.partial` export copies,
+  preview-cache entries and its own temporary and control files.
 - **No telemetry.** The app sends nothing anywhere: no analytics, crash reports or update checks. The only
   network traffic is the optional AI feature below, and only after you start it.
 
@@ -55,7 +57,7 @@ You don't need Rust or any developer tools.
 | macOS 11+ (Apple silicon and Intel) | `PhotoSquirrel-<version>-macos-universal.dmg` | Open it and drag PhotoSquirrel to Applications |
 | Windows 10/11 (x64) | `PhotoSquirrel-<version>-windows-x86_64-setup.exe` | Run it; installs for your user, no admin rights needed |
 | Linux, any distribution (x64) | `PhotoSquirrel-<version>-linux-x86_64.AppImage` | `chmod +x` the file, then run it |
-| Debian, Ubuntu (x64) | `PhotoSquirrel-<version>-linux-x86_64.deb` | `sudo apt install ./PhotoSquirrel-<version>-linux-x86_64.deb` |
+| Debian, Ubuntu (x64) | `PhotoSquirrel-<version>-linux-x86_64.deb` | `sudo apt install ./PhotoSquirrel-<version>-linux-x86_64.deb`; it installs as the package `photo-squirrel` (`sudo apt remove photo-squirrel`) |
 | Anything else | `.tar.gz` (Linux, macOS) or `.zip` (Windows) | Unpack; both programs are inside, ready to run |
 
 Every package contains the desktop app (`photosquirrel`), the command-line tool (`photosquirrel-cli`) and the
@@ -73,8 +75,9 @@ The packages are not code-signed yet, so your system warns you the first time:
 
 ### Requirements
 
-- **Linux:** glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+), a Vulkan driver (Mesa is fine), and
-  optionally a Secret Service keyring (GNOME Keyring, KWallet) to store AI provider keys.
+- **Linux:** glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+), a Vulkan driver (Mesa is fine), the
+  D-Bus, xcb and xkbcommon libraries every desktop has (the AppImage uses the system's), and optionally a Secret
+  Service keyring (GNOME Keyring, KWallet) to store AI provider keys.
 - **x86_64 CPUs:** about 2009 or newer (x86-64-v2: SSE4.2 and POPCNT).
 - **Optional:** `ffmpeg` on your PATH for video poster frames (without it videos show a placeholder with their
   length and date).
@@ -166,3 +169,16 @@ never lose a photo). `cargo xtask ci` runs everything CI checks.
 
 PhotoSquirrel is licensed under the [Apache License 2.0](LICENSE). The licences of the components it includes are
 listed in `THIRD-PARTY-LICENSES` in every package.
+
+**LGPL components.** The raw-photo decoder [rawler](https://crates.io/crates/rawler) 0.8.0 is licensed under the
+LGPL-2.1 and is linked statically into both programs. Its source is on crates.io and attached to every release
+(`rawler-0.8.0.crate`); the complete source of a release is its tag, `https://github.com/szehnder/photosquirrel2/tree/v<version>`,
+with the `Cargo.lock` and the pinned Rust toolchain it was built with. To relink against a modified rawler, unpack
+it next to the source, add
+
+```toml
+[patch.crates-io]
+rawler = { path = "../rawler-0.8.0" }
+```
+
+to the workspace `Cargo.toml` and run `cargo build --profile dist -p photosquirrel -p photosquirrel-cli`.

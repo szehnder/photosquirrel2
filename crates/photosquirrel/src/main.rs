@@ -131,9 +131,12 @@ fn main() {
     measure::mark_start();
     // Before any thread starts (it sets environment variables for the GPU loaders).
     gpu::select_drivers();
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
-        .format_timestamp_millis()
-        .init();
+    // nom-exif logs a WARN for every odd but harmless EXIF tag it skips; RUST_LOG still overrides this.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,nom_exif=error"),
+    )
+    .format_timestamp_millis()
+    .init();
     let args = Args::parse();
     if let Some(items) = args.synthetic_catalog {
         std::process::exit(synthetic::rerun_on(items));

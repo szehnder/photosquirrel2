@@ -424,9 +424,12 @@ fn settings(t: &ExportTarget) -> ps_export::ProfileSettings {
 }
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
-        .target(env_logger::Target::Stderr)
-        .init();
+    // nom-exif logs a WARN for every odd but harmless EXIF tag it skips; RUST_LOG still overrides this.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn,nom_exif=error"),
+    )
+    .target(env_logger::Target::Stderr)
+    .init();
     // Usage errors exit with 2 (clap's default), help and version with 0.
     let cli = Cli::parse();
     control::install_interrupt_handler();

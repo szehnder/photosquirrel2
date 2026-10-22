@@ -11,7 +11,7 @@
 //! and counts mismatches.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ps_model::{ContentId, ContentIdKind, DeviceClass, RelPath};
 
@@ -128,7 +128,7 @@ mod imp {
     /// Solid-state or rotational from `/sys/dev/block/<maj:min>/queue/rotational` (the partition's parent
     /// disk holds the queue). Anything without a block device (tmpfs, overlay) is unknown.
     fn block_class(major: u64, minor: u64) -> DeviceClass {
-        let base = PathBuf::from(format!("/sys/dev/block/{major}:{minor}"));
+        let base = std::path::PathBuf::from(format!("/sys/dev/block/{major}:{minor}"));
         for p in [
             base.join("queue/rotational"),
             base.join("../queue/rotational"),

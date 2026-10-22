@@ -62,8 +62,8 @@ pub fn capabilities(poster_tool: Option<&std::path::Path>) -> Capabilities {
             detail: if HEIC_SUPPORTED {
                 "HEIC/HEIF/AVIF stills via libheif".into()
             } else {
-                "HEIC/HEIF/AVIF previews unavailable: install libheif (apt install libheif-dev / brew install \
-                 libheif) and build with `--features heic`"
+                "HEIC/HEIF/AVIF previews unavailable: this build has no HEIC decoding (the prebuilt packages do \
+                 not include it yet). Build from source with libheif 1.17+ and `--features heic` to enable it"
                     .into()
             },
         },
