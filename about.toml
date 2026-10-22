@@ -1,0 +1,38 @@
+# Third-party licence notices shipped in every installer and archive (`cargo xtask package`, ADR-0058).
+# Licences the shipped binaries' dependencies may use. A new licence fails packaging until it is added here.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "IJG",
+    "Unicode-3.0",
+    "Unlicense",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "MPL-2.0",
+    "LGPL-2.1",
+    "CDLA-Permissive-2.0",
+    "NCSA",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+
+# nom-exif 3.8 ships an MIT LICENSE file but no `license` field.
+[nom-exif.clarify]
+license = "MIT"
+
+[[nom-exif.clarify.files]]
+path = "LICENSE"
+checksum = "9cfbbedc535b1a4b73b2f7f51fd683ac6cae914f6d4bc7f271b9b230dd4e2808"

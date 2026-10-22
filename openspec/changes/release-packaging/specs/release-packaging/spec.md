@@ -21,6 +21,13 @@ Every package SHALL contain the desktop application as its main binary and the h
 - **WHEN** the packager configuration is read
 - **THEN** the desktop application is the only main binary and the CLI binary is included
 
+### Requirement: Third-party licence notices
+Every package SHALL contain a `THIRD-PARTY-LICENSES` file generated from `Cargo.lock` for the shipped binaries, giving each third-party licence text and the components it covers, and packaging SHALL fail if the notices do not acknowledge mozjpeg-sys under each of IJG, Zlib and BSD-3-Clause or if a finished package lacks the file.
+
+#### Scenario: Licence notices acknowledge mozjpeg-sys
+- **WHEN** the licence reports of the app and the CLI are merged and rendered
+- **THEN** the notices list mozjpeg-sys under IJG, Zlib and BSD-3-Clause with each licence text, leave out PhotoSquirrel's own crates, and the check fails when one of the three is missing
+
 ### Requirement: Artifact naming
 Artifacts SHALL be named `PhotoSquirrel-<version>-<os>-<arch>` followed by the format's extension, with `-setup.exe` for the Windows installer and `universal` as the macOS architecture.
 

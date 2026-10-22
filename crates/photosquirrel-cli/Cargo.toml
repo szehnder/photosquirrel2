@@ -10,6 +10,10 @@ license.workspace = true
 name = "photosquirrel-cli"
 path = "src/main.rs"
 
+[features]
+# HEIC/HEIF decoding via the system libheif (ADR-0017, ADR-0059).
+heic = ["ps-media/heic"]
+
 [dependencies]
 ps-fixtures.workspace = true
 ps-service.workspace = true
