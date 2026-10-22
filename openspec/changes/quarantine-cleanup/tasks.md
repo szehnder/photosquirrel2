@@ -41,3 +41,41 @@
   0 pending, and a rescan after the undos found 0 missing, 0 quarantined, fully accounted for.)
 - [x] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 6.4 `openspec validate quarantine-cleanup --strict` passes
+
+## 7. Gate-review fixes (reviewer verdict PASS-WITH-FIXES; ADR-0062 to ADR-0066)
+
+- [x] 7.1 (HIGH) A quarantined file whose library copy is gone or differs is pending, not accounted for, with its
+  quarantine path and the reason (badge, text report, drill-down); export copies such a keeper from its quarantine
+  path, read-only (ADR-0066); README: verify before deleting a quarantine folder, which the app never deletes;
+  verify `scenario_cleanup_quarantined_file_without_library_copy_not_accounted`, `scenario_cleanup_export_reads_quarantined_keeper`
+- [x] 7.2 (MEDIUM-HIGH) Runs bound to their source: removing or folding a source with quarantined files is refused,
+  source ids a run names are never reused, migration 15 stores the source identity, undo/list use the stored root
+  when the source is gone, quarantined files match by source + path + fingerprint (ADR-0063); verify
+  `scenario_cleanup_source_with_quarantined_files_not_removed`, `scenario_cleanup_run_of_removed_source_refused`,
+  `ps-catalog/tests/cleanup_source_identity.rs`
+- [x] 7.3 (MEDIUM) No check-then-rename: `MoveFileExW` without replace on Windows, link + verified-inode unlink on
+  Unix without RENAME_NOREPLACE, otherwise refused (ADR-0062); verify `scenario_cleanup_target_appearing_mid_move_not_replaced`,
+  `fallback_moves_the_same_inode`, Windows/macOS CI
+- [x] 7.4 (MEDIUM) Cleanup catalog writes committed with `synchronous=FULL`; reconcile resolves planned/skipped and
+  quarantined moves against `journal.jsonl` and the file system (ADR-0064); verify
+  `scenario_cleanup_lost_catalog_commit_recovered`, `cleanup_writes_are_committed_durably`, `durable_writes_use_synchronous_full`
+- [x] 7.5 (MEDIUM) One operation slot: scan, export, cleanup plan/run/undo and reconcile exclude each other;
+  reconcile skips while a run is live (ADR-0065); verify `scenario_cleanup_operations_exclude_each_other`
+- [x] 7.6 (LOW) Reconcile re-hashes (content identity) before deciding where a file is; verify
+  `reconcile_compares_content_not_only_size`
+- [x] 7.7 (LOW) Layering move check parses with `syn` and scans tokens: imports and globs, unlink via
+  libc/rustix/nix, Win32 moves, `std::fs::copy`, `//` in strings, `#[cfg(test)]` items, build.rs, benches,
+  examples and xtask; verify the `layering::tests` unit tests and `cargo xtask layering`
+- [x] 7.8 (LOW) A torn journal record never swallows the next one; verify `a_torn_record_never_swallows_the_next_one`
+- [x] 7.9 (LOW) Wording: rescans count quarantined files (not missing), the text report lists quarantined counts,
+  README matches when "Free up space" appears and how moves work, the plan's quarantine column keeps the run folder
+  (`quarantine_target_keeps_the_run_folder`, `docs/screenshots/cleanup-dark.png` recaptured)
+- [x] 7.10 Gate re-run (release CLI, fresh medium corpus seed 42, 9,933 files; all three drives scanned and exported,
+  lightroom): drive-b `cleanup run` moved 2,635 files (1.8 GB) in 53 s, 0 skipped; report showed 2,635 quarantined,
+  100% accounted for; a rescan counted 2,635 quarantined, 0 missing; `cleanup undo` restored 2,635 in 51 s;
+  path/size/SHA-256 snapshots before and after equal (4,599 entries). Defect 1 repro (drive-a, 3,041 moved; one
+  exported keeper's library copy deleted): `report --verify` said "3 pending (3 only in the quarantine folder,
+  library copy gone)"; `export run` copied it again from the quarantine path (0 failed, quarantined file unchanged)
+  and the drive was 100% accounted for again. Defect 2 repro (drive-c, 2,965 moved): `sources remove 3` and adding
+  the folder that contains the drives were refused; after undo, removing source 3 and adding another folder gave
+  it id 4, and run 3 still lists drive-c. All undos complete: 0 files left in any quarantine folder.

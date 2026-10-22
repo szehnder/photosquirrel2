@@ -39,7 +39,7 @@ and copies those best copies into one clean library folder ready for Apple Photo
   sidecars. A completion report accounts for every file found: exported, covered by a better copy, excluded,
   pending, unreadable or missing.
 - **Optional AI descriptions, local first.** See [AI insights](#ai-insights-optional).
-- **Optional, reversible cleanup.** Once a drive is accounted for, move what is already safe in your library into a
+- **Optional, reversible cleanup.** Move the files of a drive that are already safe in your library into a
   quarantine folder on that drive, and undo it whenever you like. See [Freeing up space](#freeing-up-space-optional).
 
 | | |
@@ -128,21 +128,31 @@ photosquirrel-cli doctor                              # version, data folder, op
 
 ## Freeing up space (optional)
 
-When Reports says a drive is accounted for, **Free up space** on that drive plans a cleanup: every file whose
-best copy is already in your library (exported, or a duplicate of an exported photo) is listed with where it would
-go, per folder, with the space it frees. Pending, excluded, unreadable and missing files are never included.
-Nothing moves until you confirm the plan.
+In Reports, **Free up space** appears on every drive that has files whose best copy is already in your library
+(exported, or a duplicate of an exported photo); the drive does not have to be fully accounted for. It plans a
+cleanup of exactly those files, listed with where each would go, per folder, with the space it frees. Pending,
+excluded, unreadable and missing files are never included. Nothing moves until you confirm the plan.
 
 - Right before each move, the file is read and hashed again and its library copy re-verified. Anything that
   changed, or whose library copy is gone, stays where it is and is listed with the reason.
 - Files are **renamed** into `.photosquirrel-quarantine/<run>/` at the top of the same drive, keeping their folder
-  structure. Nothing is copied, nothing is overwritten, nothing is deleted, and a move to another drive is refused.
+  structure, by a rename that fails rather than replace anything. Where a drive cannot rename that way (some
+  network shares and FUSE or exFAT drives), the file gets its new name as a hard link first and loses its old
+  name only once both are the same file; a drive that can do neither (FAT, some shares) is left alone and the
+  plan lists why. Nothing is copied, nothing is overwritten, nothing is deleted, and a move to another drive is
+  refused.
 - Every move is written to a journal first (in the catalog and as `journal.jsonl` in the run's quarantine folder),
   so an interrupted cleanup is sorted out on the next start.
 - **Undo** puts a whole run back (the command line can also undo one folder or some files). A file whose old place
   is now taken by something else stays in quarantine and is reported; it never overwrites. After a full undo the
   empty folders the run created are removed; the journal stays.
-- PhotoSquirrel never empties the quarantine. When you are sure, delete the folder with your file manager.
+- While a drive has files in quarantine it cannot be removed from PhotoSquirrel (or folded into a folder that
+  contains it): undo its runs first.
+- PhotoSquirrel never empties or deletes a quarantine folder; that is up to you. Before you delete one with your
+  file manager, check its drive with **Verify copies** in Reports (or `photosquirrel-cli report --verify`): only
+  when the drive is 100% accounted for is every file in its quarantine also in your library. If a library copy
+  has gone missing or changed, Reports lists the quarantined files that are no longer covered as pending ("only in
+  the quarantine folder"), and the next export copies them from the quarantine folder again.
 
 ![A cleanup plan in Reports, waiting for confirmation](docs/screenshots/cleanup-dark.png)
 
