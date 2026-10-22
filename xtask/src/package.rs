@@ -601,13 +601,24 @@ fn verify_licences(os: Os, kind: Kind, package: &Path, staging: &Path) -> Result
         Kind::Dmg => {
             let mount = staging.join("dmg-check");
             fs::create_dir_all(&mount)?;
-            crate::run(
-                "mount the dmg",
-                Command::new("hdiutil")
-                    .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
-                    .arg(&mount)
-                    .arg(package),
-            )?;
+            // The DMG carries the licence agreement (`licenseFile`), which `hdiutil attach` shows through a
+            // pager and asks to accept; answer it on stdin.
+            let mut attach = Command::new("hdiutil")
+                .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
+                .arg(&mount)
+                .arg(package)
+                .env("PAGER", "cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .context("running hdiutil attach")?;
+            if let Some(mut stdin) = attach.stdin.take() {
+                use std::io::Write as _;
+                stdin.write_all(b"Y\n").ok();
+            }
+            if !attach.wait()?.success() {
+                bail!("hdiutil could not mount {}", package.display());
+            }
             let text = walk(&mount).map(|files| files.join("\n"));
             crate::run(
                 "unmount the dmg",
