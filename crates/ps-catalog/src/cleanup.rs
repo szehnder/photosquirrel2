@@ -1,7 +1,8 @@
 //! Catalog storage for cleanup runs (migration 14, ADR-0061): the catalog half of the write-ahead journal.
 //!
-//! Every write is committed when it returns, so a move's intent is durable before the rename it describes
-//! (`ps_export::quarantine`). This crate stores rows only; it never touches a source tree.
+//! Every write is committed with `synchronous = FULL` when it returns ([`Writer::exec_durable`], ADR-0064), so
+//! a move's intent is on disk before the rename it describes (`ps_export::quarantine`), even across a power
+//! loss. This crate stores rows only; it never touches a source tree.
 
 use rusqlite::{Connection, Row, params};
 
@@ -58,8 +59,30 @@ fn move_row(r: &Row<'_>) -> Result<CleanupMove> {
     })
 }
 
-const RUN_COLUMNS: &str =
-    "id, source_id, root_path, library_id, folder, uid, state, created_at, started_at, ended_at";
+const RUN_COLUMNS: &str = "id, source_id, root_path, library_id, folder, uid, state, created_at, started_at, \
+                           ended_at, source_added_at";
+/// [`RUN_COLUMNS`] on a catalog before migration 15 (opened read-only by an observer).
+const RUN_COLUMNS_V14: &str = "id, source_id, root_path, library_id, folder, uid, state, created_at, \
+                               started_at, ended_at, NULL";
+
+/// SQL condition: the cleanup run `r` belongs to the source that now has its id (same `added_at`).
+const RUN_OF_CURRENT_SOURCE: &str =
+    "EXISTS (SELECT 1 FROM source s WHERE s.id = r.source_id AND s.added_at = r.source_added_at)";
+
+/// SQL condition on a row of `file` (unaliased): a cleanup run moved this very file into its quarantine folder
+/// and it is still there (move state 2 or 4) - same source (by identity), same relative path and the stat
+/// fingerprint the move recorded. File ids alone are not enough: SQLite may reuse them (ADR-0063). A macro so
+/// other modules can `concat!` it into their SQL.
+macro_rules! file_is_quarantined_sql {
+    () => {
+        "EXISTS (SELECT 1 FROM cleanup_move m \
+         JOIN cleanup_run r ON r.id = m.run_id \
+         JOIN source s ON s.id = r.source_id AND s.added_at = r.source_added_at \
+         WHERE m.rel_path = file.rel_path AND m.state IN (2, 4) AND r.source_id = file.source_id \
+         AND m.size = file.size AND m.mtime_ns = file.mtime_ns)"
+    };
+}
+pub(crate) use file_is_quarantined_sql;
 
 fn run_row(r: &Row<'_>) -> Result<CleanupRunRecord> {
     let state: String = r.get(6)?;
@@ -77,6 +100,7 @@ fn run_row(r: &Row<'_>) -> Result<CleanupRunRecord> {
         created_at_ms: r.get(7)?,
         started_at_ms: r.get(8)?,
         ended_at_ms: r.get(9)?,
+        source_added_at_ms: r.get(10)?,
     })
 }
 
@@ -109,6 +133,8 @@ fn insert_move(c: &Connection, run: i64, m: &CleanupMove) -> rusqlite::Result<()
 /// the quarantine paths from it.
 pub struct NewCleanupRun {
     pub source: SourceId,
+    /// The source's `added_at` (its identity with the id).
+    pub source_added_at_ms: i64,
     pub root: Vec<u8>,
     pub library_id: i64,
     pub folder: Option<RelPath>,
@@ -116,16 +142,34 @@ pub struct NewCleanupRun {
     pub moves: Box<dyn FnOnce(i64) -> Vec<CleanupMove> + Send>,
 }
 
+/// A file a cleanup run moved into its source's quarantine folder that is still there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuarantinedFile {
+    pub file: FileId,
+    pub run: i64,
+    pub source: SourceId,
+    /// Its original path, relative to the source root.
+    pub rel_path: RelPath,
+    pub quarantine_rel_path: RelPath,
+    /// The stat fingerprint it had when it was moved (a catalog row with another fingerprint at `rel_path`
+    /// describes a different file).
+    pub size: u64,
+    pub mtime_ns: i64,
+}
+
 impl Writer {
-    /// Store a planned run and its moves in one transaction; returns the run id.
+    /// Store a planned run and its moves in one transaction; returns the run id. Like every write of this
+    /// module it is committed with `synchronous = FULL` ([`Writer::exec_durable`], ADR-0064).
     pub fn cleanup_create_run(&self, run: NewCleanupRun) -> Result<i64> {
-        self.exec(move |c| {
+        self.exec_durable(move |c| {
             c.prepare_cached(
-                "INSERT INTO cleanup_run (source_id, root_path, library_id, folder, uid, state, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'planned', ?6)",
+                "INSERT INTO cleanup_run (source_id, source_added_at, root_path, library_id, folder, uid, state,
+                                          created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'planned', ?7)",
             )?
             .execute(params![
                 run.source.0,
+                run.source_added_at_ms,
                 run.root,
                 run.library_id,
                 run.folder.as_ref().map(RelPath::as_bytes),
@@ -140,7 +184,8 @@ impl Writer {
         })
     }
 
-    /// Set one move's state (and note); committed when this returns.
+    /// Set one move's state (and note); durably committed when this returns (the write-ahead intent of a
+    /// rename must survive a power loss, ADR-0064).
     pub fn cleanup_set_move(
         &self,
         run: i64,
@@ -148,7 +193,7 @@ impl Writer {
         state: MoveState,
         note: Option<String>,
     ) -> Result<()> {
-        self.exec(move |c| {
+        self.exec_durable(move |c| {
             let n = c
                 .prepare_cached(
                     "UPDATE cleanup_move SET state = ?3, note = ?4, at = ?5 WHERE run_id = ?1 AND file_id = ?2",
@@ -164,7 +209,7 @@ impl Writer {
 
     /// Set a run's state; `running` sets the start time, `completed` and `undone` the end time.
     pub fn cleanup_set_run_state(&self, run: i64, state: CleanupRunState) -> Result<()> {
-        self.exec(move |c| {
+        self.exec_durable(move |c| {
             let now = now_ms();
             c.prepare_cached(
                 "UPDATE cleanup_run SET state = ?2,
@@ -179,15 +224,25 @@ impl Writer {
 }
 
 impl Readers {
+    fn run_columns(&self) -> Result<&'static str> {
+        Ok(
+            if self.schema_version()? < crate::db::CLEANUP_SOURCE_MIGRATION.version {
+                RUN_COLUMNS_V14
+            } else {
+                RUN_COLUMNS
+            },
+        )
+    }
+
     /// Every cleanup run, newest first. Empty on catalogs before migration 14 opened read-only.
     pub fn cleanup_runs(&self) -> Result<Vec<CleanupRunRecord>> {
         if self.schema_version()? < crate::db::CLEANUP_MIGRATION.version {
             return Ok(Vec::new());
         }
+        let cols = self.run_columns()?;
         self.with(|c| {
-            let mut stmt = c.prepare_cached(&format!(
-                "SELECT {RUN_COLUMNS} FROM cleanup_run ORDER BY id DESC"
-            ))?;
+            let mut stmt =
+                c.prepare_cached(&format!("SELECT {cols} FROM cleanup_run ORDER BY id DESC"))?;
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
@@ -201,10 +256,10 @@ impl Readers {
         if self.schema_version()? < crate::db::CLEANUP_MIGRATION.version {
             return Ok(None);
         }
+        let cols = self.run_columns()?;
         self.with(|c| {
-            let mut stmt = c.prepare_cached(&format!(
-                "SELECT {RUN_COLUMNS} FROM cleanup_run WHERE id = ?1"
-            ))?;
+            let mut stmt =
+                c.prepare_cached(&format!("SELECT {cols} FROM cleanup_run WHERE id = ?1"))?;
             let mut rows = stmt.query([id])?;
             rows.next()?.map(run_row).transpose()
         })
@@ -225,27 +280,55 @@ impl Readers {
         })
     }
 
-    /// Files in a quarantine folder now (a move in state quarantined or restoring): file, run, quarantine
-    /// path. Empty before migration 14.
-    pub fn quarantined_files(&self) -> Result<Vec<(FileId, i64, RelPath)>> {
-        if self.schema_version()? < crate::db::CLEANUP_MIGRATION.version {
+    /// Files in a quarantine folder now (a move in state quarantined or restoring) of runs whose source is
+    /// still the one they were planned on, by file id. Empty before migration 15 (catalogs opened read-only
+    /// at an older version).
+    pub fn quarantined_files(&self) -> Result<Vec<QuarantinedFile>> {
+        if self.schema_version()? < crate::db::CLEANUP_SOURCE_MIGRATION.version {
             return Ok(Vec::new());
         }
         self.with(|c| {
-            let mut stmt = c.prepare_cached(
-                "SELECT file_id, run_id, quarantine_rel_path FROM cleanup_move WHERE state IN (2, 4)
-                 ORDER BY file_id",
-            )?;
+            let mut stmt = c.prepare_cached(&format!(
+                "SELECT m.file_id, m.run_id, r.source_id, m.rel_path, m.quarantine_rel_path, m.size, m.mtime_ns
+                 FROM cleanup_move m JOIN cleanup_run r ON r.id = m.run_id
+                 WHERE m.state IN (2, 4) AND {RUN_OF_CURRENT_SOURCE}
+                 ORDER BY m.file_id"
+            ))?;
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
-                out.push((
-                    FileId(r.get(0)?),
-                    r.get(1)?,
-                    rel(r.get(2)?, "quarantine path")?,
-                ));
+                out.push(QuarantinedFile {
+                    file: FileId(r.get(0)?),
+                    run: r.get(1)?,
+                    source: SourceId(r.get(2)?),
+                    rel_path: rel(r.get(3)?, "cleanup path")?,
+                    quarantine_rel_path: rel(r.get(4)?, "quarantine path")?,
+                    size: r.get::<_, i64>(5)? as u64,
+                    mtime_ns: r.get(6)?,
+                });
             }
             Ok(out)
+        })
+    }
+
+    /// How many files of `source` are in its quarantine folder now (runs of that very source, by identity).
+    /// A source with quarantined files is never removed or folded (ADR-0063): its runs must stay undoable.
+    pub fn quarantined_count(&self, source: SourceId) -> Result<u64> {
+        if self.schema_version()? < crate::db::CLEANUP_MIGRATION.version {
+            return Ok(0);
+        }
+        // Before migration 15 there is no identity: count by id.
+        let identity = if self.schema_version()? < crate::db::CLEANUP_SOURCE_MIGRATION.version {
+            "1"
+        } else {
+            RUN_OF_CURRENT_SOURCE
+        };
+        self.with(|c| {
+            Ok(c.prepare_cached(&format!(
+                "SELECT count(*) FROM cleanup_move m JOIN cleanup_run r ON r.id = m.run_id
+                 WHERE r.source_id = ?1 AND m.state IN (1, 2, 4) AND {identity}"
+            ))?
+            .query_row([source.0], |r| r.get::<_, i64>(0))? as u64)
         })
     }
 
@@ -262,5 +345,22 @@ impl Readers {
             let rows = stmt.query_map([], |r| r.get(0))?;
             Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    /// `exec_durable` commits with `synchronous = FULL` (2) and leaves the writer at `NORMAL` (1) after.
+    #[test]
+    fn durable_writes_use_synchronous_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = crate::Catalog::open(dir.path()).unwrap();
+        let pragma = |c: &rusqlite::Connection| {
+            c.query_row("PRAGMA synchronous", [], |r| r.get::<_, i64>(0))
+        };
+        assert_eq!(cat.writer().exec_durable(pragma).unwrap(), 2);
+        assert_eq!(cat.writer().exec(pragma).unwrap(), 1);
     }
 }

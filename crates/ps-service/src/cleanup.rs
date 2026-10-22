@@ -7,6 +7,11 @@
 //! undoes whole runs or a folder or files of one, and reconciles moves a crash left mid-way. Every command
 //! reconciles first, so a restart after a crash always resolves the journal before anything else happens.
 //!
+//! Each command holds the service's operation slot ([`crate::ops`], ADR-0065): no scan, export or other cleanup
+//! command runs meanwhile, and reconciliation never touches a run that is live in this process. A run is tied
+//! to its source by identity (id and `added_at`, ADR-0063): when that source is gone the run acts on the root
+//! stored with it, never on whatever source has its id now.
+//!
 //! Nothing here touches a source tree directly: only `ps-export::quarantine` renames files, and only after
 //! re-verifying them. Nothing is ever deleted.
 
@@ -58,6 +63,8 @@ pub enum CleanupError {
     NoLibrary,
     #[error("a scan is running: wait for it to finish (or cancel it) before cleaning up")]
     ScanRunning,
+    #[error("{0} is running: wait for it to finish first")]
+    Busy(crate::ops::Operation),
     #[error(
         "source {0} is a network share, where a rename may not be atomic: confirm cleanup on a network source"
     )]
@@ -180,6 +187,15 @@ impl UndoSelection {
     }
 }
 
+/// A source as a run sees it now.
+#[derive(Clone, Debug)]
+struct CurrentSource {
+    root: PathBuf,
+    online: bool,
+    network: bool,
+    added_at_ms: i64,
+}
+
 /// The cleanup facade of one [`ScanService`].
 #[derive(Clone, Copy, Debug)]
 pub struct Cleanups<'a> {
@@ -213,9 +229,17 @@ impl<'a> Cleanups<'a> {
         }
     }
 
-    /// The current root of a source, whether it is online, and whether it is a network share (`None` when
-    /// the source was removed or folded into another).
-    fn source(&self, id: SourceId) -> Result<Option<(PathBuf, bool, bool)>> {
+    /// Take the operation slot ([`crate::ops`]).
+    fn begin(&self, op: crate::ops::Operation) -> Result<crate::ops::OpGuard<'a>> {
+        self.svc.begin(op).map_err(|b| match b {
+            crate::ops::Busy::Scan(_) => CleanupError::ScanRunning,
+            crate::ops::Busy::Operation(o) => CleanupError::Busy(o),
+        })
+    }
+
+    /// The current root of a source, whether it is online, whether it is a network share and when it was
+    /// added (`None` when the source was removed or folded into another).
+    fn source(&self, id: SourceId) -> Result<Option<CurrentSource>> {
         let folded = self
             .catalog()
             .read()
@@ -230,10 +254,20 @@ impl<'a> Cleanups<'a> {
             .sources()?
             .into_iter()
             .find(|s| s.id == id)
-            .map(|s| {
-                let online = s.status == SourceStatus::Online && s.root.is_dir();
-                (s.root, online, s.device == DeviceClass::Network)
+            .map(|s| CurrentSource {
+                online: s.status == SourceStatus::Online && s.root.is_dir(),
+                network: s.device == DeviceClass::Network,
+                added_at_ms: s.added_at_ms,
+                root: s.root,
             }))
+    }
+
+    /// The run's own source, if it is still registered: the source with the run's id *and* `added_at`. A
+    /// source that only has the id (the run's source was removed and the id handed out again) is not it.
+    fn run_source(&self, run: &CleanupRunRecord) -> Result<Option<CurrentSource>> {
+        Ok(self
+            .source(run.source)?
+            .filter(|s| run.source_added_at_ms == Some(s.added_at_ms)))
     }
 
     fn library_root(&self, id: i64) -> Result<Option<PathBuf>> {
@@ -246,11 +280,11 @@ impl<'a> Cleanups<'a> {
             .map(|l| path_from_bytes(&l.root)))
     }
 
-    /// The root a run acts on: the source's current root (re-linked sources keep their files), else the root
-    /// stored with the run.
+    /// The root a run acts on: its own source's current root (a re-linked source keeps its files), else the
+    /// root stored with the run (its source was removed, folded or replaced by another with the same id).
     fn run_root(&self, run: &CleanupRunRecord) -> Result<(PathBuf, bool)> {
-        Ok(match self.source(run.source)? {
-            Some((root, _, network)) => (root, network),
+        Ok(match self.run_source(run)? {
+            Some(s) => (s.root, s.network),
             None => (path_from_bytes(&run.root), false),
         })
     }
@@ -297,8 +331,14 @@ impl<'a> Cleanups<'a> {
         library: Option<&Path>,
     ) -> Result<CleanupPlan> {
         self.writable()?;
-        self.reconcile()?;
-        let (root, online, network) = self
+        let _op = self.begin(crate::ops::Operation::CleanupPlan)?;
+        self.reconcile_locked()?;
+        let CurrentSource {
+            root,
+            online,
+            network,
+            added_at_ms,
+        } = self
             .source(source)?
             .ok_or(CleanupError::UnknownSource(source.0))?;
         if !online {
@@ -351,6 +391,7 @@ impl<'a> Cleanups<'a> {
         let f2 = folder.clone();
         let id = self.catalog().writer().cleanup_create_run(NewCleanupRun {
             source,
+            source_added_at_ms: added_at_ms,
             root: ps_model::path_to_bytes(&root),
             library_id,
             folder: folder.clone(),
@@ -387,15 +428,44 @@ impl<'a> Cleanups<'a> {
         }
     }
 
-    /// Reconcile every run a crash left mid-way (moves `moving` or `restoring`, or the run `running`).
+    /// Reconcile every run an interruption may have left out of step with the file system: moves `moving` or
+    /// `restoring`, runs `running`, and every run with a `journal.jsonl` (whose records can be newer than the
+    /// catalog's after a power loss). Skipped (empty result) while a scan, an export or another cleanup
+    /// command runs in this process: a live run is never reconciled; the next command does it.
     pub fn reconcile(&self) -> Result<Vec<(i64, ReconcileReport)>> {
         if self.catalog().is_observer() {
             return Ok(Vec::new());
         }
-        let ids = self.catalog().read().cleanup_runs_to_reconcile()?;
+        let Ok(_op) = self.begin(crate::ops::Operation::CleanupReconcile) else {
+            return Ok(Vec::new());
+        };
+        self.reconcile_locked()
+    }
+
+    /// [`Cleanups::reconcile`] while the caller holds the operation slot.
+    fn reconcile_locked(&self) -> Result<Vec<(i64, ReconcileReport)>> {
+        let r = self.catalog().read();
+        let interrupted: std::collections::BTreeSet<i64> =
+            r.cleanup_runs_to_reconcile()?.into_iter().collect();
+        let mut ids = interrupted.clone();
+        for run in r.cleanup_runs()? {
+            if run.state == CleanupRunState::Undone || ids.contains(&run.id) {
+                continue;
+            }
+            let (root, _) = self.run_root(&run)?;
+            let journal = quarantine::run_dir_rel(run.id)
+                .under(&root)
+                .join(quarantine::JOURNAL_FILE);
+            if journal.is_file() {
+                ids.insert(run.id);
+            }
+        }
         let mut out = Vec::new();
         for id in ids {
-            out.push((id, self.reconcile_run(id)?));
+            let report = self.reconcile_run(id)?;
+            if !report.resolved.is_empty() || interrupted.contains(&id) {
+                out.push((id, report));
+            }
         }
         Ok(out)
     }
@@ -405,6 +475,14 @@ impl<'a> Cleanups<'a> {
         let run = r.cleanup_run(id)?.ok_or(CleanupError::UnknownRun(id))?;
         let moves = r.cleanup_moves(id)?;
         let (root, _) = self.run_root(&run)?;
+        if !root.is_dir() {
+            // The drive is not connected: its files cannot be found now, so nothing is decided until it is.
+            log::info!(
+                "cleanup run {id}: {} is offline; reconciled when it is back",
+                root.display()
+            );
+            return Ok(ReconcileReport::default());
+        }
         let mut journal = CatalogJournal {
             catalog: self.catalog().clone(),
             run: id,
@@ -444,10 +522,8 @@ impl<'a> Cleanups<'a> {
         progress: &RunProgress,
     ) -> Result<RunReport> {
         self.writable()?;
-        if self.svc.active().is_some() {
-            return Err(CleanupError::ScanRunning);
-        }
-        self.reconcile()?;
+        let _op = self.begin(crate::ops::Operation::CleanupRun(id))?;
+        self.reconcile_locked()?;
         let r = self.catalog().read();
         let run = r.cleanup_run(id)?.ok_or(CleanupError::UnknownRun(id))?;
         let moves = r.cleanup_moves(id)?;
@@ -461,9 +537,18 @@ impl<'a> Cleanups<'a> {
         if !moves.iter().any(|m| m.state == MoveState::Planned) {
             return Err(not_runnable("no planned file is left to move"));
         }
-        let (root, online, network) = self
-            .source(run.source)?
-            .ok_or(CleanupError::UnknownSource(run.source.0))?;
+        let CurrentSource {
+            root,
+            online,
+            network,
+            ..
+        } = self.run_source(&run)?.ok_or_else(|| {
+            not_runnable(&format!(
+                "its source {} ({}) was removed since it was planned",
+                run.source,
+                path_from_bytes(&run.root).display()
+            ))
+        })?;
         if !online {
             return Err(CleanupError::SourceOffline {
                 id: run.source.0,
@@ -508,7 +593,8 @@ impl<'a> Cleanups<'a> {
     /// quarantine any more.
     pub fn undo(&self, id: i64, selection: &UndoSelection) -> Result<UndoReport> {
         self.writable()?;
-        self.reconcile()?;
+        let _op = self.begin(crate::ops::Operation::CleanupUndo(id))?;
+        self.reconcile_locked()?;
         let r = self.catalog().read();
         let run = r.cleanup_run(id)?.ok_or(CleanupError::UnknownRun(id))?;
         let moves = r.cleanup_moves(id)?;
@@ -517,6 +603,21 @@ impl<'a> Cleanups<'a> {
             return Err(CleanupError::SourceOffline {
                 id: run.source.0,
                 root,
+            });
+        }
+        // The run folder there must be this run's (its journal header carries the run's uid).
+        let journal = quarantine::run_dir_rel(id)
+            .under(&root)
+            .join(quarantine::JOURNAL_FILE);
+        if let Some(h) = quarantine::journal::read_header(&journal)?
+            && (h.uid.as_deref() != Some(run.uid.as_str()) || h.run != id)
+        {
+            return Err(CleanupError::NotRunnable {
+                id,
+                why: format!(
+                    "{} belongs to another cleanup run; nothing was moved",
+                    journal.display()
+                ),
             });
         }
         let mut journal = CatalogJournal {

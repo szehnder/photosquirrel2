@@ -146,6 +146,8 @@ enum Msg {
     Cmd(Command),
     /// Run atomically (inside a savepoint) and commit; reply when committed.
     Exec(ExecFn, Sender<Result<()>>),
+    /// [`Msg::Exec`] committed with `synchronous = FULL` (the cleanup journal, ADR-0064).
+    ExecDurable(ExecFn, Sender<Result<()>>),
     Flush(Sender<WriteErrors>),
     AddSource(NewSource, Sender<Result<SourceId>>),
     StartRun(Vec<SourceId>, Sender<Result<ScanRunId>>),
@@ -158,6 +160,7 @@ struct Stats {
     commits: AtomicU64,
     rows_committed: AtomicU64,
     errors: AtomicU64,
+    durable_commits: AtomicU64,
 }
 
 /// A snapshot of the writer's counters.
@@ -169,6 +172,8 @@ pub struct WriterStats {
     pub rows_committed: u64,
     /// Write errors so far.
     pub errors: u64,
+    /// Transactions committed with `synchronous = FULL` ([`Writer::exec_durable`]).
+    pub durable_commits: u64,
 }
 
 struct Shared {
@@ -322,6 +327,28 @@ impl Writer {
         out_rx.recv().map_err(|_| CatalogError::WriterClosed)
     }
 
+    /// [`Writer::exec`] whose commit is durable when it returns: the batch in progress is committed first,
+    /// then `f` runs in its own transaction committed with `synchronous = FULL` (in WAL mode `NORMAL` may
+    /// lose the last commits on power loss). For the catalog half of the cleanup journal (ADR-0064), whose
+    /// intent must be on disk before the rename it describes.
+    pub(crate) fn exec_durable<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let (reply, rx) = bounded(1);
+        let (out_tx, out_rx) = bounded(1);
+        self.send(Msg::ExecDurable(
+            Box::new(move |c| {
+                let v = f(c)?;
+                let _ = out_tx.send(v);
+                Ok(())
+            }),
+            reply,
+        ))?;
+        rx.recv().map_err(|_| CatalogError::WriterClosed)??;
+        out_rx.recv().map_err(|_| CatalogError::WriterClosed)
+    }
+
     /// Add a source and return its id once committed.
     pub fn add_source(&self, source: NewSource) -> Result<SourceId> {
         let (reply, rx) = bounded(1);
@@ -342,6 +369,7 @@ impl Writer {
             commits: s.commits.load(Ordering::Relaxed),
             rows_committed: s.rows_committed.load(Ordering::Relaxed),
             errors: s.errors.load(Ordering::Relaxed),
+            durable_commits: s.durable_commits.load(Ordering::Relaxed),
         }
     }
 
@@ -398,6 +426,10 @@ impl WriterThread {
                 }
                 Msg::Exec(f, reply) => {
                     let r = self.exec(f);
+                    let _ = reply.send(r);
+                }
+                Msg::ExecDurable(f, reply) => {
+                    let r = self.exec_durable(f);
                     let _ = reply.send(r);
                 }
                 Msg::AddSource(s, reply) => {
@@ -487,6 +519,23 @@ impl WriterThread {
         self.rows += 1;
         self.commit();
         Ok(r?)
+    }
+
+    /// [`WriterThread::exec`] in a transaction of its own, committed with `synchronous = FULL`.
+    fn exec_durable(&mut self, f: ExecFn) -> Result<()> {
+        self.commit();
+        if let Err(e) = self.conn.execute_batch("PRAGMA synchronous = FULL") {
+            return Err(e.into());
+        }
+        let commits = self.stats.commits.load(Ordering::Relaxed);
+        let r = self.exec(f);
+        if self.stats.commits.load(Ordering::Relaxed) > commits {
+            self.stats.durable_commits.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Err(e) = self.conn.execute_batch("PRAGMA synchronous = NORMAL") {
+            log::warn!("catalog: could not restore synchronous = NORMAL: {e}");
+        }
+        r
     }
 
     fn error(&mut self, command: &'static str, file: Option<&FileKey>, e: &rusqlite::Error) {
@@ -1082,9 +1131,13 @@ fn move_file(c: &Connection, from: &FileKey, to: &FileKey) -> rusqlite::Result<(
 }
 
 fn add_source(c: &Connection, s: &NewSource) -> rusqlite::Result<SourceId> {
+    // `source.id` is not AUTOINCREMENT, so SQLite would hand a removed source's id to the next one. An id a
+    // cleanup run refers to is never handed out again (ADR-0063): its runs keep pointing at their own source.
     c.prepare_cached(
-        "INSERT INTO source (root_path, volume_uuid, device_hint, total_bytes, fingerprint, added_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO source (id, root_path, volume_uuid, device_hint, total_bytes, fingerprint, added_at)
+         VALUES (1 + max((SELECT coalesce(max(id), 0) FROM source),
+                         (SELECT coalesce(max(source_id), 0) FROM cleanup_run)),
+                 ?1, ?2, ?3, ?4, ?5, ?6)",
     )?
     .execute(params![
         s.root,

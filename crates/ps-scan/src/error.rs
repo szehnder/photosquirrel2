@@ -43,6 +43,20 @@ pub enum ScanError {
     #[error("unknown source {0}")]
     NoSuchSource(SourceId),
 
+    #[error(
+        "source {id} has {files} files in its quarantine folder: undo its cleanup runs first \
+         (`photosquirrel-cli cleanup list`, then `cleanup undo <run> --yes`); {what} would leave them without \
+         a way back"
+    )]
+    HasQuarantinedFiles {
+        id: SourceId,
+        files: u64,
+        what: &'static str,
+    },
+
+    #[error("{0} is running: wait for it to finish (or cancel it) first")]
+    Busy(String),
+
     #[error("unknown scan run {0}")]
     NoSuchRun(ScanRunId),
 

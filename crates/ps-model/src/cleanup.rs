@@ -128,6 +128,11 @@ pub struct CleanupMove {
 pub struct CleanupRunRecord {
     pub id: i64,
     pub source: SourceId,
+    /// When that source was added (ms since the Unix epoch): with `source`, the source's identity. A source
+    /// with this id but another `added_at` is a different source (ADR-0063); `None` for runs whose source
+    /// could not be identified when migration 15 ran.
+    #[serde(default)]
+    pub source_added_at_ms: Option<i64>,
     /// Storage bytes of the source root when the run was planned ([`crate::path_to_bytes`]).
     pub root: Vec<u8>,
     /// The export library whose copies make the files safe.

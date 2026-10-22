@@ -426,8 +426,12 @@ impl Stamp {
 /// cleanup run moved into its quarantine folder (migration 14, ADR-0034: a quarantined file is accounted for,
 /// so it keeps its place in its group - a moved keeper stays the keeper and its copies stay covered - instead
 /// of dropping out like a file that is gone).
-const INPUT_WHERE: &str = "stage IN (2, 3) AND content_id IS NOT NULL AND (missing_since IS NULL OR id IN \
-                           (SELECT file_id FROM cleanup_move WHERE state IN (2, 4)))";
+/// Quarantined files are matched by source and path ([`crate::cleanup::FILE_IS_QUARANTINED`], ADR-0063).
+const INPUT_WHERE: &str = concat!(
+    "stage IN (2, 3) AND content_id IS NOT NULL AND (missing_since IS NULL OR ",
+    crate::cleanup::file_is_quarantined_sql!(),
+    ")"
+);
 
 fn summary(r: &Row<'_>) -> rusqlite::Result<GroupSummary> {
     Ok(GroupSummary {

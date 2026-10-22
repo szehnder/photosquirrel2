@@ -43,6 +43,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     LIBRARY_VERIFIED_MIGRATION,
     CLASS_FACTS_MIGRATION,
     CLEANUP_MIGRATION,
+    CLEANUP_SOURCE_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -123,6 +124,13 @@ pub const CLEANUP_MIGRATION: Migration = Migration {
     version: 14,
     name: "cleanup",
     sql: include_str!("../migrations/0014_cleanup.sql"),
+};
+
+/// Migration 15 (ADR-0063: `cleanup_run.source_added_at`, quarantined files found by path).
+pub const CLEANUP_SOURCE_MIGRATION: Migration = Migration {
+    version: 15,
+    name: "cleanup_source_identity",
+    sql: include_str!("../migrations/0015_cleanup_source_identity.sql"),
 };
 
 /// `thumbs.db` migrations.

@@ -3,9 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use ps_catalog::{NewCleanupRun, db, latest_schema_version};
-use ps_model::{
-    CleanupMove, CleanupRunState, ContentId, Disposition, FileId, MoveState, RelPath, SourceId,
-};
+use ps_model::{CleanupMove, CleanupRunState, ContentId, Disposition, FileId, MoveState, RelPath};
 use rusqlite::{Connection, params};
 
 fn rel(s: &str) -> RelPath {
@@ -105,10 +103,22 @@ fn cleanup_rows_round_trip_through_writer_and_readers() {
         note: None,
         at_ms: None,
     };
+    let source = cat
+        .writer()
+        .add_source(ps_catalog::NewSource {
+            root: b"/src".to_vec(),
+            volume_uuid: None,
+            device_hint: None,
+            total_bytes: None,
+            fingerprint: None,
+        })
+        .unwrap();
+    let added_at = cat.read().sources().unwrap()[0].added_at_ms;
     let id = cat
         .writer()
         .cleanup_create_run(NewCleanupRun {
-            source: SourceId(3),
+            source,
+            source_added_at_ms: added_at,
             root: b"/src".to_vec(),
             library_id: lib,
             folder: Some(rel("DCIM")),
@@ -131,6 +141,7 @@ fn cleanup_rows_round_trip_through_writer_and_readers() {
     assert_eq!(run.state, CleanupRunState::Planned);
     assert_eq!(run.folder, Some(rel("DCIM")));
     assert_eq!(run.uid, "uid-1");
+    assert_eq!(run.source_added_at_ms, Some(added_at));
     let moves = r.cleanup_moves(id).unwrap();
     assert_eq!(moves.len(), 2);
     assert_eq!(moves[0].rel_path, rel("DCIM/a.jpg"));
@@ -164,7 +175,9 @@ fn cleanup_rows_round_trip_through_writer_and_readers() {
     assert!(r.cleanup_runs_to_reconcile().unwrap().is_empty());
     let q = r.quarantined_files().unwrap();
     assert_eq!(q.len(), 1);
-    assert_eq!(q[0].0, FileId(2));
+    assert_eq!(q[0].file, FileId(2));
+    assert_eq!((q[0].source, &q[0].rel_path), (source, &rel("DCIM/b.jpg")));
+    assert_eq!(r.quarantined_count(source).unwrap(), 1);
     let moves = r.cleanup_moves(id).unwrap();
     assert_eq!(moves[0].note.as_deref(), Some("changed"));
     assert!(moves[0].at_ms.is_some());

@@ -26,7 +26,7 @@ mod writer;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use cleanup::NewCleanupRun;
+pub use cleanup::{NewCleanupRun, QuarantinedFile};
 pub use error::{CatalogError, Result, WriteError, WriteErrors};
 pub use gallery::{
     UserDecision, UserDecisionRecord, excluded_classes, is_library, library_classes,

@@ -126,6 +126,8 @@ impl ScanService {
         cancel: &AtomicBool,
         progress: &ExportProgress,
     ) -> Result<(Plan, ExportReport)> {
+        // Not while a scan or a cleanup runs (ADR-0065).
+        let _op = self.begin(crate::ops::Operation::Export)?;
         let ex = self.exports();
         let (plan, input) = ex.plan(library, settings)?;
         progress.begin(&plan);

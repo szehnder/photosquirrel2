@@ -45,6 +45,8 @@ pub enum ExportError {
     },
     #[error("no export library is registered yet: export first or name the library")]
     NoLibrary,
+    #[error(transparent)]
+    Busy(#[from] crate::ops::Busy),
 }
 
 pub type Result<T, E = ExportError> = std::result::Result<T, E>;
@@ -159,6 +161,42 @@ fn sidecar_date(path: &Path) -> Option<CaptureTime> {
         f.take(SIDECAR_MAX_BYTES).read_to_end(&mut buf).ok()?;
         ps_export::date::xmp_sidecar_date(&buf)
     })
+}
+
+/// Files a cleanup run moved into a quarantine folder that are still there, by (source, original path), with
+/// the stat fingerprint they were moved with and their quarantine path (ADR-0034, ADR-0063).
+pub(crate) struct QuarantineIndex(
+    HashMap<(ps_model::SourceId, ps_model::RelPath), (u64, i64, ps_model::RelPath)>,
+);
+
+impl QuarantineIndex {
+    pub(crate) fn read(r: &ps_catalog::Readers) -> Result<Self> {
+        Ok(QuarantineIndex(
+            r.quarantined_files()?
+                .into_iter()
+                .map(|q| {
+                    (
+                        (q.source, q.rel_path),
+                        (q.size, q.mtime_ns, q.quarantine_rel_path),
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    /// The quarantine path of the catalogued file `key` with fingerprint `stat`, if a cleanup run moved this
+    /// very file (same source, path and fingerprint; a row reused for another file at that path does not
+    /// match).
+    pub(crate) fn of(
+        &self,
+        key: &ps_catalog::FileKey,
+        stat: &ps_model::StatFingerprint,
+    ) -> Option<ps_model::RelPath> {
+        self.0
+            .get(&(key.source, key.path.clone()))
+            .filter(|(size, mtime, _)| *size == stat.size && *mtime == stat.mtime_ns)
+            .map(|(_, _, q)| q.clone())
+    }
 }
 
 impl<'a> Exports<'a> {
@@ -411,6 +449,8 @@ impl<'a> Exports<'a> {
         cfg: &ExecConfig,
         cancel: &AtomicBool,
     ) -> Result<(Plan, ExportReport)> {
+        // Not while a scan or a cleanup runs (ADR-0065).
+        let _op = self.svc.begin(crate::ops::Operation::Export)?;
         let (plan, input) = self.plan(library, settings)?;
         let id = self.library_id(library)?;
         let mut ledger = CatalogLedger::new(self.catalog().clone(), id);
@@ -448,12 +488,9 @@ impl<'a> Exports<'a> {
     ) -> Result<(Vec<FileFacts>, Vec<FileDisposition>)> {
         let r = self.catalog().read();
         let excluded: HashSet<FileId> = r.user_excluded_files()?.into_iter().collect();
-        // Files moved by a cleanup run (ADR-0034): quarantined, not missing.
-        let quarantined: HashMap<FileId, ps_model::RelPath> = r
-            .quarantined_files()?
-            .into_iter()
-            .map(|(f, _, q)| (f, q))
-            .collect();
+        // Files moved by a cleanup run (ADR-0034): quarantined, not missing. Matched by source, path and
+        // fingerprint, not by a file id SQLite may reuse (ADR-0063).
+        let quarantined = QuarantineIndex::read(r)?;
         let mut files = Vec::new();
         r.for_each_file(|f| {
             files.push(FileFacts {
@@ -466,7 +503,7 @@ impl<'a> Exports<'a> {
                 unreadable: f.stage == Stage::Failed && f.attempts >= 3,
                 missing: f.missing_since_ms.is_some(),
                 user_excluded: excluded.contains(&f.id),
-                quarantined: quarantined.get(&f.id).cloned(),
+                quarantined: quarantined.of(&f.key, &f.stat),
             });
         })?;
         let groups: Vec<GroupFacts> = r

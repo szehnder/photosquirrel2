@@ -478,3 +478,180 @@ fn scenario_cleanup_crash_mid_run_is_recoverable() {
     assert!(u.run_fully_undone);
     assert_eq!(snapshot(&root), before);
 }
+
+// ---- gate-review fixes (ADR-0062 to ADR-0066) ----
+
+/// Plan and run a cleanup of `source`; every planned file moved.
+fn clean(svc: &ScanService, source: i64) -> (i64, Vec<CleanupMove>) {
+    let plan = svc.cleanups().plan(SourceId(source), None, None).unwrap();
+    let id = plan.summary.as_ref().unwrap().run.id;
+    let r = run_all(svc, id);
+    assert_eq!(r.moved, plan.moves.len() as u64, "{:?}", r.skipped);
+    (id, plan.moves)
+}
+
+#[test]
+fn scenario_cleanup_source_with_quarantined_files_not_removed() {
+    let env = Env::new("q-remove");
+    let svc = env.open();
+    let (id, moves) = clean(&svc, 3);
+    let e = svc
+        .remove_source(SourceId(3), ps_service::scan::Confirmation::Confirmed)
+        .unwrap_err();
+    let text = e.to_string();
+    assert!(
+        text.contains("quarantine") && text.contains("undo"),
+        "{text}"
+    );
+    assert!(svc.sources().unwrap().iter().any(|s| s.id == SourceId(3)));
+    // Adding a folder that contains the drive (which would fold it) is refused too.
+    let e = svc.add_source(&env.corpus).unwrap_err();
+    assert!(e.to_string().contains("quarantine"), "{e}");
+    // After a full undo the source can be removed, and its id is never handed out again: the run keeps
+    // pointing at drive-c.
+    assert!(
+        svc.cleanups()
+            .undo(id, &UndoSelection::all())
+            .unwrap()
+            .run_fully_undone
+    );
+    svc.remove_source(SourceId(3), ps_service::scan::Confirmation::Confirmed)
+        .unwrap();
+    let other = env.tmp.path().join("another-folder");
+    fs::create_dir_all(other.join("DCIM")).unwrap();
+    fs::copy(
+        moves[0].rel_path.under(&env.drive(3)),
+        other.join("DCIM/x.jpg"),
+    )
+    .unwrap();
+    let added = svc.add_source(&other).unwrap();
+    assert_ne!(added.source.id, SourceId(3));
+    let runs = svc.cleanups().runs().unwrap();
+    let r = runs.iter().find(|r| r.run.id == id).unwrap();
+    assert_eq!(
+        r.root,
+        env.drive(3),
+        "the run's own root, not the new folder"
+    );
+}
+
+/// A run planned on a source that was removed (and whose id another source could carry) never runs on
+/// another folder.
+#[test]
+fn scenario_cleanup_run_of_removed_source_refused() {
+    let env = Env::new("q-removed-run");
+    let svc = env.open();
+    let plan = svc.cleanups().plan(SourceId(3), None, None).unwrap();
+    let id = plan.summary.as_ref().unwrap().run.id;
+    let before = snapshot(&env.drive(3));
+    svc.remove_source(SourceId(3), ps_service::scan::Confirmation::Confirmed)
+        .unwrap();
+    let e = svc
+        .cleanups()
+        .run(
+            id,
+            RunOptions::default(),
+            &AtomicBool::new(false),
+            &RunProgress::default(),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("removed"), "{e}");
+    assert_eq!(snapshot(&env.drive(3)), before);
+}
+
+/// While a cleanup run is live (inside its rename step), a scan, an export, a source change, another cleanup
+/// command and reconciliation are refused or skipped; the live run is never reconciled under it.
+struct Interfere<'a> {
+    svc: &'a ScanService,
+    library: PathBuf,
+    checked: AtomicUsize,
+}
+
+impl QuarantineHooks for Interfere<'_> {
+    fn before_rename(&self, m: &CleanupMove) {
+        if self.checked.fetch_add(1, Ordering::SeqCst) > 0 {
+            return;
+        }
+        let busy = |e: String| assert!(e.contains("cleanup run"), "{e}");
+        busy(self.svc.start(&[]).unwrap_err().to_string());
+        busy(
+            self.svc
+                .exports()
+                .run(
+                    &self.library,
+                    profile_settings("lightroom").unwrap(),
+                    &ExecConfig::default(),
+                    &AtomicBool::new(false),
+                )
+                .unwrap_err()
+                .to_string(),
+        );
+        busy(
+            self.svc
+                .remove_source(SourceId(1), ps_service::scan::Confirmation::Confirmed)
+                .unwrap_err()
+                .to_string(),
+        );
+        busy(
+            self.svc
+                .cleanups()
+                .plan(SourceId(1), None, None)
+                .unwrap_err()
+                .to_string(),
+        );
+        // Reconciliation skips: the move in flight stays `moving` (its intent is journaled; the rename is next).
+        assert!(self.svc.cleanups().reconcile().unwrap().is_empty());
+        let (run, _) = self.svc.cleanups().runs().unwrap()[0]
+            .clone()
+            .run_and_root();
+        let moves = self
+            .svc
+            .engine()
+            .catalog()
+            .read()
+            .cleanup_moves(run)
+            .unwrap();
+        let mine = moves.iter().find(|x| x.file == m.file).unwrap();
+        assert_eq!(mine.state, MoveState::Moving);
+    }
+}
+
+trait RunAndRoot {
+    fn run_and_root(self) -> (i64, PathBuf);
+}
+
+impl RunAndRoot for ps_service::cleanup::RunSummary {
+    fn run_and_root(self) -> (i64, PathBuf) {
+        (self.run.id, self.root)
+    }
+}
+
+#[test]
+fn scenario_cleanup_operations_exclude_each_other() {
+    let env = Env::new("q-exclusive");
+    let svc = env.open();
+    let plan = svc.cleanups().plan(SourceId(2), None, None).unwrap();
+    let id = plan.summary.as_ref().unwrap().run.id;
+    let hooks = Interfere {
+        svc: &svc,
+        library: env.library.clone(),
+        checked: AtomicUsize::new(0),
+    };
+    let r = svc
+        .cleanups()
+        .run_with_hooks(
+            id,
+            RunOptions::default(),
+            &hooks,
+            &AtomicBool::new(false),
+            &RunProgress::default(),
+        )
+        .unwrap();
+    assert!(hooks.checked.load(Ordering::SeqCst) > 0, "the hook ran");
+    assert_eq!(r.moved, plan.moves.len() as u64, "{:?}", r.skipped);
+    // Once the run is over, everything works again.
+    assert_eq!(svc.current_operation(), None);
+    assert!(svc.cleanups().reconcile().unwrap().is_empty());
+    let u = svc.cleanups().undo(id, &UndoSelection::all()).unwrap();
+    assert!(u.run_fully_undone);
+}

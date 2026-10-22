@@ -28,6 +28,8 @@ pub struct RunReport {
 #[derive(Debug)]
 pub struct ScanService {
     engine: ps_scan::Scanner,
+    /// Exports and cleanup operations hold this; scans and source changes wait for it ([`crate::ops`]).
+    ops: crate::ops::Ops,
 }
 
 impl ScanService {
@@ -36,6 +38,7 @@ impl ScanService {
     pub fn open(data_dir: &Path, options: ScanOptions) -> Result<ScanService> {
         Ok(ScanService {
             engine: ps_scan::Scanner::open(data_dir, options)?,
+            ops: crate::ops::Ops::default(),
         })
     }
 
@@ -46,6 +49,7 @@ impl ScanService {
     pub fn open_or_observe(data_dir: &Path, options: ScanOptions) -> Result<ScanService> {
         Ok(ScanService {
             engine: ps_scan::Scanner::open_or_observe(data_dir, options)?,
+            ops: crate::ops::Ops::default(),
         })
     }
 
@@ -72,11 +76,25 @@ impl ScanService {
     // ---- sources ----
 
     pub fn add_source(&self, root: &Path) -> Result<AddedSource> {
-        self.engine.add_source(root)
+        self.unless_busy(|e| e.add_source(root))
     }
 
     pub fn sources(&self) -> Result<Vec<SourceInfo>> {
         self.engine.sources()
+    }
+
+    pub(crate) fn ops(&self) -> &crate::ops::Ops {
+        &self.ops
+    }
+
+    /// Run `f` (a scan start or a source change) unless an export or a cleanup operation is running; the
+    /// slot stays locked while `f` runs, so none can start meanwhile ([`crate::ops`]).
+    fn unless_busy<T>(&self, f: impl FnOnce(&ps_scan::Scanner) -> Result<T>) -> Result<T> {
+        let cur = self.ops.lock();
+        if let Some(op) = *cur {
+            return Err(ScanError::Busy(op.to_string()));
+        }
+        f(&self.engine)
     }
 
     /// Re-check which sources are online.
@@ -85,19 +103,20 @@ impl ScanService {
     }
 
     pub fn relink_source(&self, id: SourceId, new_root: &Path) -> Result<SourceInfo> {
-        self.engine.relink_source(id, new_root)
+        self.unless_busy(|e| e.relink_source(id, new_root))
     }
 
-    /// Remove a source's catalog records (requires [`Confirmation::Confirmed`]); never touches disk.
+    /// Remove a source's catalog records (requires [`Confirmation::Confirmed`]); never touches disk. Refused
+    /// while the source has files in its quarantine folder (undo its cleanup runs first, ADR-0063).
     pub fn remove_source(&self, id: SourceId, confirm: Confirmation) -> Result<()> {
-        self.engine.remove_source(id, confirm)
+        self.unless_busy(|e| e.remove_source(id, confirm))
     }
 
     // ---- scans ----
 
     /// Start scanning `sources` (all when empty).
     pub fn start(&self, sources: &[SourceId]) -> Result<ScanRunId> {
-        self.engine.start_scan(sources)
+        self.unless_busy(|e| e.start_scan(sources))
     }
 
     pub fn pause(&self) -> Result<ScanRunId> {
@@ -106,12 +125,12 @@ impl ScanService {
 
     /// Continue the paused active run.
     pub fn resume(&self) -> Result<ScanRunId> {
-        self.engine.resume()
+        self.unless_busy(|e| e.resume())
     }
 
     /// Resume a paused, cancelled or interrupted run (re-walks, processes unfinished files only).
     pub fn resume_run(&self, run: ScanRunId) -> Result<ScanRunId> {
-        self.engine.resume_run(run)
+        self.unless_busy(|e| e.resume_run(run))
     }
 
     pub fn cancel(&self) -> Result<ScanRunId> {

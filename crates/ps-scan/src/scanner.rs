@@ -324,6 +324,18 @@ impl Scanner {
         {
             return Err(ScanError::RunActive(a.run));
         }
+        // Folding re-keys the inner source's files under the outer one: its cleanup runs could no longer find
+        // the files they moved (ADR-0063).
+        for (inner, _) in &fold {
+            let files = self.catalog.read().quarantined_count(*inner)?;
+            if files > 0 {
+                return Err(ScanError::HasQuarantinedFiles {
+                    id: *inner,
+                    files,
+                    what: "adding a folder that contains it",
+                });
+            }
+        }
         let m = source::measure(&self.options().fs, &root).map_err(|e| walk_err(&root, e))?;
         let mut volume = m.volume.clone();
         if let Some(f) = &self.options().device_class {
@@ -468,6 +480,15 @@ impl Scanner {
             && a.ctx.sources.iter().any(|s| s.id == id)
         {
             return Err(ScanError::RunActive(a.run));
+        }
+        // Its cleanup runs must stay undoable (ADR-0063).
+        let files = self.catalog.read().quarantined_count(id)?;
+        if files > 0 {
+            return Err(ScanError::HasQuarantinedFiles {
+                id,
+                files,
+                what: "removing the source",
+            });
         }
         self.catalog
             .writer()

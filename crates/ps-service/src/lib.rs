@@ -12,6 +12,7 @@
 //! - [`library`]: the gallery's ID lists, pages, thumbnails, previews and inspector detail (`gallery`).
 //! - [`power`]: pause scans on battery power (ADR-0053).
 //! - [`cleanup`]: reversible quarantine cleanup: plan, run, undo, reconcile (`quarantine-cleanup`).
+//! - [`ops`]: scans, exports and cleanup operations exclude each other (ADR-0065).
 
 pub mod ai;
 pub mod cleanup;
@@ -21,6 +22,7 @@ pub mod groups;
 pub mod insights;
 pub mod json_store;
 pub mod library;
+pub mod ops;
 pub mod power;
 pub mod review;
 pub mod scan;
