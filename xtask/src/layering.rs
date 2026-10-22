@@ -264,11 +264,21 @@ pub const MOVE_CALLS: &[&str] = &[
     "link_unlink",
     "move_no_replace",
     "link_then_unlink",
+    "shell_command",
+    "persist",
+];
+
+/// Programs that delete or move files; spawning one ([`find_move_calls`] reads `Command::new("rm")`, also with
+/// a path or a `.exe`) is the `shell_command` kind, allowed nowhere.
+pub const SHELL_FILE_COMMANDS: &[&str] = &[
+    "rm", "rmdir", "del", "erase", "rd", "mv", "move", "unlink", "shred", "trash",
 ];
 
 /// The kind ([`MOVE_CALLS`]) of a fully resolved path, if it renames, links, copies or removes files:
-/// `std::fs` / `tokio::fs` functions, their `libc`, `rustix` and `nix` equivalents, the Windows move and
-/// delete functions, and the workspace's own move primitives (by name, wherever they are called from).
+/// `std::fs` / `tokio::fs` / `fs_err` functions, their `libc`, `rustix` and `nix` equivalents, the
+/// `remove_dir_all` crate, `tempfile`'s `persist` (it replaces its target; `persist_noclobber` does not), the
+/// Windows move and delete functions, and the workspace's own move primitives (by name, wherever they are
+/// called from).
 pub fn move_kind(path: &[String]) -> Option<&'static str> {
     let last = path.last()?.as_str();
     let own = [
@@ -309,8 +319,16 @@ pub fn move_kind(path: &[String]) -> Option<&'static str> {
     let parent: Vec<&str> = path[..path.len() - 1].iter().map(String::as_str).collect();
     let std_like = matches!(
         parent.as_slice(),
-        ["std", "fs"] | ["tokio", "fs"] | ["async_std", "fs"]
+        ["std", "fs"] | ["tokio", "fs"] | ["async_std", "fs"] | ["fs_err"] | ["fs_err", "tokio"]
     );
+    // The `remove_dir_all` crate: every function removes a tree.
+    if parent.first() == Some(&"remove_dir_all") {
+        return Some("remove_dir_all");
+    }
+    // `NamedTempFile::persist` / `TempPath::persist` replace an existing target.
+    if last == "persist" && matches!(parent.last(), Some(&"NamedTempFile") | Some(&"TempPath")) {
+        return Some("persist");
+    }
     let sys = matches!(
         parent.as_slice(),
         ["libc"] | ["rustix", "fs"] | ["nix", "unistd"] | ["nix", "fcntl"]
@@ -446,7 +464,7 @@ struct FileFacts {
     aliases: HashMap<String, Vec<String>>,
     /// Glob imports (`use std::fs::*`): their paths.
     globs: Vec<Vec<String>>,
-    /// Line ranges of items under `#[cfg(test)]` (any `cfg` that mentions `test`).
+    /// Line ranges of items under exactly `#[cfg(test)]`.
     test_lines: Vec<(usize, usize)>,
 }
 
@@ -486,17 +504,14 @@ impl FileFacts {
         }
     }
 
-    /// `#[cfg(...)]` that mentions `test` and not `not` (`cfg(not(test))` code is checked).
+    /// Exactly `#[cfg(test)]`: code compiled only into unit tests. `cfg(any(test, feature = ".."))` is also
+    /// compiled with the feature, and `cfg(not(test))` everywhere but tests, so both are checked.
     fn cfg_test(attrs: &[syn::Attribute]) -> bool {
         attrs.iter().any(|a| {
             let syn::Meta::List(l) = &a.meta else {
                 return false;
             };
-            let text = l.tokens.to_string();
-            let mut words = text.split(|c: char| !c.is_alphanumeric() && c != '_');
-            a.path().is_ident("cfg")
-                && words.clone().any(|w| w == "test")
-                && !words.any(|w| w == "not")
+            a.path().is_ident("cfg") && l.tokens.to_string().trim() == "test"
         })
     }
 
@@ -573,7 +588,20 @@ pub fn find_move_calls(text: &str) -> Result<Vec<MoveCall>, String> {
         Ident(String, usize),
         PathSep,
         Dot,
+        /// The start of a `( ... )` group.
+        OpenParen,
+        /// A string literal's value.
+        Str(String),
         Other,
+    }
+    /// The value of a (raw) string literal token, without escapes processed.
+    fn str_value(lit: &proc_macro2::Literal) -> Option<String> {
+        let t = lit.to_string();
+        let t = t
+            .strip_prefix('r')
+            .map(|r| r.trim_matches('#'))
+            .unwrap_or(&t);
+        t.strip_prefix('"')?.strip_suffix('"').map(str::to_owned)
     }
     fn flatten(ts: TokenStream, out: &mut Vec<Tok>) {
         let mut it = ts.into_iter().peekable();
@@ -594,10 +622,15 @@ pub fn find_move_calls(text: &str) -> Result<Vec<MoveCall>, String> {
                 }
                 TokenTree::Punct(p) if p.as_char() == '.' => out.push(Tok::Dot),
                 TokenTree::Group(g) => {
-                    out.push(Tok::Other);
+                    out.push(if g.delimiter() == proc_macro2::Delimiter::Parenthesis {
+                        Tok::OpenParen
+                    } else {
+                        Tok::Other
+                    });
                     flatten(g.stream(), out);
                     out.push(Tok::Other);
                 }
+                TokenTree::Literal(l) => out.push(str_value(&l).map_or(Tok::Other, Tok::Str)),
                 _ => out.push(Tok::Other),
             }
         }
@@ -628,7 +661,20 @@ pub fn find_move_calls(text: &str) -> Result<Vec<MoveCall>, String> {
         }
         let line = *line;
         i = j;
-        if after_dot || facts.is_test_line(line) {
+        if facts.is_test_line(line) {
+            continue;
+        }
+        let called = matches!(toks.get(j), Some(Tok::OpenParen));
+        if after_dot {
+            // `tmp.persist(path)`: `tempfile`'s persist replaces an existing target (`persist_noclobber`, a
+            // different name, does not). No other type in the workspace has a `persist` method.
+            if segs.len() == 1 && segs[0] == "persist" && called {
+                out.push(MoveCall {
+                    line,
+                    kind: "persist",
+                    path: ".persist".into(),
+                });
+            }
             continue;
         }
         let mut full: Vec<String> = match facts.aliases.get(&segs[0]) {
@@ -652,6 +698,24 @@ pub fn find_move_calls(text: &str) -> Result<Vec<MoveCall>, String> {
                 kind,
                 path: full.join("::"),
             });
+        } else if full.ends_with(&["Command".to_owned(), "new".to_owned()])
+            && called
+            && let Some(Tok::Str(program)) = toks.get(j + 1)
+        {
+            // `Command::new("rm")`, `Command::new("/bin/mv")`, `Command::new("del.exe")`.
+            let name = program
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(program)
+                .to_ascii_lowercase();
+            let name = name.strip_suffix(".exe").unwrap_or(&name);
+            if SHELL_FILE_COMMANDS.contains(&name) {
+                out.push(MoveCall {
+                    line,
+                    kind: "shell_command",
+                    path: format!("{}(\"{program}\")", full.join("::")),
+                });
+            }
         }
     }
     Ok(out)
@@ -838,6 +902,144 @@ mod tests {
         assert!(move_calls("crates/ps-service/src/x.rs", src).is_empty());
         let src = "#[cfg(not(test))]\nfn real() { std::fs::remove_file(p).ok(); }\n";
         assert_eq!(move_calls("crates/ps-service/src/x.rs", src).len(), 1);
+    }
+
+    #[test]
+    fn fs_err_calls_are_caught() {
+        for (src, kind) in [
+            ("fn g() { fs_err::remove_file(p).ok(); }", "remove_file"),
+            ("fn g() { fs_err::rename(a, b).ok(); }", "fs::rename"),
+            (
+                "fn g() { fs_err::remove_dir_all(p).ok(); }",
+                "remove_dir_all",
+            ),
+            ("fn g() { fs_err::hard_link(a, b).ok(); }", "hard_link"),
+            ("fn g() { fs_err::copy(a, b).ok(); }", "fs::copy"),
+            (
+                "use fs_err as fs;\nfn g() { fs::remove_dir(p).ok(); }",
+                "remove_dir",
+            ),
+            (
+                "use fs_err::remove_file;\nfn g() { remove_file(p).ok(); }",
+                "remove_file",
+            ),
+            (
+                "async fn g() { fs_err::tokio::remove_file(p).await.ok(); }",
+                "remove_file",
+            ),
+        ] {
+            let v = find_move_calls(src).expect("parse");
+            assert!(v.iter().any(|c| c.kind == kind), "{src}: {v:?}");
+            assert!(
+                !move_calls("crates/ps-service/src/x.rs", src).is_empty(),
+                "{src}"
+            );
+        }
+        // Reading through fs_err is fine.
+        assert!(move_calls("x.rs", "fn g() { fs_err::read(p).ok(); }").is_empty());
+    }
+
+    #[test]
+    fn remove_dir_all_crate_is_caught() {
+        for src in [
+            "fn g() { remove_dir_all::remove_dir_all(p).ok(); }",
+            "use remove_dir_all::remove_dir_contents;\nfn g() { remove_dir_contents(p).ok(); }",
+            "use remove_dir_all::*;\nfn g() { ensure_empty_dir(p).ok(); }",
+        ] {
+            let v = find_move_calls(src).expect("parse");
+            assert!(v.iter().any(|c| c.kind == "remove_dir_all"), "{src}: {v:?}");
+            assert!(
+                !move_calls("crates/ps-service/src/x.rs", src).is_empty(),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_file_commands_are_caught() {
+        for src in [
+            "fn g() { std::process::Command::new(\"rm\").arg(p).status().ok(); }",
+            "use std::process::Command;\nfn g() { Command::new(\"mv\").args([a, b]).status().ok(); }",
+            "fn g() { Command::new(\"rmdir\").arg(p).status().ok(); }",
+            "fn g() { Command::new(\"del\").arg(p).status().ok(); }",
+            "fn g() { Command::new(\"/bin/rm\").arg(p).status().ok(); }",
+            "fn g() { Command::new(r\"C:\\Windows\\del.EXE\").status().ok(); }",
+            "async fn g() { tokio::process::Command::new(\"rm\").status().await.ok(); }",
+        ] {
+            let v = find_move_calls(src).expect("parse");
+            assert!(v.iter().any(|c| c.kind == "shell_command"), "{src}: {v:?}");
+            // Allowed nowhere, not even in the move primitive.
+            assert_eq!(
+                move_calls("crates/ps-export/src/quarantine/fsops.rs", src).len(),
+                1,
+                "{src}"
+            );
+            assert_eq!(move_calls("xtask/src/package.rs", src).len(), 1, "{src}");
+        }
+        for src in [
+            "fn g() { Command::new(\"cargo\").arg(\"rm\").status().ok(); }",
+            "fn g() { Command::new(\"rmx\").status().ok(); }",
+            "fn g() { log::info!(\"Command::new(rm)\"); }",
+        ] {
+            assert!(
+                move_calls("crates/ps-service/src/x.rs", src).is_empty(),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn tempfile_persist_is_caught_but_not_persist_noclobber() {
+        for src in [
+            "fn g() { let t = tempfile::NamedTempFile::new()?; t.persist(p)?; }",
+            "fn g() { tempfile::NamedTempFile::persist(t, p)?; }",
+            "use tempfile::TempPath;\nfn g() { TempPath::persist(t, p)?; }",
+            "fn g() { make_temp()\n    .persist(p)?; }",
+        ] {
+            let v = find_move_calls(src).expect("parse");
+            assert!(v.iter().any(|c| c.kind == "persist"), "{src}: {v:?}");
+            assert_eq!(
+                move_calls("crates/ps-export/src/copy.rs", src).len(),
+                1,
+                "{src}"
+            );
+        }
+        for src in [
+            "fn g() { t.persist_noclobber(p)?; }",
+            "fn g() { tempfile::NamedTempFile::persist_noclobber(t, p)?; }",
+            "fn g() { t.keep()?; }",
+        ] {
+            assert!(
+                move_calls("crates/ps-export/src/copy.rs", src).is_empty(),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_pure_cfg_test_is_skipped() {
+        for src in [
+            "#[cfg(any(test, feature = \"testing\"))]\nfn helper() { std::fs::remove_file(p).ok(); }\n",
+            "#[cfg(any(feature = \"testing\", test))]\nmod t {\n    fn h() { std::fs::rename(a, b).ok(); }\n}\n",
+            "#[cfg(feature = \"test\")]\nfn helper() { std::fs::remove_file(p).ok(); }\n",
+            "#[cfg(not(test))]\nfn real() { std::fs::remove_file(p).ok(); }\n",
+            "fn f() {\n    #[cfg(any(test, debug_assertions))]\n    let x = std::fs::remove_file(p);\n}\n",
+        ] {
+            assert_eq!(
+                move_calls("crates/ps-service/src/x.rs", src).len(),
+                1,
+                "{src}"
+            );
+        }
+        for src in [
+            "#[cfg(test)]\nfn helper() { std::fs::remove_file(p).ok(); }\n",
+            "#[cfg( test )]\nmod tests {\n    fn t() { std::fs::remove_file(p).ok(); }\n}\n",
+        ] {
+            assert!(
+                move_calls("crates/ps-service/src/x.rs", src).is_empty(),
+                "{src}"
+            );
+        }
     }
 
     #[test]
