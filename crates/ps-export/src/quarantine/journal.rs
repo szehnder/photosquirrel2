@@ -3,7 +3,7 @@
 //! another `uid` belongs to another catalog's run and is never used.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use ps_model::{CleanupMove, RelPath};
@@ -140,6 +140,21 @@ pub struct Journal {
     path: PathBuf,
     file: File,
     run: i64,
+    /// The file may end in a partial line (a crash or a failed write mid-append): the next record starts
+    /// with a newline so it never joins that line.
+    torn: bool,
+}
+
+/// The file is empty or ends with a newline.
+fn ends_with_newline(path: &Path) -> io::Result<bool> {
+    let mut f = File::open(path)?;
+    if f.metadata()?.len() == 0 {
+        return Ok(true);
+    }
+    f.seek(SeekFrom::End(-1))?;
+    let mut last = [0u8; 1];
+    f.read_exact(&mut last)?;
+    Ok(last[0] == b'\n')
 }
 
 /// The run folder belongs to another run (another catalog's run with the same number).
@@ -168,7 +183,8 @@ pub fn read_header(path: &Path) -> io::Result<Option<JournalLine>> {
         .filter(|l| l.event == JournalEvent::Run))
 }
 
-/// Every line of a journal (unparseable lines, e.g. a torn last line after a crash, are skipped).
+/// Every line of a journal. An unparseable line (a record torn by a crash mid-append) is skipped on its own;
+/// the records around it are kept, since [`Journal`] never appends onto a partial line.
 pub fn read_journal(path: &Path) -> io::Result<Vec<JournalLine>> {
     let f = File::open(path)?;
     let mut out = Vec::new();
@@ -187,7 +203,12 @@ impl Journal {
         let path = run_dir.join(JOURNAL_FILE);
         match OpenOptions::new().append(true).create_new(true).open(&path) {
             Ok(file) => {
-                let mut j = Journal { path, file, run };
+                let mut j = Journal {
+                    path,
+                    file,
+                    run,
+                    torn: false,
+                };
                 j.append(&JournalLine::header(run, uid, source_root))?;
                 if let Some(dir) = j.path.parent() {
                     super::fsops::sync_dir_logged(dir);
@@ -205,7 +226,19 @@ impl Journal {
                     return Err(foreign_run(&path, found));
                 }
                 let file = OpenOptions::new().append(true).open(&path)?;
-                Ok(Journal { path, file, run })
+                let torn = !ends_with_newline(&path)?;
+                if torn {
+                    log::warn!(
+                        "{}: the last record is incomplete (interrupted write); it is kept and skipped",
+                        path.display()
+                    );
+                }
+                Ok(Journal {
+                    path,
+                    file,
+                    run,
+                    torn,
+                })
             }
             Err(e) => Err(e),
         }
@@ -215,12 +248,21 @@ impl Journal {
         &self.path
     }
 
-    /// Append one line and fsync; durable when this returns.
+    /// Append one line and fsync; durable when this returns. After a torn record the line starts with a
+    /// newline, so the torn record stays a line of its own.
     pub fn append(&mut self, line: &JournalLine) -> io::Result<()> {
-        let mut s = serde_json::to_string(line).map_err(io::Error::other)?;
+        let mut s = String::new();
+        if self.torn {
+            s.push('\n');
+        }
+        s.push_str(&serde_json::to_string(line).map_err(io::Error::other)?);
         s.push('\n');
+        // Until this write is durable the file may end in part of it.
+        self.torn = true;
         self.file.write_all(s.as_bytes())?;
-        self.file.sync_data()
+        self.file.sync_data()?;
+        self.torn = false;
+        Ok(())
     }
 
     /// Append a line about one move.
@@ -232,5 +274,64 @@ impl Journal {
     ) -> io::Result<()> {
         let line = JournalLine::of_move(self.run, event, m, note);
         self.append(&line)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a_move() -> CleanupMove {
+        let rel = |s: &str| RelPath::from_bytes(s.as_bytes().to_vec()).expect("rel");
+        CleanupMove {
+            file: ps_model::FileId(5),
+            rel_path: rel("DCIM/a.jpg"),
+            quarantine_rel_path: rel(".photosquirrel-quarantine/1/DCIM/a.jpg"),
+            size: 3,
+            mtime_ns: 1,
+            file_index: None,
+            content: ps_model::ContentId::full([7; 32]),
+            disposition: ps_model::Disposition::Exported,
+            covering_library_path: rel("2020/a.jpg"),
+            state: ps_model::MoveState::Planned,
+            note: None,
+            at_ms: None,
+        }
+    }
+
+    /// A crash mid-append leaves a partial line; the next record must not join it (it would be lost too).
+    #[test]
+    fn a_torn_record_never_swallows_the_next_one() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let m = a_move();
+        {
+            let mut j = Journal::open(d.path(), 1, "uid", d.path()).expect("open");
+            j.record(JournalEvent::Intent, &m, None).expect("intent");
+        }
+        let path = d.path().join(JOURNAL_FILE);
+        // The crash: half of a `done` record, no newline.
+        let mut f = OpenOptions::new().append(true).open(&path).expect("append");
+        f.write_all(br#"{"v":1,"event":"done","run":1,"at":12,"fi"#)
+            .expect("torn");
+        drop(f);
+        let mut j = Journal::open(d.path(), 1, "uid", d.path()).expect("reopen");
+        j.record(JournalEvent::Done, &m, Some("after the crash".into()))
+            .expect("done");
+        j.record(JournalEvent::UndoIntent, &m, None).expect("undo");
+        let events: Vec<JournalEvent> = read_journal(&path)
+            .expect("read")
+            .iter()
+            .map(|l| l.event)
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                JournalEvent::Run,
+                JournalEvent::Intent,
+                JournalEvent::Done,
+                JournalEvent::UndoIntent
+            ],
+            "only the torn line is skipped"
+        );
     }
 }
