@@ -141,6 +141,11 @@ GPUI system libraries:
 # Debian/Ubuntu
 sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev \
   libfreetype-dev libx11-xcb-dev libxcb1-dev libssl-dev libsecret-1-dev libdbus-1-dev pkg-config
+
+# Arch/Manjaro (use pacman -S instead of yay -S if you prefer; also install a Vulkan driver for your GPU:
+# vulkan-intel, vulkan-radeon or nvidia-utils)
+yay -S --needed base-devel libxkbcommon libxkbcommon-x11 wayland vulkan-icd-loader vulkan-headers \
+  fontconfig freetype2 libx11 libxcb openssl libsecret dbus pkgconf
 ```
 
 ```sh
