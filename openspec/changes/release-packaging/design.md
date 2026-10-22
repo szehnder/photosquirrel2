@@ -10,7 +10,8 @@ build, unsigned packages and the libheif fallback (ADR-0017 `heic` feature). x86
 ## Goals / Non-Goals
 
 **Goals:**
-- One tag -> one release with six installers/archives and checksums, reproducibly.
+- One tag -> one release with seven installers/archives (AppImage, .deb, Linux .tar.gz, DMG, macOS .tar.gz,
+  NSIS setup, .zip) and their checksums, reproducibly.
 
 **Non-Goals:**
 - Signing/notarization, auto-update, store submissions.

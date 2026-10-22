@@ -81,8 +81,9 @@ jobs:
           ls -l
           count=$(ls PhotoSquirrel-* | grep -vc '\.sha256$')
           sums=$(ls PhotoSquirrel-*.sha256 | wc -l)
-          if [ "$count" -ne 6 ] || [ "$sums" -ne 6 ]; then
-            echo "::error::expected 6 packages and 6 .sha256 files, found $count and $sums"; exit 1
+          # Linux AppImage, .deb, .tar.gz; macOS .dmg, .tar.gz; Windows setup .exe, .zip.
+          if [ "$count" -ne 7 ] || [ "$sums" -ne 7 ]; then
+            echo "::error::expected 7 packages and 7 .sha256 files, found $count and $sums"; exit 1
           fi
           sha256sum -c PhotoSquirrel-*.sha256
       - name: Release notes

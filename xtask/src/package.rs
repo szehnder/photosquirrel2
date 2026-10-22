@@ -987,6 +987,17 @@ mod tests {
             assert_eq!(lines[at + 2], format!("args: {args}"));
         }
         assert!(text.contains("cargo xtask package $args"));
+        // The release job checks for every package of every platform, and a checksum for each.
+        let total: usize = [Os::Linux, Os::Macos, Os::Windows]
+            .map(|os| kinds(os).len())
+            .iter()
+            .sum();
+        assert!(
+            text.contains(&format!(
+                "\"$count\" -ne {total} ] || [ \"$sums\" -ne {total} ]"
+            )),
+            "the release job does not expect {total} packages"
+        );
         // One release job, after every package job, publishing on tags only.
         let creates: Vec<_> = lines
             .iter()
