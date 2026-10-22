@@ -16,7 +16,7 @@
 
 - [x] 2.1 Clean template leftovers from `release.yml`, `Dockerfile` and `release-notes.md`; verify `grep -ri gremlin .github packaging` finds nothing
 - [x] 2.2 Workflow structure test; verify `scenario_release_packaging_release_workflow_covers_every_platform`
-- [ ] 2.3 Dry run on a fork with tag `v0.1.0-rc.1`; verify the release lists seven packages and seven `.sha256` files (seven, not six: the formats of the spec are AppImage, .deb, Linux .tar.gz, DMG, macOS .tar.gz, setup .exe, .zip; the build and check steps run without publishing via `gh workflow run release.yml`)
+- [x] 2.3 Dry run on a fork with tag `v0.1.0-rc.1`; verify the release lists seven packages and seven `.sha256` files (seven, not six: the formats of the spec are AppImage, .deb, Linux .tar.gz, DMG, macOS .tar.gz, setup .exe, .zip; the build and check steps run without publishing via `gh workflow run release.yml`). Done as the `workflow_dispatch` dry runs 39714377948 and 39736159077 instead of an rc tag: the owner chose to release `v0.1.0` directly, and run 39747062120 published seven packages and seven `.sha256` files
 - [x] 2.4 Workflow hardening: read-only token except the release job, `persist-credentials: false` on every checkout, actions pinned to commit SHAs (Node 24 majors), publish only for a pushed `v` tag, packaging image pinned to an `ubuntu:22.04` digest, clippy on macOS and Windows CI; verify `scenario_release_packaging_release_workflow_covers_every_platform`, `ci_workflow_is_least_privilege` and `scenario_release_packaging_linux_build_image_pins_glibc_floor`
 
 ## 3. Documentation
@@ -27,6 +27,6 @@
 ## 4. Verification
 
 - [x] 4.1 `cargo xtask ci` is green
-- [ ] 4.2 Gate: installers for every platform attached to a GitHub Release; README with screenshots on the default branch
+- [x] 4.2 Gate: installers for every platform attached to a GitHub Release; README with screenshots on the default branch. Release `v0.1.0` (run 39747062120) has 7 packages, 7 checksums (all `sha256sum -c` OK) and `rawler-0.8.0.crate`
 - [x] 4.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [x] 4.4 `openspec validate release-packaging --strict` passes
