@@ -99,6 +99,10 @@ pub fn disposition_reason(
         (Disposition::Pending, _, _) => "not in the library yet".into(),
         (Disposition::Unreadable, _, _) => "could not be read after retries".into(),
         (Disposition::Missing, _, _) => "gone from the source since the last scan".into(),
+        (Disposition::Quarantined, _, Some(p)) => {
+            format!("moved to the quarantine folder; its best copy is {p}")
+        }
+        (Disposition::Quarantined, _, None) => "moved to the quarantine folder".into(),
         (d, _, _) => d.as_str().into(),
     }
 }

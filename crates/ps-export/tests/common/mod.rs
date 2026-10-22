@@ -247,6 +247,7 @@ pub fn corpus_model(c: &SmallCorpus, drives: &[&str], offline: &[&str]) -> Corpu
             unreadable: false,
             missing: false,
             user_excluded: false,
+            quarantined: None,
         });
         by_group.entry(&f.group).or_default().push(f);
     }

@@ -4,6 +4,7 @@
 //! the UI. It has no I/O and no heavy dependencies.
 
 mod analysis;
+mod cleanup;
 mod disposition;
 mod export;
 mod ids;
@@ -19,6 +20,7 @@ mod run;
 pub mod settings;
 
 pub use analysis::*;
+pub use cleanup::*;
 pub use disposition::*;
 pub use export::*;
 pub use ids::*;

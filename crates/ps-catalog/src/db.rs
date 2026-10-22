@@ -42,6 +42,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     AI_RESULT_SEQ_MIGRATION,
     LIBRARY_VERIFIED_MIGRATION,
     CLASS_FACTS_MIGRATION,
+    CLEANUP_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -115,6 +116,13 @@ pub const CLASS_FACTS_MIGRATION: Migration = Migration {
     version: 13,
     name: "class_facts",
     sql: include_str!("../migrations/0013_class_facts.sql"),
+};
+
+/// Migration 14 (quarantine-cleanup, ADR-0061: `cleanup_run`, `cleanup_move`).
+pub const CLEANUP_MIGRATION: Migration = Migration {
+    version: 14,
+    name: "cleanup",
+    sql: include_str!("../migrations/0014_cleanup.sql"),
 };
 
 /// `thumbs.db` migrations.

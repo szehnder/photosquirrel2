@@ -12,6 +12,7 @@
 //!
 //! Nothing here ever writes inside a source tree: the only files created are in the data directory.
 
+pub mod cleanup;
 pub mod db;
 mod error;
 mod gallery;
@@ -25,6 +26,7 @@ mod writer;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub use cleanup::NewCleanupRun;
 pub use error::{CatalogError, Result, WriteError, WriteErrors};
 pub use gallery::{
     UserDecision, UserDecisionRecord, excluded_classes, is_library, library_classes,

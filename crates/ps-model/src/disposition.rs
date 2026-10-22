@@ -16,16 +16,20 @@ pub enum Disposition {
     Unreadable,
     /// Gone from the source since the last scan.
     Missing,
+    /// Moved by a cleanup run into its source's quarantine folder (ADR-0034); accounted for. The disposition it
+    /// had before the move is kept beside it (`prior`) and comes back with undo.
+    Quarantined,
 }
 
 impl Disposition {
-    pub const ALL: [Disposition; 6] = [
+    pub const ALL: [Disposition; 7] = [
         Disposition::Exported,
         Disposition::Covered,
         Disposition::Excluded,
         Disposition::Pending,
         Disposition::Unreadable,
         Disposition::Missing,
+        Disposition::Quarantined,
     ];
 
     /// Safe to quarantine during cleanup (ADR-0024).
@@ -41,6 +45,7 @@ impl Disposition {
             Disposition::Pending => "pending",
             Disposition::Unreadable => "unreadable",
             Disposition::Missing => "missing",
+            Disposition::Quarantined => "quarantined",
         }
     }
 }
@@ -61,8 +66,8 @@ pub enum GroupEdge {
 /// Counts and bytes per disposition for a source or folder (ADR-0023).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletionCounts {
-    pub files: [u64; 6],
-    pub bytes: [u64; 6],
+    pub files: [u64; 7],
+    pub bytes: [u64; 7],
 }
 
 impl CompletionCounts {
@@ -80,7 +85,7 @@ impl CompletionCounts {
         self.files.iter().sum()
     }
 
-    /// Nothing pending or unreadable: every file is exported, covered, excluded or missing.
+    /// Nothing pending or unreadable: every file is exported, covered, excluded, missing or quarantined.
     pub fn fully_accounted(&self) -> bool {
         self.files_of(Disposition::Pending) == 0 && self.files_of(Disposition::Unreadable) == 0
     }

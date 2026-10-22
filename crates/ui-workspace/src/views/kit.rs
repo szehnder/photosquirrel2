@@ -240,6 +240,7 @@ pub fn disposition_color(d: Disposition, colors: &Colors) -> Hsla {
         Disposition::Pending => colors.warning,
         Disposition::Unreadable => colors.danger,
         Disposition::Missing => colors.border_strong,
+        Disposition::Quarantined => colors.accent_text,
     }
 }
 
@@ -251,6 +252,7 @@ pub fn disposition_label(d: Disposition) -> &'static str {
         Disposition::Pending => "Pending",
         Disposition::Unreadable => "Unreadable",
         Disposition::Missing => "Missing",
+        Disposition::Quarantined => "Quarantined",
     }
 }
 

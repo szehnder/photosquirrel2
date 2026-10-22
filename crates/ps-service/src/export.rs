@@ -448,6 +448,12 @@ impl<'a> Exports<'a> {
     ) -> Result<(Vec<FileFacts>, Vec<FileDisposition>)> {
         let r = self.catalog().read();
         let excluded: HashSet<FileId> = r.user_excluded_files()?.into_iter().collect();
+        // Files moved by a cleanup run (ADR-0034): quarantined, not missing.
+        let quarantined: HashMap<FileId, ps_model::RelPath> = r
+            .quarantined_files()?
+            .into_iter()
+            .map(|(f, _, q)| (f, q))
+            .collect();
         let mut files = Vec::new();
         r.for_each_file(|f| {
             files.push(FileFacts {
@@ -460,6 +466,7 @@ impl<'a> Exports<'a> {
                 unreadable: f.stage == Stage::Failed && f.attempts >= 3,
                 missing: f.missing_since_ms.is_some(),
                 user_excluded: excluded.contains(&f.id),
+                quarantined: quarantined.get(&f.id).cloned(),
             });
         })?;
         let groups: Vec<GroupFacts> = r

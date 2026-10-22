@@ -10,6 +10,8 @@
 //! - in a group whose whole keeper set has a valid library copy: keeper-set files are `exported`, the other
 //!   members `covered` (with the keeper's library path);
 //! - not in a group and its content has a valid library copy: `exported`;
+//! - moved by a cleanup run (ADR-0034): `quarantined`, with the disposition the rules below give it as if it
+//!   were still at its path (`prior`) - checked first, since the scanner sees it as gone;
 //! - gone from the source: `missing`; failed after retries: `unreadable`;
 //! - user-excluded, a member of a group whose keeper the user excluded (the photo itself was excluded, every
 //!   copy goes with it; the export skips such groups), or (in no group) junk, graphic or a cache thumbnail:
@@ -42,6 +44,9 @@ pub struct FileFacts {
     /// Gone from the source.
     pub missing: bool,
     pub user_excluded: bool,
+    /// Moved into its source's quarantine folder by a cleanup run (ADR-0034): the quarantine path, relative
+    /// to the source root.
+    pub quarantined: Option<RelPath>,
 }
 
 /// One duplicate group.
@@ -95,6 +100,12 @@ pub struct FileDisposition {
     pub reason: Option<ExclusionReason>,
     /// The library copy of this file (exported) or of its keeper (covered).
     pub library_path: Option<RelPath>,
+    /// Quarantined files: the disposition the file would have at its original path (ADR-0034).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prior: Option<Disposition>,
+    /// Quarantined files: where it is, relative to its source root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quarantine_path: Option<RelPath>,
 }
 
 /// Check the library copy of every `done` row with [`check_copy`]: present with its recorded size (and, when
@@ -160,52 +171,68 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
         disposition,
         reason,
         library_path,
+        prior: None,
+        quarantine_path: None,
+    };
+    let derive = |f: &FileFacts| -> FileDisposition {
+        if let Some(&gi) = group_of.get(&f.file) {
+            if let Some(kp) = &keeper_path[gi] {
+                return if facts.groups[gi].keeper_set.contains(&f.file) {
+                    let own = exported_path(f.file).unwrap_or_else(|| kp.clone());
+                    d(f, Disposition::Exported, None, Some(own))
+                } else {
+                    d(f, Disposition::Covered, None, Some(kp.clone()))
+                };
+            }
+        } else if let Some(p) = f.content.and_then(|c| valid.get(&c)) {
+            return d(f, Disposition::Exported, None, Some(p.clone()));
+        }
+        if f.missing {
+            return d(f, Disposition::Missing, None, None);
+        }
+        if f.unreadable {
+            return d(f, Disposition::Unreadable, None, None);
+        }
+        let in_group = group_of.contains_key(&f.file);
+        // A group member is never excluded by class: its group's keeper decides (pending until exported,
+        // excluded with it when the user excluded the keeper).
+        let reason = if f.user_excluded
+            || group_of.get(&f.file).is_some_and(|gi| excluded_keeper[*gi])
+        {
+            Some(ExclusionReason::UserExcluded)
+        } else if in_group {
+            None
+        } else {
+            match f.class {
+                Some(PhotoClass::Junk) => Some(ExclusionReason::Junk),
+                Some(PhotoClass::Graphic) => Some(ExclusionReason::Graphic),
+                Some(PhotoClass::ThumbnailCache) if !in_group => Some(ExclusionReason::CacheCopy),
+                _ => None,
+            }
+        };
+        match reason {
+            Some(r) => d(f, Disposition::Excluded, Some(r), None),
+            None => d(f, Disposition::Pending, None, None),
+        }
     };
     facts
         .files
         .iter()
-        .map(|f| {
-            if let Some(&gi) = group_of.get(&f.file) {
-                if let Some(kp) = &keeper_path[gi] {
-                    return if facts.groups[gi].keeper_set.contains(&f.file) {
-                        let own = exported_path(f.file).unwrap_or_else(|| kp.clone());
-                        d(f, Disposition::Exported, None, Some(own))
-                    } else {
-                        d(f, Disposition::Covered, None, Some(kp.clone()))
-                    };
+        .map(|f| match &f.quarantined {
+            Some(q) => {
+                let at_home = FileFacts {
+                    missing: false,
+                    ..f.clone()
+                };
+                let prior = derive(&at_home);
+                FileDisposition {
+                    disposition: Disposition::Quarantined,
+                    prior: Some(prior.disposition),
+                    quarantine_path: Some(q.clone()),
+                    ..prior
                 }
-            } else if let Some(p) = f.content.and_then(|c| valid.get(&c)) {
-                return d(f, Disposition::Exported, None, Some(p.clone()));
             }
-            if f.missing {
-                return d(f, Disposition::Missing, None, None);
-            }
-            if f.unreadable {
-                return d(f, Disposition::Unreadable, None, None);
-            }
-            let in_group = group_of.contains_key(&f.file);
-            // A group member is never excluded by class: its group's keeper decides (pending until exported,
-            // excluded with it when the user excluded the keeper).
-            let reason = if f.user_excluded
-                || group_of.get(&f.file).is_some_and(|gi| excluded_keeper[*gi])
-            {
-                Some(ExclusionReason::UserExcluded)
-            } else if in_group {
-                None
-            } else {
-                match f.class {
-                    Some(PhotoClass::Junk) => Some(ExclusionReason::Junk),
-                    Some(PhotoClass::Graphic) => Some(ExclusionReason::Graphic),
-                    Some(PhotoClass::ThumbnailCache) if !in_group => {
-                        Some(ExclusionReason::CacheCopy)
-                    }
-                    _ => None,
-                }
-            };
-            match reason {
-                Some(r) => d(f, Disposition::Excluded, Some(r), None),
-                None => d(f, Disposition::Pending, None, None),
-            }
+            None => derive(f),
         })
         .collect()
 }
