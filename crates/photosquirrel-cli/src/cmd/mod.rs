@@ -2,6 +2,7 @@
 //! JSON envelope ([`crate::out::emit`]).
 
 pub mod ai;
+pub mod cleanup;
 pub mod demo;
 pub mod doctor;
 pub mod export;

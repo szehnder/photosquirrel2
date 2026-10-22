@@ -1,0 +1,403 @@
+//! `cleanup plan|run|list|show|undo` (change `quarantine-cleanup`; ADR-0024, ADR-0061).
+//!
+//! `plan` stores a dry run and moves nothing. `run` and `undo` move files only with `--yes` (or a "yes"
+//! typed at a terminal); without it they print what they would do and exit 1.
+
+use std::io::{BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use anyhow::{Result, bail};
+use serde::Serialize;
+
+use ps_export::quarantine::{RunProgress, RunReport, UndoReport};
+use ps_model::{CleanupMove, FileId, RelPath, SourceId};
+use ps_service::cleanup::{CleanupPlan, RunOptions, RunSummary, UndoSelection};
+
+use super::Ctx;
+use crate::control::{self, Interrupted};
+use crate::out::{bytes, duration_ms, emit};
+
+fn rel_arg(s: &str) -> Result<RelPath> {
+    let p = Path::new(s.trim_matches('/'));
+    match RelPath::from_path(p) {
+        Some(r) => Ok(r),
+        None => bail!("--folder must be a folder relative to the source root, like DCIM/100CANON"),
+    }
+}
+
+/// Ask at a terminal; refuse without one (`--yes` is the non-interactive confirmation).
+fn confirmed(yes: bool, what: &str) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    eprint!("{what} [y/N] ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+
+#[derive(Serialize)]
+struct MoveOut<'a> {
+    file: FileId,
+    path: PathBuf,
+    quarantine_path: PathBuf,
+    size: u64,
+    disposition: ps_model::Disposition,
+    covering_library_path: String,
+    state: ps_model::MoveState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<&'a str>,
+}
+
+fn moves_out<'a>(root: &Path, moves: &'a [CleanupMove]) -> Vec<MoveOut<'a>> {
+    moves
+        .iter()
+        .map(|m| MoveOut {
+            file: m.file,
+            path: m.rel_path.under(root),
+            quarantine_path: m.quarantine_rel_path.under(root),
+            size: m.size,
+            disposition: m.disposition,
+            covering_library_path: m.covering_library_path.display().into_owned(),
+            state: m.state,
+            note: m.note.as_deref(),
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct PlanOut<'a> {
+    run: Option<i64>,
+    source: SourceId,
+    root: &'a Path,
+    library: &'a Path,
+    folder: Option<String>,
+    network: bool,
+    totals: &'a ps_export::quarantine::MoveTotals,
+    moves: Vec<MoveOut<'a>>,
+}
+
+fn print_folders(t: &ps_export::quarantine::MoveTotals) {
+    for f in t.folders.iter().take(50) {
+        println!(
+            "  {}: {} files ({}), {} exported, {} covered",
+            f.folder
+                .as_ref()
+                .map_or_else(|| "(source root)".to_owned(), |p| p.display().into_owned()),
+            f.files,
+            bytes(f.bytes),
+            f.exported,
+            f.covered
+        );
+    }
+    if t.folders.len() > 50 {
+        println!("  ... and {} more folders", t.folders.len() - 50);
+    }
+}
+
+/// `cleanup plan`: store and print a plan; nothing on disk changes.
+pub fn plan(ctx: &Ctx, source: i64, folder: Option<&str>, library: Option<&Path>) -> Result<()> {
+    let svc = ctx.service()?;
+    let folder = folder.map(rel_arg).transpose()?;
+    let p: CleanupPlan = svc.cleanups().plan(SourceId(source), folder, library)?;
+    let out = PlanOut {
+        run: p.summary.as_ref().map(|s| s.run.id),
+        source: p.source,
+        root: &p.root,
+        library: &p.library,
+        folder: p.folder.as_ref().map(|f| f.display().into_owned()),
+        network: p.network,
+        totals: &p.totals,
+        moves: moves_out(&p.root, &p.moves),
+    };
+    emit(ctx.json, "cleanup plan", &out, |o| {
+        let Some(run) = o.run else {
+            println!(
+                "nothing to clean up in {}: no exported or covered file is there",
+                o.root.display()
+            );
+            return;
+        };
+        for m in o.moves.iter().take(200) {
+            println!(
+                "move {} -> {}",
+                m.path.display(),
+                m.quarantine_path.display()
+            );
+        }
+        if o.moves.len() > 200 {
+            println!("... and {} more", o.moves.len() - 200);
+        }
+        print_folders(o.totals);
+        println!(
+            "cleanup run {run}: {} files ({}) would move into {}/{}/{run}, safe in {}",
+            o.totals.files,
+            bytes(o.totals.bytes),
+            o.root.display(),
+            ps_export::quarantine::QUARANTINE_DIR,
+            o.library.display()
+        );
+        if o.network {
+            println!("this source is a network share: add --network-ok to the run");
+        }
+        println!(
+            "plan only: nothing was moved. Each file is re-verified right before it moves; nothing is ever deleted.\n\
+             to move them: photosquirrel-cli cleanup run {run} --yes"
+        );
+    })
+}
+
+#[derive(Serialize)]
+struct RunOut<'a> {
+    run: i64,
+    root: &'a Path,
+    #[serde(flatten)]
+    report: &'a RunReport,
+}
+
+#[derive(Serialize)]
+struct NotConfirmed<'a> {
+    run: i64,
+    root: &'a Path,
+    would_move: u64,
+    would_move_bytes: u64,
+    moved: u64,
+}
+
+/// `cleanup run <id>`: move the planned files (needs `--yes`). Ctrl-C stops between files.
+pub fn run(ctx: &Ctx, id: i64, yes: bool, network_ok: bool) -> Result<()> {
+    let svc = ctx.service()?;
+    let (summary, _) = svc.cleanups().run_detail(id)?;
+    let question = format!(
+        "Move {} files ({}) from {} into its quarantine folder? Each is re-verified first; nothing is deleted.",
+        summary.counts.planned,
+        bytes(summary.counts.planned_bytes),
+        summary.root.display()
+    );
+    if !confirmed(yes, &question)? {
+        let out = NotConfirmed {
+            run: id,
+            root: &summary.root,
+            would_move: summary.counts.planned,
+            would_move_bytes: summary.counts.planned_bytes,
+            moved: 0,
+        };
+        emit(ctx.json, "cleanup run", &out, |o| {
+            println!(
+                "nothing was moved: run {} would move {} files ({}); review it with `cleanup show {}`, then add --yes",
+                o.run,
+                o.would_move,
+                bytes(o.would_move_bytes),
+                o.run
+            );
+        })?;
+        bail!(
+            "cleanup not confirmed: add --yes to move {} files",
+            summary.counts.planned
+        );
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let cancel = cancel.clone();
+        std::thread::spawn(move || {
+            while !cancel.load(Ordering::SeqCst) {
+                if control::interrupted() {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+    };
+    let r = svc.cleanups().run(
+        id,
+        RunOptions {
+            network_confirmed: network_ok,
+        },
+        &cancel,
+        &RunProgress::default(),
+    );
+    let interrupted = control::interrupted();
+    cancel.store(true, Ordering::SeqCst);
+    let _ = watcher.join();
+    let report = r?;
+    let out = RunOut {
+        run: id,
+        root: &summary.root,
+        report: &report,
+    };
+    emit(ctx.json, "cleanup run", &out, |o| {
+        println!(
+            "moved {} files ({}) into {} in {}; {} skipped",
+            o.report.moved,
+            bytes(o.report.bytes_moved),
+            summary.quarantine_dir.display(),
+            duration_ms(o.report.elapsed_ms),
+            o.report.skipped.len()
+        );
+        for s in &o.report.skipped {
+            println!("  not moved: {}: {}", s.rel_path, s.text);
+        }
+        if o.report.cancelled {
+            println!(
+                "stopped: {} files not attempted; run again to continue",
+                o.report.not_attempted
+            );
+        }
+        println!("undo any time: photosquirrel-cli cleanup undo {id} --yes");
+    })?;
+    if interrupted {
+        return Err(Interrupted.into());
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct ListRow<'a> {
+    #[serde(flatten)]
+    summary: &'a RunSummary,
+}
+
+/// `cleanup list`: every run, newest first.
+pub fn list(ctx: &Ctx) -> Result<()> {
+    let svc = ctx.reader()?;
+    let runs = svc.cleanups().runs()?;
+    let rows: Vec<ListRow<'_>> = runs.iter().map(|summary| ListRow { summary }).collect();
+    emit(ctx.json, "cleanup list", &rows, |rows| {
+        if rows.is_empty() {
+            println!("no cleanup runs");
+            return;
+        }
+        let table: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                let s = r.summary;
+                vec![
+                    s.run.id.to_string(),
+                    s.run.state.as_str().to_owned(),
+                    s.root.display().to_string(),
+                    s.counts.planned.to_string(),
+                    format!(
+                        "{} ({})",
+                        s.counts.quarantined,
+                        bytes(s.counts.quarantined_bytes)
+                    ),
+                    s.counts.skipped.to_string(),
+                    s.counts.restored.to_string(),
+                ]
+            })
+            .collect();
+        super::table(
+            &[
+                "RUN",
+                "STATE",
+                "SOURCE",
+                "PLANNED",
+                "QUARANTINED",
+                "SKIPPED",
+                "RESTORED",
+            ],
+            &table,
+        );
+    })
+}
+
+#[derive(Serialize)]
+struct ShowOut<'a> {
+    #[serde(flatten)]
+    summary: &'a RunSummary,
+    moves: Vec<MoveOut<'a>>,
+}
+
+/// `cleanup show <id>`: a run with every move.
+pub fn show(ctx: &Ctx, id: i64) -> Result<()> {
+    let svc = ctx.reader()?;
+    let (summary, moves) = svc.cleanups().run_detail(id)?;
+    let out = ShowOut {
+        summary: &summary,
+        moves: moves_out(&summary.root, &moves),
+    };
+    emit(ctx.json, "cleanup show", &out, |o| {
+        println!(
+            "cleanup run {} ({}) of {}: {} planned, {} quarantined, {} skipped, {} restored",
+            o.summary.run.id,
+            o.summary.run.state.as_str(),
+            o.summary.root.display(),
+            o.summary.counts.planned,
+            o.summary.counts.quarantined,
+            o.summary.counts.skipped,
+            o.summary.counts.restored
+        );
+        for m in &o.moves {
+            println!(
+                "{:<11} {}{}",
+                m.state.as_str(),
+                m.path.display(),
+                m.note.map(|n| format!(" ({n})")).unwrap_or_default()
+            );
+        }
+    })
+}
+
+#[derive(Serialize)]
+struct UndoOut<'a> {
+    run: i64,
+    root: &'a Path,
+    #[serde(flatten)]
+    report: &'a UndoReport,
+}
+
+/// `cleanup undo <id>`: move quarantined files back (needs `--yes`); never onto an occupied path.
+pub fn undo(ctx: &Ctx, id: i64, folder: Option<&str>, files: &[i64], yes: bool) -> Result<()> {
+    let svc = ctx.service()?;
+    let (summary, _) = svc.cleanups().run_detail(id)?;
+    let selection = UndoSelection {
+        folder: folder.map(rel_arg).transpose()?,
+        files: files.iter().map(|f| FileId(*f)).collect(),
+    };
+    let question = format!(
+        "Move the quarantined files of run {id} back to their places in {}? Occupied paths are never overwritten.",
+        summary.root.display()
+    );
+    if !confirmed(yes, &question)? {
+        bail!("undo not confirmed: add --yes");
+    }
+    let report = svc.cleanups().undo(id, &selection)?;
+    let out = UndoOut {
+        run: id,
+        root: &summary.root,
+        report: &report,
+    };
+    emit(ctx.json, "cleanup undo", &out, |o| {
+        println!(
+            "restored {} files ({}) to {}",
+            o.report.restored,
+            bytes(o.report.bytes_restored),
+            o.root.display()
+        );
+        for c in &o.report.conflicts {
+            println!("  left in quarantine: {}: {}", c.rel_path, c.text);
+        }
+        for c in &o.report.missing {
+            println!("  not found in quarantine: {}: {}", c.rel_path, c.text);
+        }
+        for c in &o.report.changed {
+            println!("  note: {}: {}", c.rel_path, c.text);
+        }
+        if o.report.run_fully_undone {
+            println!("run {id} is fully undone");
+        }
+    })?;
+    if !report.conflicts.is_empty() {
+        bail!(
+            "{} files could not be restored and stay in quarantine",
+            report.conflicts.len()
+        );
+    }
+    Ok(())
+}

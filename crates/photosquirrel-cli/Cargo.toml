@@ -32,6 +32,7 @@ env_logger.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+blake3.workspace = true
 insta.workspace = true
 ps-llm = { workspace = true, features = ["testing"] }
 

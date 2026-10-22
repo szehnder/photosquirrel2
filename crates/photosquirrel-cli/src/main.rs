@@ -22,7 +22,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "photosquirrel-cli",
     version,
-    about = "Headless PhotoSquirrel: scan, deduplicate, export"
+    about = "Headless PhotoSquirrel: scan, deduplicate, export, clean up"
 )]
 struct Cli {
     /// Catalog/data folder (default: the app's data folder).
@@ -57,6 +57,12 @@ enum Command {
     Export {
         #[command(subcommand)]
         command: ExportCommand,
+    },
+    /// Reclaim space: move already-exported or covered originals into a quarantine folder on the same drive,
+    /// re-verified first, journaled and undoable. Nothing is ever deleted.
+    Cleanup {
+        #[command(subcommand)]
+        command: CleanupCommand,
     },
     /// Optional AI insights (advisory only; nothing is sent before `ai start`).
     Ai {
@@ -245,6 +251,50 @@ enum ExportCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum CleanupCommand {
+    /// Plan a cleanup of a source (or one folder of it) and store it as a run. Moves nothing.
+    Plan {
+        /// The source to clean up (see `sources list`).
+        #[arg(long)]
+        source: i64,
+        /// Only this folder, relative to the source root.
+        #[arg(long)]
+        folder: Option<String>,
+        /// The library whose copies make the files safe (default: the last one exported to).
+        #[arg(long)]
+        library: Option<PathBuf>,
+    },
+    /// Move a planned run's files into the source's quarantine folder (re-verifying each first).
+    Run {
+        run: i64,
+        /// Confirm the move. Without it nothing is moved (at a terminal you are asked).
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Confirm cleanup on a network source, where a rename may not be atomic.
+        #[arg(long)]
+        network_ok: bool,
+    },
+    /// Cleanup runs with their counts.
+    List,
+    /// One run with every file and its state.
+    Show { run: i64 },
+    /// Move a run's quarantined files back (all, one folder, or some files). Occupied paths are never
+    /// overwritten.
+    Undo {
+        run: i64,
+        /// Only files under this folder, relative to the source root.
+        #[arg(long)]
+        folder: Option<String>,
+        /// Only these files (repeatable).
+        #[arg(long = "file")]
+        files: Vec<i64>,
+        /// Confirm. Without it nothing is moved (at a terminal you are asked).
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ProfileArg {
     Apple,
@@ -380,6 +430,26 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
             ExportCommand::Check { library, verify } => cmd::export::check(&ctx, &library, verify),
+        },
+        Command::Cleanup { command } => match command {
+            CleanupCommand::Plan {
+                source,
+                folder,
+                library,
+            } => cmd::cleanup::plan(&ctx, source, folder.as_deref(), library.as_deref()),
+            CleanupCommand::Run {
+                run,
+                yes,
+                network_ok,
+            } => cmd::cleanup::run(&ctx, run, yes, network_ok),
+            CleanupCommand::List => cmd::cleanup::list(&ctx),
+            CleanupCommand::Show { run } => cmd::cleanup::show(&ctx, run),
+            CleanupCommand::Undo {
+                run,
+                folder,
+                files,
+                yes,
+            } => cmd::cleanup::undo(&ctx, run, folder.as_deref(), &files, yes),
         },
         Command::Ai { command } => match command {
             AiCommand::Providers => cmd::ai::providers(&ctx),

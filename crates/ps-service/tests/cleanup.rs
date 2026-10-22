@@ -1,0 +1,480 @@
+//! `cleanup` scenarios through the service (change `quarantine-cleanup`): eligibility from the derived
+//! dispositions, the stored plan, the never-delete invariant, crash reconciliation in a killed child process,
+//! and rescans of a drive with a quarantine folder. Every test works on its own copy of the ps-fixtures small
+//! corpus in a scratch folder under the target dir (the shared corpus is never changed).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use ps_export::ExecConfig;
+use ps_export::quarantine::{QUARANTINE_DIR, QuarantineHooks, RunProgress};
+use ps_model::{CleanupMove, CleanupRunState, Disposition, FileId, MoveState, SourceId};
+use ps_service::cleanup::{RunOptions, UndoSelection};
+use ps_service::export::profile_settings;
+use ps_service::scan::{ScanOptions, ScanService};
+
+fn shared_small() -> PathBuf {
+    ps_fixtures::shared_corpus(
+        Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "cleanup-corpus-small-42",
+        42,
+        ps_fixtures::Preset::Small,
+    )
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let p = e.path();
+        let t = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_tree(&p, &t);
+        } else {
+            fs::copy(&p, &t).unwrap();
+        }
+    }
+}
+
+/// A private copy of the small corpus, scanned and exported (lightroom profile) into a library beside it.
+struct Env {
+    tmp: tempfile::TempDir,
+    corpus: PathBuf,
+    library: PathBuf,
+}
+
+impl Env {
+    fn new(tag: &str) -> Env {
+        let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        fs::create_dir_all(base).unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("ps-cleanup-{tag}-"))
+            .tempdir_in(base)
+            .unwrap();
+        let corpus = tmp.path().join("corpus");
+        copy_tree(&shared_small(), &corpus);
+        let corpus = corpus
+            .canonicalize()
+            .map(ps_model::path::simplify_canonical)
+            .unwrap();
+        let env = Env {
+            library: tmp.path().join("Library"),
+            corpus,
+            tmp,
+        };
+        let svc = env.open();
+        for d in ["drive-a", "drive-b", "drive-c"] {
+            svc.add_source(&env.corpus.join(d)).unwrap();
+        }
+        svc.start(&[]).unwrap();
+        svc.wait().unwrap();
+        let (_, report) = svc
+            .exports()
+            .run(
+                &env.library,
+                profile_settings("lightroom").unwrap(),
+                &ExecConfig::default(),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        env
+    }
+
+    fn data(&self) -> PathBuf {
+        self.tmp.path().join("data")
+    }
+
+    fn open(&self) -> ScanService {
+        ScanService::open(&self.data(), ScanOptions::default()).unwrap()
+    }
+
+    fn drive(&self, id: i64) -> PathBuf {
+        self.corpus
+            .join(["drive-a", "drive-b", "drive-c"][id as usize - 1])
+    }
+}
+
+/// Every file under `root` outside its quarantine folder: relative path -> (size, BLAKE3).
+fn snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, [u8; 32])> {
+    let mut out = BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let rel = p.strip_prefix(root).unwrap().to_path_buf();
+            if rel.starts_with(QUARANTINE_DIR) {
+                continue;
+            }
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                let b = fs::read(&p).unwrap();
+                out.insert(rel, (b.len() as u64, *blake3::hash(&b).as_bytes()));
+            }
+        }
+    }
+    out
+}
+
+fn dispositions(
+    svc: &ScanService,
+    env: &Env,
+) -> BTreeMap<FileId, (SourceId, Disposition, Option<Disposition>)> {
+    let (files, d, _) = svc.exports().dispositions(&env.library, false).unwrap();
+    files
+        .iter()
+        .zip(d)
+        .map(|(f, x)| (f.file, (f.source, x.disposition, x.prior)))
+        .collect()
+}
+
+fn run_all(svc: &ScanService, id: i64) -> ps_export::quarantine::RunReport {
+    svc.cleanups()
+        .run(
+            id,
+            RunOptions::default(),
+            &AtomicBool::new(false),
+            &RunProgress::default(),
+        )
+        .unwrap()
+}
+
+#[test]
+fn quarantine_folder_name_matches_the_scanner() {
+    assert_eq!(QUARANTINE_DIR, ps_scan::walk::QUARANTINE_DIR);
+}
+
+#[test]
+fn scenario_cleanup_plan_before_move() {
+    let env = Env::new("plan");
+    let svc = env.open();
+    let before = snapshot(&env.drive(2));
+    let disp = dispositions(&svc, &env);
+    let plan = svc.cleanups().plan(SourceId(2), None, None).unwrap();
+    let summary = plan.summary.as_ref().expect("a stored plan");
+    assert_eq!(summary.run.state, CleanupRunState::Planned);
+    // Every exported and covered file of the drive, each with its quarantine path.
+    let want: BTreeSet<FileId> = disp
+        .iter()
+        .filter(|(_, (s, d, _))| *s == SourceId(2) && d.is_accounted_safe())
+        .map(|(f, _)| *f)
+        .collect();
+    let got: BTreeSet<FileId> = plan.moves.iter().map(|m| m.file).collect();
+    assert!(!want.is_empty());
+    assert_eq!(got, want);
+    for m in &plan.moves {
+        assert_eq!(
+            m.quarantine_rel_path.to_path_buf(),
+            Path::new(QUARANTINE_DIR)
+                .join(summary.run.id.to_string())
+                .join(m.rel_path.to_path_buf())
+        );
+        assert_eq!(m.state, MoveState::Planned);
+    }
+    assert_eq!(plan.totals.files, plan.moves.len() as u64);
+    assert_eq!(
+        plan.totals.bytes,
+        plan.moves.iter().map(|m| m.size).sum::<u64>()
+    );
+    assert!(!plan.totals.folders.is_empty());
+    // The drive's tree is unchanged: no file moved, no quarantine folder made.
+    assert_eq!(snapshot(&env.drive(2)), before);
+    assert!(!env.drive(2).join(QUARANTINE_DIR).exists());
+    // The plan is stored and listed.
+    let runs = svc.cleanups().runs().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].counts.planned, plan.moves.len() as u64);
+}
+
+#[test]
+fn scenario_cleanup_pending_files_never_eligible() {
+    let env = Env::new("pending");
+    let svc = env.open();
+    // Make one keeper unexported again: its library copy disappears, so it and its group are pending.
+    let (files, d, _) = svc.exports().dispositions(&env.library, false).unwrap();
+    let groups = svc.engine().catalog().read().group_memberships().unwrap();
+    let on_b: HashSet<FileId> = files
+        .iter()
+        .filter(|f| f.source == SourceId(2))
+        .map(|f| f.file)
+        .collect();
+    let (members, keeper_lib) = groups
+        .iter()
+        .find_map(|(_, members, set)| {
+            let k = set.first()?;
+            let (_, x) = files.iter().zip(&d).find(|(f, _)| f.file == *k)?;
+            (set.len() == 1
+                && members.iter().any(|m| on_b.contains(m))
+                && x.disposition == Disposition::Exported)
+                .then(|| (members.clone(), x.library_path.clone().unwrap()))
+        })
+        .expect("a group with a member on drive-b");
+    fs::rename(
+        keeper_lib.under(&env.library),
+        env.tmp.path().join("set-aside"),
+    )
+    .unwrap();
+    let disp = dispositions(&svc, &env);
+    for m in &members {
+        assert_eq!(disp[m].1, Disposition::Pending, "{m:?}");
+    }
+    let plan = svc.cleanups().plan(SourceId(2), None, None).unwrap();
+    let planned: HashSet<FileId> = plan.moves.iter().map(|m| m.file).collect();
+    assert!(!planned.is_empty());
+    for m in &members {
+        assert!(!planned.contains(m), "pending {m:?} is never eligible");
+    }
+    assert!(
+        plan.moves
+            .iter()
+            .all(|m| disp[&m.file].1.is_accounted_safe())
+    );
+}
+
+#[test]
+fn scenario_cleanup_excluded_files_not_eligible() {
+    let env = Env::new("excluded");
+    let svc = env.open();
+    let disp = dispositions(&svc, &env);
+    let mut checked = 0;
+    for s in 1..=3 {
+        let excluded: HashSet<FileId> = disp
+            .iter()
+            .filter(|(_, (src, d, _))| *src == SourceId(s) && *d == Disposition::Excluded)
+            .map(|(f, _)| *f)
+            .collect();
+        let plan = svc.cleanups().plan(SourceId(s), None, None).unwrap();
+        assert!(plan.moves.iter().all(|m| !excluded.contains(&m.file)));
+        checked += excluded.len();
+    }
+    assert!(checked > 0, "the corpus has junk and graphics");
+}
+
+#[test]
+fn scenario_cleanup_cleanup_never_deletes() {
+    let env = Env::new("never-deletes");
+    let svc = env.open();
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let plan = svc.cleanups().plan(SourceId(2), None, None).unwrap();
+    let id = plan.summary.as_ref().unwrap().run.id;
+    let r = run_all(&svc, id);
+    assert_eq!(r.moved, plan.moves.len() as u64, "{:?}", r.skipped);
+    // Partial undo: the first folder only.
+    let folder = plan.moves[0].rel_path.parent().unwrap();
+    let u = svc
+        .cleanups()
+        .undo(
+            id,
+            &UndoSelection {
+                folder: Some(folder.clone()),
+                files: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert!(u.restored > 0 && u.conflicts.is_empty());
+    let (_, moves) = svc.cleanups().run_detail(id).unwrap();
+    let qdir = root.join(QUARANTINE_DIR).join(id.to_string());
+    let mut in_quarantine = 0;
+    for (path, (size, hash)) in &before {
+        let here = root.join(path);
+        let there = qdir.join(path);
+        let found = [here, there]
+            .into_iter()
+            .filter(|p| p.is_file())
+            .map(|p| {
+                let b = fs::read(&p).unwrap();
+                (b.len() as u64, *blake3::hash(&b).as_bytes(), p)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(found.len(), 1, "{} exists exactly once", path.display());
+        assert_eq!((found[0].0, found[0].1), (*size, *hash), "unchanged bytes");
+        if found[0].2.starts_with(&qdir) {
+            in_quarantine += 1;
+        }
+    }
+    let still = moves
+        .iter()
+        .filter(|m| m.state == MoveState::Quarantined)
+        .count();
+    assert_eq!(in_quarantine, still);
+    assert!(still > 0 && still < moves.len());
+    // The total number of user files in the drive plus its quarantine folder is unchanged.
+    let total = snapshot(&root).len() + in_quarantine;
+    assert_eq!(total, before.len());
+}
+
+#[test]
+fn scenario_cleanup_quarantine_ignored_by_scanner() {
+    let env = Env::new("rescan");
+    let svc = env.open();
+    let plan = svc.cleanups().plan(SourceId(1), None, None).unwrap();
+    let id = plan.summary.as_ref().unwrap().run.id;
+    let before_disp = dispositions(&svc, &env);
+    assert_eq!(run_all(&svc, id).moved, plan.moves.len() as u64);
+    let files_before = count_files(&svc);
+    svc.start(&[SourceId(1)]).unwrap();
+    svc.wait().unwrap();
+    // Nothing under the quarantine folder is catalogued; the moved files are quarantined, not missing.
+    let mut paths = Vec::new();
+    svc.engine()
+        .catalog()
+        .read()
+        .for_each_file(|f| paths.push(f.key.path.display().into_owned()))
+        .unwrap();
+    assert!(paths.iter().all(|p| !p.contains(QUARANTINE_DIR)));
+    assert_eq!(count_files(&svc), files_before, "no new files");
+    let disp = dispositions(&svc, &env);
+    for m in &plan.moves {
+        let (_, d, prior) = disp[&m.file];
+        assert_eq!(d, Disposition::Quarantined, "{}", m.rel_path);
+        // Quarantined files keep their place in their groups (ADR-0034): the prior disposition is unchanged.
+        assert_eq!(Some(before_disp[&m.file].1), prior, "{}", m.rel_path);
+    }
+    let moved: HashSet<FileId> = plan.moves.iter().map(|m| m.file).collect();
+    for (f, v) in &before_disp {
+        if !moved.contains(f) {
+            assert_eq!(disp[f], *v, "{f:?} is unaffected by the cleanup");
+        }
+    }
+    assert!(!disp.values().any(|(_, d, _)| *d == Disposition::Missing));
+    let c = svc.exports().completion(None, false).unwrap();
+    let s1 = c
+        .report
+        .sources
+        .iter()
+        .find(|s| s.source == SourceId(1))
+        .unwrap();
+    assert_eq!(
+        s1.counts.files_of(Disposition::Quarantined),
+        plan.moves.len() as u64
+    );
+    assert!(s1.counts.fully_accounted());
+    // Undo, rescan: every file is back with the disposition it had.
+    let u = svc.cleanups().undo(id, &UndoSelection::all()).unwrap();
+    assert!(u.run_fully_undone);
+    svc.start(&[SourceId(1)]).unwrap();
+    svc.wait().unwrap();
+    assert_eq!(dispositions(&svc, &env), before_disp);
+    let run = svc.cleanups().run_detail(id).unwrap().0;
+    assert_eq!(run.run.state, CleanupRunState::Undone);
+}
+
+fn count_files(svc: &ScanService) -> usize {
+    let mut n = 0;
+    svc.engine()
+        .catalog()
+        .read()
+        .for_each_file(|_| n += 1)
+        .unwrap();
+    n
+}
+
+// ---- kill mid-run, then reconcile and undo ----
+
+const KILL_DATA: &str = "PS_CLEANUP_KILL_DATA";
+const KILL_RUN: &str = "PS_CLEANUP_KILL_RUN";
+const KILL_AFTER: usize = 10;
+
+/// Kills the process right after the 10th rename, before `done` is journaled.
+struct KillAfterRename(AtomicUsize);
+
+impl QuarantineHooks for KillAfterRename {
+    fn after_rename(&self, _m: &CleanupMove) {
+        if self.0.fetch_add(1, Ordering::SeqCst) + 1 == KILL_AFTER {
+            std::process::abort();
+        }
+    }
+}
+
+#[test]
+fn scenario_cleanup_crash_mid_run_is_recoverable() {
+    if let (Some(data), Some(run)) = (std::env::var_os(KILL_DATA), std::env::var_os(KILL_RUN)) {
+        // Child: run the cleanup until killed.
+        let svc = ScanService::open(Path::new(&data), ScanOptions::default()).unwrap();
+        let id: i64 = run.to_string_lossy().parse().unwrap();
+        let _ = svc.cleanups().run_with_hooks(
+            id,
+            RunOptions::default(),
+            &KillAfterRename(AtomicUsize::new(0)),
+            &AtomicBool::new(false),
+            &RunProgress::default(),
+        );
+        unreachable!("the child is killed mid-run");
+    }
+    let env = Env::new("crash");
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let id = {
+        let svc = env.open();
+        let plan = svc.cleanups().plan(SourceId(2), None, None).unwrap();
+        assert!(plan.moves.len() > KILL_AFTER);
+        plan.summary.unwrap().run.id
+    };
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "scenario_cleanup_crash_mid_run_is_recoverable",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(KILL_DATA, env.data())
+        .env(KILL_RUN, id.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success(), "the child was killed");
+
+    // Restart: the run was left running with one move mid-way.
+    let svc = env.open();
+    let raw = svc.engine().catalog().read().cleanup_moves(id).unwrap();
+    assert_eq!(
+        raw.iter().filter(|m| m.state == MoveState::Moving).count(),
+        1
+    );
+    assert_eq!(
+        raw.iter()
+            .filter(|m| m.state == MoveState::Quarantined)
+            .count(),
+        KILL_AFTER - 1
+    );
+    let reconciled = svc.cleanups().reconcile().unwrap();
+    assert_eq!(reconciled.len(), 1);
+    let (summary, moves) = svc.cleanups().run_detail(id).unwrap();
+    assert_eq!(summary.run.state, CleanupRunState::Completed);
+    // Every journaled move is reconciled from the file system.
+    for m in &moves {
+        let here = m.rel_path.under(&root).is_file();
+        let there = m.quarantine_rel_path.under(&root).is_file();
+        match m.state {
+            MoveState::Quarantined => assert!(!here && there, "{}", m.rel_path),
+            MoveState::Planned => assert!(here && !there, "{}", m.rel_path),
+            s => panic!("{}: unexpected {s:?}", m.rel_path),
+        }
+    }
+    assert_eq!(summary.counts.quarantined, KILL_AFTER as u64);
+    // The JSON journal records the reconciled move as done too.
+    let lines = ps_export::quarantine::read_journal(
+        &summary
+            .quarantine_dir
+            .join(ps_export::quarantine::JOURNAL_FILE),
+    )
+    .unwrap();
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.event == ps_export::quarantine::JournalEvent::Done)
+            .count(),
+        KILL_AFTER
+    );
+    // Undo restores every moved file; the drive is as it was.
+    let u = svc.cleanups().undo(id, &UndoSelection::all()).unwrap();
+    assert_eq!(u.restored, KILL_AFTER as u64);
+    assert!(u.run_fully_undone);
+    assert_eq!(snapshot(&root), before);
+}

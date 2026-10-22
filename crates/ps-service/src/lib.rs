@@ -11,8 +11,10 @@
 //! - [`insights`]: AI review: effective insights, corrections, filters, advisory suggestions (`ai-insights`).
 //! - [`library`]: the gallery's ID lists, pages, thumbnails, previews and inspector detail (`gallery`).
 //! - [`power`]: pause scans on battery power (ADR-0053).
+//! - [`cleanup`]: reversible quarantine cleanup: plan, run, undo, reconcile (`quarantine-cleanup`).
 
 pub mod ai;
+pub mod cleanup;
 pub mod export;
 pub mod export_progress;
 pub mod groups;
