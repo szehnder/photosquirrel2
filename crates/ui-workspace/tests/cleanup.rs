@@ -207,3 +207,23 @@ fn cleanup_panel_undo_restores_a_run(cx: &mut TestAppContext) {
     assert_eq!(after[0].restored, run.planned);
     assert!(!exists(&undo, &mut cx), "nothing left to undo");
 }
+
+/// The plan's sample rows keep the run folder of a long quarantine path visible (`…/quarantine/<run>/`);
+/// only the part below it is shortened.
+#[test]
+fn quarantine_target_keeps_the_run_folder() {
+    use ui_workspace::views::cleanup::quarantine_target;
+    let to = ".photosquirrel-quarantine/12/Backup 2008/Old Laptop/Users/dad/Pictures/Imports/2007-03-03 \
+              Thanksgiving/IMG_5441_384.jpg";
+    let shown = quarantine_target(to, 70);
+    assert!(
+        shown.starts_with(".photosquirrel-quarantine/12/"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("IMG_5441_384.jpg"), "{shown}");
+    assert!(shown.chars().count() <= 70, "{shown}");
+    assert_eq!(
+        quarantine_target(".photosquirrel-quarantine/3/a.jpg", 70),
+        ".photosquirrel-quarantine/3/a.jpg"
+    );
+}

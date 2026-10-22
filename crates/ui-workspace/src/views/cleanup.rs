@@ -389,6 +389,27 @@ fn state_label(r: &CleanupRunRow) -> &'static str {
     }
 }
 
+/// A quarantine path for the plan's sample rows, at most `max` characters: the run folder
+/// (`.photosquirrel-quarantine/<run>/`) is always shown whole, so the run is visible; only the part below it is
+/// shortened in the middle.
+pub fn quarantine_target(to: &str, max: usize) -> String {
+    let prefix_len = to
+        .match_indices('/')
+        .nth(1)
+        .filter(|_| to.starts_with(".photosquirrel-quarantine/"))
+        .map(|(i, _)| i + 1);
+    match prefix_len {
+        Some(n) if to.chars().count() > max && max > n + 8 => {
+            let (prefix, rest) = to.split_at(n);
+            format!(
+                "{prefix}{}",
+                kit::middle_ellipsis(rest, max - prefix.chars().count())
+            )
+        }
+        _ => kit::middle_ellipsis(to, max),
+    }
+}
+
 fn mono(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .flex_1()
@@ -581,7 +602,7 @@ impl CleanupView {
                             .size(Tokens::icon_sm())
                             .text_color(colors.text_faint),
                     )
-                    .child(mono(kit::middle_ellipsis(to, 70), colors.text_faint)),
+                    .child(mono(quarantine_target(to, 70), colors.text_faint)),
             );
         }
         if r.planned as usize > MOVE_ROWS {
