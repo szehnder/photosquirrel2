@@ -490,6 +490,135 @@ fn clean(svc: &ScanService, source: i64) -> (i64, Vec<CleanupMove>) {
     (id, plan.moves)
 }
 
+/// A move whose file is its own exported keeper (its library copy is the file's content).
+fn exported_move(moves: &[CleanupMove]) -> &CleanupMove {
+    moves
+        .iter()
+        .find(|m| m.disposition == Disposition::Exported)
+        .expect("an exported keeper among the moves")
+}
+
+/// Clean the first drive that has exported keepers (not only covered copies); its source id and moves.
+fn clean_a_drive_with_keepers(svc: &ScanService) -> (i64, Vec<CleanupMove>) {
+    let source = (1..=3)
+        .find(|s| {
+            let plan = svc.cleanups().plan(SourceId(*s), None, None).unwrap();
+            plan.moves
+                .iter()
+                .any(|m| m.disposition == Disposition::Exported)
+        })
+        .expect("a drive with exported keepers");
+    let (_, moves) = clean(svc, source);
+    (source, moves)
+}
+
+#[test]
+fn scenario_cleanup_quarantined_file_without_library_copy_not_accounted() {
+    let env = Env::new("q-uncovered");
+    let svc = env.open();
+    let (src, moves) = clean_a_drive_with_keepers(&svc);
+    svc.start(&[SourceId(src)]).unwrap();
+    svc.wait().unwrap();
+    let source_report = |verify: bool| {
+        svc.exports()
+            .completion(None, verify)
+            .unwrap()
+            .report
+            .sources
+            .into_iter()
+            .find(|s| s.source == SourceId(src))
+            .unwrap()
+    };
+    assert!(source_report(true).counts.fully_accounted());
+    // The user deletes the library copy that covers a quarantined keeper.
+    let m = exported_move(&moves);
+    fs::remove_file(m.covering_library_path.under(&env.library)).unwrap();
+    for verify in [false, true] {
+        let s = source_report(verify);
+        assert!(
+            !s.counts.fully_accounted(),
+            "verify={verify}: {:?}",
+            s.counts
+        );
+        assert!(s.counts.pending_in_quarantine >= 1);
+        assert!(
+            s.badge.label().contains("only in the quarantine folder"),
+            "{}",
+            s.badge.label()
+        );
+    }
+    // The file says why: pending, with its quarantine path.
+    let (files, d, _) = svc.exports().dispositions(&env.library, false).unwrap();
+    let (_, x) = files
+        .iter()
+        .zip(&d)
+        .find(|(f, _)| f.file == m.file)
+        .unwrap();
+    assert_eq!(x.disposition, Disposition::Pending);
+    assert_eq!(x.quarantine_path.as_ref(), Some(&m.quarantine_rel_path));
+    let why = ps_service::library::disposition_reason(
+        x.disposition,
+        x.reason,
+        x.library_path.as_ref(),
+        x.quarantine_path.as_ref(),
+    );
+    assert!(
+        why.contains("quarantine") && why.contains("library copy is gone"),
+        "{why}"
+    );
+    // Nothing on the drive changed: the file is still in quarantine.
+    assert!(m.quarantine_rel_path.under(&env.drive(src)).is_file());
+}
+
+#[test]
+fn scenario_cleanup_export_reads_quarantined_keeper() {
+    let env = Env::new("q-reexport");
+    let svc = env.open();
+    let (src, moves) = clean_a_drive_with_keepers(&svc);
+    let m = exported_move(&moves).clone();
+    let q = m.quarantine_rel_path.under(&env.drive(src));
+    let before = fs::read(&q).unwrap();
+    let q_mtime = fs::metadata(&q).unwrap().modified().unwrap();
+    let lib_copy = m.covering_library_path.under(&env.library);
+    fs::remove_file(&lib_copy).unwrap();
+    let (_, report) = svc
+        .exports()
+        .run(
+            &env.library,
+            profile_settings("lightroom").unwrap(),
+            &ExecConfig::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    // Copied again from the quarantine folder, which it never left; read-only.
+    assert!(!m.rel_path.under(&env.drive(src)).exists());
+    assert_eq!(fs::read(&q).unwrap(), before);
+    assert_eq!(fs::metadata(&q).unwrap().modified().unwrap(), q_mtime);
+    let c = svc.exports().completion(None, true).unwrap();
+    let s2 = c
+        .report
+        .sources
+        .iter()
+        .find(|s| s.source == SourceId(src))
+        .unwrap();
+    assert!(s2.counts.fully_accounted(), "{:?}", s2.counts);
+    assert_eq!(s2.counts.pending_in_quarantine, 0);
+    let (files, d, _) = svc.exports().dispositions(&env.library, true).unwrap();
+    let (_, x) = files
+        .iter()
+        .zip(&d)
+        .find(|(f, _)| f.file == m.file)
+        .unwrap();
+    assert_eq!(x.disposition, Disposition::Quarantined);
+    let copy = x.library_path.as_ref().unwrap().under(&env.library);
+    assert_eq!(
+        fs::read(copy).unwrap(),
+        before,
+        "the new library copy is the photo"
+    );
+}
+
 #[test]
 fn scenario_cleanup_source_with_quarantined_files_not_removed() {
     let env = Env::new("q-remove");

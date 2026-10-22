@@ -11,7 +11,10 @@
 //!   members `covered` (with the keeper's library path);
 //! - not in a group and its content has a valid library copy: `exported`;
 //! - moved by a cleanup run (ADR-0034): `quarantined`, with the disposition the rules below give it as if it
-//!   were still at its path (`prior`) - checked first, since the scanner sees it as gone;
+//!   were still at its path (`prior`) - checked first, since the scanner sees it as gone. Only while that
+//!   prior disposition is exported, covered or excluded: a quarantined file whose library copy is gone or
+//!   differs is `pending` again, with its `quarantine_path`, so it is not accounted for and export copies it
+//!   from the quarantine folder (ADR-0066);
 //! - gone from the source: `missing`; failed after retries: `unreadable`;
 //! - user-excluded, a member of a group whose keeper the user excluded (the photo itself was excluded, every
 //!   copy goes with it; the export skips such groups), or (in no group) junk, graphic or a cache thumbnail:
@@ -225,9 +228,15 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
                     ..f.clone()
                 };
                 let prior = derive(&at_home);
+                let safe = prior.disposition.is_accounted_safe()
+                    || prior.disposition == Disposition::Excluded;
                 FileDisposition {
-                    disposition: Disposition::Quarantined,
-                    prior: Some(prior.disposition),
+                    disposition: if safe {
+                        Disposition::Quarantined
+                    } else {
+                        Disposition::Pending
+                    },
+                    prior: safe.then_some(prior.disposition),
                     quarantine_path: Some(q.clone()),
                     ..prior
                 }
@@ -242,7 +251,13 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Badge {
     FullyAccounted,
-    Outstanding { pending: u64, unreadable: u64 },
+    Outstanding {
+        pending: u64,
+        unreadable: u64,
+        /// Of `pending`, the files whose only copy is in a quarantine folder.
+        #[serde(default)]
+        in_quarantine: u64,
+    },
 }
 
 impl Badge {
@@ -253,6 +268,7 @@ impl Badge {
             Badge::Outstanding {
                 pending: c.files_of(Disposition::Pending),
                 unreadable: c.files_of(Disposition::Unreadable),
+                in_quarantine: c.pending_in_quarantine,
             }
         }
     }
@@ -262,12 +278,20 @@ impl Badge {
             Badge::FullyAccounted => "100% accounted for".into(),
             Badge::Outstanding {
                 pending,
-                unreadable: 0,
-            } => format!("{pending} pending"),
-            Badge::Outstanding {
-                pending,
                 unreadable,
-            } => format!("{pending} pending, {unreadable} unreadable"),
+                in_quarantine,
+            } => {
+                let mut s = format!("{pending} pending");
+                if in_quarantine > 0 {
+                    s.push_str(&format!(
+                        " ({in_quarantine} only in the quarantine folder, library copy gone)"
+                    ));
+                }
+                if unreadable > 0 {
+                    s.push_str(&format!(", {unreadable} unreadable"));
+                }
+                s
+            }
         }
     }
 }
@@ -302,6 +326,14 @@ pub struct CompletionReport {
     pub mismatches: Vec<(RelPath, CopyCheck)>,
 }
 
+/// Count one file's disposition (and whether it is pending only in a quarantine folder).
+pub fn count_disposition(c: &mut CompletionCounts, d: &FileDisposition, size: u64) {
+    c.add(d.disposition, size);
+    if d.disposition == Disposition::Pending && d.quarantine_path.is_some() {
+        c.add_pending_in_quarantine();
+    }
+}
+
 /// Aggregate dispositions per source and folder.
 pub fn report(
     files: &[FileFacts],
@@ -311,7 +343,7 @@ pub fn report(
     type Acc = (CompletionCounts, ExcludedBreakdown);
     let mut per: BTreeMap<SourceId, (Acc, BTreeMap<Option<RelPath>, Acc>)> = BTreeMap::new();
     let add = |acc: &mut Acc, d: &FileDisposition, size: u64| {
-        acc.0.add(d.disposition, size);
+        count_disposition(&mut acc.0, d, size);
         if let Some(r) = d.reason {
             let e = acc.1.entry(r).or_default();
             e.0 += 1;

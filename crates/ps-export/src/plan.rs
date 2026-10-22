@@ -594,7 +594,9 @@ pub fn plan(
                 unit: *u,
                 file: f.file,
                 source: f.source,
-                source_path: input.source_path(f.source, &f.rel_path).unwrap_or_default(),
+                source_path: input
+                    .source_path(f.source, f.read_path())
+                    .unwrap_or_default(),
                 target,
                 size: f.size,
                 mtime_ns: f.mtime_ns,

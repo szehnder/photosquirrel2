@@ -227,6 +227,8 @@ impl<'a> Exports<'a> {
             })
             .collect();
         let excluded: HashSet<FileId> = r.user_excluded_files()?.into_iter().collect();
+        // A keeper a cleanup run moved into the quarantine folder is read from there (ADR-0066).
+        let quarantine = QuarantineIndex::read(r)?;
         let mut recs: HashMap<FileId, (ps_catalog::FileRecord, Option<ps_model::Metadata>)> =
             HashMap::new();
         r.analyzed_files(None, |rec, meta| {
@@ -275,6 +277,7 @@ impl<'a> Exports<'a> {
                     .as_ref()
                     .and_then(|m| m.fields.content_identifier.clone()),
                 library_name: None,
+                read_from: quarantine.of(&rec.key, &rec.stat),
             })
         };
         let copy_ref = |id: FileId| -> Option<CopyRef> {
@@ -551,7 +554,7 @@ impl<'a> Exports<'a> {
         let report = ps_export::report(&files, &d, &checks);
         let mut totals = ps_model::CompletionCounts::default();
         for (f, x) in files.iter().zip(&d) {
-            totals.add(x.disposition, f.size);
+            ps_export::count_disposition(&mut totals, x, f.size);
         }
         Ok(Completion {
             library: lib,

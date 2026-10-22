@@ -139,6 +139,7 @@ impl Sources {
             capture,
             content_identifier: None,
             library_name: None,
+            read_from: None,
         }
     }
 
@@ -269,6 +270,7 @@ pub fn corpus_model(c: &SmallCorpus, drives: &[&str], offline: &[&str]) -> Corpu
             date_origin: ps_export::DateOrigin::MTIME,
             content_identifier: None,
             library_name: None,
+            read_from: None,
         }
     };
     let mut units = Vec::new();

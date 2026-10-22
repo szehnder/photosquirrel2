@@ -679,7 +679,12 @@ impl ScanBackend for CatalogBackend {
                 path: f.rel_path.under(&root).display().to_string(),
                 size: f.size,
                 disposition: x.disposition,
-                reason: disposition_reason(x.disposition, x.reason, x.library_path.as_ref()),
+                reason: disposition_reason(
+                    x.disposition,
+                    x.reason,
+                    x.library_path.as_ref(),
+                    x.quarantine_path.as_ref(),
+                ),
             })
             .collect())
     }
@@ -983,10 +988,7 @@ impl DemoBackend {
             }
             let mut counts = CompletionCounts::default();
             for f in &folders {
-                for k in 0..6 {
-                    counts.files[k] += f.counts.files[k];
-                    counts.bytes[k] += f.counts.bytes[k];
-                }
+                counts.merge(&f.counts);
             }
             let excluded = vec![
                 (
@@ -1010,10 +1012,7 @@ impl DemoBackend {
         }
         let mut totals = CompletionCounts::default();
         for s in &sources {
-            for k in 0..6 {
-                totals.files[k] += s.counts.files[k];
-                totals.bytes[k] += s.counts.bytes[k];
-            }
+            totals.merge(&s.counts);
         }
         ReportData {
             library: library.to_path_buf(),

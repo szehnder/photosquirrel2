@@ -16,8 +16,10 @@ pub enum Disposition {
     Unreadable,
     /// Gone from the source since the last scan.
     Missing,
-    /// Moved by a cleanup run into its source's quarantine folder (ADR-0034); accounted for. The disposition it
-    /// had before the move is kept beside it (`prior`) and comes back with undo.
+    /// Moved by a cleanup run into its source's quarantine folder (ADR-0034) and still safe in the library
+    /// (exported or covered at its original path, or excluded); accounted for. The disposition it had before
+    /// the move is kept beside it (`prior`) and comes back with undo. A quarantined file whose library copy is
+    /// gone is `Pending` (with its quarantine path), not accounted for (ADR-0066).
     Quarantined,
 }
 
@@ -68,6 +70,11 @@ pub enum GroupEdge {
 pub struct CompletionCounts {
     pub files: [u64; 7],
     pub bytes: [u64; 7],
+    /// Of the pending files, those whose only copy is in a quarantine folder: a cleanup moved them while
+    /// their library copy existed, and that copy is gone or differs now (ADR-0066). Export copies them from
+    /// the quarantine folder again; undo puts them back.
+    #[serde(default)]
+    pub pending_in_quarantine: u64,
 }
 
 impl CompletionCounts {
@@ -75,6 +82,20 @@ impl CompletionCounts {
         let i = d as usize;
         self.files[i] += 1;
         self.bytes[i] += bytes;
+    }
+
+    /// Count one more pending file that is only in a quarantine folder (also counted as pending).
+    pub fn add_pending_in_quarantine(&mut self) {
+        self.pending_in_quarantine += 1;
+    }
+
+    /// Add every count of `o`.
+    pub fn merge(&mut self, o: &CompletionCounts) {
+        for i in 0..self.files.len() {
+            self.files[i] += o.files[i];
+            self.bytes[i] += o.bytes[i];
+        }
+        self.pending_in_quarantine += o.pending_in_quarantine;
     }
 
     pub fn files_of(&self, d: Disposition) -> u64 {
@@ -85,7 +106,8 @@ impl CompletionCounts {
         self.files.iter().sum()
     }
 
-    /// Nothing pending or unreadable: every file is exported, covered, excluded, missing or quarantined.
+    /// Nothing pending or unreadable: every file is exported, covered, excluded, missing or quarantined (with
+    /// a valid library copy; a quarantined file without one is pending).
     pub fn fully_accounted(&self) -> bool {
         self.files_of(Disposition::Pending) == 0 && self.files_of(Disposition::Unreadable) == 0
     }

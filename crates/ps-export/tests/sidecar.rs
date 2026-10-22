@@ -251,6 +251,7 @@ fn sidecar_kill_input(dir: &std::path::Path) -> ps_export::ExportInput {
                 date_origin: ps_export::DateOrigin::OWN_EXIF,
                 content_identifier: None,
                 library_name: None,
+                read_from: None,
             }])
         })
         .collect();

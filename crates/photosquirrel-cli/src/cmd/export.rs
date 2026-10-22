@@ -245,6 +245,8 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
 struct CountsOut {
     files: std::collections::BTreeMap<&'static str, u64>,
     bytes: std::collections::BTreeMap<&'static str, u64>,
+    /// Of the pending files, those only in a quarantine folder (their library copy is gone).
+    pending_in_quarantine: u64,
     fully_accounted: bool,
 }
 
@@ -258,6 +260,7 @@ fn counts(c: &CompletionCounts) -> CountsOut {
             .iter()
             .map(|d| (d.as_str(), c.bytes[*d as usize]))
             .collect(),
+        pending_in_quarantine: c.pending_in_quarantine,
         fully_accounted: c.fully_accounted(),
     }
 }
@@ -308,10 +311,7 @@ fn report_out(
         .iter()
         .filter(|s| only.is_empty() || only.contains(&s.source.0))
         .map(|s| {
-            for d in Disposition::ALL {
-                total.files[d as usize] += s.counts.files_of(d);
-                total.bytes[d as usize] += s.counts.bytes[d as usize];
-            }
+            total.merge(&s.counts);
             SourceOut {
                 source: s.source,
                 root: roots.get(&s.source).cloned().unwrap_or_default(),
@@ -358,7 +358,8 @@ fn print_report(o: &ReportOut) {
     for s in &o.sources {
         let f = &s.counts.files;
         println!(
-            "source {} {}: {}  exported {}, covered {}, excluded {}, pending {}, unreadable {}, missing {}",
+            "source {} {}: {}  exported {}, covered {}, excluded {}, pending {}, unreadable {}, missing {}, \
+             quarantined {}",
             s.source,
             s.root.display(),
             s.badge,
@@ -367,8 +368,17 @@ fn print_report(o: &ReportOut) {
             f["excluded"],
             f["pending"],
             f["unreadable"],
-            f["missing"]
+            f["missing"],
+            f["quarantined"]
         );
+        if s.counts.pending_in_quarantine > 0 {
+            println!(
+                "    {} files are only in the quarantine folder and their library copy is gone: NOT accounted \
+                 for. Keep the quarantine folder; run `export run` to copy them again (read from the \
+                 quarantine folder) or `cleanup undo` to put them back.",
+                s.counts.pending_in_quarantine
+            );
+        }
         for fo in s.folders.iter().flatten() {
             println!("    {}: {}", fo.folder, fo.badge);
         }

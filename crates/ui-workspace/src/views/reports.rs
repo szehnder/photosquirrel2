@@ -27,15 +27,20 @@ pub const DRILL_LIMIT: usize = 2_000;
 pub fn badge_label(c: &CompletionCounts) -> String {
     let pending = c.files_of(Disposition::Pending);
     let unreadable = c.files_of(Disposition::Unreadable);
-    match (pending, unreadable) {
-        (0, 0) => "100% accounted for".into(),
-        (p, 0) => format!("{} pending", format_count(p)),
-        (p, u) => format!(
-            "{} pending, {} unreadable",
-            format_count(p),
-            format_count(u)
-        ),
+    let mut s = match (pending, unreadable) {
+        (0, 0) => return "100% accounted for".into(),
+        (p, _) => format!("{} pending", format_count(p)),
+    };
+    if c.pending_in_quarantine > 0 {
+        s.push_str(&format!(
+            " ({} only in quarantine, library copy gone)",
+            format_count(c.pending_in_quarantine)
+        ));
     }
+    if unreadable > 0 {
+        s.push_str(&format!(", {} unreadable", format_count(unreadable)));
+    }
+    s
 }
 
 pub struct ReportsView {

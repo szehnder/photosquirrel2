@@ -43,6 +43,10 @@ pub struct KeeperFile {
     /// "Copy of IMG_5437.JPG" whose group also has "IMG_5437.JPG" is filed under the cleaner name
     /// ([`crate::layout::cleaner_name`]). `None`: the source name.
     pub library_name: Option<Vec<u8>>,
+    /// Where the file is now, relative to its source root, when that is not `rel_path`: a cleanup run moved
+    /// it into the quarantine folder (ADR-0034) and its library copy has since gone, so it is exported again
+    /// from there (ADR-0066). Read-only like every source read; the file is never moved back by export.
+    pub read_from: Option<RelPath>,
 }
 
 impl KeeperFile {
@@ -55,6 +59,11 @@ impl KeeperFile {
 
     pub fn kind(&self) -> Option<MediaKind> {
         self.format.map(Format::kind)
+    }
+
+    /// The path to read the file from, relative to its source root.
+    pub fn read_path(&self) -> &RelPath {
+        self.read_from.as_ref().unwrap_or(&self.rel_path)
     }
 }
 

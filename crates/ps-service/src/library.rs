@@ -89,7 +89,14 @@ pub fn disposition_reason(
     d: Disposition,
     reason: Option<ExclusionReason>,
     library_path: Option<&ps_model::RelPath>,
+    quarantine_path: Option<&ps_model::RelPath>,
 ) -> String {
+    if let (Disposition::Pending, Some(q)) = (d, quarantine_path) {
+        return format!(
+            "only in the quarantine folder ({q}) and its library copy is gone: export again (it is copied from \
+             the quarantine folder) or undo the cleanup"
+        );
+    }
     match (d, reason, library_path) {
         (Disposition::Excluded, Some(r), _) => format!("excluded: {}", reason_label(r)),
         (Disposition::Exported, _, Some(p)) => format!("copied to {p}"),
@@ -906,7 +913,7 @@ impl Library {
         };
         Ok(d.by_file.get(&file).map(|x| DispositionDetail {
             disposition: x.disposition,
-            reason: disposition_reason(x.disposition, x.reason, None),
+            reason: disposition_reason(x.disposition, x.reason, None, x.quarantine_path.as_ref()),
             library_path: x
                 .library_path
                 .as_ref()
