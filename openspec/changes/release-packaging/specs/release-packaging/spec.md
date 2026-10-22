@@ -28,6 +28,24 @@ Every package SHALL contain a `THIRD-PARTY-LICENSES` file generated from `Cargo.
 - **WHEN** the licence reports of the app and the CLI are merged and rendered
 - **THEN** the notices list mozjpeg-sys under IJG, Zlib and BSD-3-Clause with each licence text, leave out PhotoSquirrel's own crates, and the check fails when one of the three is missing
 
+### Requirement: LGPL source offer
+For every third-party component under an LGPL licence, `THIRD-PARTY-LICENSES` SHALL start with a section naming the component and version, stating that it is linked statically, and giving the location of its source, the location of the complete source of the release (its `v<version>` tag with `Cargo.lock` and the pinned toolchain) and the steps to relink against a modified copy; LGPL SHALL be accepted only for the components so covered; and the release SHALL attach each such component's source archive and fail without it.
+
+#### Scenario: LGPL components offer their source
+- **WHEN** the notices for a dependency graph with rawler under LGPL-2.1 are rendered and the licence configuration and release workflow are read
+- **THEN** the notices open with an LGPL section naming rawler, its crates.io source, the release tag URL, `Cargo.lock`, the toolchain, `[patch.crates-io]` and `cargo build --profile dist`; LGPL-2.1 is accepted for rawler only; and the release job downloads, checks and attaches the crate source
+
+### Requirement: Self-contained packages
+Packages SHALL bundle no shared library that their notices do not name, and the Windows programs SHALL not import the Visual C++ runtime, which the packages do not carry; packaging SHALL fail otherwise.
+
+#### Scenario: AppImage bundles no library without a notice
+- **WHEN** an extracted AppImage listing contains shared libraries that the notices do not name
+- **THEN** the check lists them, it passes when the notices name them, and the packager configuration excludes the system libraries every desktop has
+
+#### Scenario: Windows programs do not import the MSVC runtime
+- **WHEN** the import table of a Windows program lists `VCRUNTIME140.dll` or `MSVCP140.dll`
+- **THEN** the check fails naming the DLL and the static CRT, it passes for system DLLs only, and the Windows target links the CRT statically
+
 ### Requirement: Artifact naming
 Artifacts SHALL be named `PhotoSquirrel-<version>-<os>-<arch>` followed by the format's extension, with `-setup.exe` for the Windows installer and `universal` as the macOS architecture.
 
@@ -58,21 +76,21 @@ The Debian package SHALL declare the system libraries the application needs at r
 
 #### Scenario: Linux build image pins glibc floor
 - **WHEN** the Linux packaging image definition is read
-- **THEN** it is based on Ubuntu 22.04
+- **THEN** it is based on Ubuntu 22.04, pinned to an image digest
 
 ### Requirement: Packaged binary smoke test
 After packaging, the packaged CLI SHALL be run with `--version` and packaging SHALL fail unless it prints `photosquirrel-cli` and the expected version.
 
 #### Scenario: Wrong binary fails the smoke test
-- **WHEN** the smoke check receives `photosquirrel-cli 0.0.9` or empty output while expecting 0.1.0
+- **WHEN** the smoke check receives `photosquirrel-cli 0.0.9`, `photosquirrel 0.1.0` or empty output while expecting 0.1.0
 - **THEN** it fails, and it passes for `photosquirrel-cli 0.1.0`
 
 ### Requirement: Tagged release workflow
-Pushing a `v<version>` tag SHALL build packages on Linux, macOS and Windows and publish one GitHub Release containing every artifact and checksum, with release notes generated from the template.
+Pushing a `v<version>` tag SHALL build packages on Linux, macOS and Windows and publish one GitHub Release containing every artifact and checksum, with release notes generated from the template. Only a pushed tag SHALL publish; the workflows SHALL hold a read-only token except in the publishing job, keep no credentials in the checkout and pin every action to a commit.
 
 #### Scenario: Release workflow covers every platform
 - **WHEN** the release workflow definition is read
-- **THEN** it triggers on `v*` tags, packages on Linux, macOS and Windows, and publishes all packages in one release job
+- **THEN** it triggers on `v*` tags, packages on Linux, macOS and Windows, and publishes all packages in one release job that runs only for a pushed `v` tag, is the only job with write permission, and every checkout has `persist-credentials: false` and every action a commit SHA
 
 #### Scenario: HEIC fallback noted
 - **WHEN** a platform's packaging runs without libheif available

@@ -22,9 +22,18 @@ build, unsigned packages and the libheif fallback (ADR-0017 `heic` feature). x86
   `check_tag`, `check_smoke`, `--docker`, `--universal`, `--tag`. Packager metadata lives in
   `crates/photosquirrel/Cargo.toml` (`binaries` with `photosquirrel` main and `photosquirrel-cli`, icons from
   `assets/`, `deb.depends`, desktop file `packaging/linux/photosquirrel.desktop`).
-- **libheif per platform.** Homebrew on macOS, vcpkg on Windows, apt in the Docker image; `package.rs` probes
-  `pkg-config libheif` (or the vcpkg path) and passes `--no-default-features --features <rest>` when absent,
-  writing `target/packages/heic-<os>.txt`; the release job folds these into the notes.
+- **libheif per platform (ADR-0059).** `package.rs` probes for libheif the way libheif-sys does (`pkg-config
+  libheif` on Linux and macOS, a static vcpkg library under `VCPKG_ROOT` on Windows) and builds with
+  `--features photosquirrel/heic,photosquirrel-cli/heic` only for libheif 1.17+ outside the universal macOS build;
+  otherwise it builds without HEIC and writes `target/packages/heic-<os>.txt`, which the release job folds into
+  the notes. The release images install no libheif, so v0.1 packages are HEIC-off on every platform.
+- **What the packages redistribute (ADR-0058, ADR-0060).** `THIRD-PARTY-LICENSES` from cargo-about, opening with
+  the LGPL source offer for rawler (the release attaches `rawler-<version>.crate`, checked against `Cargo.lock`);
+  the AppImage excludes the system libraries linuxdeploy would bundle; Windows links the CRT statically and
+  packaging rejects an `.exe` importing `VCRUNTIME*`.
+- **Workflow hardening.** Read-only `GITHUB_TOKEN` except in the release job, `persist-credentials: false` on
+  every checkout, actions pinned to commit SHAs, and publishing only for a pushed `v` tag (a manual run is a dry
+  run from any ref). The packaging image is pinned to an `ubuntu:22.04` digest.
 - **Template clean-up.** References to the template project in `release.yml`, `packaging/linux/Dockerfile` and
   `packaging/release-notes.md` (wrong ADR numbers, `GREMLINER_SECRET_STORE`, "A Gremlin database to connect
   to") are replaced with PhotoSquirrel content: optional LM Studio, optional ffmpeg, keyring note.

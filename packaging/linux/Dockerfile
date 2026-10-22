@@ -1,7 +1,9 @@
 # Linux release packaging image (ADR-0030). Ubuntu 22.04 sets the glibc floor of the packages (2.35): they run
 # on Ubuntu 22.04+, Debian 12+, Fedora 36+ and similar. Used by `cargo xtask package --docker`, which runs it
 # as the calling user with the repository mounted at /work.
-FROM ubuntu:22.04
+# Pinned by digest (ubuntu:22.04 as of 2026-10-21) so a rebuild starts from the same base; to update:
+# `docker pull ubuntu:22.04 && docker inspect --format "{{index .RepoDigests 0}}" ubuntu:22.04`.
+FROM ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \

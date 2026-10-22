@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only token; no checkout keeps it in .git/config; actions pinned to commits.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -13,18 +17,19 @@ jobs:
     name: Linux (full CI)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: System dependencies for GPUI
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libssl-dev libsecret-1-dev libdbus-1-dev pkg-config
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
         with:
-          toolchain: "1.99.0"
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Install OpenSpec
@@ -42,18 +47,17 @@ jobs:
       # Base and head share one target dir, so the base build reuses the compiled dependencies.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: System dependencies for GPUI
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libssl-dev libsecret-1-dev libdbus-1-dev pkg-config
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.99.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # ADR-0026: runners differ from the reference machine (whose baseline is the committed perf-baseline.json)
       # and from each other, so CI measures the base commit (the PR base, or the previous main) on this same
       # runner first, then checks the head for relative regressions (>15%) only, without app (window) budgets.
@@ -96,12 +100,16 @@ jobs:
         os: [macos-14, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: "1.99.0"
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build --workspace --locked
+      # Platform-only code (cfg'd for macOS or Windows) gets the same lint bar as Linux.
+      - run: cargo clippy --locked -p ps-model -p ps-media -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service -p photosquirrel-cli -p xtask -- -D warnings
       # Engine crates are platform-sensitive (paths, file ids, fsync, renames); UI tests run on Linux.
       # The 1M-row catalog tests run at a tenth of the scale here: these runners take about an hour per test at
       # full scale, which Linux CI and `cargo xtask bench` cover.

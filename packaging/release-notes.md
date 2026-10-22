@@ -13,6 +13,15 @@ Every package contains the desktop app (`photosquirrel`), the headless CLI (`pho
 notices of the open-source components they include (`THIRD-PARTY-LICENSES`). Each file has a
 `.sha256` beside it; check it with `sha256sum -c <file>.sha256` (on macOS, `shasum -a 256 -c`).
 
+### LGPL components
+
+{{lgpl}} (LGPL-2.1) is linked statically into both programs. Its source is attached to this release as a `.crate`
+file (a gzipped tar, also on [crates.io](https://crates.io/crates/rawler)), and the complete source of this
+release, with the `Cargo.lock` and Rust toolchain it was built with, is the
+[`v{{version}}` tag](https://github.com/szehnder/photosquirrel2/tree/v{{version}}). To relink against a modified
+copy, unpack both, point the workspace at your copy with `[patch.crates-io]` and run
+`cargo build --profile dist`; `THIRD-PARTY-LICENSES` has the details.
+
 ### First launch
 
 These builds are not code-signed yet, so the first launch shows a warning:
@@ -30,5 +39,5 @@ These builds are not code-signed yet, so the first launch shows a warning:
 - **Optional:** `ffmpeg` on your PATH for video poster frames; [LM Studio](https://lmstudio.ai) with a vision model
   for local AI insights.
 
-PhotoSquirrel never modifies or deletes your source folders: it copies the best copies into a library folder you
+PhotoSquirrel never modifies, moves or deletes your source files: it copies the best copies into a library folder you
 choose. See the [README](https://github.com/szehnder/photosquirrel2#readme).

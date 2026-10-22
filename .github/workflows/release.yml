@@ -1,9 +1,12 @@
 name: Release
 
 # Installers for macOS, Windows and Linux (ADR-0030). Pushing a tag `v<workspace version>` builds every platform and
-# publishes a GitHub Release. Running the workflow by hand (`gh workflow run release.yml`) is a dry run: it builds the
-# same packages, checks the full set and its checksums and uploads them with the release notes as workflow
-# artifacts, without creating a release.
+# publishes a GitHub Release. Running the workflow by hand (`gh workflow run release.yml`, from any ref, a tag
+# included) is a dry run: it builds the same packages, checks the full set, its checksums and the LGPL sources and
+# uploads them with the release notes as workflow artifacts, without creating a release.
+#
+# The build compiles hundreds of third-party crates, so the token is read-only everywhere except the step that
+# publishes, no checkout keeps it in .git/config, and every action is pinned to a commit.
 
 on:
   push:
@@ -11,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -39,11 +42,12 @@ jobs:
             args: ""
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: "1.99.0"
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      # The branch of rust-toolchain.toml's version, pinned to its commit.
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: matrix.name != 'linux'
         with:
           key: dist
@@ -58,7 +62,7 @@ jobs:
           args="${{ matrix.args }}"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then args="$args --tag $GITHUB_REF_NAME"; fi
           cargo xtask package $args
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-${{ matrix.name }}
           path: target/packages/*
@@ -68,9 +72,14 @@ jobs:
     name: Check and publish the release
     needs: package
     runs-on: ubuntu-24.04
+    # The only write permission: creating the release.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: packages
           pattern: packages-*
@@ -86,27 +95,50 @@ jobs:
             echo "::error::expected 7 packages and 7 .sha256 files, found $count and $sums"; exit 1
           fi
           sha256sum -c PhotoSquirrel-*.sha256
+      # LGPL-2.1 components are linked statically; the release carries the source of each one at the version in
+      # Cargo.lock (ADR-0060). The download is checked against Cargo.lock's checksum.
+      - name: Attach the source of the LGPL components
+        run: |
+          test -f packages/lgpl-sources.txt || { echo "::error::packages/lgpl-sources.txt is missing"; exit 1; }
+          cat packages/lgpl-sources.txt
+          while read -r name ver; do
+            [ -n "$name" ] || continue
+            sum=$(awk -v n="name = \"$name\"" -v v="version = \"$ver\"" \
+              '$0 == n { getline; if ($0 == v) { getline; getline; gsub(/"/, "", $3); print $3 } }' Cargo.lock)
+            [ -n "$sum" ] || { echo "::error::$name $ver is not in Cargo.lock"; exit 1; }
+            curl -fsSL --retry 3 -o "packages/$name-$ver.crate" "https://crates.io/api/v1/crates/$name/$ver/download"
+            (cd packages && echo "$sum  $name-$ver.crate" | sha256sum -c)
+          done < packages/lgpl-sources.txt
+          expected=$(grep -c . packages/lgpl-sources.txt || true)
+          found=$(ls packages/*.crate 2>/dev/null | wc -l)
+          if [ "$expected" -lt 1 ] || [ "$found" -ne "$expected" ]; then
+            echo "::error::expected the source of $expected LGPL components, found $found"; exit 1
+          fi
       - name: Release notes
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          sed "s/{{version}}/$version/g" packaging/release-notes.md > notes.md
+          lgpl=$(awk '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2 }' packages/lgpl-sources.txt)
+          sed -e "s/{{version}}/$version/g" -e "s/{{lgpl}}/$lgpl/g" packaging/release-notes.md > notes.md
           # Platforms built without libheif (ADR-0059).
           if ls packages/heic-*.txt >/dev/null 2>&1; then
             printf '\n### HEIC photos\n\n' >> notes.md
             cat packages/heic-*.txt >> notes.md
           fi
           cat notes.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes
-          path: notes.md
+          path: |
+            notes.md
+            packages/*.crate
+          if-no-files-found: error
       - name: Create the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           prerelease=""
           if [[ "$version" == *-* ]]; then prerelease="--prerelease"; fi
-          gh release create "$GITHUB_REF_NAME" packages/PhotoSquirrel-* $prerelease \
+          gh release create "$GITHUB_REF_NAME" packages/PhotoSquirrel-* packages/*.crate $prerelease \
             --title "PhotoSquirrel $version" --notes-file notes.md

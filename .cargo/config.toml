@@ -6,8 +6,11 @@ xtask = "run --quiet --package xtask --"
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=x86-64-v2"]
 
+# ADR-0060: link the C runtime statically, so the programs do not need the Visual C++ Redistributable
+# (VCRUNTIME140.dll), which Windows does not include and the packages do not carry. `cargo xtask package` checks
+# the imports of the shipped .exe files. (A RUSTFLAGS environment variable would replace these flags.)
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-cpu=x86-64-v2"]
+rustflags = ["-C", "target-cpu=x86-64-v2", "-C", "target-feature=+crt-static"]
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "target-cpu=x86-64-v2"]

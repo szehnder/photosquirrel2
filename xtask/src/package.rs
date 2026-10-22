@@ -6,7 +6,9 @@
 //!
 //! Every package carries `THIRD-PARTY-LICENSES`, generated from `Cargo.lock` by cargo-about (ADR-0058) and checked
 //! in each finished package. HEIC decoding is built in only where a recent enough libheif is found; otherwise
-//! the build leaves it out and writes `target/packages/heic-<os>.txt` for the release notes (ADR-0059).
+//! the build leaves it out and writes `target/packages/heic-<os>.txt` for the release notes (ADR-0059). Packages
+//! carry nothing their notices do not cover (ADR-0060): the notices offer the source of the statically linked LGPL
+//! crates, the AppImage bundles no system library, and the Windows programs need no Visual C++ runtime.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -140,7 +142,8 @@ pub fn check_tag(tag: &str, version: &str) -> Result<()> {
 
 /// `photosquirrel-cli --version` prints `photosquirrel-cli <version>`.
 pub fn check_smoke(output: &str, version: &str) -> Result<()> {
-    if output.split_whitespace().nth(1) != Some(version) {
+    let mut words = output.split_whitespace();
+    if words.next() != Some("photosquirrel-cli") || words.next() != Some(version) {
         bail!(
             "packaged photosquirrel-cli reported {:?}, expected version {version}",
             output.trim()
@@ -278,6 +281,60 @@ pub fn merge_notices(reports: &[serde_json::Value]) -> Result<Vec<Notice>> {
     Ok(notices)
 }
 
+/// The public repository: the complete corresponding source of a release is its `v<version>` tag.
+pub const REPOSITORY: &str = "https://github.com/szehnder/photosquirrel2";
+/// Where the release job lists the LGPL crates whose source it attaches to the release (ADR-0060).
+pub const LGPL_SOURCES_FILE: &str = "lgpl-sources.txt";
+
+/// The crates under an LGPL licence, as `name version`, sorted. They are linked statically, so each release
+/// offers their source and says how to relink (LGPL-2.1 section 6, ADR-0060).
+pub fn lgpl_crates(notices: &[Notice]) -> Vec<String> {
+    let mut crates: Vec<String> = notices
+        .iter()
+        .filter(|n| n.id.starts_with("LGPL-"))
+        .flat_map(|n| n.crates.iter().cloned())
+        .collect();
+    crates.sort();
+    crates.dedup();
+    crates
+}
+
+/// The section at the top of `THIRD-PARTY-LICENSES` for the statically linked LGPL components: where the
+/// complete source of this release and of each component is, and how to relink against a modified copy.
+pub fn render_lgpl_section(version: &str, notices: &[Notice]) -> String {
+    let lgpl = lgpl_crates(notices);
+    if lgpl.is_empty() {
+        return String::new();
+    }
+    let rule = "-".repeat(78);
+    let mut out = format!("LGPL components\n{rule}\n");
+    for krate in &lgpl {
+        let (name, ver) = krate.split_once(' ').unwrap_or((krate, "?"));
+        let licence = notices
+            .iter()
+            .find(|n| n.id.starts_with("LGPL-") && n.crates.contains(krate))
+            .map_or("LGPL", |n| n.id.as_str());
+        out.push_str(&format!(
+            "{name} {ver} ({licence}) is statically linked into photosquirrel and photosquirrel-cli.\n\
+             - Its source: https://crates.io/crates/{name}/{ver} (download \
+             https://crates.io/api/v1/crates/{name}/{ver}/download);\n  \
+             the GitHub Release of PhotoSquirrel {version} also carries it as {name}-{ver}.crate.\n"
+        ));
+    }
+    out.push_str(&format!(
+        "- The complete corresponding source of PhotoSquirrel {version}, with the Cargo.lock that pins every\n  \
+         component version and the pinned Rust toolchain (rust-toolchain.toml):\n  \
+         {REPOSITORY}/tree/v{version}\n\
+         - To relink against a modified copy: unpack the source above and the component's .crate file\n  \
+         (`tar -xzf <name>-<version>.crate`), change the component, add to the workspace Cargo.toml\n\n    \
+         [patch.crates-io]\n    \
+         <name> = {{ path = \"../<name>-<version>\" }}\n\n  \
+         and run `cargo build --profile dist -p photosquirrel -p photosquirrel-cli`. The rebuilt programs\n  \
+         are in target/dist.\n\n"
+    ));
+    out
+}
+
 /// The text of `THIRD-PARTY-LICENSES`.
 pub fn render_notices(version: &str, notices: &[Notice]) -> String {
     let rule = "=".repeat(78);
@@ -285,8 +342,10 @@ pub fn render_notices(version: &str, notices: &[Notice]) -> String {
         "PhotoSquirrel {version}: third-party software notices\n\n\
          PhotoSquirrel is licensed under the Apache License 2.0 (see LICENSE). The programs in this package also \
          contain\nthe open-source components listed below, each under the licence text that follows its name.\n\
-         This software is based in part on the work of the Independent JPEG Group.\n\n"
+         This software is based in part on the work of the Independent JPEG Group.\n\
+         The source of every component is published on crates.io at the version shown.\n\n"
     );
+    out.push_str(&render_lgpl_section(version, notices));
     let mut ids: Vec<&str> = notices.iter().map(|n| n.id.as_str()).collect();
     ids.dedup();
     out.push_str("Licences used:\n");
@@ -324,6 +383,101 @@ pub fn check_notices(notices: &[Notice]) -> Result<()> {
         if !covered {
             bail!("{LICENCES_FILE} has no {id} notice for mozjpeg-sys");
         }
+    }
+    Ok(())
+}
+
+/// Shared libraries in an extracted AppImage (`.so` files under `usr/lib*`) that `THIRD-PARTY-LICENSES` does not
+/// name. The packager config excludes every system library, so the AppImage should bundle none; one that slips in
+/// fails packaging until it is excluded or its notice is added (ADR-0060).
+pub fn bundled_libs_without_notice(files: &[String], notices: &str) -> Vec<String> {
+    let mut missing: Vec<String> = files
+        .iter()
+        .filter(|f| f.contains("/usr/lib"))
+        .filter_map(|f| f.rsplit(['/', '\\']).next())
+        .filter(|name| name.ends_with(".so") || name.contains(".so."))
+        .filter(|name| !notices.contains(*name))
+        .map(str::to_owned)
+        .collect();
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
+/// The DLL names a Windows PE executable imports (its import directory).
+pub fn pe_imports(bytes: &[u8]) -> Result<Vec<String>> {
+    let u16_at = |at: usize| -> Result<usize> {
+        let b = bytes.get(at..at + 2).context("PE file truncated")?;
+        Ok(u16::from_le_bytes([b[0], b[1]]) as usize)
+    };
+    let u32_at = |at: usize| -> Result<usize> {
+        let b = bytes.get(at..at + 4).context("PE file truncated")?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    };
+    if bytes.get(..2) != Some(b"MZ") {
+        bail!("not a PE file (no MZ header)");
+    }
+    let pe = u32_at(0x3c)?;
+    if bytes.get(pe..pe + 4) != Some(b"PE\0\0") {
+        bail!("not a PE file (no PE signature)");
+    }
+    let coff = pe + 4;
+    let sections = u16_at(coff + 2)?;
+    let optional = coff + 20;
+    let dirs = match u16_at(optional)? {
+        0x10b => optional + 96,
+        0x20b => optional + 112,
+        magic => bail!("unknown PE optional header magic {magic:#x}"),
+    };
+    let section_table = optional + u16_at(coff + 16)?;
+    let to_offset = |rva: usize| -> Result<usize> {
+        for i in 0..sections {
+            let header = section_table + i * 40;
+            let size = u32_at(header + 8)?.max(u32_at(header + 16)?);
+            let va = u32_at(header + 12)?;
+            if (va..va + size).contains(&rva) {
+                return Ok(rva - va + u32_at(header + 20)?);
+            }
+        }
+        bail!("RVA {rva:#x} is in no section")
+    };
+    let import_rva = u32_at(dirs + 8)?;
+    let mut imports = Vec::new();
+    if import_rva == 0 {
+        return Ok(imports);
+    }
+    let mut descriptor = to_offset(import_rva)?;
+    loop {
+        let name_rva = u32_at(descriptor + 12)?;
+        if name_rva == 0 {
+            break;
+        }
+        let start = to_offset(name_rva)?;
+        let len = bytes[start..]
+            .iter()
+            .position(|&b| b == 0)
+            .context("unterminated import name")?;
+        imports.push(String::from_utf8_lossy(&bytes[start..start + len]).into_owned());
+        descriptor += 20;
+    }
+    Ok(imports)
+}
+
+/// A shipped Windows program must not need the Visual C++ runtime, which Windows does not include and the
+/// packages do not carry: `.cargo/config.toml` links the CRT statically (`+crt-static`, ADR-0060).
+pub fn check_windows_imports(program: &str, imports: &[String]) -> Result<()> {
+    let runtime: Vec<&String> = imports
+        .iter()
+        .filter(|dll| {
+            let dll = dll.to_ascii_lowercase();
+            dll.starts_with("vcruntime") || dll.starts_with("msvcp")
+        })
+        .collect();
+    if !runtime.is_empty() {
+        bail!(
+            "{program} imports the Visual C++ runtime ({runtime:?}), which the packages do not ship; build with \
+             -C target-feature=+crt-static"
+        );
     }
     Ok(())
 }
@@ -377,7 +531,16 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         build(&features)?;
         (target_dir.join(PROFILE), std::env::consts::ARCH.to_owned())
     };
-    let licences = licence_notices(root, &target_dir, &version)?;
+    if os == Os::Windows {
+        for bin in SHIPPED {
+            let exe = os.exe(bin);
+            let imports = pe_imports(&fs::read(bins.join(&exe))?)
+                .with_context(|| format!("reading the imports of {exe}"))?;
+            check_windows_imports(&exe, &imports)?;
+            eprintln!("{exe} imports: {}", imports.join(", "));
+        }
+    }
+    let licences = licence_notices(root, &target_dir, &out, &version)?;
 
     let kinds = kinds(os);
     let formats: Vec<&str> = kinds
@@ -423,7 +586,7 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
             }
             None => archive(root, os, &bins, &licences, &name, &staging, &dest, &version)?,
         }
-        verify_licences(os, kind, &dest, &staging)?;
+        verify_licences(os, kind, &dest, &staging, &version)?;
         written.push(name);
     }
 
@@ -487,7 +650,8 @@ fn universal_binaries(target_dir: &Path, features: &[&str]) -> Result<PathBuf> {
 fn probe_libheif(os: Os) -> Option<String> {
     if os == Os::Windows {
         let root = PathBuf::from(std::env::var_os("VCPKG_ROOT")?);
-        let lib = root.join("installed/x64-windows-static-md/lib/heif.lib");
+        // `+crt-static` (see .cargo/config.toml) makes libheif-sys look in the static-CRT triplet.
+        let lib = root.join("installed/x64-windows-static/lib/heif.lib");
         return lib.is_file().then(|| "vcpkg".to_owned());
     }
     let out = Command::new("pkg-config")
@@ -500,8 +664,9 @@ fn probe_libheif(os: Os) -> Option<String> {
 }
 
 /// Generate `THIRD-PARTY-LICENSES` with cargo-about for each shipped binary's dependency graph (all release
-/// targets, see `about.toml`), check it and return its path.
-fn licence_notices(root: &Path, target_dir: &Path, version: &str) -> Result<PathBuf> {
+/// targets, see `about.toml`), check it and return its path. The LGPL crates go to `out/lgpl-sources.txt`, one
+/// `name version` per line, for the release job to attach their source (ADR-0060).
+fn licence_notices(root: &Path, target_dir: &Path, out: &Path, version: &str) -> Result<PathBuf> {
     let installed = Command::new("cargo")
         .args(["about", "--version"])
         .output()
@@ -535,6 +700,11 @@ fn licence_notices(root: &Path, target_dir: &Path, version: &str) -> Result<Path
     fs::create_dir_all(&dir)?;
     let path = dir.join(LICENCES_FILE);
     fs::write(&path, render_notices(version, &notices))?;
+    let lgpl = lgpl_crates(&notices);
+    fs::write(
+        out.join(LGPL_SOURCES_FILE),
+        lgpl.iter().map(|c| format!("{c}\n")).collect::<String>(),
+    )?;
     eprintln!(
         "licence notices: {} ({} licence texts)",
         path.display(),
@@ -544,7 +714,13 @@ fn licence_notices(root: &Path, target_dir: &Path, version: &str) -> Result<Path
 }
 
 /// Check a finished package contains `THIRD-PARTY-LICENSES`, using the platform's own tools.
-fn verify_licences(os: Os, kind: Kind, package: &Path, staging: &Path) -> Result<()> {
+fn verify_licences(
+    os: Os,
+    kind: Kind,
+    package: &Path,
+    staging: &Path,
+    version: &str,
+) -> Result<()> {
     let listing = |cmd: &mut Command| -> Result<String> {
         let out = cmd
             .output()
@@ -594,9 +770,11 @@ fn verify_licences(os: Os, kind: Kind, package: &Path, staging: &Path) -> Result
                     .current_dir(&dir),
             )?;
             let root = dir.join("squashfs-root");
-            let text = walk(&root)?.join("\n");
+            let checked = check_appimage(&root, version);
+            let text = walk(&root).map(|files| files.join("\n"));
             fs::remove_dir_all(&dir).ok();
-            text
+            checked?;
+            text?
         }
         Kind::Dmg => {
             let mount = staging.join("dmg-check");
@@ -637,6 +815,35 @@ fn verify_licences(os: Os, kind: Kind, package: &Path, staging: &Path) -> Result
         );
     }
     eprintln!("licence notices present: {}", package.display());
+    Ok(())
+}
+
+/// An extracted AppImage bundles no shared library without a notice, its programs find every library they link
+/// on this (build) machine, and its CLI runs.
+fn check_appimage(root: &Path, version: &str) -> Result<()> {
+    let files = walk(root)?;
+    let notices = fs::read_to_string(root.join("usr/lib/photosquirrel").join(LICENCES_FILE))
+        .with_context(|| format!("the AppImage has no usr/lib/photosquirrel/{LICENCES_FILE}"))?;
+    let missing = bundled_libs_without_notice(&files, &notices);
+    if !missing.is_empty() {
+        bail!(
+            "the AppImage bundles {missing:?} without a notice in {LICENCES_FILE}: add them to \
+             `appimage.excludedLibs` in crates/photosquirrel/Cargo.toml or add their notices"
+        );
+    }
+    for bin in SHIPPED {
+        let program = root.join("usr/bin").join(bin);
+        let out = Command::new("ldd").arg(&program).output()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let unresolved: Vec<&str> = text.lines().filter(|l| l.contains("not found")).collect();
+        if !out.status.success() || !unresolved.is_empty() {
+            bail!("{bin} in the AppImage has unresolved libraries: {unresolved:?}");
+        }
+    }
+    let cli = root.join("usr/bin/photosquirrel-cli");
+    let out = Command::new(&cli).arg("--version").output()?;
+    check_smoke(&String::from_utf8_lossy(&out.stdout), version)?;
+    eprintln!("AppImage: no bundled libraries without notices; its CLI runs");
     Ok(())
 }
 
@@ -918,6 +1125,9 @@ mod tests {
         assert!(check_smoke("photosquirrel-cli 0.1.0\n", "0.1.0").is_ok());
         assert!(check_smoke("photosquirrel-cli 0.0.9\n", "0.1.0").is_err());
         assert!(check_smoke("", "0.1.0").is_err());
+        // The right version from the wrong program (the app, not the CLI) fails too.
+        assert!(check_smoke("photosquirrel 0.1.0\n", "0.1.0").is_err());
+        assert!(check_smoke("0.1.0 photosquirrel-cli\n", "0.1.0").is_err());
     }
 
     #[test]
@@ -925,7 +1135,12 @@ mod tests {
         let text =
             fs::read_to_string(root().join("packaging/linux/Dockerfile")).expect("Dockerfile");
         let from: Vec<_> = text.lines().filter(|l| l.starts_with("FROM ")).collect();
-        assert_eq!(from, ["FROM ubuntu:22.04"]);
+        // Pinned to a digest, so a rebuilt image is the same base.
+        assert_eq!(from.len(), 1, "{from:?}");
+        let digest = from[0]
+            .strip_prefix("FROM ubuntu:22.04@sha256:")
+            .unwrap_or_else(|| panic!("not a digest-pinned ubuntu:22.04: {}", from[0]));
+        assert!(digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -1006,8 +1221,79 @@ mod tests {
         assert_eq!(creates.len(), 1, "{creates:?}");
         let release = text.split("\n  release:\n").nth(1).expect("release job");
         assert!(release.contains("needs: package"));
-        assert!(release.contains("if: startsWith(github.ref, 'refs/tags/v')"));
+        // Publishing needs a pushed tag: a manual run from a tag ref is still a dry run.
+        assert!(
+            release.contains(
+                "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+            )
+        );
         assert!(release.contains("merge-multiple: true"));
+        assert_least_privilege(&text, Some("release"));
+    }
+
+    /// The workflow token is read-only except where `write_job` publishes, no checkout keeps the token in
+    /// `.git/config`, and every action is pinned to a commit.
+    fn assert_least_privilege(text: &str, write_job: Option<&str>) {
+        let lines: Vec<&str> = text.lines().collect();
+        let top = lines
+            .iter()
+            .position(|l| *l == "permissions:")
+            .expect("top-level permissions");
+        assert_eq!(lines[top + 1].trim(), "contents: read");
+        let writes: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.contains("contents: write"))
+            .map(|(i, _)| i)
+            .collect();
+        match write_job {
+            None => assert!(writes.is_empty(), "contents: write in {writes:?}"),
+            Some(job) => {
+                assert_eq!(writes.len(), 1, "contents: write at {writes:?}");
+                let job_line = lines[..writes[0]]
+                    .iter()
+                    .rposition(|l| l.len() > 2 && l.starts_with("  ") && !l.starts_with("   "))
+                    .expect("job of the write permission");
+                assert_eq!(lines[job_line].trim(), format!("{job}:"));
+            }
+        }
+        let mut checkouts = 0;
+        for (i, line) in lines.iter().enumerate() {
+            let Some(uses) = line
+                .trim()
+                .strip_prefix("- uses: ")
+                .or(line.trim().strip_prefix("uses: "))
+            else {
+                continue;
+            };
+            let (action, rest) = uses.split_once('@').expect("versioned action");
+            let sha = rest.split_whitespace().next().unwrap_or_default();
+            assert!(
+                sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "{action} is not pinned to a commit: {line}"
+            );
+            assert!(rest.contains(" # "), "{action}: no version comment");
+            if action == "actions/checkout" {
+                checkouts += 1;
+                let with: Vec<&str> = lines[i + 1..]
+                    .iter()
+                    .take_while(|l| !l.trim_start().starts_with("- "))
+                    .map(|l| l.trim())
+                    .collect();
+                assert!(
+                    with.contains(&"persist-credentials: false"),
+                    "checkout at line {} keeps its credentials",
+                    i + 1
+                );
+            }
+        }
+        assert!(checkouts > 0);
+    }
+
+    #[test]
+    fn ci_workflow_is_least_privilege() {
+        let text = fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+        assert_least_privilege(&text, None);
     }
 
     fn about_report(entries: &[(&str, &str, &[(&str, Option<&str>)])]) -> serde_json::Value {
@@ -1092,6 +1378,178 @@ mod tests {
         assert!(!listing_has_licences(
             "LICENSE\nREADME.md\nTHIRD-PARTY-LICENSES.bak\n"
         ));
+    }
+
+    #[test]
+    fn scenario_release_packaging_lgpl_components_offer_their_source() {
+        let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let report = about_report(&[
+            ("LGPL-2.1", "lgpl text", &[("rawler", registry)]),
+            ("MIT", "mit text", &[("anyhow", registry)]),
+        ]);
+        let notices = merge_notices(&[report]).expect("merge");
+        assert_eq!(lgpl_crates(&notices), ["rawler 1.0.0"]);
+        let text = render_notices("0.1.0", &notices);
+        let section = text.find("LGPL components").expect("LGPL section");
+        assert!(
+            section < text.find("Licences used:").expect("overview"),
+            "the LGPL section is not at the top"
+        );
+        for needle in [
+            "rawler 1.0.0 (LGPL-2.1) is statically linked",
+            "https://crates.io/api/v1/crates/rawler/1.0.0/download",
+            "rawler-1.0.0.crate",
+            "https://github.com/szehnder/photosquirrel2/tree/v0.1.0",
+            "Cargo.lock",
+            "rust-toolchain.toml",
+            "[patch.crates-io]",
+            "cargo build --profile dist",
+        ] {
+            assert!(text.contains(needle), "{needle} missing from:\n{text}");
+        }
+        // Without an LGPL component there is no section.
+        let mit = merge_notices(&[about_report(&[("MIT", "mit", &[("anyhow", registry)])])])
+            .expect("merge");
+        assert!(!render_notices("0.1.0", &mit).contains("LGPL components"));
+
+        // about.toml accepts LGPL-2.1 for rawler only.
+        let about: toml::Value =
+            toml::from_str(&fs::read_to_string(root().join("about.toml")).expect("about.toml"))
+                .expect("toml");
+        let global: Vec<_> = about["accepted"]
+            .as_array()
+            .expect("accepted")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(global.iter().all(|l| !l.contains("GPL")), "{global:?}");
+        assert_eq!(
+            about["rawler"]["accepted"].as_array().map(Vec::as_slice),
+            Some([toml::Value::from("LGPL-2.1")].as_slice())
+        );
+
+        // The release job attaches each LGPL crate's source, checked against Cargo.lock, and fails without it.
+        let workflow = release_workflow();
+        for needle in [
+            "packages/lgpl-sources.txt",
+            "https://crates.io/api/v1/crates/$name/$ver/download",
+            "sha256sum -c",
+            "packages/*.crate",
+        ] {
+            assert!(workflow.contains(needle), "release.yml lacks {needle}");
+        }
+    }
+
+    #[test]
+    fn scenario_release_packaging_appimage_bundles_no_library_without_a_notice() {
+        let files: Vec<String> = [
+            "squashfs-root/usr/bin/photosquirrel",
+            "squashfs-root/usr/lib/photosquirrel/THIRD-PARTY-LICENSES",
+            "squashfs-root/usr/lib/libgcrypt.so.20",
+            "squashfs-root/usr/lib/x86_64-linux-gnu/libfoo.so",
+            "squashfs-root/usr/share/doc/libcap2/copyright",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(
+            bundled_libs_without_notice(&files, "notices"),
+            ["libfoo.so", "libgcrypt.so.20"]
+        );
+        assert_eq!(
+            bundled_libs_without_notice(&files, "libgcrypt.so.20 ... libfoo.so"),
+            Vec::<String>::new()
+        );
+        // The packager excludes the libraries every glibc desktop has, so none are bundled.
+        let excluded = packager_metadata()["appimage"]["excludedLibs"].clone();
+        let excluded: Vec<_> = excluded
+            .as_array()
+            .expect("appimage.excludedLibs")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        for lib in [
+            "libgcrypt.so*",
+            "libsystemd.so*",
+            "libdbus-1.so*",
+            "libxkbcommon.so*",
+            "libxkbcommon-x11.so*",
+            "libzstd.so*",
+        ] {
+            assert!(excluded.contains(&lib), "{lib} not excluded: {excluded:?}");
+        }
+    }
+
+    /// A minimal PE32+ file whose import directory names `dlls`.
+    fn fake_pe(dlls: &[&str]) -> Vec<u8> {
+        let mut pe = vec![0u8; 0x1200];
+        let put32 =
+            |pe: &mut Vec<u8>, at: usize, v: u32| pe[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        let put16 =
+            |pe: &mut Vec<u8>, at: usize, v: u16| pe[at..at + 2].copy_from_slice(&v.to_le_bytes());
+        pe[..2].copy_from_slice(b"MZ");
+        put32(&mut pe, 0x3c, 0x40);
+        pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let coff = 0x44;
+        put16(&mut pe, coff, 0x8664);
+        put16(&mut pe, coff + 2, 1);
+        put16(&mut pe, coff + 16, 240);
+        let optional = coff + 20;
+        put16(&mut pe, optional, 0x20b);
+        put32(&mut pe, optional + 108, 16);
+        put32(&mut pe, optional + 112 + 8, 0x1000);
+        put32(&mut pe, optional + 112 + 12, ((dlls.len() + 1) * 20) as u32);
+        let section = optional + 240;
+        for (field, v) in [(8, 0x1000), (12, 0x1000), (16, 0x1000), (20, 0x200)] {
+            put32(&mut pe, section + field, v);
+        }
+        let mut name_rva = 0x1100;
+        for (i, dll) in dlls.iter().enumerate() {
+            put32(&mut pe, 0x200 + i * 20 + 12, name_rva);
+            let at = 0x200 + (name_rva as usize - 0x1000);
+            pe[at..at + dll.len()].copy_from_slice(dll.as_bytes());
+            name_rva += dll.len() as u32 + 1;
+        }
+        pe
+    }
+
+    #[test]
+    fn scenario_release_packaging_windows_programs_do_not_import_the_msvc_runtime() {
+        let dynamic = fake_pe(&[
+            "KERNEL32.dll",
+            "VCRUNTIME140.dll",
+            "api-ms-win-crt-heap-l1-1-0.dll",
+        ]);
+        let imports = pe_imports(&dynamic).expect("imports");
+        assert_eq!(
+            imports,
+            [
+                "KERNEL32.dll",
+                "VCRUNTIME140.dll",
+                "api-ms-win-crt-heap-l1-1-0.dll"
+            ]
+        );
+        let err = check_windows_imports("photosquirrel.exe", &imports)
+            .expect_err("VCRUNTIME140 is not shipped")
+            .to_string();
+        assert!(
+            err.contains("VCRUNTIME140.dll") && err.contains("crt-static"),
+            "{err}"
+        );
+        let imports = pe_imports(&fake_pe(&["KERNEL32.dll", "MSVCP140.dll"])).expect("imports");
+        assert!(check_windows_imports("photosquirrel-cli.exe", &imports).is_err());
+        let imports = pe_imports(&fake_pe(&["KERNEL32.dll", "USER32.dll"])).expect("imports");
+        assert!(check_windows_imports("photosquirrel.exe", &imports).is_ok());
+        assert!(pe_imports(b"not a PE file").is_err());
+        // The static CRT is configured for the Windows release target.
+        let config = fs::read_to_string(root().join(".cargo/config.toml")).expect("config");
+        let config: toml::Value = toml::from_str(&config).expect("toml");
+        let flags: Vec<_> = config["target"]["x86_64-pc-windows-msvc"]["rustflags"]
+            .as_array()
+            .expect("rustflags")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(flags.contains(&"target-feature=+crt-static"), "{flags:?}");
     }
 
     #[test]

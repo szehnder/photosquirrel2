@@ -53,6 +53,29 @@ section = "graphics"
 # Adds StartupWMClass (matches the window app_id) and search keywords; the AppImage uses it too.
 desktopTemplate = "../../packaging/linux/photosquirrel.desktop"
 
+[package.metadata.packager.appimage]
+# linuxdeploy would bundle these from the build image. Every glibc desktop already has them (the .deb depends on
+# the same ones), and bundled copies would each need their own licence notice and source offer (LGPL libgcrypt,
+# libsystemd), so the AppImage uses the system's (ADR-0060). `cargo xtask package` fails if the AppImage bundles
+# a library its notices do not name.
+excludedLibs = [
+    "libdbus-1.so*",
+    "libsystemd.so*",
+    "libgcrypt.so*",
+    "libgpg-error.so*",
+    "libcap.so*",
+    "liblzma.so*",
+    "libzstd.so*",
+    "liblz4.so*",
+    "libbsd.so*",
+    "libmd.so*",
+    "libxkbcommon.so*",
+    "libxkbcommon-x11.so*",
+    "libxcb*.so*",
+    "libXau.so*",
+    "libXdmcp.so*",
+]
+
 [package.metadata.packager.macos]
 minimumSystemVersion = "11.0"
 
