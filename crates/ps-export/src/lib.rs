@@ -1,6 +1,7 @@
-//! Copy-only verified export (ADR-0004, ADR-0022, ADR-0023).
+//! Copy-only verified export (ADR-0004, ADR-0022, ADR-0023) and reversible quarantine cleanup (ADR-0024).
 //!
-//! The only crate allowed to create files under user paths, and only inside the chosen library folder:
+//! The only crate allowed to create files under user paths: inside the chosen library folder, and (cleanup
+//! only) the quarantine folder of a source:
 //!
 //! - [`input`]: the pure export input (keeper sets with metadata, insights and every copy's source path). The
 //!   service builds it from the catalog and the dedup grouping; tests build it directly.
@@ -14,6 +15,8 @@
 //! - [`execute`]: runs a confirmed plan with the ledger ([`ledger`]): idempotent and resumable.
 //! - [`xmp`] sidecars, the append-only [`manifest`], [`profile`] defaults.
 //! - [`disposition`]: derived dispositions and completion reports (ADR-0023).
+//! - [`quarantine`]: reversible cleanup (ADR-0024, ADR-0061): the only code that renames files in a source
+//!   tree, by a same-volume no-replace rename into its quarantine folder and back, journaled. Never deletes.
 //!
 //! Safety invariants (tested in `tests/copy.rs`: `scenario_export_export_leaves_sources_untouched`,
 //! `scenario_export_existing_file_never_overwritten`, the kill and disk-full tests): sources are opened read-only
@@ -32,6 +35,7 @@ pub mod manifest;
 pub mod pairs;
 pub mod plan;
 pub mod profile;
+pub mod quarantine;
 pub mod rename;
 pub mod xmp;
 
