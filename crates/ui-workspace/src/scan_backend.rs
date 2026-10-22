@@ -219,6 +219,173 @@ pub trait ScanBackend: Send + Sync + 'static {
         query: &DrillQuery,
         limit: usize,
     ) -> anyhow::Result<Vec<DrillRow>>;
+
+    // ---- cleanup (change `quarantine-cleanup`; ADR-0024, ADR-0061) ----
+
+    /// Every cleanup run, newest first.
+    fn cleanup_runs(&self) -> anyhow::Result<Vec<CleanupRunRow>> {
+        Ok(Vec::new())
+    }
+    /// One run with what it moves (or moved) per folder.
+    fn cleanup_review(&self, run: i64) -> anyhow::Result<CleanupReview> {
+        anyhow::bail!("cleanup run {run}: cleanup is not available here")
+    }
+    /// Plan a cleanup of a whole source and store it; `None` when nothing there is exported or covered.
+    /// Moves nothing.
+    fn cleanup_plan(&self, source: SourceId) -> anyhow::Result<Option<CleanupReview>> {
+        anyhow::bail!("source {source}: cleanup is not available here")
+    }
+    /// Run a confirmed plan (each file re-verified, then renamed into the quarantine folder).
+    fn cleanup_run(
+        &self,
+        run: i64,
+        network_confirmed: bool,
+        cancel: &AtomicBool,
+        progress: &CleanupProgress,
+    ) -> anyhow::Result<CleanupOutcome> {
+        let _ = (network_confirmed, cancel, progress);
+        anyhow::bail!("cleanup run {run}: cleanup is not available here")
+    }
+    /// Move a run's quarantined files back (never onto an occupied path).
+    fn cleanup_undo(&self, run: i64) -> anyhow::Result<UndoOutcome> {
+        anyhow::bail!("cleanup run {run}: cleanup is not available here")
+    }
+}
+
+pub use ps_model::CleanupRunState;
+/// Live counters of a cleanup run (sampled by the Cleanup panel, ADR-0019).
+pub use ps_service::cleanup::RunProgress as CleanupProgress;
+
+/// One cleanup run in the history.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CleanupRunRow {
+    pub id: i64,
+    pub source: SourceId,
+    pub source_name: String,
+    pub state: CleanupRunState,
+    pub created_at_ms: i64,
+    pub planned: u64,
+    pub planned_bytes: u64,
+    pub quarantined: u64,
+    pub quarantined_bytes: u64,
+    pub skipped: u64,
+    pub restored: u64,
+    /// `<source root>/.photosquirrel-quarantine/<run id>`.
+    pub quarantine_dir: PathBuf,
+    /// The source is a network share (running needs an extra confirmation).
+    pub network: bool,
+}
+
+/// Files listed by a cleanup review (the rest is counted).
+pub const CLEANUP_ROWS_LIMIT: usize = 200;
+
+/// A run as the Cleanup panel reviews it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CleanupReview {
+    pub run: CleanupRunRow,
+    pub root: PathBuf,
+    pub library: Option<PathBuf>,
+    /// Planned files per folder: (folder, files, bytes), `(source root)` for files at the root.
+    pub folders: Vec<(String, u64, u64)>,
+    /// Planned moves (original path, quarantine path, both relative to the source root), at most
+    /// [`CLEANUP_ROWS_LIMIT`].
+    pub moves: Vec<(String, String)>,
+    /// Files a run did not move or an undo left in quarantine, with why, at most [`CLEANUP_ROWS_LIMIT`].
+    pub notes: Vec<(String, String)>,
+}
+
+/// How a cleanup run ended.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CleanupOutcome {
+    pub run: i64,
+    pub moved: u64,
+    pub bytes_moved: u64,
+    /// (path, why) of files not moved.
+    pub skipped: Vec<(String, String)>,
+    pub cancelled: bool,
+    pub not_attempted: u64,
+    pub elapsed_ms: u64,
+}
+
+/// How an undo ended.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UndoOutcome {
+    pub run: i64,
+    pub restored: u64,
+    pub bytes_restored: u64,
+    /// (path, why) of files left in quarantine.
+    pub conflicts: Vec<(String, String)>,
+    pub missing: u64,
+    pub changed: u64,
+    pub fully_undone: bool,
+}
+
+fn cleanup_row(s: &ps_service::cleanup::RunSummary) -> CleanupRunRow {
+    CleanupRunRow {
+        id: s.run.id,
+        source: s.run.source,
+        source_name: source_name(&s.root),
+        state: s.run.state,
+        created_at_ms: s.run.created_at_ms,
+        planned: s.counts.planned,
+        planned_bytes: s.counts.planned_bytes,
+        quarantined: s.counts.quarantined,
+        quarantined_bytes: s.counts.quarantined_bytes,
+        skipped: s.counts.skipped,
+        restored: s.counts.restored,
+        quarantine_dir: s.quarantine_dir.clone(),
+        network: s.network,
+    }
+}
+
+fn cleanup_review_of(
+    summary: &ps_service::cleanup::RunSummary,
+    moves: &[ps_model::CleanupMove],
+) -> CleanupReview {
+    let planned: Vec<&ps_model::CleanupMove> = moves
+        .iter()
+        .filter(|m| m.state == ps_model::MoveState::Planned)
+        .collect();
+    let totals = ps_service::cleanup::totals_of(planned.iter().copied());
+    CleanupReview {
+        run: cleanup_row(summary),
+        root: summary.root.clone(),
+        library: summary.library.clone(),
+        folders: totals
+            .folders
+            .iter()
+            .map(|f| {
+                (
+                    f.folder
+                        .as_ref()
+                        .map_or_else(|| "(source root)".to_owned(), |p| p.display().into_owned()),
+                    f.files,
+                    f.bytes,
+                )
+            })
+            .collect(),
+        moves: planned
+            .iter()
+            .take(CLEANUP_ROWS_LIMIT)
+            .map(|m| {
+                (
+                    m.rel_path.display().into_owned(),
+                    m.quarantine_rel_path.display().into_owned(),
+                )
+            })
+            .collect(),
+        notes: moves
+            .iter()
+            .filter(|m| m.note.is_some() && m.state != ps_model::MoveState::Restored)
+            .take(CLEANUP_ROWS_LIMIT)
+            .map(|m| {
+                (
+                    m.rel_path.display().into_owned(),
+                    m.note.clone().unwrap_or_default(),
+                )
+            })
+            .collect(),
+    }
 }
 
 pub type SharedScanBackend = Arc<dyn ScanBackend>;
@@ -515,6 +682,85 @@ impl ScanBackend for CatalogBackend {
                 reason: disposition_reason(x.disposition, x.reason, x.library_path.as_ref()),
             })
             .collect())
+    }
+
+    fn cleanup_runs(&self) -> anyhow::Result<Vec<CleanupRunRow>> {
+        let scan = self.scan()?;
+        if !scan.is_observer() {
+            scan.cleanups().reconcile()?;
+        }
+        Ok(scan.cleanups().runs()?.iter().map(cleanup_row).collect())
+    }
+
+    fn cleanup_review(&self, run: i64) -> anyhow::Result<CleanupReview> {
+        self.cleanup_review_now(run)
+    }
+
+    fn cleanup_plan(&self, source: SourceId) -> anyhow::Result<Option<CleanupReview>> {
+        let plan = self.scan()?.cleanups().plan(source, None, None)?;
+        match plan.summary {
+            Some(s) => Ok(Some(self.cleanup_review_now(s.run.id)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn cleanup_run(
+        &self,
+        run: i64,
+        network_confirmed: bool,
+        cancel: &AtomicBool,
+        progress: &CleanupProgress,
+    ) -> anyhow::Result<CleanupOutcome> {
+        let r = self.scan()?.cleanups().run(
+            run,
+            ps_service::cleanup::RunOptions { network_confirmed },
+            cancel,
+            progress,
+        );
+        self.forget_dispositions();
+        let r = r?;
+        Ok(CleanupOutcome {
+            run,
+            moved: r.moved,
+            bytes_moved: r.bytes_moved,
+            skipped: r
+                .skipped
+                .iter()
+                .map(|s| (s.rel_path.display().into_owned(), s.text.clone()))
+                .collect(),
+            cancelled: r.cancelled,
+            not_attempted: r.not_attempted,
+            elapsed_ms: r.elapsed_ms,
+        })
+    }
+
+    fn cleanup_undo(&self, run: i64) -> anyhow::Result<UndoOutcome> {
+        let r = self
+            .scan()?
+            .cleanups()
+            .undo(run, &ps_service::cleanup::UndoSelection::all());
+        self.forget_dispositions();
+        let r = r?;
+        Ok(UndoOutcome {
+            run,
+            restored: r.restored,
+            bytes_restored: r.bytes_restored,
+            conflicts: r
+                .conflicts
+                .iter()
+                .map(|c| (c.rel_path.display().into_owned(), c.text.clone()))
+                .collect(),
+            missing: r.missing.len() as u64,
+            changed: r.changed.len() as u64,
+            fully_undone: r.run_fully_undone,
+        })
+    }
+}
+
+impl CatalogBackend {
+    fn cleanup_review_now(&self, run: i64) -> anyhow::Result<CleanupReview> {
+        let (summary, moves) = self.scan()?.cleanups().run_detail(run)?;
+        Ok(cleanup_review_of(&summary, &moves))
     }
 }
 

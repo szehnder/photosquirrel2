@@ -1,6 +1,7 @@
 //! The Reports view (change `export`, task 6.2): "is this drive 100% accounted for?". Per source and per
 //! folder: files and bytes per disposition (ADR-0023), excluded files by reason, the badge, and a drill-down
-//! that lists the files behind any count with the reason for each.
+//! that lists the files behind any count with the reason for each. A source's "Free up space" plans a cleanup
+//! of it in the embedded Cleanup panel ([`crate::views::cleanup`], change `quarantine-cleanup`).
 
 use std::path::PathBuf;
 
@@ -15,6 +16,7 @@ use crate::assets::IconName;
 use crate::inspector::format_count;
 use crate::scan_backend::{DrillQuery, DrillRow, ReportData, SharedScanBackend, reason_label};
 use crate::service::Loadable;
+use crate::views::cleanup::{CleanupChanged, CleanupView};
 use crate::views::kit::{self, Tone, disposition_color, disposition_label};
 use crate::views::scan::ScanHub;
 
@@ -45,12 +47,21 @@ pub struct ReportsView {
     pub verifying: bool,
     task: Option<Task<()>>,
     drill_task: Option<Task<()>>,
+    /// Plans, runs and undoes cleanups (quarantine-cleanup).
+    pub cleanup: Entity<CleanupView>,
+    _cleanup_changed: Subscription,
 }
 
 impl ReportsView {
     pub fn new(cx: &mut Context<'_, Self>) -> Self {
         let backend = ScanHub::monitor(cx).map(|m| m.read(cx).backend().clone());
+        let b = backend.clone();
+        let cleanup = cx.new(|cx| CleanupView::new(b, cx));
+        // Files moved or put back: their dispositions changed.
+        let changed = cx.subscribe(&cleanup, |this, _, _: &CleanupChanged, cx| this.refresh(cx));
         let mut this = Self {
+            cleanup,
+            _cleanup_changed: changed,
             backend,
             data: Loadable::Loading,
             expanded: None,
@@ -321,41 +332,48 @@ impl Render for ReportsView {
             Loadable::Ready(Some(d)) => d,
         };
 
+        // Quarantined only appears once a cleanup has moved something.
+        let shown = |d: Disposition, c: &CompletionCounts| {
+            d != Disposition::Quarantined || c.files_of(d) > 0
+        };
         let legend = h_flex().flex_wrap().gap(Tokens::space(4.0)).children(
-            Disposition::ALL.into_iter().map(|d| {
-                h_flex()
-                    .id(SharedString::from(format!("report-total-{}", d.as_str())))
-                    .test_support()
-                    .aria_label(SharedString::from(format!(
-                        "{} {}",
-                        disposition_label(d),
-                        data.totals.files_of(d)
-                    )))
-                    .gap(Tokens::space(1.5))
-                    .items_center()
-                    .child(
-                        div()
-                            .size(Tokens::dot_size())
-                            .rounded_full()
-                            .bg(disposition_color(d, &colors)),
-                    )
-                    .child(
-                        div()
-                            .text_size(Tokens::text_sm())
-                            .text_color(colors.text)
-                            .child(format_count(data.totals.files_of(d))),
-                    )
-                    .child(
-                        div()
-                            .text_size(Tokens::text_xs())
-                            .text_color(colors.text_muted)
-                            .child(format!(
-                                "{} · {}",
-                                disposition_label(d).to_lowercase(),
-                                kit::format_bytes(data.totals.bytes[d as usize])
-                            )),
-                    )
-            }),
+            Disposition::ALL
+                .into_iter()
+                .filter(|d| shown(*d, &data.totals))
+                .map(|d| {
+                    h_flex()
+                        .id(SharedString::from(format!("report-total-{}", d.as_str())))
+                        .test_support()
+                        .aria_label(SharedString::from(format!(
+                            "{} {}",
+                            disposition_label(d),
+                            data.totals.files_of(d)
+                        )))
+                        .gap(Tokens::space(1.5))
+                        .items_center()
+                        .child(
+                            div()
+                                .size(Tokens::dot_size())
+                                .rounded_full()
+                                .bg(disposition_color(d, &colors)),
+                        )
+                        .child(
+                            div()
+                                .text_size(Tokens::text_sm())
+                                .text_color(colors.text)
+                                .child(format_count(data.totals.files_of(d))),
+                        )
+                        .child(
+                            div()
+                                .text_size(Tokens::text_xs())
+                                .text_color(colors.text_muted)
+                                .child(format!(
+                                    "{} · {}",
+                                    disposition_label(d).to_lowercase(),
+                                    kit::format_bytes(data.totals.bytes[d as usize])
+                                )),
+                        )
+                }),
         );
         let overview = kit::card(cx)
             .child(
@@ -487,10 +505,14 @@ impl Render for ReportsView {
                 )
             });
 
+        let cleanup_busy = self.cleanup.read(cx).busy();
         let mut sources = Vec::new();
         for s in &data.sources {
             let open = self.expanded == Some(s.id);
             let sid = s.id;
+            // Files a cleanup could move: exported or covered (ADR-0023).
+            let cleanable =
+                s.counts.files_of(Disposition::Exported) + s.counts.files_of(Disposition::Covered);
             let excluded = s
                 .excluded
                 .iter()
@@ -539,6 +561,22 @@ impl Render for ReportsView {
                                 )),
                         )
                         .child(div().flex_1())
+                        .when(cleanable > 0, |row| {
+                            row.child(kit::button(
+                                SharedString::from(format!("report-cleanup-{}", s.id.0)),
+                                "Free up space",
+                                Some(IconName::ShieldCheck),
+                                Tone::Ghost,
+                                (!cleanup_busy)
+                                    .then(|| {
+                                        kit::on(cx.listener(move |this, _, _, cx| {
+                                            this.cleanup.update(cx, |c, cx| c.plan(sid, cx));
+                                        }))
+                                    })
+                                    .flatten(),
+                                cx,
+                            ))
+                        })
                         .child(badge(
                             &s.counts,
                             format!("report-badge-{}", s.id.0),
@@ -550,20 +588,27 @@ impl Render for ReportsView {
                     h_flex()
                         .flex_wrap()
                         .gap(Tokens::space(2.0))
-                        .children(Disposition::ALL.into_iter().map(|d| {
-                            let q = DrillQuery {
-                                source: sid,
-                                folder: None,
-                                disposition: d,
-                            };
-                            count_chip(
-                                format!("report-count-{}-{}", sid.0, d.as_str()),
-                                d,
-                                s.counts.files_of(d),
-                                &colors,
-                                cx.listener(move |this, _, _, cx| this.drill(q.clone(), cx)),
-                            )
-                        }))
+                        .children(
+                            Disposition::ALL
+                                .into_iter()
+                                .filter(|d| shown(*d, &s.counts))
+                                .map(|d| {
+                                    let q = DrillQuery {
+                                        source: sid,
+                                        folder: None,
+                                        disposition: d,
+                                    };
+                                    count_chip(
+                                        format!("report-count-{}-{}", sid.0, d.as_str()),
+                                        d,
+                                        s.counts.files_of(d),
+                                        &colors,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.drill(q.clone(), cx)
+                                        }),
+                                    )
+                                }),
+                        )
                         .when(!excluded.is_empty(), |d| {
                             d.child(
                                 div()
@@ -577,7 +622,11 @@ impl Render for ReportsView {
                         }),
                 );
             if open {
-                card = card.child(folder_table(s.id, &s.folders, &colors, cx));
+                let columns: Vec<Disposition> = Disposition::ALL
+                    .into_iter()
+                    .filter(|d| shown(*d, &s.counts))
+                    .collect();
+                card = card.child(folder_table(s.id, &s.folders, &columns, &colors, cx));
             }
             sources.push(card.into_any_element());
         }
@@ -681,6 +730,7 @@ impl Render for ReportsView {
         });
 
         page.child(overview)
+            .child(self.cleanup.clone())
             .children(drill)
             .children(sources)
             .into_any_element()
@@ -744,6 +794,7 @@ fn count_chip(
 fn folder_table(
     source: SourceId,
     folders: &[crate::scan_backend::FolderRow],
+    columns: &[Disposition],
     colors: &Colors,
     cx: &mut Context<'_, ReportsView>,
 ) -> AnyElement {
@@ -774,7 +825,7 @@ fn folder_table(
                         .text_color(colors.text_faint)
                         .child("FOLDER"),
                 )
-                .children(Disposition::ALL.map(|d| head(disposition_label(d))))
+                .children(columns.iter().map(|d| head(disposition_label(*d))))
                 .child(div().w(Tokens::size(150.0)).flex_none()),
         );
     // Folders with something left to do first; ids keep the folder's index.
@@ -810,7 +861,7 @@ fn folder_table(
                     .text_color(colors.text)
                     .child(folder.clone().unwrap_or_else(|| "(source root)".into())),
             );
-        for d in Disposition::ALL {
+        for &d in columns {
             let n = f.counts.files_of(d);
             let q = DrillQuery {
                 source,

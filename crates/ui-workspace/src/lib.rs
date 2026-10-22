@@ -129,7 +129,14 @@ fn register_commands(cx: &mut App) {
         CommandMeta::new("Go to", "AI Review", ShowAiReview).keywords(&["llm", "tags", "describe"]),
         CommandMeta::new("Go to", "Export", ShowExport)
             .keywords(&["copy", "library", "apple", "google"]),
-        CommandMeta::new("Go to", "Reports", ShowReports).keywords(&["completion", "summary"]),
+        CommandMeta::new("Go to", "Reports", ShowReports).keywords(&[
+            "completion",
+            "summary",
+            "cleanup",
+            "free up space",
+            "quarantine",
+            "undo",
+        ]),
         CommandMeta::new("Library", "Add Source…", AddSource)
             .keywords(&["folder", "drive", "import"]),
         CommandMeta::new("Library", "Rescan All Sources", Rescan)

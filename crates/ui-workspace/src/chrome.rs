@@ -299,13 +299,13 @@ fn navigator(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyElement {
                                 .text_size(Tokens::text_xs())
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(colors.text)
-                                .child("Sources are read-only"),
+                                .child("Nothing is ever deleted"),
                         )
                         .child(
                             div()
                                 .text_size(Tokens::text_2xs())
                                 .text_color(colors.text_faint)
-                                .child("Nothing is moved, changed or deleted"),
+                                .child("Sources are only read; a cleanup you confirm moves files, with undo"),
                         ),
                 ),
         )

@@ -39,6 +39,8 @@ and copies those best copies into one clean library folder ready for Apple Photo
   sidecars. A completion report accounts for every file found: exported, covered by a better copy, excluded,
   pending, unreadable or missing.
 - **Optional AI descriptions, local first.** See [AI insights](#ai-insights-optional).
+- **Optional, reversible cleanup.** Once a drive is accounted for, move what is already safe in your library into a
+  quarantine folder on that drive, and undo it whenever you like. See [Freeing up space](#freeing-up-space-optional).
 
 | | |
 |---|---|
@@ -88,8 +90,8 @@ The packages are not code-signed yet, so your system warns you the first time:
   catalogued, de-duplicated by content and exported; they show "preview unavailable" and are not matched to
   resized copies by look. Building from source with libheif 1.17+ and `--features heic` turns decoding on. The
   release notes say which platforms this applies to.
-- **Cleanup is not in this release.** Moving already-exported originals into a reversible quarantine is planned;
-  until then PhotoSquirrel never touches your sources at all.
+- **Cleanup is new since 0.1.0** (built from source; not in the 0.1.0 packages). Without it PhotoSquirrel never
+  touches your sources at all.
 - **Windows performance** has only been measured on CI machines, where writing very large catalogs (around a
   million files) was much slower than on Linux and macOS. Reports from real Windows machines are welcome.
 
@@ -116,10 +118,33 @@ photosquirrel-cli groups show 42                      # members of a group and w
 photosquirrel-cli export dry-run --library ~/Pictures/Library     # what would be copied where; writes nothing
 photosquirrel-cli export run --library ~/Pictures/Library --yes   # copy, verify, rename
 photosquirrel-cli report                              # what happened to every file found
+photosquirrel-cli cleanup plan --source 1             # what a cleanup would move into quarantine; moves nothing
+photosquirrel-cli cleanup run 3 --yes                 # re-verify each file, then move it; never deletes
+photosquirrel-cli cleanup undo 3 --yes                # put a run's files back
 photosquirrel-cli doctor                              # version, data folder, optional decoders, AI provider
 ```
 
 `photosquirrel-cli --help` and `photosquirrel-cli <command> --help` list every option.
+
+## Freeing up space (optional)
+
+When Reports says a drive is accounted for, **Free up space** on that drive plans a cleanup: every file whose
+best copy is already in your library (exported, or a duplicate of an exported photo) is listed with where it would
+go, per folder, with the space it frees. Pending, excluded, unreadable and missing files are never included.
+Nothing moves until you confirm the plan.
+
+- Right before each move, the file is read and hashed again and its library copy re-verified. Anything that
+  changed, or whose library copy is gone, stays where it is and is listed with the reason.
+- Files are **renamed** into `.photosquirrel-quarantine/<run>/` at the top of the same drive, keeping their folder
+  structure. Nothing is copied, nothing is overwritten, nothing is deleted, and a move to another drive is refused.
+- Every move is written to a journal first (in the catalog and as `journal.jsonl` in the run's quarantine folder),
+  so an interrupted cleanup is sorted out on the next start.
+- **Undo** puts a whole run back (the command line can also undo one folder or some files). A file whose old place
+  is now taken by something else stays in quarantine and is reported; it never overwrites. After a full undo the
+  empty folders the run created are removed; the journal stays.
+- PhotoSquirrel never empties the quarantine. When you are sure, delete the folder with your file manager.
+
+![A cleanup plan in Reports, waiting for confirmation](docs/screenshots/cleanup-dark.png)
 
 ## AI insights (optional)
 

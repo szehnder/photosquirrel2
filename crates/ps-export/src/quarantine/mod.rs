@@ -40,7 +40,7 @@ pub use fsops::MoveError;
 pub use journal::{JOURNAL_FILE, JournalEvent, JournalLine, read_journal};
 pub use reconcile::{ReconcileReport, reconcile};
 pub use run::{RunConfig, RunProgress, RunReport, run};
-pub use undo::{UndoReport, undo};
+pub use undo::{UndoNote, UndoReport, undo};
 
 /// The folder ADR-0024 reserves at each source root (equal to `ps_scan::walk::QUARANTINE_DIR`, which the
 /// scanner never walks; a ps-service test keeps them equal).

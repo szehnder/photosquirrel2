@@ -11,6 +11,7 @@
 //! ```
 
 pub mod ai_review;
+pub mod cleanup;
 pub mod duplicates;
 pub mod export;
 pub mod kit;

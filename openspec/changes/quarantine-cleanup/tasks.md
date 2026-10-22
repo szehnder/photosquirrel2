@@ -9,26 +9,26 @@
 
 ## 2. Plan
 
-- [ ] 2.1 Eligibility query and plan rows; verify `scenario_cleanup_pending_files_never_eligible` and `scenario_cleanup_excluded_files_not_eligible`
-- [ ] 2.2 Plan presentation without side effects; verify `scenario_cleanup_plan_before_move`
+- [x] 2.1 Eligibility query and plan rows; verify `scenario_cleanup_pending_files_never_eligible` and `scenario_cleanup_excluded_files_not_eligible`
+- [x] 2.2 Plan presentation without side effects; verify `scenario_cleanup_plan_before_move`
 
 ## 3. Run
 
-- [ ] 3.1 Re-verification of source and library copy; verify `scenario_cleanup_changed_source_skipped` and `scenario_cleanup_missing_library_copy_blocks_move`
-- [ ] 3.2 Same-volume no-replace rename; verify `scenario_cleanup_move_is_a_same_volume_rename` and `scenario_cleanup_cross_volume_move_refused`
-- [ ] 3.3 Write-ahead journals; verify `scenario_cleanup_journal_records_every_move`
-- [ ] 3.4 Crash reconciliation (child-process kill test); verify `scenario_cleanup_crash_mid_run_is_recoverable`
+- [x] 3.1 Re-verification of source and library copy; verify `scenario_cleanup_changed_source_skipped` and `scenario_cleanup_missing_library_copy_blocks_move`
+- [x] 3.2 Same-volume no-replace rename; verify `scenario_cleanup_move_is_a_same_volume_rename` and `scenario_cleanup_cross_volume_move_refused`
+- [x] 3.3 Write-ahead journals; verify `scenario_cleanup_journal_records_every_move`
+- [x] 3.4 Crash reconciliation (child-process kill test); verify `scenario_cleanup_crash_mid_run_is_recoverable`
 
 ## 4. Undo
 
-- [ ] 4.1 Full and partial undo with conflict handling; verify `scenario_cleanup_undo_restores_run`, `scenario_cleanup_partial_undo_by_folder`, `scenario_cleanup_occupied_path_not_overwritten`
-- [ ] 4.2 Never-delete invariant over cleanup + undo; verify `scenario_cleanup_cleanup_never_deletes`
+- [x] 4.1 Full and partial undo with conflict handling; verify `scenario_cleanup_undo_restores_run`, `scenario_cleanup_partial_undo_by_folder`, `scenario_cleanup_occupied_path_not_overwritten`
+- [x] 4.2 Never-delete invariant over cleanup + undo; verify `scenario_cleanup_cleanup_never_deletes`
 
 ## 5. Integration
 
-- [ ] 5.1 Scanner/report handling of quarantined files; verify `scenario_cleanup_quarantine_ignored_by_scanner`
-- [ ] 5.2 CLI `cleanup plan|run|list|undo`; verify `scenario_cleanup_no_move_without_confirmation` and `scenario_cleanup_cli_undo_round_trip`
-- [ ] 5.3 Cleanup view (plan review, confirm, progress, history with Undo); verify a headless UI test that Undo restores a run and screenshot review
+- [x] 5.1 Scanner/report handling of quarantined files; verify `scenario_cleanup_quarantine_ignored_by_scanner`
+- [x] 5.2 CLI `cleanup plan|run|list|undo`; verify `scenario_cleanup_no_move_without_confirmation` and `scenario_cleanup_cli_undo_round_trip`
+- [x] 5.3 Cleanup view (plan review, confirm, progress, history with Undo); verify a headless UI test that Undo restores a run and screenshot review
 
 ## 6. Verification
 

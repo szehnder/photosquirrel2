@@ -20,8 +20,7 @@ use serde::Serialize;
 
 use ps_catalog::{Catalog, NewCleanupRun};
 use ps_export::quarantine::{
-    self, CleanupJournal, MoveTotals, NoQuarantineHooks, QuarantineHooks, ReconcileReport,
-    RunConfig, RunProgress, RunReport, Stat, UndoReport,
+    self, CleanupJournal, NoQuarantineHooks, QuarantineHooks, RunConfig, Stat,
 };
 use ps_model::{
     CleanupMove, CleanupRunRecord, CleanupRunState, DeviceClass, FileId, MoveState, RelPath,
@@ -29,7 +28,12 @@ use ps_model::{
 };
 
 use crate::export::ExportError;
+
 use crate::scan::ScanService;
+pub use ps_export::quarantine::{
+    FolderTotals, MoveTotals, ReconcileReport, RunProgress, RunReport, SkipReason, Skipped,
+    UndoNote, UndoReport,
+};
 
 /// Errors of the cleanup facade. None of them leaves a file moved without its journal entries.
 #[derive(Debug, thiserror::Error)]
@@ -142,6 +146,11 @@ pub struct CleanupPlan {
     pub totals: MoveTotals,
     /// The source is a network share: running needs [`RunOptions::network_confirmed`].
     pub network: bool,
+}
+
+/// Totals per folder of some moves ([`ps_export::quarantine::totals`]).
+pub fn totals_of<'m>(moves: impl IntoIterator<Item = &'m CleanupMove>) -> MoveTotals {
+    quarantine::totals(moves)
 }
 
 /// Options of [`Cleanups::run`].
