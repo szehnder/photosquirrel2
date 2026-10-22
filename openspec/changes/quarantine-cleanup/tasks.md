@@ -3,8 +3,9 @@
 ## 1. Decisions and schema
 
 - [x] 1.1 ADR-0034 "Quarantined disposition" accepted (verify: listed in `docs/adr/README.md`)
-- [ ] 1.2 Migration 7 (cleanup_run, cleanup_move) and the quarantined flag in `file_disposition`; verify migration upgrade test in `ps-catalog`
-- [ ] 1.3 Extend the forbidden-call check allow-list to `ps-export::quarantine`; verify `cargo xtask layering` passes and its unit test rejects `fs::rename` elsewhere
+- [x] 1.2 Migration 7 (cleanup_run, cleanup_move) and the quarantined flag in `file_disposition`; verify migration upgrade test in `ps-catalog`
+  (Shipped as catalog migration 14, the next free number, per ADR-0061; dispositions are derived in `ps-export`, so the flag is `FileFacts::quarantined` from `cleanup_move` states 2/4. Verified by `ps-catalog/tests/cleanup_migration.rs`.)
+- [x] 1.3 Extend the forbidden-call check allow-list to `ps-export::quarantine`; verify `cargo xtask layering` passes and its unit test rejects `fs::rename` elsewhere
 
 ## 2. Plan
 
