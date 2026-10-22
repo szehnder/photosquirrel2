@@ -48,8 +48,9 @@ reversible renames.
 
 ## Risks / Trade-offs
 
-- [Rename on SMB/NAS shares lacks no-replace semantics] -> check-then-rename with post-rename verification;
-  cleanup on network sources requires an extra confirmation.
+- [Rename on SMB/NAS shares lacks no-replace semantics] -> link then unlink after verifying both names are the
+  same file, or refuse; never check-then-rename (ADR-0062). Cleanup on network sources requires an extra
+  confirmation.
 - [Re-hashing makes cleanup as slow as a scan] -> acceptable; safety over speed, progress shown.
 - [User edits files in quarantine] -> undo re-hashes before restoring and reports changed files (still restores,
   since restoring cannot lose data, but flags them).

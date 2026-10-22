@@ -52,6 +52,14 @@ Each eligible file SHALL be moved by a rename to `<source root>/.photosquirrel-q
 - **WHEN** a planned file's quarantine folder would be on a different volume than the file
 - **THEN** the file is not moved and the reason is reported
 
+
+### Requirement: Moves never replace a path
+Moves and undo MUST use an operation that fails rather than replace an existing target; where the file system offers none, the move MUST be refused, never done by a plain rename.
+
+#### Scenario: Target appearing mid-move not replaced
+- **WHEN** a file appears at the target path right before a move on a file system without a no-replace rename
+- **THEN** that file is unchanged, the moved file stays at its source path and the move is reported as occupied
+
 ### Requirement: Never delete
 Cleanup and undo MUST NOT delete any user file; the total number of user files in the source tree plus its quarantine folder SHALL be unchanged by any cleanup or undo.
 
@@ -69,6 +77,10 @@ Every move SHALL be journaled in the catalog and in a JSON journal inside the ru
 #### Scenario: Crash mid-run is recoverable
 - **WHEN** the process is killed during a cleanup run and restarted
 - **THEN** every journaled move is reconciled as done or not done from the file system and undo restores all moved files
+
+#### Scenario: Lost catalog commit recovered
+- **WHEN** the catalog lost the record of a move (it says planned or skipped) while the file is in quarantine and the JSON journal records the move
+- **THEN** reconciliation finds the file by its content hash and marks it quarantined, and undo restores it
 
 ### Requirement: Undo
 The user SHALL be able to undo a whole cleanup run or a selection of its moves (by folder or file), restoring each file to its original path; a file whose original path is now occupied MUST NOT overwrite it and SHALL be reported.
@@ -98,3 +110,32 @@ The CLI SHALL plan, run (with `--yes`), list and undo cleanup runs with `--json`
 #### Scenario: CLI undo round trip
 - **WHEN** the CLI plans and runs a cleanup of a fully exported corpus drive and then undoes it
 - **THEN** the drive's tree snapshot equals the one taken before the cleanup
+
+### Requirement: Quarantined files stay accounted for only while their library copy is valid
+A quarantined file SHALL count as accounted for only while the library copy that makes it safe exists and matches; otherwise it SHALL be reported as pending, with its quarantine path and the reason, and export SHALL copy it from the quarantine folder (read-only) without moving it.
+
+#### Scenario: Quarantined file without library copy not accounted
+- **WHEN** the library copy covering a quarantined file is deleted and the completion report is made, with or without verification
+- **THEN** the drive is not reported 100% accounted for, and the file is pending with its quarantine path and a reason that says its only copy is in the quarantine folder
+
+#### Scenario: Export reads quarantined keeper
+- **WHEN** an export runs after the library copy of a quarantined keeper was deleted
+- **THEN** the keeper is copied into the library again from its quarantine path, the quarantined file is unchanged and still in quarantine, and the drive is accounted for again
+
+### Requirement: Runs stay bound to their source
+A cleanup run SHALL act only on the source it was planned on (by identity, not only by id) or, when that source is gone, on the root stored with the run; a source with files in quarantine MUST NOT be removed or folded into another source.
+
+#### Scenario: Source with quarantined files not removed
+- **WHEN** the user removes a source, or adds a folder containing it, while it has files in quarantine
+- **THEN** it is refused with a message to undo first; after a full undo the source can be removed and a folder added later never takes over its runs
+
+#### Scenario: Run of removed source refused
+- **WHEN** a planned run's source is removed and the run is started
+- **THEN** it is refused and nothing on disk changes
+
+### Requirement: One operation at a time
+Scans, exports, cleanup plans, runs, undo and reconciliation SHALL exclude each other; reconciliation MUST NOT touch a run that is live.
+
+#### Scenario: Operations exclude each other
+- **WHEN** a scan, an export, a source removal, a cleanup plan and a reconciliation are attempted while a cleanup run is moving files
+- **THEN** the first four are refused naming the running cleanup, reconciliation skips, and the live run's in-flight move is untouched

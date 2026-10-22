@@ -65,3 +65,8 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0059](0059-release-packages-build-heic-only-with-a-shippable-libheif.md) | Release packages build HEIC only where libheif is found and new enough (amends 0017, 0030) |
 | [0060](0060-packages-redistribute-only-what-they-license.md) | Release packages redistribute only what their notices and source offers cover (amends 0058) |
 | [0061](0061-cleanup-journal-and-quarantine-moves.md) | Cleanup journal, catalog migration 14 and quarantine moves |
+| [0062](0062-quarantine-moves-never-check-then-rename.md) | Quarantine moves never check-then-rename: MoveFileExW, link+unlink or refuse (amends 0061) |
+| [0063](0063-cleanup-runs-know-their-source-by-identity.md) | Cleanup runs know their source by identity; quarantined files match by path (migration 15; amends 0061) |
+| [0064](0064-durable-cleanup-journal-and-journal-file-reconciliation.md) | The cleanup journal's catalog half is durable; reconciliation reads journal.jsonl and hashes (amends 0061) |
+| [0065](0065-one-file-changing-operation-at-a-time.md) | One file-changing operation (scan, export, cleanup) at a time per catalog |
+| [0066](0066-quarantined-without-library-copy-is-pending.md) | A quarantined file without a valid library copy is pending; export reads it from quarantine (amends 0034) |
