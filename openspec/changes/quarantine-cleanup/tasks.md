@@ -79,3 +79,24 @@
   and the drive was 100% accounted for again. Defect 2 repro (drive-c, 2,965 moved): `sources remove 3` and adding
   the folder that contains the drives were refused; after undo, removing source 3 and adding another folder gave
   it id 4, and run 3 still lists drive-c. All undos complete: 0 files left in any quarantine folder.
+- [x] 7.11 (LOW-MEDIUM, re-review) A failed `COMMIT` (or a batch SQLite rolled back by itself) fails the
+  writer's `exec` / `exec_durable` / `add_source` / `start_run` instead of returning `Ok`; the cleanup run stops
+  before the rename when its `moving` intent cannot be committed; verify `a_failed_durable_commit_is_an_error`,
+  `run_stops_before_the_rename_when_the_intent_commit_fails` (a trigger whose deferred foreign key fails at commit)
+- [x] 7.12 (LOW-MEDIUM, re-review) A quarantined file counts as accounted for only while a valid library copy
+  covers it, also when it became excluded after the move; otherwise pending in quarantine (ADR-0067); verify
+  `scenario_cleanup_excluded_quarantined_file_without_library_copy_not_accounted`,
+  `excluded_quarantined_files_need_a_valid_library_copy`
+- [x] 7.13 (LOW, re-review) Layering move check: `fs_err` (and `fs_err::tokio`), the `remove_dir_all` crate,
+  `Command::new("rm" | "rmdir" | "del" | "mv" | ...)`, `tempfile` `persist` (not `persist_noclobber`), and code
+  under `cfg(any(test, feature = ..))` (only exactly `#[cfg(test)]` is skipped); verify `fs_err_calls_are_caught`,
+  `remove_dir_all_crate_is_caught`, `shell_file_commands_are_caught`,
+  `tempfile_persist_is_caught_but_not_persist_noclobber`, `only_pure_cfg_test_is_skipped`
+- [x] 7.14 (LOW, re-review) Wording: the plan shows "Space you can free" (a move stays on the drive; the space is
+  freed once the user deletes the quarantine folder), likewise the CLI help and README;
+  `docs/screenshots/cleanup-dark.png` recaptured
+- [x] 7.15 (TRIVIAL, re-review) A failed link or rename says why: source gone (`ENOENT`), permission (`EACCES`,
+  `EPERM` except `EPERM` from `link` on the user's own file, which means no hard links), unsupported (`ENOTSUP`,
+  `EOPNOTSUPP`, `ENOSYS`); never a plain rename; verify `move_failures_are_classified`,
+  `source_gone_before_the_link_is_not_unsupported`, `read_only_target_folder_is_a_permission_error`
+- [x] 7.16 (TRIVIAL, re-review) Doc link to `file_is_quarantined_sql!` in `ps-catalog/src/groups.rs`
