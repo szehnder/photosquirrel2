@@ -862,13 +862,21 @@ fn scenes_by_content_match_the_truth() {
             .unwrap_or_else(|| panic!("no scene for {}", f.path));
         let s = scene.summary();
         let drawn = |k: ps_fixtures::synth::ShapeKind| {
-            scene.shapes.iter().filter(|sh| sh.kind == k).count() as u32
+            scene.scene.shapes.iter().filter(|sh| sh.kind == k).count() as u32
         };
+        // A portrait frame shows no more of the scene than a landscape one.
+        if scene.aspect < 1.0 {
+            let wide = scene.scene.summary_in(1.0 / scene.aspect);
+            assert!(
+                s.adults + s.children + s.buildings + s.trees
+                    <= wide.adults + wide.children + wide.buildings + wide.trees
+            );
+        }
         assert!(s.adults + s.children <= drawn(ps_fixtures::synth::ShapeKind::Person));
         assert!(s.buildings <= drawn(ps_fixtures::synth::ShapeKind::Building));
         assert!(s.trees <= drawn(ps_fixtures::synth::ShapeKind::Tree));
-        assert_eq!(s.indoor, scene.indoor);
-        assert_eq!(s.sky.is_none(), scene.indoor);
+        assert_eq!(s.indoor, scene.scene.indoor);
+        assert_eq!(s.sky.is_none(), scene.scene.indoor);
     }
     // Derivatives of an original share its scene.
     let by_group: BTreeMap<&str, &str> = originals

@@ -446,12 +446,21 @@ pub struct SceneSummary {
 
 /// A person this tall (in image heights) or taller reads as an adult.
 const ADULT_HEIGHT: f32 = 0.16;
-/// Shapes whose centre lies further out than this (image heights from the centre) are mostly out of frame.
-const IN_FRAME_X: f32 = 0.62;
+/// Shapes whose centre lies within this distance (image heights) of the frame's left or right edge, or beyond
+/// it, are mostly out of frame.
+const IN_FRAME_MARGIN: f32 = 0.05;
 
 impl Scene {
-    /// What this scene shows ([`SceneSummary`]). Shapes centred outside the frame are not counted.
+    /// What this scene shows in a 4:3 landscape frame ([`Scene::summary_in`]).
     pub fn summary(&self) -> SceneSummary {
+        self.summary_in(4.0 / 3.0)
+    }
+
+    /// What this scene shows in a frame of `aspect` (width / height) ([`SceneSummary`]). x is in image heights
+    /// from the centre, so a portrait frame shows a narrower part of the scene; shapes centred outside the
+    /// frame (or at its very edge) are not counted.
+    pub fn summary_in(&self, aspect: f32) -> SceneSummary {
+        let in_frame = aspect / 2.0 - IN_FRAME_MARGIN;
         let mut s = SceneSummary {
             indoor: self.indoor,
             adults: 0,
@@ -468,7 +477,7 @@ impl Scene {
             hills: !self.indoor && self.hill_amp > 0.09,
             sun: self.sun.is_some(),
         };
-        for sh in self.shapes.iter().filter(|sh| sh.cx.abs() <= IN_FRAME_X) {
+        for sh in self.shapes.iter().filter(|sh| sh.cx.abs() <= in_frame) {
             match sh.kind {
                 ShapeKind::Person if sh.ry >= ADULT_HEIGHT => s.adults += 1,
                 ShapeKind::Person => s.children += 1,
@@ -753,6 +762,33 @@ pub fn render(scene: &Scene, p: &Perturb, width: u32, height: u32) -> Rgb {
 mod tests {
     use super::*;
     use crate::rng::derive;
+
+    #[test]
+    fn a_portrait_frame_counts_only_the_shapes_inside_it() {
+        let mut scene = Scene::random(&mut derive(3, "s", 0));
+        let shape = |kind, cx| Shape {
+            kind,
+            cx,
+            cy: 0.1,
+            rx: 0.05,
+            ry: 0.2,
+            rot: (1.0, 0.0),
+            color: [200.0, 100.0, 50.0],
+            shade: 0.0,
+            soft: 0.0,
+        };
+        scene.shapes = vec![
+            shape(ShapeKind::Person, -0.2),
+            shape(ShapeKind::Building, 0.5),
+            shape(ShapeKind::Tree, 0.31),
+        ];
+        let wide = scene.summary_in(1.5);
+        assert_eq!((wide.adults, wide.buildings, wide.trees), (1, 1, 1));
+        // 2:3 portrait: half the width is 0.33 image heights; the tree at 0.31 sits on the edge.
+        let tall = scene.summary_in(2.0 / 3.0);
+        assert_eq!((tall.adults, tall.buildings, tall.trees), (1, 0, 0));
+        assert_eq!(scene.summary(), scene.summary_in(4.0 / 3.0));
+    }
 
     #[test]
     fn render_is_deterministic_and_textured() {

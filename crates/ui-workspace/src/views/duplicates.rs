@@ -295,10 +295,17 @@ impl DuplicatesView {
             return true;
         };
         let (filter, sort) = (self.filter, self.sort);
+        // Dev-only: scripted screenshots of a particular group (list index; the first by default).
+        let pick = std::env::var("PHOTOSQUIRREL_REVIEW_GROUP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
         let Some((list, detail, suggestions)) =
             crate::startup::StartupGrace::within(deadline, move || {
                 let list = src.groups(filter, sort).ok();
-                let first = list.as_ref().and_then(|l| l.rows.first().map(|r| r.id));
+                let first = list
+                    .as_ref()
+                    .and_then(|l| l.rows.get(pick).or(l.rows.first()).map(|r| r.id));
                 let detail = first.and_then(|id| src.group(id).ok());
                 (list, detail, src.suggestions(500).ok())
             })
@@ -307,14 +314,17 @@ impl DuplicatesView {
         };
         let in_time = || std::time::Instant::now() < deadline;
         if let Some(list) = list {
-            for r in list.rows.iter().take(16) {
+            for r in list.rows.iter().skip(pick.saturating_sub(12)).take(16) {
                 if let Some(t) = r.thumb
                     && in_time()
                 {
                     self.images.prime_thumb(t);
                 }
             }
-            self.selected = list.rows.first().map(|r| r.id);
+            self.selected = list.rows.get(pick).or(list.rows.first()).map(|r| r.id);
+            if pick > 0 && pick < list.rows.len() {
+                self.scroll.scroll_to_item(pick, ScrollStrategy::Center);
+            }
             self.list = Some(Rc::new(list));
         }
         if let Some(d) = detail {

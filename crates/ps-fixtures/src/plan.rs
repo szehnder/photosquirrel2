@@ -395,14 +395,36 @@ struct Planner {
     wa_counter: u32,
 }
 
-/// The scene each true group (`truth.json` `group`) was rendered from: camera shots and scanned prints. Crops
-/// show only part of a scene and are left out. Demo data uses it to describe each image truthfully.
-pub fn scenes_by_group(plan: &Plan) -> std::collections::HashMap<String, Scene> {
+/// A scene and the frame it was rendered into.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FramedScene {
+    pub scene: Scene,
+    /// Display width / height (orientation applied).
+    pub aspect: f32,
+}
+
+impl FramedScene {
+    fn new(scene: &Scene, (w, h): (u32, u32)) -> Self {
+        Self {
+            scene: scene.clone(),
+            aspect: w as f32 / h.max(1) as f32,
+        }
+    }
+
+    /// What the image shows: the scene's shapes inside this frame.
+    pub fn summary(&self) -> crate::synth::SceneSummary {
+        self.scene.summary_in(self.aspect)
+    }
+}
+
+/// The scene each true group (`truth.json` `group`) was rendered from, with its frame: camera shots and scanned
+/// prints. Crops show only part of a scene and are left out. Demo data uses it to describe each image truthfully.
+pub fn scenes_by_group(plan: &Plan) -> std::collections::HashMap<String, FramedScene> {
     plan.tasks
         .iter()
         .filter_map(|t| match t {
-            Task::Shot(s) => Some((s.group.clone(), s.scene.clone())),
-            Task::Scan(s) => Some((s.group.clone(), s.scene.clone())),
+            Task::Shot(s) => Some((s.group.clone(), FramedScene::new(&s.scene, s.display))),
+            Task::Scan(s) => Some((s.group.clone(), FramedScene::new(&s.scene, s.display))),
             _ => None,
         })
         .collect()
@@ -414,7 +436,7 @@ pub fn scenes_by_group(plan: &Plan) -> std::collections::HashMap<String, Scene> 
 /// left out (they show part of a scene).
 pub fn scenes_by_content(
     truth: &crate::truth::Truth,
-) -> Option<std::collections::HashMap<String, Scene>> {
+) -> Option<std::collections::HashMap<String, FramedScene>> {
     use crate::truth::Category;
     let preset = Preset::parse(&truth.preset)?;
     let plan = plan(truth.seed, preset);
