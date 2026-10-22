@@ -619,6 +619,66 @@ fn scenario_cleanup_quarantined_file_without_library_copy_not_accounted() {
     assert!(m.quarantine_rel_path.under(&env.drive(src)).is_file());
 }
 
+/// A quarantined keeper the user excludes afterwards (or a reclassification sets aside) is accounted for only
+/// while its library copy is valid: once that copy is gone its only copy is in the quarantine folder, so it is
+/// pending, and the drive is not 100% accounted for (ADR-0067).
+#[test]
+fn scenario_cleanup_excluded_quarantined_file_without_library_copy_not_accounted() {
+    let env = Env::new("q-excluded");
+    let svc = env.open();
+    let (src, moves) = clean_a_drive_with_keepers(&svc);
+    svc.start(&[SourceId(src)]).unwrap();
+    svc.wait().unwrap();
+    let m = exported_move(&moves).clone();
+    let w = svc.engine().catalog().writer();
+    w.submit(ps_catalog::Command::SetUserDecision {
+        file: m.file,
+        decision: Some(ps_catalog::UserDecision::Exclude),
+        reason: Some("test".into()),
+    })
+    .unwrap();
+    w.flush().unwrap();
+    let source_report = |verify: bool| {
+        svc.exports()
+            .completion(None, verify)
+            .unwrap()
+            .report
+            .sources
+            .into_iter()
+            .find(|s| s.source == SourceId(src))
+            .unwrap()
+    };
+    // Excluded, but its library copy is still there: accounted for.
+    assert!(source_report(true).counts.fully_accounted());
+    fs::remove_file(m.covering_library_path.under(&env.library)).unwrap();
+    for verify in [false, true] {
+        let s = source_report(verify);
+        assert!(
+            !s.counts.fully_accounted(),
+            "verify={verify}: {:?}",
+            s.counts
+        );
+        assert!(s.counts.pending_in_quarantine >= 1, "{:?}", s.counts);
+    }
+    let (files, d, _) = svc.exports().dispositions(&env.library, false).unwrap();
+    let (_, x) = files
+        .iter()
+        .zip(&d)
+        .find(|(f, _)| f.file == m.file)
+        .unwrap();
+    assert_eq!(x.disposition, Disposition::Pending);
+    assert_eq!(x.reason, None, "pending, not counted as excluded");
+    assert_eq!(x.quarantine_path.as_ref(), Some(&m.quarantine_rel_path));
+    let why = ps_service::library::disposition_reason(
+        x.disposition,
+        x.reason,
+        x.library_path.as_ref(),
+        x.quarantine_path.as_ref(),
+    );
+    assert!(why.contains("only in the quarantine folder"), "{why}");
+    assert!(m.quarantine_rel_path.under(&env.drive(src)).is_file());
+}
+
 #[test]
 fn scenario_cleanup_export_reads_quarantined_keeper() {
     let env = Env::new("q-reexport");

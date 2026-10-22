@@ -112,11 +112,15 @@ The CLI SHALL plan, run (with `--yes`), list and undo cleanup runs with `--json`
 - **THEN** the drive's tree snapshot equals the one taken before the cleanup
 
 ### Requirement: Quarantined files stay accounted for only while their library copy is valid
-A quarantined file SHALL count as accounted for only while the library copy that makes it safe exists and matches; otherwise it SHALL be reported as pending, with its quarantine path and the reason, and export SHALL copy it from the quarantine folder (read-only) without moving it.
+A quarantined file SHALL count as accounted for only while the library copy that makes it safe exists and matches, whatever its exclusion state; otherwise it SHALL be reported as pending, with its quarantine path and the reason, and export SHALL copy it from the quarantine folder (read-only) without moving it.
 
 #### Scenario: Quarantined file without library copy not accounted
 - **WHEN** the library copy covering a quarantined file is deleted and the completion report is made, with or without verification
 - **THEN** the drive is not reported 100% accounted for, and the file is pending with its quarantine path and a reason that says its only copy is in the quarantine folder
+
+#### Scenario: Excluded quarantined file without library copy not accounted
+- **WHEN** a quarantined file becomes excluded (by the user or a reclassification) and the library copy covering it is then deleted
+- **THEN** the file is pending with its quarantine path, not excluded, and the drive is not reported 100% accounted for
 
 #### Scenario: Export reads quarantined keeper
 - **WHEN** an export runs after the library copy of a quarantined keeper was deleted

@@ -12,9 +12,10 @@
 //! - not in a group and its content has a valid library copy: `exported`;
 //! - moved by a cleanup run (ADR-0034): `quarantined`, with the disposition the rules below give it as if it
 //!   were still at its path (`prior`) - checked first, since the scanner sees it as gone. Only while that
-//!   prior disposition is exported, covered or excluded: a quarantined file whose library copy is gone or
-//!   differs is `pending` again, with its `quarantine_path`, so it is not accounted for and export copies it
-//!   from the quarantine folder (ADR-0066);
+//!   prior disposition is exported or covered, that is while a valid library copy covers it: a quarantined
+//!   file whose library copy is gone or differs is `pending` again, with its `quarantine_path`, even when it
+//!   is excluded, so it is not accounted for and export copies it from the quarantine folder (ADR-0066,
+//!   ADR-0067);
 //! - gone from the source: `missing`; failed after retries: `unreadable`;
 //! - user-excluded, a member of a group whose keeper the user excluded (the photo itself was excluded, every
 //!   copy goes with it; the export skips such groups), or (in no group) junk, graphic or a cache thumbnail:
@@ -228,17 +229,25 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
                     ..f.clone()
                 };
                 let prior = derive(&at_home);
-                let safe = prior.disposition.is_accounted_safe()
-                    || prior.disposition == Disposition::Excluded;
-                FileDisposition {
-                    disposition: if safe {
-                        Disposition::Quarantined
-                    } else {
-                        Disposition::Pending
-                    },
-                    prior: safe.then_some(prior.disposition),
-                    quarantine_path: Some(q.clone()),
-                    ..prior
+                // Accounted for only while a valid library copy covers it, whatever its exclusion state
+                // (ADR-0067): an excluded file in quarantine whose library copy is gone has its only copy
+                // there, so it is pending like any other.
+                if prior.disposition.is_accounted_safe() {
+                    FileDisposition {
+                        disposition: Disposition::Quarantined,
+                        prior: Some(prior.disposition),
+                        quarantine_path: Some(q.clone()),
+                        ..prior
+                    }
+                } else {
+                    FileDisposition {
+                        disposition: Disposition::Pending,
+                        reason: None,
+                        library_path: None,
+                        prior: None,
+                        quarantine_path: Some(q.clone()),
+                        ..prior
+                    }
                 }
             }
             None => derive(f),
@@ -382,5 +391,102 @@ pub fn report(
     CompletionReport {
         sources,
         mismatches,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ps_model::{ExportProfile, LedgerKind, LedgerState};
+
+    fn rel(s: &str) -> RelPath {
+        RelPath::from_bytes(s.as_bytes().to_vec()).expect("rel")
+    }
+
+    fn file(i: i64) -> FileFacts {
+        FileFacts {
+            file: FileId(i),
+            source: SourceId(1),
+            rel_path: rel(&format!("a/{i}.jpg")),
+            size: 10,
+            content: Some(ContentId::full([i as u8; 32])),
+            class: Some(PhotoClass::Photo),
+            unreadable: false,
+            missing: true,
+            user_excluded: false,
+            quarantined: Some(rel(&format!(".photosquirrel-quarantine/1/a/{i}.jpg"))),
+        }
+    }
+
+    fn row(i: i64) -> LedgerEntry {
+        LedgerEntry {
+            content: ContentId::full([i as u8; 32]),
+            full_hash: None,
+            file: FileId(i),
+            library_rel_path: rel(&format!("2020/{i}.jpg")),
+            size: 10,
+            state: LedgerState::Done,
+            profile: ExportProfile::Lightroom,
+            at_ms: 0,
+            library_mtime_ns: None,
+            kind: LedgerKind::File,
+        }
+    }
+
+    /// Quarantined files that are (or became) excluded: by the user, by a reclassification, or as a member of
+    /// a group whose keeper the user excluded. With their library copy valid they are quarantined; with it
+    /// gone they are pending in quarantine, never accounted for (ADR-0067).
+    #[test]
+    fn excluded_quarantined_files_need_a_valid_library_copy() {
+        let files = vec![
+            FileFacts {
+                user_excluded: true,
+                ..file(1)
+            },
+            FileFacts {
+                class: Some(PhotoClass::Junk),
+                ..file(2)
+            },
+            FileFacts {
+                user_excluded: true,
+                ..file(3)
+            },
+            file(4),
+        ];
+        // 3 is the keeper of a group, 4 its copy.
+        let groups = vec![GroupFacts {
+            members: vec![FileId(3), FileId(4)],
+            keeper_set: vec![FileId(3)],
+        }];
+        let ledger: Vec<LedgerEntry> = [1, 2, 3].map(row).into();
+        let derive = |checks: &HashMap<RelPath, CopyCheck>| {
+            derive_dispositions(&DispositionFacts {
+                files: &files,
+                groups: &groups,
+                ledger: &ledger,
+                checks,
+            })
+        };
+        let ok: HashMap<RelPath, CopyCheck> = ledger
+            .iter()
+            .map(|e| (e.library_rel_path.clone(), CopyCheck::Ok))
+            .collect();
+        for d in derive(&ok) {
+            assert_eq!(d.disposition, Disposition::Quarantined, "{d:?}");
+        }
+        let gone: HashMap<RelPath, CopyCheck> = ledger
+            .iter()
+            .map(|e| (e.library_rel_path.clone(), CopyCheck::Missing))
+            .collect();
+        let d = derive(&gone);
+        let mut counts = CompletionCounts::default();
+        for (f, x) in files.iter().zip(&d) {
+            assert_eq!(x.disposition, Disposition::Pending, "{x:?}");
+            assert_eq!(x.reason, None, "{x:?}");
+            assert_eq!(x.quarantine_path, f.quarantined, "{x:?}");
+            count_disposition(&mut counts, x, f.size);
+        }
+        assert!(!counts.fully_accounted());
+        assert_eq!(counts.pending_in_quarantine, 4);
     }
 }

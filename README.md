@@ -152,7 +152,8 @@ excluded, unreadable and missing files are never included. Nothing moves until y
   file manager, check its drive with **Verify copies** in Reports (or `photosquirrel-cli report --verify`): only
   when the drive is 100% accounted for is every file in its quarantine also in your library. If a library copy
   has gone missing or changed, Reports lists the quarantined files that are no longer covered as pending ("only in
-  the quarantine folder"), and the next export copies them from the quarantine folder again.
+  the quarantine folder"), even ones you have excluded since, and the next export copies them from the quarantine
+  folder again (an excluded one once you include it again).
 
 ![A cleanup plan in Reports, waiting for confirmation](docs/screenshots/cleanup-dark.png)
 

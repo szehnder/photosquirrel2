@@ -94,7 +94,7 @@ pub fn disposition_reason(
     if let (Disposition::Pending, Some(q)) = (d, quarantine_path) {
         return format!(
             "only in the quarantine folder ({q}) and its library copy is gone: export again (it is copied from \
-             the quarantine folder) or undo the cleanup"
+             the quarantine folder; include it first if you excluded it) or undo the cleanup"
         );
     }
     match (d, reason, library_path) {

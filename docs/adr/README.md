@@ -70,3 +70,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0064](0064-durable-cleanup-journal-and-journal-file-reconciliation.md) | The cleanup journal's catalog half is durable; reconciliation reads journal.jsonl and hashes (amends 0061) |
 | [0065](0065-one-file-changing-operation-at-a-time.md) | One file-changing operation (scan, export, cleanup) at a time per catalog |
 | [0066](0066-quarantined-without-library-copy-is-pending.md) | A quarantined file without a valid library copy is pending; export reads it from quarantine (amends 0034) |
+| [0067](0067-excluded-quarantined-files-need-a-library-copy-too.md) | An excluded quarantined file needs a valid library copy too (amends 0066) |
