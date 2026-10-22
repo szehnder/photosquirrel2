@@ -1,11 +1,24 @@
-//! The file-system primitives of cleanup (ADR-0061). The only place in the workspace that renames a user's
-//! file; it never removes, links or copies one.
+//! The file-system primitives of cleanup (ADR-0061, ADR-0062). The only place in the workspace that moves a
+//! user's file; it never copies one and never replaces an existing path.
 //!
-//! - [`move_no_replace`]: `renameat2(RENAME_NOREPLACE)` (Linux) / `renameatx_np(RENAME_EXCL)` (macOS) through
-//!   `rustix`. Where the flag is unsupported (Windows, some network file systems) check-then-rename with
-//!   `std::fs::rename`, which never copies across volumes. A cross-volume rename (`EXDEV`,
-//!   `ERROR_NOT_SAME_DEVICE`) is reported as [`MoveError::CrossVolume`]; an existing target as
-//!   [`MoveError::Occupied`]. In every error case the file is still at `from`.
+//! - [`move_no_replace`]: an atomic rename that fails instead of replacing an existing target, or no move at
+//!   all. In order:
+//!   1. Linux / Android: `renameat2(RENAME_NOREPLACE)`; macOS / iOS: `renameatx_np(RENAME_EXCL)`, through
+//!      `rustix`.
+//!   2. Windows: `MoveFileExW` with neither `MOVEFILE_REPLACE_EXISTING` nor `MOVEFILE_COPY_ALLOWED` (so it
+//!      never replaces and never copies across volumes), through `windows-sys`.
+//!   3. Unix file systems without the no-replace flag (`EINVAL`/`ENOTSUP`/`ENOSYS`: some NFS, FUSE, SMB and
+//!      exFAT mounts) and other Unixes: `link(from, to)`, which fails with `EEXIST` when the target exists and
+//!      so is atomic and no-replace, then - only after the link succeeded and both names are verified to be
+//!      the same file (device and inode) - `unlink(from)`. That unlink removes a second name of a file that
+//!      is still reachable at `to`; it is the only removal of a name in this module ([`link_then_unlink`]).
+//!   4. Otherwise (no hard links either: FAT, some SMB shares) the move is refused
+//!      ([`MoveError::Unsupported`]). There is no check-then-rename: `std::fs::rename` replaces an existing
+//!      target, so a file created at the target between a check and the rename would be overwritten.
+//!
+//!   A cross-volume rename (`EXDEV`, `ERROR_NOT_SAME_DEVICE`) is [`MoveError::CrossVolume`]; an existing target
+//!   [`MoveError::Occupied`]. In every error case the file is still at `from` (method 3 may leave it at both
+//!   names if the unlink itself fails, never at neither).
 //! - [`device_of`]: the volume a path lives on (`st_dev`), for the same-volume check before a move.
 //! - [`prepare_dir`]: create the folders of a path inside a root one level at a time, refusing any existing
 //!   component that is not a real folder (a symlinked quarantine folder could lead to another volume or tree).
@@ -25,6 +38,11 @@ pub enum MoveError {
     Occupied(PathBuf),
     #[error("the quarantine folder is on another volume than the file (a move would copy data)")]
     CrossVolume,
+    #[error(
+        "this file system has neither an atomic no-replace rename nor hard links ({0}); refusing to move, since \
+         a plain rename could overwrite a file that appears at the target"
+    )]
+    Unsupported(String),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -44,7 +62,8 @@ fn is_cross_device(e: &io::Error) -> bool {
     }
 }
 
-/// Rename `from` to `to` unless `to` exists, never across volumes. See the module docs.
+/// Rename `from` to `to` unless `to` exists, never across volumes, never by a plain rename. See the module
+/// docs.
 pub fn move_no_replace(from: &Path, to: &Path) -> Result<RenameMethod, MoveError> {
     #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
     {
@@ -57,26 +76,123 @@ pub fn move_no_replace(from: &Path, to: &Path) -> Result<RenameMethod, MoveError
                 rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::NOTSUP,
             ) => {
                 log::warn!(
-                    "{}: no atomic no-replace rename on this file system; checking then renaming",
+                    "{}: no atomic no-replace rename on this file system; moving by link then unlink",
                     to.display()
                 );
             }
             Err(e) => return Err(MoveError::Io(e.into())),
         }
     }
-    check_then_rename(from, to)
+    #[cfg(windows)]
+    {
+        windows::move_file_no_replace(from, to)
+    }
+    #[cfg(unix)]
+    {
+        link_then_unlink(from, to, &|| {})
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (from, to);
+        Err(MoveError::Unsupported(
+            "no no-replace move on this platform".into(),
+        ))
+    }
 }
 
-fn check_then_rename(from: &Path, to: &Path) -> Result<RenameMethod, MoveError> {
-    match fs::symlink_metadata(to) {
-        Ok(_) => Err(MoveError::Occupied(to.to_path_buf())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => match fs::rename(from, to) {
-            Ok(()) => Ok(RenameMethod::CheckThenRename),
-            Err(e) if is_cross_device(&e) => Err(MoveError::CrossVolume),
-            Err(e) => Err(MoveError::Io(e)),
-        },
-        Err(e) => Err(MoveError::Io(e)),
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    use super::{MoveError, RenameMethod, is_cross_device};
+
+    /// `ERROR_FILE_EXISTS`, `ERROR_ALREADY_EXISTS`.
+    const EXISTS: [i32; 2] = [80, 183];
+
+    fn wide(p: &Path) -> Vec<u16> {
+        p.as_os_str().encode_wide().chain(Some(0)).collect()
     }
+
+    /// `MoveFileExW(from, to, 0)`: without `MOVEFILE_REPLACE_EXISTING` it fails when `to` exists, and without
+    /// `MOVEFILE_COPY_ALLOWED` it never copies to another volume.
+    pub fn move_file_no_replace(from: &Path, to: &Path) -> Result<RenameMethod, MoveError> {
+        let (f, t) = (wide(from), wide(to));
+        // SAFETY: both arguments are NUL-terminated UTF-16 strings that live until the call returns; flags 0.
+        let ok = unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } != 0;
+        if ok {
+            return Ok(RenameMethod::NoReplace);
+        }
+        let e = io::Error::last_os_error();
+        if e.raw_os_error().is_some_and(|c| EXISTS.contains(&c)) {
+            Err(MoveError::Occupied(to.to_path_buf()))
+        } else if is_cross_device(&e) {
+            Err(MoveError::CrossVolume)
+        } else {
+            Err(MoveError::Io(e))
+        }
+    }
+}
+
+/// The same file (device and inode) on Unix.
+#[cfg(unix)]
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+/// Method 3 of [`move_no_replace`]: `link(from, to)` (atomic, fails if `to` exists), then - only once `to` is
+/// verified to be the very file `from` was (device and inode, a regular file) - `unlink(from)`. `before_link`
+/// runs right before the link (tests use it to create the target in the window a check-then-rename would
+/// have). Public so tests exercise it on file systems that do support the no-replace flag.
+#[cfg(unix)]
+pub fn link_then_unlink(
+    from: &Path,
+    to: &Path,
+    before_link: &dyn Fn(),
+) -> Result<RenameMethod, MoveError> {
+    let before = fs::symlink_metadata(from)?;
+    if !before.file_type().is_file() {
+        return Err(MoveError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", from.display()),
+        )));
+    }
+    before_link();
+    match fs::hard_link(from, to) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(MoveError::Occupied(to.to_path_buf()));
+        }
+        Err(e) if is_cross_device(&e) => return Err(MoveError::CrossVolume),
+        Err(e) => return Err(MoveError::Unsupported(e.to_string())),
+    }
+    // Both names must now be the file we checked; otherwise nothing is removed (the file stays at `from`,
+    // and the extra name at `to` is reported for the user to look at).
+    let (at_from, at_to) = (fs::symlink_metadata(from)?, fs::symlink_metadata(to)?);
+    if !(at_to.file_type().is_file() && same_file(&before, &at_from) && same_file(&at_from, &at_to))
+    {
+        return Err(MoveError::Io(io::Error::other(format!(
+            "{} was linked to {}, but they are not the same file afterwards; nothing was removed",
+            from.display(),
+            to.display()
+        ))));
+    }
+    fs::remove_file(from).map_err(|e| {
+        MoveError::Io(io::Error::new(
+            e.kind(),
+            format!(
+                "{} is also at {} now, but its old name could not be removed: {e}",
+                from.display(),
+                to.display()
+            ),
+        ))
+    })?;
+    Ok(RenameMethod::LinkUnlink)
 }
 
 /// The device a path lives on (`None` where the platform does not say; the rename's own cross-volume error is
@@ -214,8 +330,9 @@ mod tests {
         ));
         assert_eq!(fs::read(&b).expect("b"), b"other");
         assert_eq!(fs::read(&a).expect("a"), b"photo");
+        #[cfg(unix)]
         assert!(matches!(
-            check_then_rename(&a, &b),
+            link_then_unlink(&a, &b, &|| {}),
             Err(MoveError::Occupied(_))
         ));
         let c = d.path().join("c");
@@ -223,6 +340,44 @@ mod tests {
         assert!(!a.exists());
         assert_eq!(fs::read(&c).expect("c"), b"photo");
         assert!(device_of(&c).is_ok());
+    }
+
+    /// The fallback for file systems without a no-replace rename: a file that appears at the target right
+    /// before the move (the window a check-then-rename had) is never replaced, and the source stays.
+    #[cfg(unix)]
+    #[test]
+    fn scenario_cleanup_target_appearing_mid_move_not_replaced() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        fs::write(&a, b"photo").expect("a");
+        let appear = || fs::write(&b, b"someone else's file").expect("b");
+        let r = link_then_unlink(&a, &b, &appear);
+        assert!(matches!(r, Err(MoveError::Occupied(_))), "{r:?}");
+        assert_eq!(fs::read(&b).expect("b"), b"someone else's file");
+        assert_eq!(fs::read(&a).expect("a"), b"photo");
+    }
+
+    /// The fallback keeps the file's identity (it is a rename in two steps) and leaves one name.
+    #[cfg(unix)]
+    #[test]
+    fn fallback_moves_the_same_inode() {
+        use std::os::unix::fs::MetadataExt;
+        let d = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        fs::write(&a, b"photo").expect("a");
+        let ino = fs::metadata(&a).expect("a").ino();
+        assert_eq!(
+            link_then_unlink(&a, &b, &|| {}).expect("move"),
+            RenameMethod::LinkUnlink
+        );
+        assert!(!a.exists());
+        let m = fs::metadata(&b).expect("b");
+        assert_eq!((m.ino(), m.nlink()), (ino, 1));
+        assert_eq!(fs::read(&b).expect("b"), b"photo");
+        // A folder is never moved this way.
+        fs::create_dir(d.path().join("dir")).expect("dir");
+        assert!(link_then_unlink(&d.path().join("dir"), &d.path().join("dir2"), &|| {}).is_err());
+        assert!(d.path().join("dir").is_dir() && !d.path().join("dir2").exists());
     }
 
     #[cfg(unix)]

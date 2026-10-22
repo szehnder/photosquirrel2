@@ -100,6 +100,8 @@ pub enum SkipReason {
     QuarantineOccupied,
     /// The quarantine folder is not a real folder inside the source.
     UnsafeFolder(String),
+    /// The file system offers no atomic no-replace move (ADR-0062): refused rather than risk an overwrite.
+    NoSafeMove(String),
     /// A read or rename failed.
     Io(String),
 }
@@ -122,6 +124,9 @@ impl SkipReason {
                 "something already exists at its quarantine path".into()
             }
             SkipReason::UnsafeFolder(s) => format!("unsafe quarantine folder: {s}"),
+            SkipReason::NoSafeMove(s) => format!(
+                "not moved: the drive cannot rename without risking an overwrite ({s}); nothing was changed"
+            ),
             SkipReason::Io(s) => s.clone(),
         }
     }

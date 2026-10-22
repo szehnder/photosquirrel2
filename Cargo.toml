@@ -67,6 +67,8 @@ toml = "0.9"
 quick-xml = "0.41"
 # No-replace rename (renameat2 RENAME_NOREPLACE / renameatx_np RENAME_EXCL) and statvfs for ps-export.
 rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
+# `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` for the quarantine move on Windows (ADR-0062).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 keyring = { version = "3", features = ["linux-native-sync-persistent", "apple-native", "windows-native", "crypto-rust"] }
 
 # Network (LLM providers)

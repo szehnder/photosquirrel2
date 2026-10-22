@@ -57,7 +57,7 @@ fn io_text(op: &str, p: &Path, e: &io::Error) -> String {
 
 /// Recompute the identity of the file at `path` like the catalog computed it: the full BLAKE3, or the sampled
 /// identity for sampled ones (ADR-0011). Opened read-only.
-fn identity_of(path: &Path, kind: ContentIdKind, size: u64) -> io::Result<ContentId> {
+pub(super) fn identity_of(path: &Path, kind: ContentIdKind, size: u64) -> io::Result<ContentId> {
     let f = File::open(path)?;
     Ok(match kind {
         ContentIdKind::Full => ContentId::full(full_hash_of(f)?.0),
@@ -366,6 +366,7 @@ fn move_one(
             let reason = match e {
                 MoveError::Occupied(_) => SkipReason::QuarantineOccupied,
                 MoveError::CrossVolume => SkipReason::CrossVolume,
+                MoveError::Unsupported(s) => SkipReason::NoSafeMove(s),
                 MoveError::Io(e) => SkipReason::Io(io_text("rename", &source, &e)),
             };
             skip(m, reason, journal, catalog)
