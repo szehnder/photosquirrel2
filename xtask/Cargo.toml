@@ -12,6 +12,9 @@ serde_json.workspace = true
 toml.workspace = true
 ureq.workspace = true
 sha2.workspace = true
+# The layering check parses sources (imports, `#[cfg(test)]` items) and scans their tokens (ADR-0062).
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [lints]
 workspace = true
