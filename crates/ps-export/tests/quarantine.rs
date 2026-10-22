@@ -644,3 +644,86 @@ fn eligibility_and_plan_are_pure() {
     assert_eq!(t.folders[0].covered, 1);
     let _: &RelPath = &all[0].rel_path;
 }
+
+impl Fixture {
+    fn reconcile(&self, j: &mut MemJournal) -> quarantine::ReconcileReport {
+        let moves = j.apply(&self.moves);
+        quarantine::reconcile(&self.cfg(), &moves, j).expect("reconcile")
+    }
+}
+
+/// The catalog half of the journal lost its last commits (power loss with the catalog's commit not yet on
+/// disk): the catalog says planned, the file is in quarantine and `journal.jsonl` records the move. Reconcile
+/// reads the JSON journal, finds the file and marks it quarantined; undo then restores it.
+#[test]
+fn scenario_cleanup_lost_catalog_commit_recovered() {
+    let f = Fixture::new("q-lost-commit", THREE);
+    let before = snapshot_outside_quarantine(&f.root);
+    let mut j = MemJournal::default();
+    assert_eq!(f.run(&mut j, &NoQuarantineHooks).moved, 3);
+    // Lose the catalog commits of the first move (intent and done) and of the second one's done.
+    let (a, b) = (f.moves[0].file, f.moves[1].file);
+    j.state.insert(a, (MoveState::Planned, None));
+    j.state
+        .insert(b, (MoveState::Skipped, Some("stale".into())));
+    let r = f.reconcile(&mut j);
+    let fixed: Vec<FileId> = r.resolved.iter().map(|x| x.0).collect();
+    assert_eq!(fixed, vec![a, b]);
+    assert_eq!(j.of(a), MoveState::Quarantined);
+    assert_eq!(j.of(b), MoveState::Quarantined);
+    assert!(f.q(&f.moves[0]).is_file() && !f.src(&f.moves[0]).exists());
+    // Nothing was moved by reconciling; a second pass finds nothing to do.
+    assert!(f.reconcile(&mut j).resolved.is_empty());
+    let u = f.undo(&mut j, &|_| true);
+    assert_eq!(u.restored, 3, "{:?}", u.conflicts);
+    assert_eq!(snapshot_outside_quarantine(&f.root), before);
+    // A lost undo commit: the catalog says quarantined, the file is home and the JSON journal says restored.
+    let mut j2 = MemJournal::default();
+    let g = Fixture::new("q-lost-undo", THREE);
+    assert_eq!(g.run(&mut j2, &NoQuarantineHooks).moved, 3);
+    assert_eq!(g.undo(&mut j2, &|_| true).restored, 3);
+    let c = g.moves[2].file;
+    j2.state.insert(c, (MoveState::Quarantined, None));
+    let r = g.reconcile(&mut j2);
+    assert_eq!(r.resolved.len(), 1);
+    assert_eq!(j2.of(c), MoveState::Restored);
+}
+
+/// A file of the right size is not enough: reconcile re-hashes before deciding where a file is. An
+/// interrupted undo whose original path now holds another file of the same size (and whose quarantined file
+/// is gone) is not marked restored.
+#[test]
+fn reconcile_compares_content_not_only_size() {
+    let f = Fixture::new("q-reconcile-hash", THREE);
+    let mut j = MemJournal::default();
+    assert_eq!(f.run(&mut j, &NoQuarantineHooks).moved, 3);
+    let m = &f.moves[0];
+    // Undo intent journaled, then the crash; meanwhile the quarantined file was moved away by someone and a
+    // same-size impostor sits at the original path.
+    j.state.insert(m.file, (MoveState::Restoring, None));
+    fs::rename(f.q(m), f._dir.path().join("elsewhere")).unwrap();
+    let mut impostor = fs::read(f._dir.path().join("elsewhere")).unwrap();
+    impostor[0] ^= 0xff;
+    fs::write(f.src(m), &impostor).unwrap();
+    f.reconcile(&mut j);
+    assert_eq!(
+        j.of(m.file),
+        MoveState::Quarantined,
+        "never restored onto another file's bytes"
+    );
+    assert_eq!(
+        fs::read(f.src(m)).unwrap(),
+        impostor,
+        "the impostor is untouched"
+    );
+    // An interrupted move whose quarantine path holds a same-size impostor while the file is still home:
+    // the rename never happened.
+    let n = &f.moves[1];
+    fs::rename(f.q(n), f.src(n)).unwrap();
+    let mut other = fs::read(f.src(n)).unwrap();
+    other[1] ^= 0xff;
+    fs::write(f.q(n), &other).unwrap();
+    j.state.insert(n.file, (MoveState::Moving, None));
+    f.reconcile(&mut j);
+    assert_eq!(j.of(n.file), MoveState::Planned);
+}
