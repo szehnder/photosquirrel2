@@ -77,6 +77,8 @@ jobs:
             best=""; echo "::warning title=bench baseline::the base has no --best-of; measured once"; fi
           cargo xtask bench --ci --update-baseline $best
           test -s perf-baseline.json || { echo "::error title=bench baseline::the base wrote no perf-baseline.json"; exit 1; }
+          jq -e '.values | length > 0' perf-baseline.json >/dev/null \
+            || { echo "::error title=bench baseline::the base measured no budget"; exit 1; }
           cp perf-baseline.json "$GITHUB_WORKSPACE/perf-baseline-ci.json"
           # The base checkout is newer on disk than the head's sources, and cargo fingerprints path crates by
           # mtime: touch every tracked file of the head (sources, manifests and include_str!/include_bytes!
