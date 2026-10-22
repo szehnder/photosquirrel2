@@ -32,7 +32,12 @@
 
 ## 6. Verification
 
-- [ ] 6.1 `cargo xtask ci` is green
-- [ ] 6.2 Gate: move + undo round trip proven on the small and medium corpora (tree snapshots equal)
-- [ ] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
-- [ ] 6.4 `openspec validate quarantine-cleanup --strict` passes
+- [x] 6.1 `cargo xtask ci` is green (clean worktree at the UI commit)
+- [x] 6.2 Gate: move + undo round trip proven on the small and medium corpora (tree snapshots equal)
+  (Release CLI, seed 42, all three drives scanned and exported (lightroom), then per drive: `cleanup plan`, `cleanup run --yes`,
+  `report`, `cleanup undo --yes`, snapshot of every folder and file hash outside the quarantine folder. Small: 217/193/162 files
+  moved, 0 skipped, 0 conflicts, snapshots equal (405/511/366 entries). Medium: 3,041/2,635/2,965 files (2.0/1.8/1.8 GB) moved
+  in 161/99/94 s, 0 skipped, 0 conflicts, snapshots equal (4,805/4,599/4,302 entries); the report showed them quarantined with
+  0 pending, and a rescan after the undos found 0 missing, 0 quarantined, fully accounted for.)
+- [x] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
+- [x] 6.4 `openspec validate quarantine-cleanup --strict` passes
