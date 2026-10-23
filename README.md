@@ -224,5 +224,6 @@ to the workspace `Cargo.toml` and run `cargo build --profile dist -p photosquirr
 the small program that mounts the image. PhotoSquirrel ships the build pinned in
 [`packaging/linux/appimage-runtime.toml`](packaging/linux/appimage-runtime.toml); it contains musl, squashfuse, zstd,
 zlib and libfuse 3.15.0, which is LGPL-2.1 and linked statically. Every release attaches the libfuse source the
-runtime was built from (`fuse-3.15.0.tar.xz`) and the patch the runtime applies to it, and the AppImage's
-`THIRD-PARTY-LICENSES` lists each component with its licence.
+runtime was built from (`fuse-3.15.0.tar.xz`) and the patch the runtime applies to it, and, to relink the runtime
+against a modified libfuse, the source of the runtime itself (`type2-runtime-dd6cebe.tar`) and of squashfuse
+(`squashfuse-0.5.2.tar.gz`). The AppImage's `THIRD-PARTY-LICENSES` lists each component with its licence.

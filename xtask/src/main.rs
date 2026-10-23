@@ -50,6 +50,12 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         runs: u32,
     },
+    /// Fetch and check the AppImage runtime's pinned source archives into a folder (the release attaches them).
+    RuntimeSources {
+        /// The folder to write them to.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Check crate layering rules (ADR-0003).
     Layering,
     /// Check UI code uses design tokens instead of raw colours/sizes (ADR-0028).
@@ -123,6 +129,7 @@ fn main() -> Result<()> {
             },
         ),
         Cmd::Timing { runs } => timing::run(&root, runs),
+        Cmd::RuntimeSources { out } => package::runtime_sources(&root, &out),
         Cmd::Layering => layering::check(&root),
         Cmd::Tokens => tokens::check(&root),
         Cmd::SpecCoverage { enforce } => spec_coverage::run(&root, enforce),

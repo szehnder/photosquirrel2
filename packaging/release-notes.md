@@ -23,9 +23,10 @@ copy, unpack both, point the workspace at your copy with `[patch.crates-io]` and
 `cargo build --profile dist`; `THIRD-PARTY-LICENSES` has the details.
 
 The Linux AppImage also starts with the AppImage runtime (the program that mounts the image), which links libfuse
-(LGPL-2.1) statically, together with musl, squashfuse, zstd and zlib. The libfuse source it was built from and the
-patch the runtime applies to it are attached to this release ({{runtime_sources}}); the AppImage's
-`THIRD-PARTY-LICENSES` names every component of the runtime with its version and licence.
+(LGPL-2.1) statically, together with musl, squashfuse, zstd and zlib. Attached to this release
+({{runtime_sources}}): the libfuse source it was built from and the patch the runtime applies to it, and, to relink
+the runtime against a modified libfuse, the source of the runtime itself and of squashfuse. The AppImage's
+`THIRD-PARTY-LICENSES` names every component of the runtime with its version and licence and says how to relink.
 
 ### First launch
 

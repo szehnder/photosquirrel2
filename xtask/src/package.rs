@@ -551,14 +551,46 @@ pub struct PinnedAppRun {
     pub body: String,
 }
 
+/// A source archive the release attaches: a byte-stable download (`url`: an upstream release file), or, for code
+/// published only as a git repository, a `git archive` of a pinned commit whose tree hash is checked (ADR-0077).
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PinnedSource {
+    /// The `[[component]]` whose source this is.
     pub name: String,
     pub version: String,
     /// The file name the release attaches it under.
     pub file: String,
-    pub url: String,
+    /// A release file that never changes once published.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// The repository a `git archive` is made from, with `commit` and `tree`.
+    #[serde(default)]
+    pub git: Option<String>,
+    #[serde(default)]
+    pub commit: Option<String>,
+    /// The commit's tree hash: what the archive must contain, whatever git version writes it.
+    #[serde(default)]
+    pub tree: Option<String>,
+    /// SHA-256 of the attached file.
     pub sha256: String,
+}
+
+impl PinnedSource {
+    /// Where the source is published: the download URL, or the repository's tree at the commit.
+    pub fn location(&self) -> String {
+        match (&self.url, &self.git, &self.commit) {
+            (Some(url), _, _) => url.clone(),
+            (None, Some(git), Some(commit)) => {
+                format!("{}/tree/{commit}", git.trim_end_matches(".git"))
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// The directory a `git archive` puts every file under: the file name without `.tar`.
+    pub fn archive_prefix(&self) -> String {
+        format!("{}/", self.file.trim_end_matches(".tar"))
+    }
 }
 
 impl RuntimePin {
@@ -572,6 +604,45 @@ impl RuntimePin {
         for sum in sums {
             if !hex(sum) {
                 bail!("{RUNTIME_PIN}: {sum:?} is not a SHA-256");
+            }
+        }
+        let git_hash = |s: &Option<String>| {
+            s.as_deref()
+                .is_some_and(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        };
+        for s in &pin.sources {
+            match (&s.url, &s.git) {
+                (Some(_), None) if s.commit.is_none() && s.tree.is_none() => {}
+                (None, Some(_)) => {
+                    if !git_hash(&s.commit) || !git_hash(&s.tree) {
+                        bail!(
+                            "{RUNTIME_PIN}: the git [[source]] {} needs a full `commit` and `tree` hash",
+                            s.file
+                        );
+                    }
+                    if !s.file.ends_with(".tar") {
+                        bail!(
+                            "{RUNTIME_PIN}: the git [[source]] {} must be an uncompressed .tar",
+                            s.file
+                        );
+                    }
+                }
+                _ => bail!(
+                    "{RUNTIME_PIN}: the [[source]] {} needs either `url` or `git`, `commit` and `tree`",
+                    s.file
+                ),
+            }
+            if !pin
+                .components
+                .iter()
+                .any(|c| c.name == s.name && c.version == s.version)
+            {
+                bail!(
+                    "{RUNTIME_PIN}: the [[source]] {} is for {} {}, which is not a [[component]]",
+                    s.file,
+                    s.name,
+                    s.version
+                );
             }
         }
         for c in pin
@@ -790,7 +861,7 @@ pub fn render_runtime_section(version: &str, pin: &RuntimePin) -> String {
             c.title, c.version, c.licence
         ));
         for s in &sources {
-            out.push_str(&format!("  {}\n", s.url));
+            out.push_str(&format!("  {}\n", s.location()));
         }
         out.push_str(&format!(
             "  the GitHub Release of PhotoSquirrel {version} also carries {}.\n\
@@ -803,6 +874,40 @@ pub fn render_runtime_section(version: &str, pin: &RuntimePin) -> String {
                 .join(" and "),
             pin.runtime.commit
         ));
+        // The rest of the program that links it: what relinking against a modified copy needs.
+        let rest: Vec<&PinnedSource> = pin
+            .sources
+            .iter()
+            .filter(|s| {
+                pin.components
+                    .iter()
+                    .any(|o| o.name == s.name && o.version == s.version && o.name != c.name)
+            })
+            .collect();
+        if !rest.is_empty() {
+            out.push_str(&format!(
+                "- To relink the runtime against a modified {}: the source of the code linked with it, which the\n  \
+                 GitHub Release of PhotoSquirrel {version} also carries:\n",
+                c.title
+            ));
+            for s in &rest {
+                let title = pin
+                    .components
+                    .iter()
+                    .find(|o| o.name == s.name)
+                    .map_or(s.name.as_str(), |o| o.title.as_str());
+                out.push_str(&format!(
+                    "  {title} {}: {} ({})\n",
+                    s.version,
+                    s.file,
+                    s.location()
+                ));
+            }
+            out.push_str(
+                "  Unpack them with the libfuse source, apply the patch, and build with the runtime's scripts\n  \
+                 (scripts/common/install-dependencies.sh, then scripts/build-runtime.sh) using your libfuse.\n",
+            );
+        }
     }
     out.push_str("The licence texts follow the other notices at the end of this file.\n\n");
     out
@@ -1084,6 +1189,103 @@ fn fetch_pinned(path: &Path, url: &str, sha256: &str) -> Result<PathBuf> {
     }
     set_executable(path)?;
     Ok(path.to_path_buf())
+}
+
+/// `cargo xtask runtime-sources --out <dir>`: every `[[source]]` of the AppImage runtime pin in `out`, each checked
+/// against its SHA-256 (and a git source against its tree hash first). The release attaches them (ADR-0073,
+/// ADR-0077).
+pub fn runtime_sources(root: &Path, out: &Path) -> Result<()> {
+    let pin = RuntimePin::parse(&fs::read_to_string(root.join(RUNTIME_PIN))?)?;
+    if pin.sources.is_empty() {
+        bail!("{RUNTIME_PIN} lists no [[source]]");
+    }
+    fs::create_dir_all(out)?;
+    // Absolute: git runs in the scratch repository.
+    let out = &std::env::current_dir()?.join(out);
+    let work = crate::temp_dir(root)?.join(format!("runtime-sources-{}", std::process::id()));
+    for s in &pin.sources {
+        let path = out.join(&s.file);
+        if let Some(url) = &s.url {
+            eprintln!("downloading {url}");
+            let bytes = ureq::get(url)
+                .call()
+                .with_context(|| format!("downloading {url}"))?
+                .into_body()
+                .with_config()
+                .limit(64 << 20)
+                .read_to_vec()
+                .with_context(|| format!("reading {url}"))?;
+            check_source_sha256(s, &bytes)?;
+            fs::write(&path, &bytes)?;
+        } else {
+            fs::remove_dir_all(&work).ok();
+            let made = git_archive(s, &work, &path);
+            fs::remove_dir_all(&work).ok();
+            made?;
+        }
+        eprintln!("{}: SHA-256 {} as pinned", s.file, s.sha256);
+    }
+    Ok(())
+}
+
+fn check_source_sha256(s: &PinnedSource, bytes: &[u8]) -> Result<()> {
+    let found = sha256_hex(bytes);
+    if found != s.sha256 {
+        bail!(
+            "{} has SHA-256 {found}, but {RUNTIME_PIN} pins {}: review the upstream change and update the pin",
+            s.file,
+            s.sha256
+        );
+    }
+    Ok(())
+}
+
+/// A deterministic `git archive` of a git `[[source]]` into `path`, made in the scratch repository `work`: the
+/// commit is fetched by hash, its tree must be the pinned tree, and the tar (uncompressed, fixed umask and line
+/// endings, mtimes from the commit) must have the pinned SHA-256.
+fn git_archive(s: &PinnedSource, work: &Path, path: &Path) -> Result<()> {
+    let (Some(repo), Some(commit), Some(tree)) = (&s.git, &s.commit, &s.tree) else {
+        bail!("{}: not a git [[source]]", s.file);
+    };
+    fs::create_dir_all(work)?;
+    let git = |args: &[&str]| -> Result<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(work)
+            .args(["-c", "core.autocrlf=false", "-c", "tar.umask=0002"])
+            .args(args)
+            .output()
+            .context("running git")?;
+        if !out.status.success() {
+            bail!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    git(&["init", "-q"])?;
+    eprintln!("fetching {repo} at {commit}");
+    git(&["fetch", "-q", "--depth", "1", repo, commit])?;
+    let found = git(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+    if &found != tree {
+        bail!(
+            "{repo} commit {commit} has tree {found}, but {RUNTIME_PIN} pins {tree} for {}",
+            s.file
+        );
+    }
+    let prefix = format!("--prefix={}", s.archive_prefix());
+    let output = format!("--output={}", path.display());
+    git(&["archive", "--format=tar", &prefix, &output, commit])?;
+    let bytes = fs::read(path)?;
+    if let Err(e) = check_source_sha256(s, &bytes) {
+        fs::remove_file(path).ok();
+        bail!(
+            "{e:#} (its tree is the pinned {tree}: this git wrote the same files in a different tar layout)"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1682,7 +1884,7 @@ mod tests {
             .collect();
         assert_eq!(creates.len(), 1, "{creates:?}");
         let release = text.split("\n  release:\n").nth(1).expect("release job");
-        assert!(release.contains("needs: package"));
+        assert!(release.contains("needs: [package, runtime-sources]"));
         // Publishing needs a pushed tag: a manual run from a tag ref is still a dry run.
         assert!(
             release.contains(
@@ -1963,6 +2165,12 @@ mod tests {
             "AppImageKit AppRun launcher (MIT)",
             "https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz",
             "fuse-3.15.0.tar.xz and libfuse-3.15.0-type2-runtime-mount.c.diff",
+            // What relinking against a modified libfuse needs: the rest of the program, attached too.
+            "To relink the runtime against a modified libfuse",
+            "AppImage type2-runtime dd6cebe: type2-runtime-dd6cebe.tar \
+             (https://github.com/AppImage/type2-runtime/tree/dd6cebedcbddde9c82f89b011e8e1d40b6e43868)",
+            "squashfuse 0.5.2: squashfuse-0.5.2.tar.gz \
+             (https://github.com/vasi/squashfuse/releases/download/0.5.2/squashfuse-0.5.2.tar.gz)",
             "concerns the AppImage package only",
             // The licence texts themselves.
             "GNU LESSER GENERAL PUBLIC LICENSE",
@@ -1995,15 +2203,32 @@ mod tests {
     #[test]
     fn scenario_release_packaging_release_attaches_the_appimage_runtime_lgpl_source() {
         let workflow = release_workflow();
+        // A read-only job fetches and checks the pinned sources with xtask; the publishing job compiles nothing.
+        let fetch = workflow
+            .split("\n  runtime-sources:\n")
+            .nth(1)
+            .and_then(|j| j.split("\n  release:\n").next())
+            .expect("runtime-sources job");
+        assert!(fetch.contains("cargo xtask runtime-sources --out runtime-source"));
+        assert!(fetch.contains("name: runtime-source"));
+        assert!(
+            !fetch.contains("permissions:"),
+            "the fetch job is read-only"
+        );
         let release = workflow
             .split("\n  release:\n")
             .nth(1)
             .expect("release job");
+        assert!(release.contains("needs: [package, runtime-sources]"));
+        assert!(
+            !release.contains("cargo "),
+            "the publishing job compiles nothing"
+        );
         for needle in [
+            "name: runtime-source\n          path: packages/runtime-source",
             "packaging/linux/appimage-runtime.toml",
             "tomllib",
             "pin[\"source\"]",
-            "curl -fsSL --retry 3",
             "sha256sum -c",
             "packages/runtime-source/*",
         ] {
@@ -2022,11 +2247,209 @@ mod tests {
         assert!(upload.contains("packages/runtime-source/*"));
         // The step fails without a pinned source.
         assert!(release.contains("lists no [[source]]"));
+        // The pin attaches, besides libfuse, the source of the program that links it and of squashfuse, so the
+        // runtime can be relinked: the runtime at its pinned commit and squashfuse at its component version.
+        let pin = RuntimePin::load(&root()).expect("pin");
+        let runtime = pin
+            .sources
+            .iter()
+            .find(|s| s.name == "runtime")
+            .expect("runtime source");
+        assert_eq!(runtime.commit.as_deref(), Some(pin.runtime.commit.as_str()));
+        assert_eq!(runtime.version, pin.short_commit());
+        assert!(runtime.tree.is_some() && runtime.url.is_none());
+        let squashfuse = pin
+            .sources
+            .iter()
+            .find(|s| s.name == "squashfuse")
+            .expect("squashfuse source");
+        let component = pin
+            .components
+            .iter()
+            .find(|c| c.name == "squashfuse")
+            .expect("squashfuse");
+        assert_eq!(squashfuse.version, component.version);
+        // An upstream release file, never a generated tag archive (`/archive/`), whose bytes are not promised.
+        for s in &pin.sources {
+            if let Some(url) = &s.url {
+                assert!(
+                    url.contains("/releases/download/")
+                        || url.contains("raw.githubusercontent.com"),
+                    "{url}"
+                );
+                assert!(!url.contains("/archive/"), "{url}");
+            }
+        }
         // Every pinned source is reachable from the notes and README.
         let notes = fs::read_to_string(root().join("packaging/release-notes.md")).expect("notes");
         assert!(notes.contains("AppImage runtime") && notes.contains("{{runtime_sources}}"));
+        assert!(notes.contains("relink") && notes.contains("squashfuse"));
         let readme = fs::read_to_string(root().join("README.md")).expect("README");
         assert!(readme.contains("AppImage runtime") && readme.contains("libfuse"));
+        for s in &pin.sources {
+            if s.name != "libfuse" || s.file.ends_with(".tar.xz") {
+                assert!(
+                    readme.contains(&format!("`{}`", s.file)),
+                    "README lacks {}",
+                    s.file
+                );
+            }
+        }
+    }
+
+    /// The pin rejects a source that is neither a download nor a fully pinned git archive, or belongs to no component.
+    #[test]
+    fn runtime_pin_sources_are_byte_stable() {
+        let text = fs::read_to_string(root().join(RUNTIME_PIN)).expect("pin");
+        let mut pin = RuntimePin::parse(&text).expect("pin");
+        assert!(
+            pin.sources
+                .iter()
+                .all(|s| s.url.is_some() != s.git.is_some())
+        );
+        let commit = "dd6cebedcbddde9c82f89b011e8e1d40b6e43868";
+        let tree = "c7cdda89406bda7e04456dd5df8801e42d811ccb";
+        let git = |extra: &str| {
+            format!(
+                "{text}\n[[source]]\nname = \"runtime\"\nversion = \"dd6cebe\"\nfile = \"x.tar\"\n\
+                 git = \"https://example.invalid/r\"\nsha256 = \"{}\"\n{extra}",
+                "0".repeat(64)
+            )
+        };
+        RuntimePin::parse(&git(&format!("commit = \"{commit}\"\ntree = \"{tree}\"\n")))
+            .expect("valid");
+        for (extra, needle) in [
+            (format!("commit = \"{commit}\"\n"), "`commit` and `tree`"),
+            (
+                format!("commit = \"dd6cebe\"\ntree = \"{tree}\"\n"),
+                "`commit` and `tree`",
+            ),
+            (
+                format!("commit = \"{commit}\"\ntree = \"{tree}\"\nurl = \"https://x\"\n"),
+                "either `url` or",
+            ),
+        ] {
+            let err = RuntimePin::parse(&git(&extra))
+                .expect_err(&extra)
+                .to_string();
+            assert!(err.contains(needle), "{extra}: {err}");
+        }
+        let gz = git(&format!("commit = \"{commit}\"\ntree = \"{tree}\"\n"))
+            .replace("\"x.tar\"", "\"x.tar.gz\"");
+        assert!(
+            RuntimePin::parse(&gz)
+                .expect_err("compressed")
+                .to_string()
+                .contains(".tar")
+        );
+        let stray = text.replace(
+            "name = \"squashfuse\"\nversion = \"0.5.2\"\nfile",
+            "name = \"squashfuse\"\nversion = \"0.5.1\"\nfile",
+        );
+        assert_ne!(stray, text);
+        let err = RuntimePin::parse(&stray)
+            .expect_err("no such component")
+            .to_string();
+        assert!(err.contains("not a [[component]]"), "{err}");
+        pin.sources.retain(|s| s.git.is_some());
+        assert_eq!(pin.sources[0].archive_prefix(), "type2-runtime-dd6cebe/");
+    }
+
+    /// A git source is archived deterministically from its pinned commit: the same bytes every time, refused when
+    /// the commit's tree or the archive's hash is not the pinned one.
+    #[test]
+    fn git_source_archive_is_deterministic_and_checked() {
+        let base = crate::temp_dir(&root())
+            .expect("tmp")
+            .join(format!("git-source-{}", std::process::id()));
+        fs::remove_dir_all(&base).ok();
+        let repo = base.join("repo");
+        fs::create_dir_all(repo.join("src")).expect("repo");
+        fs::write(repo.join("src/a.c"), "int main(void) { return 0; }\r\n").expect("file");
+        fs::write(repo.join("README"), "x\n").expect("file");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2025-11-08T00:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2025-11-08T00:00:00Z")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        git(&["add", "."]);
+        git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", "c"]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        let tree = git(&["rev-parse", "HEAD^{tree}"]);
+        let mut source = PinnedSource {
+            name: "runtime".into(),
+            version: "x".into(),
+            file: "r-x.tar".into(),
+            url: None,
+            git: Some(format!("file://{}", repo.display())),
+            commit: Some(commit),
+            tree: Some(tree.clone()),
+            sha256: "0".repeat(64),
+        };
+        let out = base.join("out.tar");
+        // The wrong hash: refused, and nothing is left behind; the error names the tree as checked.
+        let err = git_archive(&source, &base.join("w1"), &out)
+            .expect_err("hash")
+            .to_string();
+        assert!(err.contains("pins 0000") && err.contains(&tree), "{err}");
+        assert!(!out.exists());
+        // Learn the archive's hash from the refusal, pin it, then archive twice: byte-identical, prefixed, with the
+        // file's own line endings.
+        let probe = PinnedSource {
+            sha256: "f".repeat(64),
+            ..source.clone()
+        };
+        let err = git_archive(&probe, &base.join("w2"), &out)
+            .expect_err("probe")
+            .to_string();
+        source.sha256 = err
+            .split("has SHA-256 ")
+            .nth(1)
+            .and_then(|r| r.split(',').next())
+            .expect("the found hash")
+            .to_owned();
+        git_archive(&source, &base.join("w3"), &out).expect("pinned archive");
+        let first = fs::read(&out).expect("tar");
+        fs::remove_file(&out).expect("rm");
+        git_archive(&source, &base.join("w4"), &out).expect("again");
+        assert_eq!(
+            fs::read(&out).expect("tar"),
+            first,
+            "the archive is byte-stable"
+        );
+        let names = String::from_utf8_lossy(&first);
+        assert!(
+            names.contains("r-x/src/a.c") && names.contains("\r\n"),
+            "prefix and line endings kept"
+        );
+        // The wrong tree: refused before archiving.
+        let wrong = PinnedSource {
+            tree: Some("1".repeat(40)),
+            ..source.clone()
+        };
+        let err = git_archive(&wrong, &base.join("w5"), &base.join("o2.tar"))
+            .expect_err("tree")
+            .to_string();
+        assert!(err.contains(&format!("has tree {tree}")), "{err}");
+        assert!(!base.join("o2.tar").exists());
+        fs::remove_dir_all(&base).ok();
     }
 
     /// Run `packaging/merge-lgpl-sources.sh` over `lists` (platform, contents; `None` leaves the file out).

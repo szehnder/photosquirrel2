@@ -68,9 +68,27 @@ jobs:
           path: target/packages/*
           if-no-files-found: error
 
+  # The AppImage runtime's source archives (ADR-0073, ADR-0077), fetched and checked by xtask in a read-only job so
+  # the job that can publish compiles nothing.
+  runtime-sources:
+    name: AppImage runtime sources
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - name: Fetch and check the pinned sources
+        run: cargo xtask runtime-sources --out runtime-source
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runtime-source
+          path: runtime-source/*
+          if-no-files-found: error
+
   release:
     name: Check and publish the release
-    needs: package
+    needs: [package, runtime-sources]
     runs-on: ubuntu-24.04
     # The only write permission: creating the release.
     permissions:
@@ -84,6 +102,10 @@ jobs:
           path: packages
           pattern: packages-*
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: runtime-source
+          path: packages/runtime-source
       - name: Check the packages and their checksums
         working-directory: packages
         run: |
@@ -115,20 +137,20 @@ jobs:
             echo "::error::expected the source of $expected LGPL components, found $found"; exit 1
           fi
       # The AppImage starts with the AppImage runtime, which links libfuse (LGPL-2.1) statically. The release
-      # carries the source the pinned runtime was built from, checked against the pin (ADR-0073).
-      - name: Attach the source of the AppImage runtime's LGPL component
+      # carries the source the pinned runtime was built from and the source of the code linked with libfuse
+      # (the runtime itself and squashfuse), for relinking. The runtime-sources job made them; every file is
+      # checked again here against the pin (ADR-0073, ADR-0077).
+      - name: Attach the source of the AppImage runtime
         run: |
           python3 - > runtime-sources.txt <<'EOF'
           import tomllib
           with open("packaging/linux/appimage-runtime.toml", "rb") as f:
               pin = tomllib.load(f)
           for s in pin["source"]:
-              print(s["file"], s["url"], s["sha256"])
+              print(s["file"], s["sha256"])
           EOF
           test -s runtime-sources.txt || { echo "::error::the AppImage runtime pin lists no [[source]]"; exit 1; }
-          mkdir -p packages/runtime-source
-          while read -r file url sum; do
-            curl -fsSL --retry 3 -o "packages/runtime-source/$file" "$url"
+          while read -r file sum; do
             (cd packages/runtime-source && echo "$sum  $file" | sha256sum -c)
           done < runtime-sources.txt
           if [ "$(ls packages/runtime-source | wc -l)" -ne "$(wc -l < runtime-sources.txt)" ]; then

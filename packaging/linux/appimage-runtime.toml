@@ -79,8 +79,12 @@ licence = "MIT"
 text = "apprun.txt"
 upstream = "https://github.com/AppImage/AppImageKit"
 
-# Source the release attaches for the LGPL component (libfuse, LGPL-2.1): the upstream release the runtime was
-# built from and the patch type2-runtime applies to it before building.
+# Sources the release attaches (`cargo xtask runtime-sources`, ADR-0077). For the LGPL component (libfuse,
+# LGPL-2.1): the upstream release the runtime was built from and the patch type2-runtime applies to it. For
+# relinking the runtime against a modified libfuse: the source of the program that links it (type2-runtime) and of
+# squashfuse, linked with it. Each is byte-stable: an upstream release file (`url`), or, for type2-runtime, which
+# publishes no source archive, a `git archive --format=tar` of the pinned commit, made by xtask after checking the
+# commit's tree hash (`git`, `commit`, `tree`).
 [[source]]
 name = "libfuse"
 version = "3.15.0"
@@ -94,3 +98,21 @@ version = "3.15.0"
 file = "libfuse-3.15.0-type2-runtime-mount.c.diff"
 url = "https://raw.githubusercontent.com/AppImage/type2-runtime/dd6cebedcbddde9c82f89b011e8e1d40b6e43868/patches/libfuse/mount.c.diff"
 sha256 = "1c7fd9e26717545a476b226b083a9f9d05676c180edbd71a04bbd8a73599dc44"
+
+[[source]]
+name = "runtime"
+version = "dd6cebe"
+file = "type2-runtime-dd6cebe.tar"
+git = "https://github.com/AppImage/type2-runtime"
+commit = "dd6cebedcbddde9c82f89b011e8e1d40b6e43868"
+tree = "c7cdda89406bda7e04456dd5df8801e42d811ccb"
+sha256 = "aeb37c5f3c9f8b4a6b1c455f9e80ab1d63f6a3842b8947b4a36d0740522e53b3"
+
+# squashfuse's release file for the 0.5.2 tag (`make dist`). type2-runtime builds from GitHub's generated archive of
+# that tag, which holds the same sources without the generated build files, but whose bytes GitHub does not promise.
+[[source]]
+name = "squashfuse"
+version = "0.5.2"
+file = "squashfuse-0.5.2.tar.gz"
+url = "https://github.com/vasi/squashfuse/releases/download/0.5.2/squashfuse-0.5.2.tar.gz"
+sha256 = "54e4baaa20796e86a214a1f62bab07c7c361fb7a598375576d585712691178f5"
