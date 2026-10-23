@@ -62,7 +62,8 @@ jobs:
       # and from each other, so CI measures the base commit (the PR base, or the previous main) on this same
       # runner first, then checks the head for relative regressions (>15%) only, without app (window) budgets.
       # The base is measured best-of-3, the same policy the head gets for a suspected regression, so a noisy-high
-      # base cannot hide one. A base that produces no baseline file fails the job: comparing with nothing is not
+      # base cannot hide one; budgets with `ci_runs` (control latency) are measured that often and compared by
+      # their medians instead (ADR-0078). A base that produces no baseline file fails the job: comparing with nothing is not
       # a pass. Budgets the base has no value for (new in the head) are listed as warnings.
       - name: Measure the base commit
         env:

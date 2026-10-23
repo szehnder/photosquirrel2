@@ -83,6 +83,23 @@ file fails the job; a budget the base has no value for (one new in the head) is 
 head is built, every tracked file is touched, so `include_str!` inputs are rebuilt too. The committed
 `perf-baseline.json` is never compared with runner numbers.
 
+`control-latency-p95` sets `ci_runs = 5` (ADR-0078). In CI it is measured five times for the base and five for the
+head, and the **medians** are compared, not the best runs; a suspected regression measures the head five more times
+and the median of all ten counts. Its single runs vary by about 25% on runners: the p95 of 20 alternating
+pause/cancel trials is, in effect, the ninth of ten cancel latencies, whose teardown (durable catalog flushes, thread
+joins) varies most. With best-of-three, one low base run failed identical code about one run in twenty. The base file
+records each run under `samples`; a base without them (measured by an older xtask) is compared by its best run, with
+a warning.
+
+Absolute numbers on a runner mean little, and the job does not fail on them. In run 39965164278,
+`scan-analysis-12mp` measured 19.0 ms against the 6.67 ms bound because that bound is for 16 hardware threads
+(150 files/s) and a runner has 4: 4.83 ms x 16 / 4 = 19.3 ms, the same for base and head. The budget test asserts
+its bound in release builds and fails there, so the job logs `(... failed)` and still uses the printed measurement.
+Only the relative check (and a missing measurement) fails the job. The same run's `replan_50k_exported_within_budget
+failed` once at 502 ms because the test still asserted ADR-0044's 500 ms after ADR-0050 raised the budget to 800 ms;
+the test now asserts 800 ms, and an xtask unit test keeps every `budget(...)` bound in a budget test equal to
+`perf-budgets.toml`.
+
 ## Budgets
 
 | Budget | Bound | ADR-0026 | Owner | Reference value |

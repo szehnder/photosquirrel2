@@ -55,6 +55,12 @@ pub struct Budget {
     pub unit: String,
     pub change: String,
     pub source: Source,
+    /// In `--ci`, measure this budget this many times, base and head alike, and compare the medians instead
+    /// of the best runs; a suspected regression measures the head this many times again and must still
+    /// regress on the median of all its runs (ADR-0078). For budgets whose single runs are too noisy on
+    /// shared runners for best-of-three (control latency).
+    #[serde(default)]
+    pub ci_runs: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +108,10 @@ pub struct Measurement {
 pub struct Baseline {
     /// Budget name → value, in the budget's unit.
     pub values: BTreeMap<String, f64>,
+    /// Budget name → every run's value, for budgets measured with [`Budget::ci_runs`] in `--ci` (their value is
+    /// the median of these). A base without them was measured best-of-n by an older xtask.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub samples: BTreeMap<String, Vec<f64>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,8 +183,35 @@ pub fn select<'a>(budgets: &'a [Budget], only: &[String], mode: Mode) -> Result<
         .collect())
 }
 
-/// How many times `--check --ci` re-measures a budget that looks regressed before it counts as one.
+/// How many times `--check --ci` re-measures a budget that looks regressed before it counts as one (budgets
+/// with [`Budget::ci_runs`] are re-measured once, `ci_runs` times).
 pub const CI_REMEASURES: usize = 2;
+
+/// How many runs a budget gets: `ci_runs` in `--ci` (at least `best_of`), otherwise `best_of` (at least one).
+pub fn runs_for(b: &Budget, mode: Mode, best_of: usize) -> usize {
+    match (mode, b.ci_runs) {
+        (Mode::Ci, Some(n)) => n.max(best_of).max(1),
+        _ => best_of.max(1),
+    }
+}
+
+/// Whether a budget's runs are summarised by their median (a `ci_runs` budget in `--ci`, compared with a base
+/// that recorded its samples) rather than their best run. A base without samples was measured best-of-n by an
+/// older xtask, so the head is compared the same way.
+pub fn uses_median(b: &Budget, mode: Mode, baseline: &Baseline, writing_base: bool) -> bool {
+    mode == Mode::Ci
+        && b.ci_runs.is_some()
+        && (writing_base || baseline.samples.contains_key(&b.name))
+}
+
+/// The value of a budget's runs: their median or their best ([`uses_median`]).
+pub fn summarise(samples: &[f64], median_of: bool) -> Option<f64> {
+    if median_of {
+        median(samples.to_vec())
+    } else {
+        samples.iter().copied().reduce(f64::min)
+    }
+}
 
 /// The selected budgets that regressed from their baseline ([`is_regression`]).
 pub fn regressed<'a>(
@@ -212,10 +249,19 @@ pub fn missing_base<'a>(budgets: &[&'a Budget], baseline: &Baseline) -> Vec<&'a 
         .collect()
 }
 
-/// Merge `measured` into `baseline`: measured budgets get their new values, the others keep theirs.
-pub fn merge_baseline(baseline: &mut Baseline, measured: &BTreeMap<String, Measurement>) {
+/// Merge `measured` into `baseline`: measured budgets get their new values, the others keep theirs. `samples`
+/// (the runs of median-summarised budgets) replace the recorded samples of those budgets.
+pub fn merge_baseline(
+    baseline: &mut Baseline,
+    measured: &BTreeMap<String, Measurement>,
+    samples: &BTreeMap<String, Vec<f64>>,
+) {
     for (name, m) in measured {
         baseline.values.insert(name.clone(), m.value);
+        baseline.samples.remove(name);
+    }
+    for (name, v) in samples {
+        baseline.samples.insert(name.clone(), v.clone());
     }
 }
 
@@ -342,8 +388,12 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
     } else {
         read_baseline(&baseline_path)?
     };
+    // Every run's value per budget; a budget's measurement is their best, or their median (ADR-0078).
+    let mut runs: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let writing_base = opts.update_baseline && !opts.check;
     for b in &selected {
-        for run in 0..opts.best_of.max(1) {
+        let n = runs_for(b, mode, opts.best_of);
+        for run in 0..n {
             let started = Instant::now();
             match measure(root, b) {
                 Ok(Some(value)) => {
@@ -357,11 +407,36 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
                         started.elapsed().as_secs_f32(),
                         if run > 0 { ", repeat" } else { "" }
                     );
-                    best_of(&mut measured, &b.name, value);
+                    runs.entry(b.name.clone()).or_default().push(value);
                 }
                 Ok(None) => eprintln!("    {:<28} no measurement printed", b.name),
                 Err(err) => eprintln!("    {:<28} failed: {err:#}", b.name),
             }
+        }
+        let by_median = uses_median(b, mode, &baseline, writing_base);
+        if let Some(value) = runs.get(&b.name).and_then(|v| summarise(v, by_median)) {
+            if n > 1 {
+                eprintln!(
+                    "    {:<28} {:>10.2} {:<3}  ({} of {} runs)",
+                    b.name,
+                    value,
+                    b.unit,
+                    if by_median { "median" } else { "best" },
+                    runs[&b.name].len()
+                );
+            }
+            measured.insert(b.name.clone(), Measurement { value });
+        }
+        if mode == Mode::Ci && b.ci_runs.is_some() && !by_median && opts.check {
+            let msg = format!(
+                "{}: the baseline has no samples (measured by an older xtask), so the head's best run is \
+                 compared with its best run, not the medians (ADR-0078)",
+                b.name
+            );
+            if std::env::var_os("GITHUB_ACTIONS").is_some() {
+                println!("::warning title=bench baseline::{msg}");
+            }
+            eprintln!("WARN {msg}");
         }
     }
 
@@ -380,11 +455,35 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         }
     }
     if opts.check && mode == Mode::Ci {
-        // Shared runners are noisy: a budget that looks regressed is measured again, and its best run counts.
-        for _ in 0..CI_REMEASURES {
+        // Shared runners are noisy: a budget that looks regressed is measured again. Its best run counts, or,
+        // for a median-summarised budget, the median of all its runs after `ci_runs` more (ADR-0078).
+        for round in 0..CI_REMEASURES {
             let suspects = regressed(&selected, &measured, &baseline);
             for b in suspects {
-                if let Ok(Some(value)) = measure(root, b) {
+                if uses_median(b, mode, &baseline, false) {
+                    if round > 0 {
+                        continue;
+                    }
+                    for _ in 0..b.ci_runs.unwrap_or(1) {
+                        if let Ok(Some(value)) = measure(root, b) {
+                            eprintln!(
+                                "    {:<28} {:>10.2} {:<3}  (re-measured)",
+                                b.name, value, b.unit
+                            );
+                            runs.entry(b.name.clone()).or_default().push(value);
+                        }
+                    }
+                    if let Some(value) = summarise(&runs[&b.name], true) {
+                        eprintln!(
+                            "    {:<28} {:>10.2} {:<3}  (median of {} runs)",
+                            b.name,
+                            value,
+                            b.unit,
+                            runs[&b.name].len()
+                        );
+                        measured.insert(b.name.clone(), Measurement { value });
+                    }
+                } else if let Ok(Some(value)) = measure(root, b) {
                     eprintln!(
                         "    {:<28} {:>10.2} {:<3}  (re-measured)",
                         b.name, value, b.unit
@@ -418,7 +517,15 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         println!("all {} budgets {scope}", measured.len());
     }
     if opts.update_baseline {
-        merge_baseline(&mut baseline, &measured);
+        let samples: BTreeMap<String, Vec<f64>> = runs
+            .into_iter()
+            .filter(|(name, _)| {
+                selected
+                    .iter()
+                    .any(|b| &b.name == name && uses_median(b, mode, &baseline, true))
+            })
+            .collect();
+        merge_baseline(&mut baseline, &measured, &samples);
         std::fs::write(
             &baseline_path,
             serde_json::to_string_pretty(&baseline)? + "\n",
@@ -557,6 +664,7 @@ mod tests {
                 test: "t".into(),
                 name: "n".into(),
             },
+            ci_runs: None,
         }
     }
 
@@ -721,6 +829,73 @@ mod tests {
         }
     }
 
+    /// ADR-0078: CI run 39965164278 (head be70eeb, documentation only) failed control latency on the best runs
+    /// (base 61.96, 53.80, 63.82 ms; head 72.23, 69.19, 68.08 ms): the base's one low run set the bar. Medians
+    /// (61.96 against 69.19 ms, 12%) pass; a real regression of 20 ms per pause or cancel still fails.
+    #[test]
+    fn ci_runs_budgets_compare_medians_and_still_catch_a_real_regression() {
+        let mut b = budget("control-latency-p95", 250.0);
+        b.ci_runs = Some(5);
+        let (base, head) = ([61.96, 53.80, 63.82], [72.23, 69.19, 68.08]);
+        let by_best = |v: &[f64]| summarise(v, false).unwrap();
+        let by_median = |v: &[f64]| summarise(v, true).unwrap();
+        assert!(
+            is_regression(&b, by_best(&base), by_best(&head)),
+            "best runs: the flake"
+        );
+        assert!(
+            !is_regression(&b, by_median(&base), by_median(&head)),
+            "medians: noise"
+        );
+        // The same base with every head run 20 ms slower (a sleep in the control path).
+        let slower: Vec<f64> = head.iter().map(|v| v + 20.0).collect();
+        assert!(is_regression(&b, by_median(&base), by_median(&slower)));
+
+        // Which runs are taken: ci_runs in --ci (at least best_of), best_of otherwise.
+        assert_eq!(runs_for(&b, Mode::Ci, 3), 5);
+        assert_eq!(runs_for(&b, Mode::Ci, 1), 5);
+        assert_eq!(runs_for(&b, Mode::Local, 1), 1);
+        assert_eq!(runs_for(&budget("x", 1.0), Mode::Ci, 3), 3);
+        // Medians only against a base that recorded its samples (an older base was measured best-of-n).
+        let mut baseline = Baseline::default();
+        baseline.values.insert(b.name.clone(), 53.80);
+        assert!(uses_median(&b, Mode::Ci, &baseline, true), "writing a base");
+        assert!(
+            !uses_median(&b, Mode::Ci, &baseline, false),
+            "an older base"
+        );
+        assert!(!uses_median(&b, Mode::Local, &baseline, true));
+        assert!(!uses_median(&budget("x", 1.0), Mode::Ci, &baseline, true));
+        merge_baseline(
+            &mut baseline,
+            &measured(&[(b.name.as_str(), 61.96)]),
+            &[(b.name.clone(), base.to_vec())].into_iter().collect(),
+        );
+        assert!(uses_median(&b, Mode::Ci, &baseline, false));
+        let json = serde_json::to_string_pretty(&baseline).unwrap();
+        let back: Baseline = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.samples[&b.name], base);
+        // A later best-of measurement of the same budget drops the stale samples.
+        merge_baseline(
+            &mut baseline,
+            &measured(&[(b.name.as_str(), 60.0)]),
+            &BTreeMap::new(),
+        );
+        assert!(baseline.samples.is_empty());
+        // The absolute bound is unchanged: 260 ms fails locally whatever the baseline holds.
+        let over = measured(&[(b.name.as_str(), 260.0)]);
+        let v = evaluate(&[&b], &over, &baseline, Mode::Local);
+        assert!(
+            v.iter().any(|v| v.0.contains("exceeds the budget of 250")),
+            "{v:?}"
+        );
+        // The workspace budget is configured so.
+        let ws = workspace_budgets();
+        let cl = ws.iter().find(|x| x.name == "control-latency-p95").unwrap();
+        assert_eq!(cl.ci_runs, Some(5));
+        assert_eq!(cl.max, 250.0);
+    }
+
     #[test]
     fn ci_remeasures_only_regressed_budgets_and_keeps_the_best_run() {
         let (a, b, c) = (budget("a", 20.0), budget("b", 20.0), budget("c", 20.0));
@@ -810,6 +985,7 @@ mod tests {
         merge_baseline(
             &mut baseline,
             &measured(&[("cold-start", 210.0), ("idle-rss", 190.0)]),
+            &BTreeMap::new(),
         );
         assert_eq!(baseline.values.len(), 11);
         assert_eq!(baseline.values["cold-start"], 210.0);
@@ -865,6 +1041,40 @@ mod tests {
             baseline.values.keys().all(|k| names.contains(&k.as_str())),
             "no stale entries"
         );
+    }
+
+    /// A budget test that asserts its own bound (`budget("<name>", value, unit, <max>)`) asserts the bound in
+    /// perf-budgets.toml: `export-replan-50k` asserted ADR-0044's 500 ms after ADR-0050 raised it to 800 ms, so
+    /// `cargo test --release` failed a re-plan of 502 ms that met the budget (CI run 39965164278).
+    #[test]
+    fn budget_tests_assert_the_bounds_in_perf_budgets() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut checked = 0;
+        for b in workspace_budgets() {
+            let Source::Test { package, test, .. } = &b.source else {
+                continue;
+            };
+            let file = root
+                .join("crates")
+                .join(package)
+                .join("tests")
+                .join(format!("{test}.rs"));
+            let text = std::fs::read_to_string(&file).unwrap();
+            let call = format!("budget(\"{}\",", b.name);
+            for at in text.match_indices(&call).map(|(i, _)| i) {
+                let args = &text[at..at + text[at..].find(");").unwrap()];
+                let max: f64 = args
+                    .rsplit(',')
+                    .next()
+                    .unwrap()
+                    .trim()
+                    .parse()
+                    .unwrap_or_else(|e| panic!("{}: bound in {args:?}: {e}", file.display()));
+                assert_eq!(max, b.max, "{}: {} asserts {max}", file.display(), b.name);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 5, "found the budget calls ({checked})");
     }
 
     #[test]

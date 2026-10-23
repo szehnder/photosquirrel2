@@ -108,6 +108,9 @@ metric = "p95"
 max = 250.0
 unit = "ms"
 change = "scanning"
+# ADR-0078: in CI, base and head are measured 5 times each and their medians compared (best-of-3 flaked on
+# identical code); a suspected regression measures the head 5 more times. The absolute bound is unchanged.
+ci_runs = 5
 source = { kind = "test", package = "ps-scan", test = "budgets", name = "scenario_scan_control_control_latency_within_budget" }
 
 # duplicate-groups (ADR-0013, ADR-0026). The scan's post-stage regroup: 1,000 new files against a grouped catalog of

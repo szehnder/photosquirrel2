@@ -81,3 +81,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0075](0075-wall-clock-budget-tests-run-alone.md) | Wall-clock budget tests run alone, in a timing pass after the other tests |
 | [0076](0076-timing-pass-shares-the-main-build-and-covers-every-crate.md) | The timing pass shares the main pass's build and covers every crate (amends 0075) |
 | [0077](0077-appimage-runtime-relinking-sources-attached.md) | The release attaches the AppImage runtime's relinking sources, all byte-stable (amends 0073) |
+| [0078](0078-control-latency-compared-by-medians-in-ci.md) | CI compares control latency by the median of five runs, not the best of three (amends 0057) |
