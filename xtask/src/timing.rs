@@ -65,6 +65,11 @@ pub const TESTS: &[TimingTest] = &[
         target: "interrupt",
         name: "scenario_cli_ctrl_c_cancels_scan",
     },
+    TimingTest {
+        package: "photosquirrel-cli",
+        target: "power",
+        name: "scenario_cli_ctrl_c_while_paused_on_battery",
+    },
 ];
 
 /// The `cargo` arguments of one timing pass: the main pass's package selection (`--workspace`), the timing tests'

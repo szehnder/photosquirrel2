@@ -13,22 +13,22 @@
 
 ## 3. CLI wiring (`photosquirrel-cli`)
 
-- [ ] 3.1 `--ignore-battery` on `ScanStartArgs` and `scan resume` in `main.rs`; `start()` builds an `Option<PowerGuard>` from the setting and the flag (verify: `scenario_cli_every_subcommand_has_help` still passes and `scan --help` lists the flag)
-- [ ] 3.2 `foreground()` ticks the guard at start and every second, never after a cancel; `pause` requests mark the pause as the user's (verify: new binary test file `crates/photosquirrel-cli/tests/power.rs`, using `PHOTOSQUIRREL_POWER_SUPPLY_DIR`: `scenario_settings_cli_scan_started_on_battery_pauses_at_once`, `scenario_settings_cli_ignore_battery_flag`)
-- [ ] 3.3 Power output: stderr transition lines, `paused on battery` in `progress_line`, `power` NDJSON lines (`PowerLine`), paused snapshots and plain lines at most every 5 s (verify: `scenario_cli_power_pause_json_lines`, `scenario_cli_paused_snapshots_throttled`, `scenario_cli_power_pause_on_stderr`, and `scenario_cli_scan_streams_json_snapshots` unchanged)
-- [ ] 3.4 Heartbeat `LiveScan` with `power_pause`; `scan status` text and JSON show it; `control_live` still parses (verify: `scenario_cli_status_shows_power_pause`; `scan pause`/`scan resume` from a second process in `tests/power.rs` still report the new status)
-- [ ] 3.5 Interrupt while paused on battery (unix, in `tests/power.rs`, serialized like `tests/interrupt.rs`) (verify: `scenario_cli_ctrl_c_while_paused_on_battery`)
+- [x] 3.1 `--ignore-battery` on `ScanStartArgs` and `scan resume` in `main.rs`; `start()` builds an `Option<PowerGuard>` from the setting and the flag (verify: `scenario_cli_every_subcommand_has_help` still passes and `scan --help` lists the flag)
+- [x] 3.2 `foreground()` ticks the guard at start and every second, never after a cancel; `pause` requests mark the pause as the user's (verify: new binary test file `crates/photosquirrel-cli/tests/power.rs`, using `PHOTOSQUIRREL_POWER_SUPPLY_DIR`: `scenario_settings_cli_scan_started_on_battery_pauses_at_once`, `scenario_settings_cli_ignore_battery_flag`)
+- [x] 3.3 Power output: stderr transition lines, `paused on battery` in `progress_line`, `power` NDJSON lines (`PowerLine`), paused snapshots and plain lines at most every 5 s (verify: `scenario_cli_power_pause_json_lines`, `scenario_cli_paused_snapshots_throttled`, `scenario_cli_power_pause_on_stderr`, and `scenario_cli_scan_streams_json_snapshots` unchanged)
+- [x] 3.4 Heartbeat `LiveScan` with `power_pause`; `scan status` text and JSON show it; `control_live` still parses (verify: `scenario_cli_status_shows_power_pause`; `scan pause`/`scan resume` from a second process in `tests/power.rs` still report the new status)
+- [x] 3.5 Interrupt while paused on battery (unix, in `tests/power.rs`, serialized like `tests/interrupt.rs`) (verify: `scenario_cli_ctrl_c_while_paused_on_battery`)
 
 ## 4. Documentation
 
-- [ ] 4.1 README CLI section: pause on battery applies to CLI scans, auto-resume, `--ignore-battery`, the `power` NDJSON line and `PHOTOSQUIRREL_POWER_SUPPLY_DIR` (verify: README diff reviewed; `cargo xtask ci` passes)
+- [x] 4.1 README CLI section: pause on battery applies to CLI scans, auto-resume, `--ignore-battery`, the `power` NDJSON line and `PHOTOSQUIRREL_POWER_SUPPLY_DIR` (verify: README diff reviewed; `cargo xtask ci` passes)
 
 ## 5. Verification
 
-- [ ] 5.1 `cargo test -p ps-service --test pause_on_battery` and `cargo test -p photosquirrel-cli --test power` pass (with `CARGO_BUILD_JOBS=4`, `--test-threads=4`, TMPDIR under `target/`)
-- [ ] 5.2 `cargo xtask spec-coverage` maps every scenario of this change
+- [x] 5.1 `cargo test -p ps-service --test pause_on_battery` and `cargo test -p photosquirrel-cli --test power` pass (with `CARGO_BUILD_JOBS=4`, `--test-threads=4`, TMPDIR under `target/`)
+- [x] 5.2 `cargo xtask spec-coverage` maps every scenario of this change
 - [ ] 5.3 `cargo xtask ci` is green
-- [ ] 5.4 `openspec validate cli-power-pause --strict` passes
+- [x] 5.4 `openspec validate cli-power-pause --strict` passes
 
 ## Workflow follow-up
 

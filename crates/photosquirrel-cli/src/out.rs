@@ -14,7 +14,7 @@ pub struct Envelope<'a, T: Serialize> {
     pub data: T,
 }
 
-/// One NDJSON line of a streaming command (`"type": "snapshot" | "summary"`).
+/// One NDJSON line of a streaming command (`"type": "snapshot" | "power" | "summary"`).
 #[derive(Serialize)]
 pub struct Line<'a, T: Serialize> {
     pub schema_version: u32,

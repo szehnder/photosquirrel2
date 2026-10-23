@@ -86,7 +86,8 @@ struct Beat<T> {
     progress: T,
 }
 
-fn now_ms() -> u64 {
+/// Milliseconds since the Unix epoch.
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)

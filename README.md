@@ -126,6 +126,17 @@ photosquirrel-cli doctor                              # version, data folder, op
 
 `photosquirrel-cli --help` and `photosquirrel-cli <command> --help` list every option.
 
+With "pause scans on battery" on (Settings, General, or `pause_on_battery = true` under `[general]` in
+`settings.toml`), a scan started from the command line pauses too when the computer switches to battery power,
+and, unlike the app, which asks, **resumes by itself** once mains power is back, so an unattended overnight scan
+finishes. A pause you asked for with `scan pause` is never resumed for you, and `scan resume` on battery keeps the
+scan going until the next unplug. Each pause and resume is one line on standard error; with `--json` it is also an
+NDJSON line `{"type": "power", "data": {"event": "paused_on_battery" | "resumed_on_mains", "run": ..., "at_ms":
+...}}`, and while a scan is paused its snapshot lines slow to one every 5 seconds. `scan status` shows a scan
+paused on battery. `--ignore-battery` on `scan`, `scan start` or `scan resume` skips the pause for that one scan.
+`PHOTOSQUIRREL_POWER_SUPPLY_DIR` points the power check at a folder laid out like Linux's
+`/sys/class/power_supply` instead of the system's own (on any platform; for testing and support).
+
 ## Freeing up space (optional)
 
 In Reports, **Free up space** appears on every drive that has files whose best copy is already in your library

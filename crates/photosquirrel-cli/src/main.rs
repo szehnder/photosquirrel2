@@ -127,6 +127,9 @@ struct ScanStartArgs {
     /// The run to resume (with `--resume`; default the latest resumable run).
     #[arg(long, requires = "resume")]
     run: Option<i64>,
+    /// Do not pause on battery power for this scan, although `general.pause_on_battery` is on.
+    #[arg(long)]
+    ignore_battery: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -137,6 +140,9 @@ enum ScanCommand {
     Resume {
         /// The run to continue (default the latest resumable run).
         run: Option<i64>,
+        /// Do not pause on battery power when this continues a run in the foreground.
+        #[arg(long)]
+        ignore_battery: bool,
     },
     /// Pause the scan running in another terminal (in-flight files finish).
     Pause,
@@ -381,9 +387,20 @@ fn run(cli: Cli) -> Result<()> {
             SourcesCommand::Remove { id, yes } => cmd::sources::remove(&ctx, id, yes),
         },
         Command::Scan(a) => match a.action {
-            None => cmd::scan::start(&ctx, &a.start.sources, a.start.resume, a.start.run),
-            Some(ScanCommand::Start(s)) => cmd::scan::start(&ctx, &s.sources, s.resume, s.run),
-            Some(ScanCommand::Resume { run }) => cmd::scan::resume(&ctx, run),
+            None => cmd::scan::start(
+                &ctx,
+                &a.start.sources,
+                a.start.resume,
+                a.start.run,
+                a.start.ignore_battery,
+            ),
+            Some(ScanCommand::Start(s)) => {
+                cmd::scan::start(&ctx, &s.sources, s.resume, s.run, s.ignore_battery)
+            }
+            Some(ScanCommand::Resume {
+                run,
+                ignore_battery,
+            }) => cmd::scan::resume(&ctx, run, ignore_battery),
             Some(ScanCommand::Pause) => cmd::scan::control(&ctx, "pause"),
             Some(ScanCommand::Cancel) => cmd::scan::control(&ctx, "cancel"),
             Some(ScanCommand::Status) => cmd::scan::status(&ctx),

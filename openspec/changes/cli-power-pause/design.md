@@ -36,7 +36,10 @@ Observed today (read from the code, nothing run):
 
 - **Extract the rule into `ps_service::power::PowerPolicy`** (public, no thread): `PowerPolicy::new(resume:
   ResumeOnMains::{Offer, Auto})`, `tick(&mut self, &ScanService, on_battery: bool) -> Option<PowerEvent>`,
-  `user_paused(run)` and `note() -> Option<PowerPause>`. `PowerEvent::{PausedOnBattery(run),
+  `user_paused(run)`, `note() -> Option<PowerPause>` and `for_cli(pause_on_battery, ignore_battery) ->
+  Option<PowerPolicy>` (the CLI's gate: `Auto` only with the setting on and no flag). `user_paused` holds the run
+  until it is no longer paused: on mains a held run's power note is dropped (the pause is the user's now) and it is
+  not resumed; a held run resumed by the user on battery counts as an override, as without the hold. `PowerEvent::{PausedOnBattery(run),
   ResumedOnMains(run), MainsBack(run)}`. `PowerWatch` keeps its thread and `Mutex<WatchState>` but delegates to a
   `PowerPolicy` with `Offer`, so `scenario_settings_scan_pauses_on_battery` keeps passing unchanged. With `Auto`,
   on mains while the note is `OnBattery(run)` and the run is still `Paused`, it calls `ScanService::resume()` and
@@ -55,7 +58,7 @@ Observed today (read from the code, nothing run):
   `pause` request calls `policy.user_paused(run)` after `svc.pause()`, so a later mains return does not resume
   it. A `resume` request on battery needs nothing new: the policy already treats a power-paused run seen running
   on battery as overridden. With `--ignore-battery` and the setting on, one stderr note is printed if the probe
-  says battery at start ("on battery power; --ignore-battery: not pausing"); with the setting off nothing is
+  says battery at start ("on battery power: ignoring it (--ignore-battery), the scan does not pause"); with the setting off nothing is
   probed.
 - **Output.** On `PausedOnBattery`: stderr (always, also with `--json`, since stderr is for humans and logs)
   `paused: this computer is on battery power (general.pause_on_battery); the scan resumes when mains power
@@ -68,8 +71,9 @@ Observed today (read from the code, nothing run):
   most every 5 s (`PAUSED_EVERY`); a paused snapshot carries no new information, and hours of 200 ms lines are
   noise. The terminal redraw is unaffected.
 - **`scan status`.** The heartbeat payload becomes `LiveScan { #[serde(flatten)] snapshot: ProgressSnapshot,
-  power_pause: Option<&'static str> }` (`"on_battery"` while noted), written by `control::beat`; `status` reads
-  `control::live::<LiveScan>` and prints `live: ... paused on battery power`; its JSON `live` object gains
+  power_pause: Option<String> }` (`"on_battery"` while noted; owned so `status` can read it back), written by
+  `control::beat`; `status` reads `control::live::<LiveScan>` and prints the progress line, which reads
+  `[<phase>, paused on battery]`; its JSON `live` object gains
   `power_pause`. `control_live` (pause/resume/cancel from another terminal) keeps reading the snapshot fields,
   which flattening leaves where they were.
 - **Ctrl-C while paused**: unchanged path (`svc.cancel()`, exit 130, `Interrupted`); a test pins it, because the
