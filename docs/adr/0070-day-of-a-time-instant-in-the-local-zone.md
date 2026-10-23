@@ -1,6 +1,6 @@
 # 0070. The day of a time instant is taken in the recorded offset, else the local zone (amends 0022)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-22
 - Deciders: maintainers
 

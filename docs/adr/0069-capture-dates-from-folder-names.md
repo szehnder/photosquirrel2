@@ -1,6 +1,6 @@
 # 0069. Capture dates from folder names, with honest precision (amends 0022, 0043)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-22
 - Deciders: maintainers
 

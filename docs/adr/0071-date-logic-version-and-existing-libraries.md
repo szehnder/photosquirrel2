@@ -1,6 +1,6 @@
 # 0071. A date-logic version re-dates catalog rows from stored facts; exported libraries keep their layout (migration 17)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-22
 - Deciders: maintainers
 
