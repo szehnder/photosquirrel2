@@ -102,8 +102,11 @@ pub struct MoveCounts {
     pub restored: u64,
     /// Moving or restoring (only between a crash and its reconciliation).
     pub in_flight: u64,
+    /// In the plan but left out by the selection (ADR-0068).
+    pub unselected: u64,
     pub planned_bytes: u64,
     pub quarantined_bytes: u64,
+    pub unselected_bytes: u64,
 }
 
 impl MoveCounts {
@@ -121,6 +124,10 @@ impl MoveCounts {
                 }
                 MoveState::Skipped => c.skipped += 1,
                 MoveState::Restored => c.restored += 1,
+                MoveState::Unselected => {
+                    c.unselected += 1;
+                    c.unselected_bytes += m.size;
+                }
                 MoveState::Moving | MoveState::Restoring => c.in_flight += 1,
             }
         }

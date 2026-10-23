@@ -386,6 +386,7 @@ fn state_label(r: &CleanupRunRow) -> &'static str {
         CleanupRunState::Running => "Running",
         CleanupRunState::Completed => "Quarantined",
         CleanupRunState::Undone => "Undone",
+        CleanupRunState::Discarded => "Discarded",
     }
 }
 

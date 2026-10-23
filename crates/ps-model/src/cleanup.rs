@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ContentId, Disposition, FileId, RelPath, SourceId};
 
-/// Where one planned move stands (catalog codes 0-5, ADR-0061; never reuse a value).
+/// Where one planned move stands (catalog codes 0-6, ADR-0061, ADR-0068; never reuse a value).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MoveState {
@@ -21,6 +21,9 @@ pub enum MoveState {
     Restoring,
     /// Back at its original path.
     Restored,
+    /// In the plan, left out by the user's selection (ADR-0068): never verified, journaled or moved while
+    /// it stays unselected; selectable again until the run ends.
+    Unselected,
 }
 
 impl MoveState {
@@ -32,6 +35,7 @@ impl MoveState {
             MoveState::Skipped => 3,
             MoveState::Restoring => 4,
             MoveState::Restored => 5,
+            MoveState::Unselected => 6,
         }
     }
 
@@ -43,6 +47,7 @@ impl MoveState {
             3 => MoveState::Skipped,
             4 => MoveState::Restoring,
             5 => MoveState::Restored,
+            6 => MoveState::Unselected,
             _ => return None,
         })
     }
@@ -60,6 +65,7 @@ impl MoveState {
             MoveState::Skipped => "skipped",
             MoveState::Restoring => "restoring",
             MoveState::Restored => "restored",
+            MoveState::Unselected => "unselected",
         }
     }
 }
@@ -76,6 +82,8 @@ pub enum CleanupRunState {
     Completed,
     /// Every quarantined file of the run was restored.
     Undone,
+    /// Dropped before it moved any file (ADR-0068): kept in the history, never run, selected or undone.
+    Discarded,
 }
 
 impl CleanupRunState {
@@ -85,6 +93,7 @@ impl CleanupRunState {
             CleanupRunState::Running => "running",
             CleanupRunState::Completed => "completed",
             CleanupRunState::Undone => "undone",
+            CleanupRunState::Discarded => "discarded",
         }
     }
 
@@ -94,6 +103,7 @@ impl CleanupRunState {
             "running" => CleanupRunState::Running,
             "completed" => CleanupRunState::Completed,
             "undone" => CleanupRunState::Undone,
+            "discarded" => CleanupRunState::Discarded,
             _ => return None,
         })
     }
@@ -145,4 +155,50 @@ pub struct CleanupRunRecord {
     pub created_at_ms: i64,
     pub started_at_ms: Option<i64>,
     pub ended_at_ms: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL_MOVES: [MoveState; 7] = [
+        MoveState::Planned,
+        MoveState::Moving,
+        MoveState::Quarantined,
+        MoveState::Skipped,
+        MoveState::Restoring,
+        MoveState::Restored,
+        MoveState::Unselected,
+    ];
+
+    #[test]
+    fn move_states_round_trip_and_keep_their_codes() {
+        // Codes are stored in catalogs: 0-5 are those of migration 14, 6 is new (ADR-0068).
+        let codes: Vec<i64> = ALL_MOVES.iter().map(|s| s.code()).collect();
+        assert_eq!(codes, vec![0, 1, 2, 3, 4, 5, 6]);
+        for s in ALL_MOVES {
+            assert_eq!(MoveState::from_code(s.code()), Some(s));
+            let json = serde_json::to_string(&s).unwrap_or_default();
+            assert_eq!(json, format!("\"{}\"", s.as_str()));
+        }
+        assert_eq!(MoveState::from_code(7), None);
+        assert_eq!(MoveState::from_code(-1), None);
+        assert!(!MoveState::Unselected.is_quarantined());
+        assert_eq!(MoveState::Unselected.as_str(), "unselected");
+    }
+
+    #[test]
+    fn run_states_round_trip() {
+        for s in [
+            CleanupRunState::Planned,
+            CleanupRunState::Running,
+            CleanupRunState::Completed,
+            CleanupRunState::Undone,
+            CleanupRunState::Discarded,
+        ] {
+            assert_eq!(CleanupRunState::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(CleanupRunState::Discarded.as_str(), "discarded");
+        assert_eq!(CleanupRunState::parse("deleted"), None);
+    }
 }

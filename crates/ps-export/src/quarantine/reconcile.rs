@@ -84,7 +84,7 @@ fn journal_events(
 ///   a later run moves it); both or neither -> `skipped` with the reason, nothing touched;
 /// - `restoring`: at its path only -> `restored`; in quarantine only -> `quarantined`; both or neither ->
 ///   `quarantined` with the reason (undo reports it again);
-/// - `planned` or `skipped` while `journal.jsonl` records an intent or a move for it (the catalog lost a
+/// - `planned`, `skipped` or `unselected` while `journal.jsonl` records an intent or a move for it (the catalog lost a
 ///   commit, e.g. on power loss): in quarantine only -> `quarantined`; anything else is left as it is;
 /// - `quarantined` while `journal.jsonl` records an undo intent or a restore for it: at its path only ->
 ///   `restored`; anything else is left as it is.
@@ -115,7 +115,9 @@ pub fn reconcile(
         );
         let suspect = match m.state {
             MoveState::Moving | MoveState::Restoring => true,
-            MoveState::Planned | MoveState::Skipped => moved_per_journal,
+            // Unselected moves are never attempted, but a catalog that lost commits may say unselected for a
+            // file the JSON journal records as moved (ADR-0068): treated like planned.
+            MoveState::Planned | MoveState::Skipped | MoveState::Unselected => moved_per_journal,
             MoveState::Quarantined => restored_per_journal,
             MoveState::Restored => false,
         };
@@ -161,7 +163,7 @@ pub fn reconcile(
                 Some("found at neither its path nor its quarantine path after an interruption".to_owned()),
                 JournalEvent::Conflict,
             ),
-            (MoveState::Planned | MoveState::Skipped, false, true) => (
+            (MoveState::Planned | MoveState::Skipped | MoveState::Unselected, false, true) => (
                 MoveState::Quarantined,
                 Some(
                     "found in quarantine as the journal file records; the catalog had lost the move".to_owned(),

@@ -727,3 +727,41 @@ fn reconcile_compares_content_not_only_size() {
     f.reconcile(&mut j);
     assert_eq!(j.of(n.file), MoveState::Planned);
 }
+
+/// A run never touches an unselected move (ADR-0068): not verified, not journaled, not renamed. And when the
+/// catalog says unselected for a file `journal.jsonl` records as moved (a lost catalog commit), reconcile
+/// adopts it as quarantined, exactly as for a planned move, so undo can restore it.
+#[test]
+fn unselected_moves_are_never_run_and_reconcile_like_planned() {
+    let f = Fixture::new("q-unselected", THREE);
+    let before = snapshot_outside_quarantine(&f.root);
+    let mut j = MemJournal::default();
+    let left_out = f.moves[1].file;
+    j.state.insert(left_out, (MoveState::Unselected, None));
+    let r = f.run(&mut j, &NoQuarantineHooks);
+    assert_eq!(r.moved, 2);
+    assert!(r.skipped.is_empty());
+    assert!(f.src(&f.moves[1]).is_file() && !f.q(&f.moves[1]).exists());
+    assert_eq!(j.of(left_out), MoveState::Unselected);
+    assert!(
+        j.history.iter().all(|(file, _)| *file != left_out),
+        "no catalog record for the unselected file"
+    );
+    let lines = quarantine::read_journal(&f.journal_path()).unwrap();
+    assert!(
+        lines.iter().all(|l| l.file != Some(left_out.0)),
+        "no journal.jsonl record for it either"
+    );
+    // A lost commit: the catalog says unselected, the JSON journal says moved and the file is in quarantine.
+    let moved = f.moves[0].file;
+    j.state.insert(moved, (MoveState::Unselected, None));
+    let rep = f.reconcile(&mut j);
+    assert_eq!(rep.resolved.len(), 1);
+    assert_eq!(rep.resolved[0].0, moved);
+    assert_eq!(j.of(moved), MoveState::Quarantined);
+    // The truly unselected file is left alone by reconciliation.
+    assert_eq!(j.of(left_out), MoveState::Unselected);
+    let u = f.undo(&mut j, &|_| true);
+    assert_eq!(u.restored, 2, "{:?}", u.conflicts);
+    assert_eq!(snapshot_outside_quarantine(&f.root), before);
+}

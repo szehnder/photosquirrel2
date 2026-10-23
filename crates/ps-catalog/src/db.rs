@@ -44,6 +44,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     CLASS_FACTS_MIGRATION,
     CLEANUP_MIGRATION,
     CLEANUP_SOURCE_MIGRATION,
+    CLEANUP_SELECTION_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -131,6 +132,13 @@ pub const CLEANUP_SOURCE_MIGRATION: Migration = Migration {
     version: 15,
     name: "cleanup_source_identity",
     sql: include_str!("../migrations/0015_cleanup_source_identity.sql"),
+};
+
+/// Migration 16 (ADR-0068: run state `discarded`, move state 6 `unselected`; both cleanup tables rebuilt).
+pub const CLEANUP_SELECTION_MIGRATION: Migration = Migration {
+    version: 16,
+    name: "cleanup_selection",
+    sql: include_str!("../migrations/0016_cleanup_selection.sql"),
 };
 
 /// `thumbs.db` migrations.

@@ -2,17 +2,17 @@
 
 ## 1. Decision, model and catalog
 
-- [ ] 1.1 ADR-0068 set to accepted once 1.3 lands and listed in `docs/adr/README.md` (verify: the index row links the file; status line reads accepted)
-- [ ] 1.2 `ps-model`: `MoveState::Unselected` (code 6, `as_str` "unselected", not `is_quarantined`) and `CleanupRunState::Discarded` ("discarded"); verify unit tests round-trip every code and string, and that codes 0-5 are unchanged
-- [ ] 1.3 Catalog migration 16 `0016_cleanup_selection.sql` (rebuild with `defer_foreign_keys`, widened CHECKs, indexes recreated) and `CLEANUP_SELECTION_MIGRATION` in `db.rs`; verify `ps-catalog/tests/cleanup_selection_migration.rs`: a version-15 catalog with runs in every state and moves in every code upgrades with all rows, both indexes and the foreign key intact (`PRAGMA foreign_key_check` empty), and accepts state `discarded` and code 6
-- [ ] 1.4 `Writer::cleanup_select_moves(run, picked)` (temp table of ids, only rows in states 0/6 change) and `Writer::cleanup_discard_run(run)` (planned -> unselected, run -> discarded with `ended_at`), both `exec_durable`; verify `ps-catalog` unit tests: moves in other states are untouched, 100k picked ids in one call, and `synchronous = FULL` is used (same check as `durable_writes_use_synchronous_full`)
+- [x] 1.1 ADR-0068 set to accepted once 1.3 lands and listed in `docs/adr/README.md` (verify: the index row links the file; status line reads accepted)
+- [x] 1.2 `ps-model`: `MoveState::Unselected` (code 6, `as_str` "unselected", not `is_quarantined`) and `CleanupRunState::Discarded` ("discarded"); verify unit tests round-trip every code and string, and that codes 0-5 are unchanged
+- [x] 1.3 Catalog migration 16 `0016_cleanup_selection.sql` (rebuild with `defer_foreign_keys`, widened CHECKs, indexes recreated) and `CLEANUP_SELECTION_MIGRATION` in `db.rs`; verify `ps-catalog/tests/cleanup_selection_migration.rs`: a version-15 catalog with runs in every state and moves in every code upgrades with all rows, both indexes and the foreign key intact (`PRAGMA foreign_key_check` empty), and accepts state `discarded` and code 6
+- [x] 1.4 `Writer::cleanup_select_moves(run, picked)` (temp table of ids, only rows in states 0/6 change) and `Writer::cleanup_discard_run(run)` (planned -> unselected, run -> discarded with `ended_at`), both `exec_durable`; verify `ps-catalog` unit tests: moves in other states are untouched, 100k picked ids in one call, and `synchronous = FULL` is used (same check as `durable_writes_use_synchronous_full`)
 
 ## 2. Service: selection
 
 - [ ] 2.1 `ps-service::cleanup::Selection` (folders, files, except_folders, except_files) replacing `UndoSelection`; `picks` unit tests for inclusion, exclusion, subtree semantics and the empty selection; verify `cargo test -p ps-service selection`
 - [ ] 2.2 `Cleanups::select(run, &Selection)` with `Operation::CleanupSelect`, reconcile first, refused unless `planned`, `EmptySelection` when nothing is picked; verify `scenario_cleanup_plan_narrowed_to_folders`, `scenario_cleanup_plan_narrowed_to_files`, `scenario_cleanup_narrowing_is_reversible_before_the_run`, `scenario_cleanup_empty_selection_refused`
 - [ ] 2.3 `MoveCounts` gains `unselected`/`unselected_bytes`; `RunSummary` and `cleanup list/show` JSON carry them; verify the narrowing scenarios assert the counts and the run's `skipped` stays 0
-- [ ] 2.4 `quarantine::reconcile` treats `Unselected` like `Planned` (suspect only when the JSON journal records a move); verify a `ps-export` test that an unselected move recorded as moved by `journal.jsonl` is adopted as quarantined
+- [x] 2.4 `quarantine::reconcile` treats `Unselected` like `Planned` (suspect only when the JSON journal records a move); verify a `ps-export` test that an unselected move recorded as moved by `journal.jsonl` is adopted as quarantined
 
 ## 3. Service: discard
 

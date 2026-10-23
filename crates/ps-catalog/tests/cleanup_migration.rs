@@ -72,7 +72,10 @@ fn cleanup_migration_upgrades_version_13() {
     // file_id has no foreign key: file 42 does not exist and the row stands.
     mv(42, 0, 0).unwrap();
     assert!(mv(42, 0, 0).is_err(), "one move per file and run");
-    assert!(mv(43, 6, 0).is_err(), "move states are checked");
+    assert!(
+        mv(43, 7, 0).is_err(),
+        "move states are checked (0-6 since migration 16)"
+    );
     assert!(
         mv(44, 0, 2).is_err(),
         "only exported or covered files are moved"

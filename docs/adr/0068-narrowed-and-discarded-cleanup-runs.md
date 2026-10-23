@@ -1,7 +1,7 @@
 # 0068. Cleanup plans are narrowed by marking moves unselected and discarded by state; no cleanup row is deleted (migration 16; amends 0061)
 
-- Status: proposed
-- Date: 2026-10-22
+- Status: accepted
+- Date: 2026-10-23
 - Deciders: maintainers
 
 ## Context
@@ -43,8 +43,9 @@ clauses, which SQLite cannot alter in place.
   a note on the move. A discarded run cannot be run, selected or undone.
 - **No cleanup row is ever deleted**, so run ids are never handed out again and reconciliation always has
   the row it needs.
-- **Catalog migration 16** rebuilds `cleanup_run` and `cleanup_move` (SQLite's documented table-rebuild
-  procedure, inside the migration transaction, keeping every row, index and the foreign key) to allow run
+- **Catalog migration 16** rebuilds `cleanup_run` and `cleanup_move` inside the migration transaction,
+  keeping every row, index and the foreign key: the old tables are renamed aside, the new ones created and
+  filled, and the old ones dropped child first, so no step leaves a move without its run to allow run
   state `discarded` and move code 6. Older builds refuse a catalog at version 16 as they refuse any newer
   catalog. If another change claims migration 16 first, this one takes the next free number; the decision
   does not depend on the number.

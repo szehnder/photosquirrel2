@@ -207,6 +207,59 @@ impl Writer {
         })
     }
 
+    /// Set a run's selection (ADR-0068): every move of `run` in state planned (0) or unselected (6) becomes
+    /// planned when `picked` names it and unselected otherwise; moves in any other state are untouched. One
+    /// durable transaction; the ids go through a temporary table, so a million of them is fine. Returns how
+    /// many moves are planned afterwards.
+    pub fn cleanup_select_moves(&self, run: i64, picked: Vec<FileId>) -> Result<u64> {
+        self.exec_durable(move |c| {
+            c.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS cleanup_pick (file_id INTEGER PRIMARY KEY) WITHOUT ROWID;
+                 DELETE FROM temp.cleanup_pick;",
+            )?;
+            {
+                let mut ins =
+                    c.prepare_cached("INSERT OR IGNORE INTO temp.cleanup_pick (file_id) VALUES (?1)")?;
+                for f in &picked {
+                    ins.execute([f.0])?;
+                }
+            }
+            c.prepare_cached(
+                "UPDATE cleanup_move
+                 SET state = CASE WHEN file_id IN (SELECT file_id FROM temp.cleanup_pick) THEN 0 ELSE 6 END,
+                     at = ?2
+                 WHERE run_id = ?1 AND state IN (0, 6)
+                   AND state <> CASE WHEN file_id IN (SELECT file_id FROM temp.cleanup_pick) THEN 0 ELSE 6 END",
+            )?
+            .execute(params![run, now_ms()])?;
+            c.execute_batch("DELETE FROM temp.cleanup_pick;")?;
+            Ok(c.prepare_cached("SELECT count(*) FROM cleanup_move WHERE run_id = ?1 AND state = 0")?
+                .query_row([run], |r| r.get::<_, i64>(0))? as u64)
+        })
+    }
+
+    /// Discard a run (ADR-0068): its planned moves become unselected and the run `discarded` with its end time,
+    /// in one durable transaction. Only a `planned` run with no move in state 1, 2, 4 or 5 changes; returns
+    /// whether it did. Touches catalog rows only.
+    pub fn cleanup_discard_run(&self, run: i64) -> Result<bool> {
+        self.exec_durable(move |c| {
+            let n = c
+                .prepare_cached(
+                    "UPDATE cleanup_run SET state = 'discarded', ended_at = ?2
+                     WHERE id = ?1 AND state = 'planned'
+                       AND NOT EXISTS (SELECT 1 FROM cleanup_move WHERE run_id = ?1 AND state IN (1, 2, 4, 5))",
+                )?
+                .execute(params![run, now_ms()])?;
+            if n == 1 {
+                c.prepare_cached(
+                    "UPDATE cleanup_move SET state = 6, at = ?2 WHERE run_id = ?1 AND state = 0",
+                )?
+                .execute(params![run, now_ms()])?;
+            }
+            Ok(n == 1)
+        })
+    }
+
     /// Set a run's state; `running` sets the start time, `completed` and `undone` the end time.
     pub fn cleanup_set_run_state(&self, run: i64, state: CleanupRunState) -> Result<()> {
         self.exec_durable(move |c| {
@@ -351,6 +404,192 @@ impl Readers {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn rel(s: &str) -> RelPath {
+        RelPath::from_bytes(s.as_bytes().to_vec()).unwrap()
+    }
+
+    fn a_move(file: i64, state: MoveState) -> CleanupMove {
+        let path = format!("DCIM/{file}.jpg");
+        CleanupMove {
+            file: FileId(file),
+            quarantine_rel_path: rel(&format!(".photosquirrel-quarantine/1/{path}")),
+            rel_path: rel(&path),
+            size: 10,
+            mtime_ns: 5,
+            file_index: None,
+            content: ContentId::full([1; 32]),
+            disposition: Disposition::Exported,
+            covering_library_path: rel("2011/x.jpg"),
+            state,
+            note: None,
+            at_ms: None,
+        }
+    }
+
+    fn run_with(cat: &crate::Catalog, moves: Vec<CleanupMove>) -> i64 {
+        let lib = cat.writer().export_library(b"/lib".to_vec(), None).unwrap();
+        cat.writer()
+            .cleanup_create_run(NewCleanupRun {
+                source: SourceId(1),
+                source_added_at_ms: 1,
+                root: b"/a".to_vec(),
+                library_id: lib,
+                folder: None,
+                uid: "u".into(),
+                moves: Box::new(move |_| moves),
+            })
+            .unwrap()
+    }
+
+    fn states(cat: &crate::Catalog, run: i64) -> Vec<(i64, MoveState)> {
+        cat.read()
+            .cleanup_moves(run)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.file.0, m.state))
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Selecting only flips planned and unselected moves; every other state is left alone.
+    #[test]
+    fn select_changes_only_planned_and_unselected_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = crate::Catalog::open(dir.path()).unwrap();
+        let all = [
+            MoveState::Planned,
+            MoveState::Moving,
+            MoveState::Quarantined,
+            MoveState::Skipped,
+            MoveState::Restoring,
+            MoveState::Restored,
+            MoveState::Unselected,
+            MoveState::Planned,
+        ];
+        let run = run_with(
+            &cat,
+            all.iter()
+                .enumerate()
+                .map(|(i, s)| a_move(i as i64 + 1, *s))
+                .collect(),
+        );
+        // Pick everything except file 1: 1 becomes unselected, 7 planned, 8 stays planned.
+        let picked: Vec<FileId> = (2..=8).map(FileId).collect();
+        assert_eq!(cat.writer().cleanup_select_moves(run, picked).unwrap(), 2);
+        let want = [
+            MoveState::Unselected,
+            MoveState::Moving,
+            MoveState::Quarantined,
+            MoveState::Skipped,
+            MoveState::Restoring,
+            MoveState::Restored,
+            MoveState::Planned,
+            MoveState::Planned,
+        ];
+        assert_eq!(
+            states(&cat, run),
+            want.iter()
+                .enumerate()
+                .map(|(i, s)| (i as i64 + 1, *s))
+                .collect::<Vec<_>>()
+        );
+        // Picking nothing unselects the planned ones only.
+        assert_eq!(
+            cat.writer().cleanup_select_moves(run, Vec::new()).unwrap(),
+            0
+        );
+        let s = states(&cat, run);
+        assert_eq!(s[6].1, MoveState::Unselected);
+        assert_eq!(s[2].1, MoveState::Quarantined);
+    }
+
+    #[test]
+    fn select_takes_100k_ids_in_one_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = crate::Catalog::open(dir.path()).unwrap();
+        let run = run_with(
+            &cat,
+            (1..=100_000)
+                .map(|i| a_move(i, MoveState::Planned))
+                .collect(),
+        );
+        let picked: Vec<FileId> = (1..=100_000).filter(|i| i % 2 == 0).map(FileId).collect();
+        assert_eq!(
+            cat.writer().cleanup_select_moves(run, picked).unwrap(),
+            50_000
+        );
+        let moves = cat.read().cleanup_moves(run).unwrap();
+        assert!(
+            moves
+                .iter()
+                .all(|m| (m.file.0 % 2 == 0) == (m.state == MoveState::Planned))
+        );
+        assert!(
+            moves
+                .iter()
+                .all(|m| matches!(m.state, MoveState::Planned | MoveState::Unselected))
+        );
+    }
+
+    #[test]
+    fn discard_marks_the_run_and_its_planned_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = crate::Catalog::open(dir.path()).unwrap();
+        let run = run_with(
+            &cat,
+            vec![
+                a_move(1, MoveState::Planned),
+                a_move(2, MoveState::Skipped),
+                a_move(3, MoveState::Unselected),
+            ],
+        );
+        assert!(cat.writer().cleanup_discard_run(run).unwrap());
+        let r = cat.read().cleanup_run(run).unwrap().unwrap();
+        assert_eq!(r.state, CleanupRunState::Discarded);
+        assert!(r.ended_at_ms.is_some());
+        assert_eq!(
+            states(&cat, run),
+            vec![
+                (1, MoveState::Unselected),
+                (2, MoveState::Skipped),
+                (3, MoveState::Unselected)
+            ]
+        );
+        // Not twice, and never a run that moved a file.
+        assert!(!cat.writer().cleanup_discard_run(run).unwrap());
+        for s in [
+            MoveState::Moving,
+            MoveState::Quarantined,
+            MoveState::Restoring,
+            MoveState::Restored,
+        ] {
+            let other = run_with(&cat, vec![a_move(1, MoveState::Planned), a_move(2, s)]);
+            assert!(!cat.writer().cleanup_discard_run(other).unwrap(), "{s:?}");
+            assert_eq!(
+                cat.read().cleanup_run(other).unwrap().unwrap().state,
+                CleanupRunState::Planned
+            );
+            assert_eq!(states(&cat, other)[0].1, MoveState::Planned);
+        }
+    }
+
+    /// Selection and discard are durable writes (they go through `exec_durable`, counted by the writer).
+    #[test]
+    fn select_and_discard_are_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = crate::Catalog::open(dir.path()).unwrap();
+        let run = run_with(&cat, vec![a_move(1, MoveState::Planned)]);
+        let before = cat.writer().stats().durable_commits;
+        cat.writer()
+            .cleanup_select_moves(run, vec![FileId(1)])
+            .unwrap();
+        cat.writer().cleanup_discard_run(run).unwrap();
+        assert_eq!(cat.writer().stats().durable_commits, before + 2);
+    }
 
     /// `exec_durable` commits with `synchronous = FULL` (2) and leaves the writer at `NORMAL` (1) after.
     #[test]

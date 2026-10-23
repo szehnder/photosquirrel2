@@ -73,11 +73,16 @@ See proposal.md for why. What exists today (read from the code, 2026-10-22):
    rebuild `cleanup_run` and `cleanup_move` with the widened `CHECK`s. The runner (`db.rs` `migrate`) runs
    each migration's SQL in one `IMMEDIATE` transaction with `foreign_keys = ON` set at open, and that pragma
    cannot change inside a transaction, so the SQL starts with `PRAGMA defer_foreign_keys = ON` (allowed in a
-   transaction; checked at commit) and then: create `cleanup_run_new` (same columns incl. `source_added_at`,
-   `CHECK (state IN ('planned','running','completed','undone','discarded'))`), copy; create
-   `cleanup_move_new ... REFERENCES cleanup_run(id) ... CHECK (state BETWEEN 0 AND 6)`, copy; drop
-   `cleanup_move`, drop `cleanup_run`; rename `cleanup_run_new` to `cleanup_run` and `cleanup_move_new` to
-   `cleanup_move`; recreate `cleanup_move_by_state` and `cleanup_move_by_path`. No change to the runner. `RUN_COLUMNS` is unchanged.
+   transaction; checked at commit) as a belt-and-braces measure, and then: drop both indexes; rename
+   `cleanup_move` to `cleanup_move_old` and `cleanup_run` to `cleanup_run_old` (with `legacy_alter_table` off
+   the old move table's reference follows the rename); create `cleanup_run` (same columns incl.
+   `source_added_at`, `CHECK (state IN ('planned','running','completed','undone','discarded'))`), copy; create
+   `cleanup_move ... REFERENCES cleanup_run(id) ... CHECK (state BETWEEN 0 AND 6)`, copy; drop
+   `cleanup_move_old`, then `cleanup_run_old` (child first: no step ever leaves a move whose run is missing,
+   so no foreign-key violation is ever counted); recreate `cleanup_move_by_state` and `cleanup_move_by_path`.
+   (Implementation note: the first draft created `*_new` tables and dropped the old run table while the new
+   move table still referenced the name `cleanup_run`; that relies on deferred-violation bookkeeping across a
+   DROP and a RENAME, so the order was changed.) No change to the runner. `RUN_COLUMNS` is unchanged.
    Readers on an older schema (observer mode) keep working: they never see the new values. If another M7
    change lands a migration 16 first, renumber (ADR-0068 says the number is not the decision).
 5. **Counts.** `MoveCounts` gains `unselected` and `unselected_bytes`; `CleanupRunRow` (UI) gains the same;
