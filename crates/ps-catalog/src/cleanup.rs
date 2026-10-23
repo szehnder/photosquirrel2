@@ -333,6 +333,49 @@ impl Readers {
         })
     }
 
+    /// The moves of one run whose file lies directly in `folder` (`None`: the source root), by path. Served by
+    /// the path index (a range of paths), so expanding one folder of a huge plan reads only that folder.
+    pub fn cleanup_moves_in_folder(
+        &self,
+        run: i64,
+        folder: Option<&RelPath>,
+    ) -> Result<Vec<CleanupMove>> {
+        let folder = folder.cloned();
+        self.with(move |c| {
+            let mut out = Vec::new();
+            match &folder {
+                Some(f) => {
+                    let mut lo = f.as_bytes().to_vec();
+                    lo.push(b'/');
+                    let mut hi = f.as_bytes().to_vec();
+                    hi.push(b'/' + 1);
+                    let mut stmt = c.prepare_cached(&format!(
+                        "SELECT {MOVE_COLUMNS} FROM cleanup_move
+                         WHERE rel_path > ?2 AND rel_path < ?3 AND run_id = ?1 ORDER BY rel_path"
+                    ))?;
+                    let mut rows = stmt.query(params![run, lo, hi])?;
+                    while let Some(r) = rows.next()? {
+                        let m = move_row(r)?;
+                        if m.rel_path.parent().as_ref() == Some(f) {
+                            out.push(m);
+                        }
+                    }
+                }
+                None => {
+                    let mut stmt = c.prepare_cached(&format!(
+                        "SELECT {MOVE_COLUMNS} FROM cleanup_move
+                         WHERE run_id = ?1 AND instr(rel_path, x'2f') = 0 ORDER BY rel_path"
+                    ))?;
+                    let mut rows = stmt.query([run])?;
+                    while let Some(r) = rows.next()? {
+                        out.push(move_row(r)?);
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Files in a quarantine folder now (a move in state quarantined or restoring) of runs whose source is
     /// still the one they were planned on, by file id. Empty before migration 15 (catalogs opened read-only
     /// at an older version).
@@ -575,6 +618,41 @@ mod tests {
             );
             assert_eq!(states(&cat, other)[0].1, MoveState::Planned);
         }
+    }
+
+    #[test]
+    fn moves_of_one_folder_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cat = crate::Catalog::open(dir.path()).unwrap();
+        let mut moves: Vec<CleanupMove> = Vec::new();
+        for (i, p) in [
+            "a.jpg",
+            "DCIM/b.jpg",
+            "DCIM/c.jpg",
+            "DCIM/100/d.jpg",
+            "DCIMX/e.jpg",
+            "DCIM 2/f.jpg",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut m = a_move(i as i64 + 1, MoveState::Planned);
+            m.rel_path = rel(p);
+            moves.push(m);
+        }
+        let run = run_with(&cat, moves);
+        let names = |f: Option<&str>| -> Vec<String> {
+            cat.read()
+                .cleanup_moves_in_folder(run, f.map(rel).as_ref())
+                .unwrap()
+                .iter()
+                .map(|m| m.rel_path.to_string())
+                .collect()
+        };
+        assert_eq!(names(Some("DCIM")), vec!["DCIM/b.jpg", "DCIM/c.jpg"]);
+        assert_eq!(names(Some("DCIM/100")), vec!["DCIM/100/d.jpg"]);
+        assert_eq!(names(None), vec!["a.jpg"]);
+        assert!(names(Some("Nope")).is_empty());
     }
 
     /// Selection and discard are durable writes (they go through `exec_durable`, counted by the writer).

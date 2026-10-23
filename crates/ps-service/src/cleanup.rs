@@ -370,6 +370,11 @@ impl<'a> Cleanups<'a> {
         Ok((self.summary(run, &moves)?, moves))
     }
 
+    /// The moves of run `id` whose file lies directly in `folder` (`None`: the source root), by path.
+    pub fn folder_moves(&self, id: i64, folder: Option<&RelPath>) -> Result<Vec<CleanupMove>> {
+        Ok(self.catalog().read().cleanup_moves_in_folder(id, folder)?)
+    }
+
     /// Plan a cleanup of `source` (or of `folder` in it) against `library` (default: the last library
     /// exported to). Stores the plan as a `planned` run and returns it; nothing on disk is touched (the
     /// dispositions are checked without re-hashing; the run re-verifies every file).

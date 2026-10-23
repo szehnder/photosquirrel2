@@ -90,8 +90,11 @@ See proposal.md for why. What exists today (read from the code, 2026-10-22):
    on picked moves only for the review, and on all `Planned | Unselected` moves for the selection tree.
 6. **Backend trait (`ui-workspace/src/scan_backend.rs`).** New and changed methods, all called from
    background threads by the view, like today:
-   `cleanup_tree(run) -> CleanupTree` (every `Planned | Unselected` folder with files/bytes and how many are
-   picked, for narrowing; or every quarantined folder, for undo — a `CleanupTreeKind` argument);
+   `cleanup_tree(run, kind) -> CleanupTree` (every `Planned | Unselected` folder, for narrowing, or every
+   quarantined folder, for undo — a `CleanupTreeKind` argument — with the id, size and picked flag of each of
+   its files, but no names: 24 bytes per file, so the tree's counts are exact and its `Selection` precise
+   without loading names; implementation note: per-folder counts alone cannot express "this folder's own files
+   unticked, a subfolder ticked again" with subtree folder rules, so the ids are carried);
    `cleanup_folder_files(run, folder, kind) -> Vec<CleanupFileRow { file, name, size, picked }>` (direct
    files of one folder, loaded when it is expanded); `cleanup_select(run, Selection) -> CleanupReview`;
    `cleanup_discard(run) -> CleanupRunRow`; `cleanup_undo(run, Selection) -> UndoOutcome` (replaces the
@@ -114,7 +117,9 @@ See proposal.md for why. What exists today (read from the code, 2026-10-22):
    - Undo: "Undo…" on a history row opens the tree in undo mode (quarantined moves, all ticked) with "Put
      back N files" (the existing undo confirmation text with the picked count); `cleanup_undo(run,
      selection)`.
-   - States: `CleanupPhase` gains `Selecting` (applying a selection) and `Discarding`; `busy()` covers them;
+   - States: `CleanupPhase` gains `Selecting` (applying a selection); a discard is tracked like an undo
+     (`discarding: Option<run>`, since it can be asked from a history row while another plan is reviewed);
+     `busy()` covers both;
      `state_label` gains "Discarded". All colours and sizes from `ui-theme` tokens (ADR-0028).
 8. **CLI (`main.rs`, `cmd/cleanup.rs`).** `cleanup select <run> [--folder]... [--file]... [--except-folder]...
    [--except-file]... [--all]` (`--all` = empty selection = everything; at least one flag required),

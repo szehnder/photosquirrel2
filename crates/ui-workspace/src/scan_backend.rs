@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ps_model::{
-    CompletionCounts, DeviceClass, Disposition, ExclusionReason, ExportProfile, ProgressSnapshot,
-    RunStatus, ScanRunId, SourceId, SourceStatus, Stage,
+    CompletionCounts, DeviceClass, Disposition, ExclusionReason, ExportProfile, FileId,
+    ProgressSnapshot, RelPath, RunStatus, ScanRunId, SourceId, SourceStatus, Stage,
 };
 use ps_service::export_progress::{ExecConfig, ExportProgress, ExportSnapshot, ProfileSettings};
 use ps_service::scan::Confirmation;
@@ -252,9 +252,127 @@ pub trait ScanBackend: Send + Sync + 'static {
         let _ = (network_confirmed, cancel, progress);
         anyhow::bail!("cleanup run {run}: cleanup is not available here")
     }
-    /// Move a run's quarantined files back (never onto an occupied path).
-    fn cleanup_undo(&self, run: i64) -> anyhow::Result<UndoOutcome> {
+    /// Move a run's quarantined files back, those `selection` picks (never onto an occupied path).
+    fn cleanup_undo(&self, run: i64, selection: CleanupSelection) -> anyhow::Result<UndoOutcome> {
+        let _ = selection;
         anyhow::bail!("cleanup run {run}: cleanup is not available here")
+    }
+
+    // ---- cleanup-selection (ADR-0068) ----
+
+    /// Every folder of a run with its files' ids, sizes and whether they are picked: the planned and
+    /// unselected moves of a plan ([`CleanupTreeKind::Plan`]), or the quarantined ones ([`CleanupTreeKind::Undo`],
+    /// all picked). No file names: those load per folder ([`ScanBackend::cleanup_folder_files`]).
+    fn cleanup_tree(&self, run: i64, kind: CleanupTreeKind) -> anyhow::Result<CleanupTree> {
+        let _ = kind;
+        anyhow::bail!("cleanup run {run}: cleanup is not available here")
+    }
+    /// The files directly in one folder of [`ScanBackend::cleanup_tree`], with their names.
+    fn cleanup_folder_files(
+        &self,
+        run: i64,
+        folder: Option<RelPath>,
+        kind: CleanupTreeKind,
+    ) -> anyhow::Result<Vec<CleanupFileRow>> {
+        let _ = (folder, kind);
+        anyhow::bail!("cleanup run {run}: cleanup is not available here")
+    }
+    /// Store a plan's selection (catalog rows only; moves nothing) and return the stored plan.
+    fn cleanup_select(
+        &self,
+        run: i64,
+        selection: CleanupSelection,
+    ) -> anyhow::Result<CleanupReview> {
+        let _ = selection;
+        anyhow::bail!("cleanup run {run}: cleanup is not available here")
+    }
+    /// Discard a plan that never moved a file (catalog rows only).
+    fn cleanup_discard(&self, run: i64) -> anyhow::Result<CleanupRunRow> {
+        anyhow::bail!("cleanup run {run}: cleanup is not available here")
+    }
+}
+
+/// Which moves of a run a selection picks ([`ps_service::cleanup::Selection`]).
+pub use ps_service::cleanup::Selection as CleanupSelection;
+
+/// What a selection tree is over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CleanupTreeKind {
+    /// A plan's planned and unselected moves (narrowing before the run).
+    Plan,
+    /// A run's quarantined moves (undo).
+    Undo,
+}
+
+/// One file of a [`CleanupTree`] folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CleanupTreeFile {
+    pub file: FileId,
+    pub size: u64,
+    pub picked: bool,
+}
+
+/// The files directly in one folder (`None`: the source root).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CleanupTreeFolder {
+    pub folder: Option<RelPath>,
+    pub files: Vec<CleanupTreeFile>,
+}
+
+/// Every folder of a run that holds a move of the tree's kind, by path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CleanupTree {
+    pub run: i64,
+    pub kind: CleanupTreeKind,
+    pub folders: Vec<CleanupTreeFolder>,
+}
+
+/// A file of an expanded folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CleanupFileRow {
+    pub file: FileId,
+    pub name: String,
+    pub size: u64,
+    pub picked: bool,
+}
+
+/// The moves a tree of `kind` is over, and whether each is picked now.
+fn tree_pick(kind: CleanupTreeKind, state: ps_model::MoveState) -> Option<bool> {
+    use ps_model::MoveState as S;
+    match (kind, state) {
+        (CleanupTreeKind::Plan, S::Planned) => Some(true),
+        (CleanupTreeKind::Plan, S::Unselected) => Some(false),
+        (CleanupTreeKind::Undo, S::Quarantined) => Some(true),
+        _ => None,
+    }
+}
+
+/// [`CleanupTree`] of `moves` (any order).
+pub fn cleanup_tree_of(
+    run: i64,
+    kind: CleanupTreeKind,
+    moves: &[ps_model::CleanupMove],
+) -> CleanupTree {
+    let mut by: std::collections::BTreeMap<Option<RelPath>, Vec<CleanupTreeFile>> =
+        std::collections::BTreeMap::new();
+    for m in moves {
+        if let Some(picked) = tree_pick(kind, m.state) {
+            by.entry(m.rel_path.parent())
+                .or_default()
+                .push(CleanupTreeFile {
+                    file: m.file,
+                    size: m.size,
+                    picked,
+                });
+        }
+    }
+    CleanupTree {
+        run,
+        kind,
+        folders: by
+            .into_iter()
+            .map(|(folder, files)| CleanupTreeFolder { folder, files })
+            .collect(),
     }
 }
 
@@ -276,6 +394,9 @@ pub struct CleanupRunRow {
     pub quarantined_bytes: u64,
     pub skipped: u64,
     pub restored: u64,
+    /// In the plan, left out by the selection (ADR-0068).
+    pub unselected: u64,
+    pub unselected_bytes: u64,
     /// `<source root>/.photosquirrel-quarantine/<run id>`.
     pub quarantine_dir: PathBuf,
     /// The source is a network share (running needs an extra confirmation).
@@ -339,6 +460,8 @@ fn cleanup_row(s: &ps_service::cleanup::RunSummary) -> CleanupRunRow {
         quarantined_bytes: s.counts.quarantined_bytes,
         skipped: s.counts.skipped,
         restored: s.counts.restored,
+        unselected: s.counts.unselected,
+        unselected_bytes: s.counts.unselected_bytes,
         quarantine_dir: s.quarantine_dir.clone(),
         network: s.network,
     }
@@ -749,11 +872,8 @@ impl ScanBackend for CatalogBackend {
         })
     }
 
-    fn cleanup_undo(&self, run: i64) -> anyhow::Result<UndoOutcome> {
-        let r = self
-            .scan()?
-            .cleanups()
-            .undo(run, &ps_service::cleanup::Selection::all());
+    fn cleanup_undo(&self, run: i64, selection: CleanupSelection) -> anyhow::Result<UndoOutcome> {
+        let r = self.scan()?.cleanups().undo(run, &selection);
         self.forget_dispositions();
         let r = r?;
         Ok(UndoOutcome {
@@ -770,9 +890,61 @@ impl ScanBackend for CatalogBackend {
             fully_undone: r.run_fully_undone,
         })
     }
+
+    fn cleanup_tree(&self, run: i64, kind: CleanupTreeKind) -> anyhow::Result<CleanupTree> {
+        self.cleanup_tree_now(run, kind)
+    }
+
+    fn cleanup_folder_files(
+        &self,
+        run: i64,
+        folder: Option<RelPath>,
+        kind: CleanupTreeKind,
+    ) -> anyhow::Result<Vec<CleanupFileRow>> {
+        self.cleanup_folder_files_now(run, folder, kind)
+    }
+
+    fn cleanup_select(
+        &self,
+        run: i64,
+        selection: CleanupSelection,
+    ) -> anyhow::Result<CleanupReview> {
+        self.scan()?.cleanups().select(run, &selection)?;
+        self.cleanup_review_now(run)
+    }
+
+    fn cleanup_discard(&self, run: i64) -> anyhow::Result<CleanupRunRow> {
+        let s = self.scan()?.cleanups().discard(run)?;
+        Ok(cleanup_row(&s))
+    }
 }
 
 impl CatalogBackend {
+    fn cleanup_tree_now(&self, run: i64, kind: CleanupTreeKind) -> anyhow::Result<CleanupTree> {
+        let (_, moves) = self.scan()?.cleanups().run_detail(run)?;
+        Ok(cleanup_tree_of(run, kind, &moves))
+    }
+
+    fn cleanup_folder_files_now(
+        &self,
+        run: i64,
+        folder: Option<RelPath>,
+        kind: CleanupTreeKind,
+    ) -> anyhow::Result<Vec<CleanupFileRow>> {
+        let moves = self.scan()?.cleanups().folder_moves(run, folder.as_ref())?;
+        Ok(moves
+            .iter()
+            .filter_map(|m| {
+                Some(CleanupFileRow {
+                    picked: tree_pick(kind, m.state)?,
+                    file: m.file,
+                    name: String::from_utf8_lossy(m.rel_path.file_name()).into_owned(),
+                    size: m.size,
+                })
+            })
+            .collect())
+    }
+
     fn cleanup_review_now(&self, run: i64) -> anyhow::Result<CleanupReview> {
         let (summary, moves) = self.scan()?.cleanups().run_detail(run)?;
         Ok(cleanup_review_of(&summary, &moves))
@@ -810,6 +982,137 @@ pub struct DemoBackend {
     pub restarted: AtomicBool,
     /// Source roots of the real catalog the simulation mirrors (screenshots of a seeded demo library).
     pub roots: Mutex<HashMap<SourceId, PathBuf>>,
+    /// An in-memory cleanup plan (UI tests of the selection tree); nothing on disk.
+    pub cleanup: Mutex<Option<DemoCleanup>>,
+}
+
+/// An in-memory cleanup run for [`DemoBackend`]: selecting and discarding change only these rows.
+#[derive(Clone, Debug)]
+pub struct DemoCleanup {
+    pub run: CleanupRunRow,
+    pub moves: Vec<ps_model::CleanupMove>,
+    /// Selections received (tests).
+    pub selections: Vec<CleanupSelection>,
+}
+
+impl DemoCleanup {
+    /// A planned run of `folders` folders (`Folder NNNNN/IMG_NNNN.JPG` paths) with `files` photos each.
+    pub fn synthetic(run: i64, folders: usize, files: usize) -> Self {
+        let mut moves = Vec::with_capacity(folders * files);
+        for f in 0..folders {
+            for i in 0..files {
+                let path = format!("Folder {f:05}/IMG_{i:04}.JPG");
+                let quarantine = format!(".photosquirrel-quarantine/{run}/{path}");
+                let (Some(rel), Some(quarantine_rel_path)) = (
+                    RelPath::from_bytes(path.into_bytes()),
+                    RelPath::from_bytes(quarantine.into_bytes()),
+                ) else {
+                    continue;
+                };
+                moves.push(ps_model::CleanupMove {
+                    file: FileId((f * files + i) as i64 + 1),
+                    quarantine_rel_path,
+                    rel_path: rel,
+                    size: 1_000_000 + (i as u64) * 1000,
+                    mtime_ns: 0,
+                    file_index: None,
+                    content: ps_model::ContentId::full([0; 32]),
+                    disposition: Disposition::Exported,
+                    covering_library_path: RelPath::from_bytes(b"lib.jpg".to_vec())
+                        .unwrap_or_else(|| unreachable!("a valid path")),
+                    state: ps_model::MoveState::Planned,
+                    note: None,
+                    at_ms: None,
+                });
+            }
+        }
+        let mut c = DemoCleanup {
+            run: CleanupRunRow {
+                id: run,
+                source: SourceId(1),
+                source_name: "Demo Drive".into(),
+                state: CleanupRunState::Planned,
+                created_at_ms: now_ms(),
+                planned: 0,
+                planned_bytes: 0,
+                quarantined: 0,
+                quarantined_bytes: 0,
+                skipped: 0,
+                restored: 0,
+                unselected: 0,
+                unselected_bytes: 0,
+                quarantine_dir: PathBuf::from(format!("/demo/.photosquirrel-quarantine/{run}")),
+                network: false,
+            },
+            moves,
+            selections: Vec::new(),
+        };
+        c.recount();
+        c
+    }
+
+    fn recount(&mut self) {
+        use ps_model::MoveState as S;
+        let r = &mut self.run;
+        (r.planned, r.planned_bytes, r.unselected, r.unselected_bytes) = (0, 0, 0, 0);
+        (r.quarantined, r.quarantined_bytes) = (0, 0);
+        for m in &self.moves {
+            match m.state {
+                S::Planned => {
+                    r.planned += 1;
+                    r.planned_bytes += m.size;
+                }
+                S::Unselected => {
+                    r.unselected += 1;
+                    r.unselected_bytes += m.size;
+                }
+                S::Quarantined => {
+                    r.quarantined += 1;
+                    r.quarantined_bytes += m.size;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn review(&self) -> CleanupReview {
+        let planned: Vec<&ps_model::CleanupMove> = self
+            .moves
+            .iter()
+            .filter(|m| m.state == ps_model::MoveState::Planned)
+            .collect();
+        let totals = ps_service::cleanup::totals_of(planned.iter().copied());
+        CleanupReview {
+            run: self.run.clone(),
+            root: PathBuf::from("/demo"),
+            library: None,
+            folders: totals
+                .folders
+                .iter()
+                .map(|f| {
+                    (
+                        f.folder.as_ref().map_or_else(
+                            || "(source root)".to_owned(),
+                            |p| p.display().into_owned(),
+                        ),
+                        f.files,
+                        f.bytes,
+                    )
+                })
+                .collect(),
+            moves: planned
+                .iter()
+                .take(CLEANUP_ROWS_LIMIT)
+                .map(|m| {
+                    (
+                        m.rel_path.display().into_owned(),
+                        m.quarantine_rel_path.display().into_owned(),
+                    )
+                })
+                .collect(),
+            notes: Vec::new(),
+        }
+    }
 }
 
 impl DemoBackend {
@@ -829,6 +1132,7 @@ impl DemoBackend {
             pinned: Mutex::new(None),
             restarted: AtomicBool::new(false),
             roots: Mutex::new(HashMap::new()),
+            cleanup: Mutex::new(None),
         }
     }
 
@@ -1039,6 +1343,99 @@ impl DemoBackend {
 }
 
 impl ScanBackend for DemoBackend {
+    fn cleanup_runs(&self) -> anyhow::Result<Vec<CleanupRunRow>> {
+        Ok(Self::lock(&self.cleanup)
+            .as_ref()
+            .map(|c| vec![c.run.clone()])
+            .unwrap_or_default())
+    }
+
+    fn cleanup_review(&self, run: i64) -> anyhow::Result<CleanupReview> {
+        match Self::lock(&self.cleanup).as_ref() {
+            Some(c) if c.run.id == run => Ok(c.review()),
+            _ => anyhow::bail!("unknown cleanup run {run}"),
+        }
+    }
+
+    fn cleanup_tree(&self, run: i64, kind: CleanupTreeKind) -> anyhow::Result<CleanupTree> {
+        match Self::lock(&self.cleanup).as_ref() {
+            Some(c) if c.run.id == run => Ok(cleanup_tree_of(run, kind, &c.moves)),
+            _ => anyhow::bail!("unknown cleanup run {run}"),
+        }
+    }
+
+    fn cleanup_folder_files(
+        &self,
+        run: i64,
+        folder: Option<RelPath>,
+        kind: CleanupTreeKind,
+    ) -> anyhow::Result<Vec<CleanupFileRow>> {
+        let g = Self::lock(&self.cleanup);
+        let Some(c) = g.as_ref().filter(|c| c.run.id == run) else {
+            anyhow::bail!("unknown cleanup run {run}");
+        };
+        Ok(c.moves
+            .iter()
+            .filter(|m| m.rel_path.parent() == folder)
+            .filter_map(|m| {
+                Some(CleanupFileRow {
+                    picked: tree_pick(kind, m.state)?,
+                    file: m.file,
+                    name: String::from_utf8_lossy(m.rel_path.file_name()).into_owned(),
+                    size: m.size,
+                })
+            })
+            .collect())
+    }
+
+    fn cleanup_select(
+        &self,
+        run: i64,
+        selection: CleanupSelection,
+    ) -> anyhow::Result<CleanupReview> {
+        use ps_model::MoveState as S;
+        let mut g = Self::lock(&self.cleanup);
+        let Some(c) = g.as_mut().filter(|c| c.run.id == run) else {
+            anyhow::bail!("unknown cleanup run {run}");
+        };
+        if !c
+            .moves
+            .iter()
+            .any(|m| matches!(m.state, S::Planned | S::Unselected) && selection.picks(m))
+        {
+            anyhow::bail!(
+                "this selection leaves no file of cleanup run {run} to move: discard the plan instead"
+            );
+        }
+        for m in &mut c.moves {
+            if matches!(m.state, S::Planned | S::Unselected) {
+                m.state = if selection.picks(m) {
+                    S::Planned
+                } else {
+                    S::Unselected
+                };
+            }
+        }
+        c.selections.push(selection);
+        c.recount();
+        Ok(c.review())
+    }
+
+    fn cleanup_discard(&self, run: i64) -> anyhow::Result<CleanupRunRow> {
+        let mut g = Self::lock(&self.cleanup);
+        let Some(c) = g.as_mut().filter(|c| c.run.id == run) else {
+            anyhow::bail!("unknown cleanup run {run}");
+        };
+        for m in &mut c.moves {
+            if m.state == ps_model::MoveState::Planned {
+                m.state = ps_model::MoveState::Unselected;
+            }
+        }
+        c.run.state = CleanupRunState::Discarded;
+        c.recount();
+        Ok(c.run.clone())
+    }
+
     fn sources(&self) -> anyhow::Result<Vec<SourceRow>> {
         Ok(self
             .scan

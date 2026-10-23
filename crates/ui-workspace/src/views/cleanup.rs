@@ -1,10 +1,13 @@
-//! The Cleanup panel of the Reports view (change `quarantine-cleanup`, task 5.3; ADR-0024, ADR-0061): review
-//! a plan (what moves where, per folder, how much space you can free), an explicit confirmation, live progress,
-//! and the history of runs with Undo.
+//! The Cleanup panel of the Reports view (changes `quarantine-cleanup`, `cleanup-selection`; ADR-0024,
+//! ADR-0061, ADR-0068): review a plan (what moves where, how much space you can free) in a tree of folders the
+//! user can tick, expand to files and untick, an explicit confirmation, live progress, and the history of runs
+//! with Undo (whole runs or chosen folders and files) and Discard (plans that never moved a file).
 //!
-//! Nothing moves without the confirmation: "Move N files…" only opens it, and only its own button starts the
-//! run. Undo also asks first. Every call goes to the backend on a background thread; progress is sampled
-//! (ADR-0019).
+//! Nothing moves without the confirmation: "Move N files…" first stores the selection (catalog rows only),
+//! then opens the confirmation with the stored counts, and only its own button starts the run. Undo and
+//! Discard also ask first. Every call goes to the backend on a background thread; progress is sampled
+//! (ADR-0019). The trees are virtualized ([`uniform_list`] over the visible rows only) and file names load per
+//! folder when it is expanded, so a plan of a million files stays responsive.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,17 +23,47 @@ use crate::assets::IconName;
 use crate::inspector::format_count;
 use crate::scan_backend::{
     CleanupOutcome, CleanupProgress, CleanupReview, CleanupRunRow, CleanupRunState,
-    SharedScanBackend, UndoOutcome,
+    CleanupTreeKind, SharedScanBackend, UndoOutcome,
 };
 use crate::service::Loadable;
+use crate::views::cleanup_tree::{Row, SelectionTree, Tick};
 use crate::views::kit::{self, Tone};
 
 /// Progress is sampled this often (ADR-0019).
 const SAMPLE: Duration = Duration::from_millis(100);
 
-/// Rows of a plan's folder list and move list shown before "and N more".
-const FOLDER_ROWS: usize = 5;
+/// Rows of a plan's move list shown before "and N more".
 const MOVE_ROWS: usize = 3;
+
+/// Height of one selection-tree row (default px; scaled by [`Tokens::size`]).
+const TREE_ROW: f32 = 28.0;
+/// Rows of a selection tree visible at once (the list scrolls beyond).
+const TREE_VISIBLE_ROWS: usize = 12;
+
+/// Which selection tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeOf {
+    /// The reviewed plan's planned and unselected files (narrowing).
+    Plan,
+    /// The quarantined files of the run whose undo is being confirmed.
+    Undo,
+}
+
+impl TreeOf {
+    fn kind(self) -> CleanupTreeKind {
+        match self {
+            TreeOf::Plan => CleanupTreeKind::Plan,
+            TreeOf::Undo => CleanupTreeKind::Undo,
+        }
+    }
+
+    fn prefix(self) -> &'static str {
+        match self {
+            TreeOf::Plan => "cleanup-tree",
+            TreeOf::Undo => "cleanup-undo-tree",
+        }
+    }
+}
 
 /// The run changed files (a cleanup or an undo finished): the Reports view refreshes its counts.
 #[derive(Clone, Debug)]
@@ -45,7 +78,9 @@ pub enum CleanupPhase {
     Planning(SourceId),
     /// A planned run is shown for review.
     Review,
-    /// The user clicked "Move N files…": the confirmation is shown.
+    /// The user clicked "Move N files…" after changing the selection: it is being stored.
+    Selecting,
+    /// The confirmation is shown (for the stored selection).
     Confirming,
     Running {
         progress: Arc<CleanupProgress>,
@@ -70,8 +105,21 @@ pub struct CleanupView {
     pub last_undo: Option<Result<UndoOutcome, String>>,
     /// Nothing to clean up on the source last planned.
     pub nothing_on: Option<SourceId>,
+    /// The reviewed plan's folders with check boxes (loaded in the background).
+    pub plan_tree: Option<SelectionTree>,
+    plan_scroll: UniformListScrollHandle,
+    /// The folders of the run whose undo is being confirmed.
+    pub undo_tree: Option<SelectionTree>,
+    undo_scroll: UniformListScrollHandle,
+    /// Discard asked for this run; the confirmation is shown.
+    pub discard_confirm: Option<i64>,
+    pub discarding: Option<i64>,
+    /// Why the last selection, discard or tree load was refused.
+    pub note: Option<String>,
     task: Option<Task<()>>,
     run_task: Option<Task<()>>,
+    tree_task: Option<Task<()>>,
+    undo_tree_task: Option<Task<()>>,
 }
 
 impl EventEmitter<CleanupChanged> for CleanupView {}
@@ -88,8 +136,17 @@ impl CleanupView {
             undoing: None,
             last_undo: None,
             nothing_on: None,
+            plan_tree: None,
+            plan_scroll: UniformListScrollHandle::new(),
+            undo_tree: None,
+            undo_scroll: UniformListScrollHandle::new(),
+            discard_confirm: None,
+            discarding: None,
+            note: None,
             task: None,
             run_task: None,
+            tree_task: None,
+            undo_tree_task: None,
         };
         // Shown at start-up: the history (and the latest plan) are in frame one when quick (start-up grace).
         let early = this.backend.clone().and_then(|b| {
@@ -97,13 +154,17 @@ impl CleanupView {
             crate::startup::StartupGrace::within(deadline, move || load(&b))
         });
         match early {
-            Some(r) => this.loaded(r),
+            Some(r) => this.loaded(r, cx),
             None => this.refresh(cx),
         }
         this
     }
 
-    fn loaded(&mut self, r: anyhow::Result<(Vec<CleanupRunRow>, Option<CleanupReview>)>) {
+    fn loaded(
+        &mut self,
+        r: anyhow::Result<(Vec<CleanupRunRow>, Option<CleanupReview>)>,
+        cx: &mut Context<'_, Self>,
+    ) {
         match r {
             Ok((runs, review)) => {
                 self.runs = Loadable::Ready(runs);
@@ -114,10 +175,165 @@ impl CleanupView {
                     } else {
                         CleanupPhase::Idle
                     };
-                    self.review = review;
+                    self.set_review(review, cx);
                 }
             }
             Err(e) => self.runs = Loadable::Failed(format!("{e:#}")),
+        }
+    }
+
+    /// Show `review` (or none) and load its selection tree when it is another run's.
+    fn set_review(&mut self, review: Option<CleanupReview>, cx: &mut Context<'_, Self>) {
+        let run = review.as_ref().map(|r| r.run.id);
+        self.review = review;
+        match run {
+            Some(id) if self.plan_tree.as_ref().is_some_and(|t| t.run == id) => {}
+            Some(id) => {
+                self.plan_tree = None;
+                self.load_tree(TreeOf::Plan, id, cx);
+            }
+            None => {
+                self.plan_tree = None;
+                self.tree_task = None;
+            }
+        }
+    }
+
+    /// Load a run's selection tree on a background thread.
+    fn load_tree(&mut self, which: TreeOf, run: i64, cx: &mut Context<'_, Self>) {
+        let Some(b) = self.backend.clone() else {
+            return;
+        };
+        let kind = which.kind();
+        let reply = cx.background_spawn(async move { b.cleanup_tree(run, kind) });
+        let task = cx.spawn(async move |this, cx| {
+            let r = reply.await;
+            let _ = this.update(cx, |this, cx| {
+                match r {
+                    Ok(tree) => {
+                        let t = Some(SelectionTree::new(&tree));
+                        match which {
+                            TreeOf::Plan
+                                if this.review.as_ref().is_some_and(|r| r.run.id == run) =>
+                            {
+                                this.plan_tree = t;
+                            }
+                            TreeOf::Undo if this.undo_confirm == Some(run) => this.undo_tree = t,
+                            _ => {}
+                        }
+                    }
+                    Err(e) => this.note = Some(format!("{e:#}")),
+                }
+                cx.notify();
+            });
+        });
+        match which {
+            TreeOf::Plan => self.tree_task = Some(task),
+            TreeOf::Undo => self.undo_tree_task = Some(task),
+        }
+    }
+
+    fn tree_mut(&mut self, which: TreeOf) -> Option<&mut SelectionTree> {
+        match which {
+            TreeOf::Plan => self.plan_tree.as_mut(),
+            TreeOf::Undo => self.undo_tree.as_mut(),
+        }
+    }
+
+    fn tree(&self, which: TreeOf) -> Option<&SelectionTree> {
+        match which {
+            TreeOf::Plan => self.plan_tree.as_ref(),
+            TreeOf::Undo => self.undo_tree.as_ref(),
+        }
+    }
+
+    /// The tree's check boxes can be changed now (not while a selection is stored, a run or undo is going,
+    /// or the confirmation shows the stored counts).
+    pub fn tree_editable(&self, which: TreeOf) -> bool {
+        match which {
+            TreeOf::Plan => matches!(self.phase, CleanupPhase::Review) && self.discarding.is_none(),
+            TreeOf::Undo => self.undo_confirm.is_some() && self.undoing.is_none(),
+        }
+    }
+
+    /// Tick or untick a row of a tree (a folder with everything below it, or one file).
+    pub fn toggle_row(&mut self, which: TreeOf, ix: usize, cx: &mut Context<'_, Self>) {
+        if !self.tree_editable(which) {
+            return;
+        }
+        let Some(t) = self.tree_mut(which) else {
+            return;
+        };
+        match t.row(ix).cloned() {
+            Some(Row::Folder(n)) => t.toggle_folder(n),
+            Some(Row::File(n, k)) => t.toggle_file(n, k),
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    /// Tick or untick everything in a tree.
+    pub fn toggle_all(&mut self, which: TreeOf, cx: &mut Context<'_, Self>) {
+        if !self.tree_editable(which) {
+            return;
+        }
+        if let Some(t) = self.tree_mut(which) {
+            t.toggle_all();
+            cx.notify();
+        }
+    }
+
+    /// Expand or collapse a folder row; its file names load in the background the first time.
+    pub fn expand_row(&mut self, which: TreeOf, ix: usize, cx: &mut Context<'_, Self>) {
+        let Some(b) = self.backend.clone() else {
+            return;
+        };
+        let Some(t) = self.tree_mut(which) else {
+            return;
+        };
+        let Some(Row::Folder(n)) = t.row(ix).cloned() else {
+            return;
+        };
+        let (run, kind) = (t.run, t.kind);
+        let need = t.toggle_expand(n);
+        cx.notify();
+        let Some(folder) = need else {
+            return;
+        };
+        let reply = cx.background_spawn(async move { b.cleanup_folder_files(run, folder, kind) });
+        cx.spawn(async move |this, cx| {
+            let r = reply.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(t) = this.tree_mut(which).filter(|t| t.run == run) {
+                    match r {
+                        Ok(rows) => t.set_names(n, &rows),
+                        Err(e) => {
+                            t.names_failed(n);
+                            this.note = Some(format!("{e:#}"));
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Scroll a tree so that row `ix` is at the top.
+    pub fn scroll_tree_to(&self, which: TreeOf, ix: usize) {
+        match which {
+            TreeOf::Plan => self.plan_scroll.scroll_to_item(ix, ScrollStrategy::Top),
+            TreeOf::Undo => self.undo_scroll.scroll_to_item(ix, ScrollStrategy::Top),
+        }
+    }
+
+    /// Files and bytes the reviewed plan would move now: the tree's picks once it is loaded, else the stored
+    /// plan's.
+    pub fn picked(&self) -> (u64, u64) {
+        match (&self.plan_tree, &self.review) {
+            (Some(t), _) => t.picked(),
+            (None, Some(r)) => (r.run.planned, r.run.planned_bytes),
+            _ => (0, 0),
         }
     }
 
@@ -130,7 +346,7 @@ impl CleanupView {
         self.task = Some(cx.spawn(async move |this, cx| {
             let r = reply.await;
             let _ = this.update(cx, |this, cx| {
-                this.loaded(r);
+                this.loaded(r, cx);
                 cx.notify();
             });
         }));
@@ -147,8 +363,9 @@ impl CleanupView {
     pub fn busy(&self) -> bool {
         matches!(
             self.phase,
-            CleanupPhase::Running { .. } | CleanupPhase::Planning(_)
+            CleanupPhase::Running { .. } | CleanupPhase::Planning(_) | CleanupPhase::Selecting
         ) || self.undoing.is_some()
+            || self.discarding.is_some()
     }
 
     /// Plan a cleanup of a whole source (stored as a planned run; moves nothing) and show it for review.
@@ -162,6 +379,8 @@ impl CleanupView {
         self.phase = CleanupPhase::Planning(source);
         self.nothing_on = None;
         self.network_ack = false;
+        self.note = None;
+        self.discard_confirm = None;
         cx.notify();
         let reply = cx.background_spawn(async move { b.cleanup_plan(source) });
         self.task = Some(cx.spawn(async move |this, cx| {
@@ -169,11 +388,11 @@ impl CleanupView {
             let _ = this.update(cx, |this, cx| {
                 match r {
                     Ok(Some(review)) => {
-                        this.review = Some(review);
+                        this.set_review(Some(review), cx);
                         this.phase = CleanupPhase::Review;
                     }
                     Ok(None) => {
-                        this.review = None;
+                        this.set_review(None, cx);
                         this.nothing_on = Some(source);
                         this.phase = CleanupPhase::Idle;
                     }
@@ -199,8 +418,9 @@ impl CleanupView {
             let _ = this.update(cx, |this, cx| {
                 match r {
                     Ok(review) => {
-                        this.review = Some(review);
+                        this.set_review(Some(review), cx);
                         this.network_ack = false;
+                        this.note = None;
                         this.phase = CleanupPhase::Review;
                     }
                     Err(e) => this.phase = CleanupPhase::Failed(format!("{e:#}")),
@@ -210,14 +430,50 @@ impl CleanupView {
         }));
     }
 
-    /// "Move N files…": show the confirmation. Moves nothing.
+    /// "Move N files…": store the tree's selection when it changed (catalog rows only, on a background
+    /// thread), then show the confirmation with the stored counts. Moves nothing.
     pub fn ask(&mut self, cx: &mut Context<'_, Self>) {
-        if matches!(self.phase, CleanupPhase::Review)
-            && self.review.as_ref().is_some_and(|r| r.run.planned > 0)
-        {
-            self.phase = CleanupPhase::Confirming;
-            cx.notify();
+        if !matches!(self.phase, CleanupPhase::Review) || self.picked().0 == 0 {
+            return;
         }
+        let Some(review) = self.review.clone() else {
+            return;
+        };
+        let changed = self.plan_tree.as_ref().filter(|t| t.changed());
+        let (Some(t), Some(b)) = (changed, self.backend.clone()) else {
+            if review.run.planned > 0 {
+                self.phase = CleanupPhase::Confirming;
+                cx.notify();
+            }
+            return;
+        };
+        let selection = t.selection();
+        let run = review.run.id;
+        self.phase = CleanupPhase::Selecting;
+        self.note = None;
+        cx.notify();
+        let reply = cx.background_spawn(async move { b.cleanup_select(run, selection) });
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let r = reply.await;
+            let _ = this.update(cx, |this, cx| {
+                match r {
+                    Ok(stored) => {
+                        // The confirmation shows what the catalog holds now.
+                        this.review = Some(stored);
+                        if let Some(t) = this.plan_tree.as_mut() {
+                            t.mark_stored();
+                        }
+                        this.phase = CleanupPhase::Confirming;
+                    }
+                    Err(e) => {
+                        this.note = Some(format!("{e:#}"));
+                        this.phase = CleanupPhase::Review;
+                    }
+                }
+                this.refresh(cx);
+                cx.notify();
+            });
+        }));
     }
 
     /// Back from the confirmation, or close the plan.
@@ -225,8 +481,11 @@ impl CleanupView {
         self.phase = match self.phase {
             CleanupPhase::Confirming => CleanupPhase::Review,
             CleanupPhase::Running { .. } => return,
+            CleanupPhase::Selecting => return,
             _ => {
-                self.review = None;
+                self.set_review(None, cx);
+                self.note = None;
+                self.discard_confirm = None;
                 CleanupPhase::Idle
             }
         };
@@ -283,7 +542,7 @@ impl CleanupView {
                             None => {}
                         }
                         if finished {
-                            this.review = None;
+                            this.set_review(None, cx);
                             this.refresh(cx);
                             cx.emit(CleanupChanged);
                         }
@@ -306,19 +565,43 @@ impl CleanupView {
         }
     }
 
-    /// "Undo": ask first.
+    /// "Undo…": ask first, with the run's quarantined folders in a tree (all ticked).
     pub fn ask_undo(&mut self, run: i64, cx: &mut Context<'_, Self>) {
         if !self.busy() {
             self.undo_confirm = Some(run);
+            self.undo_tree = None;
+            self.discard_confirm = None;
+            self.load_tree(TreeOf::Undo, run, cx);
             cx.notify();
         }
     }
 
-    /// Undo the run whose confirmation is shown: every quarantined file goes back to its place.
+    /// Close the undo confirmation.
+    pub fn cancel_undo(&mut self, cx: &mut Context<'_, Self>) {
+        self.undo_confirm = None;
+        self.undo_tree = None;
+        self.undo_tree_task = None;
+        cx.notify();
+    }
+
+    /// Undo the run whose confirmation is shown: the quarantined files its tree picks go back to their places.
     pub fn undo(&mut self, cx: &mut Context<'_, Self>) {
-        let (Some(b), Some(run)) = (self.backend.clone(), self.undo_confirm.take()) else {
+        let Some(b) = self.backend.clone() else {
             return;
         };
+        let Some(run) = self.undo_confirm else {
+            return;
+        };
+        let Some(selection) = self
+            .undo_tree
+            .as_ref()
+            .filter(|t| t.run == run && t.picked().0 > 0)
+            .map(SelectionTree::selection)
+        else {
+            return;
+        };
+        self.undo_confirm = None;
+        self.undo_tree = None;
         self.undoing = Some(run);
         self.last_undo = None;
         cx.notify();
@@ -328,7 +611,7 @@ impl CleanupView {
             let spawned = std::thread::Builder::new()
                 .name("cleanup-undo".into())
                 .spawn(move || {
-                    let r = b.cleanup_undo(run);
+                    let r = b.cleanup_undo(run, selection);
                     *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(r);
                 });
             if let Err(e) = spawned {
@@ -363,6 +646,64 @@ impl CleanupView {
                 cx.background_executor().timer(SAMPLE).await;
             }
         }));
+    }
+}
+
+impl CleanupView {
+    /// "Discard": ask first (nothing on the drive changes either way).
+    pub fn ask_discard(&mut self, run: i64, cx: &mut Context<'_, Self>) {
+        if !self.busy() {
+            self.discard_confirm = Some(run);
+            self.undo_confirm = None;
+            cx.notify();
+        }
+    }
+
+    pub fn cancel_discard(&mut self, cx: &mut Context<'_, Self>) {
+        self.discard_confirm = None;
+        cx.notify();
+    }
+
+    /// Discard the plan whose confirmation is shown: catalog rows only, on a background thread.
+    pub fn discard(&mut self, cx: &mut Context<'_, Self>) {
+        let (Some(b), Some(run)) = (self.backend.clone(), self.discard_confirm.take()) else {
+            return;
+        };
+        if self.busy() {
+            return;
+        }
+        self.discarding = Some(run);
+        self.note = None;
+        cx.notify();
+        let reply = cx.background_spawn(async move { b.cleanup_discard(run) });
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let r = reply.await;
+            let _ = this.update(cx, |this, cx| {
+                this.discarding = None;
+                match r {
+                    Ok(_) => {
+                        if this.review.as_ref().is_some_and(|r| r.run.id == run) {
+                            this.set_review(None, cx);
+                            if matches!(this.phase, CleanupPhase::Review | CleanupPhase::Confirming)
+                            {
+                                this.phase = CleanupPhase::Idle;
+                            }
+                        }
+                    }
+                    Err(e) => this.note = Some(format!("{e:#}")),
+                }
+                this.refresh(cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A run that can be discarded: planned, never moved a file.
+    fn discardable(r: &CleanupRunRow) -> bool {
+        r.state == CleanupRunState::Planned
+            && r.quarantined == 0
+            && r.restored == 0
+            && r.planned + r.unselected > 0
     }
 }
 
@@ -452,14 +793,19 @@ impl CleanupView {
         let colors = *ui_theme::colors(cx);
         let r = &review.run;
         let quarantine = kit::display_path(&r.quarantine_dir);
+        let (picked, picked_bytes) = self.picked();
+        let folders_n = self
+            .plan_tree
+            .as_ref()
+            .map_or(review.folders.len(), SelectionTree::folder_count);
         let mut card = kit::card(cx)
             .id("cleanup-plan")
             .test_support()
             .aria_label(SharedString::from(format!(
                 "Cleanup plan {}: {} files, {}",
                 r.id,
-                r.planned,
-                kit::format_bytes(r.planned_bytes)
+                picked,
+                kit::format_bytes(picked_bytes)
             )))
             .child(
                 kit::card_title(format!("Cleanup plan · {}", r.source_name), cx)
@@ -477,19 +823,19 @@ impl CleanupView {
                     .child(kit::stat(
                         "cleanup-files",
                         "Files to move",
-                        format_count(r.planned),
+                        format_count(picked),
                         cx,
                     ))
                     .child(kit::stat(
                         "cleanup-bytes",
                         "Space you can free",
-                        kit::format_bytes(r.planned_bytes),
+                        kit::format_bytes(picked_bytes),
                         cx,
                     ))
                     .child(kit::stat(
                         "cleanup-folders",
                         "Folders",
-                        format_count(review.folders.len() as u64),
+                        format_count(folders_n as u64),
                         cx,
                     )),
             )
@@ -504,7 +850,8 @@ impl CleanupView {
                          photo (covered) are listed. Right before each move the file is re-read and hashed and its \
                          library copy re-verified; anything that changed stays where it is. Files are renamed into \
                          a quarantine folder on the same drive: nothing is copied, nothing is deleted, and Undo \
-                         puts everything back. The space is freed only once you delete that folder yourself.",
+                         puts everything back. The space is freed only once you delete that folder yourself. \
+                         Untick folders or files to keep them where they are.",
                     ),
             )
             .child(
@@ -520,71 +867,20 @@ impl CleanupView {
                     .child(mono(format!("Quarantine: {quarantine}"), colors.text_faint)),
             );
 
-        // Per folder: files and bytes.
-        let mut folders = v_flex()
-            .id("cleanup-folders-list")
-            .test_support()
-            .w_full()
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap(Tokens::space(2.0))
-                    .py(Tokens::space(1.0))
-                    .border_b_1()
-                    .border_color(colors.border)
-                    .text_size(Tokens::text_2xs())
-                    .text_color(colors.text_faint)
-                    .child(div().flex_1().child("FOLDER"))
-                    .child(div().w(Tokens::size(76.0)).text_right().child("FILES"))
-                    .child(div().w(Tokens::size(96.0)).text_right().child("SIZE")),
-            );
-        let mut by_size: Vec<&(String, u64, u64)> = review.folders.iter().collect();
-        by_size.sort_by_key(|a| std::cmp::Reverse(a.2));
-        for (i, (f, n, bytes)) in by_size.iter().take(FOLDER_ROWS).enumerate() {
-            folders = folders.child(
-                h_flex()
-                    .id(SharedString::from(format!("cleanup-folder-{i}")))
-                    .test_support()
-                    .aria_label(SharedString::from(format!("{f}: {n} files")))
-                    .w_full()
-                    .gap(Tokens::space(2.0))
-                    .py(Tokens::space(1.0))
-                    .border_b_1()
-                    .border_color(colors.border)
-                    .child(mono(f.clone(), colors.text))
-                    .child(
-                        div()
-                            .w(Tokens::size(76.0))
-                            .text_right()
-                            .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
-                            .text_size(Tokens::text_mono())
-                            .text_color(colors.text)
-                            .child(format_count(*n)),
-                    )
-                    .child(
-                        div()
-                            .w(Tokens::size(96.0))
-                            .text_right()
-                            .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
-                            .text_size(Tokens::text_mono())
-                            .text_color(colors.text_muted)
-                            .child(kit::format_bytes(*bytes)),
-                    ),
+        // The selection tree: folders (and, expanded, files) with check boxes.
+        if let Some(note) = self.note.clone() {
+            card = card.child(
+                note_box(
+                    "cleanup-note",
+                    note,
+                    colors.warning,
+                    IconName::TriangleAlert,
+                    &colors,
+                )
+                .test_support(),
             );
         }
-        if review.folders.len() > FOLDER_ROWS {
-            folders = folders.child(
-                div()
-                    .py(Tokens::space(1.0))
-                    .text_size(Tokens::text_xs())
-                    .text_color(colors.text_faint)
-                    .child(format!(
-                        "and {} more folders",
-                        review.folders.len() - FOLDER_ROWS
-                    )),
-            );
-        }
-        card = card.child(folders);
+        card = card.child(self.tree_box(TreeOf::Plan, cx));
 
         // Where files go.
         let mut moves = v_flex().w_full().gap(Tokens::space(0.5));
@@ -606,7 +902,7 @@ impl CleanupView {
                     .child(mono(quarantine_target(to, 70), colors.text_faint)),
             );
         }
-        if r.planned as usize > MOVE_ROWS {
+        if r.planned > MOVE_ROWS as u64 {
             moves = moves.child(
                 div()
                     .text_size(Tokens::text_xs())
@@ -626,6 +922,12 @@ impl CleanupView {
                 let mut confirm = v_flex()
                     .id("cleanup-confirmation")
                     .test_support()
+                    .aria_label(SharedString::from(format!(
+                        "Move {} files ({}) out of their folders on {}?",
+                        format_count(r.planned),
+                        kit::format_bytes(r.planned_bytes),
+                        r.source_name
+                    )))
                     .w_full()
                     .gap(Tokens::space(2.0))
                     .p(Tokens::space(3.0))
@@ -729,26 +1031,56 @@ impl CleanupView {
                 );
                 card = card.child(confirm);
             }
+            _ if self.discard_confirm == Some(r.id) => {
+                card = card.child(self.discard_confirmation(r, cx));
+            }
             _ => {
+                let selecting = matches!(self.phase, CleanupPhase::Selecting);
+                let can_move = picked > 0 && !selecting && self.discarding.is_none();
+                let move_label = if selecting {
+                    "Saving the selection…".to_owned()
+                } else if picked == 0 {
+                    "Nothing selected".to_owned()
+                } else {
+                    format!("Move {} files…", format_count(picked))
+                };
                 card = card.child(
                     h_flex()
                         .w_full()
                         .gap(Tokens::space(2.0))
-                        .justify_end()
+                        .items_center()
+                        .child(kit::button(
+                            "cleanup-discard",
+                            "Discard plan",
+                            Some(IconName::X),
+                            Tone::Ghost,
+                            (Self::discardable(r) && !self.busy())
+                                .then(|| {
+                                    let id = r.id;
+                                    kit::on(
+                                        cx.listener(move |this, _, _, cx| this.ask_discard(id, cx)),
+                                    )
+                                })
+                                .flatten(),
+                            cx,
+                        ))
+                        .child(div().flex_1())
                         .child(kit::button(
                             "cleanup-close",
                             "Not now",
                             None,
                             Tone::Ghost,
-                            kit::on(cx.listener(|this, _, _, cx| this.back(cx))),
+                            (!selecting)
+                                .then(|| kit::on(cx.listener(|this, _, _, cx| this.back(cx))))
+                                .flatten(),
                             cx,
                         ))
                         .child(kit::button(
                             "cleanup-confirm",
-                            format!("Move {} files…", format_count(r.planned)),
+                            move_label,
                             Some(IconName::ArrowRight),
                             Tone::Primary,
-                            (r.planned > 0)
+                            can_move
                                 .then(|| kit::on(cx.listener(|this, _, _, cx| this.ask(cx))))
                                 .flatten(),
                             cx,
@@ -759,15 +1091,119 @@ impl CleanupView {
         card.into_any_element()
     }
 
+    fn discard_confirmation(&self, r: &CleanupRunRow, cx: &mut Context<'_, Self>) -> AnyElement {
+        let colors = *ui_theme::colors(cx);
+        h_flex()
+            .id("cleanup-discard-confirmation")
+            .test_support()
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .p(Tokens::space(2.0))
+            .items_center()
+            .rounded(Tokens::RADIUS_MD)
+            .bg(colors.raised)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text)
+                    .child(format!(
+                        "Discard plan {}? Nothing on the drive changes: its {} files stay where they are, and the \
+                         plan stays in the history as discarded.",
+                        r.id,
+                        format_count(r.planned + r.unselected)
+                    )),
+            )
+            .child(kit::button(
+                "cleanup-discard-cancel",
+                "Cancel",
+                None,
+                Tone::Ghost,
+                kit::on(cx.listener(|this, _, _, cx| this.cancel_discard(cx))),
+                cx,
+            ))
+            .child(kit::button(
+                "cleanup-discard-confirm",
+                "Discard plan",
+                Some(IconName::X),
+                Tone::Secondary,
+                kit::on(cx.listener(|this, _, _, cx| this.discard(cx))),
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn undo_confirmation(&self, r: &CleanupRunRow, cx: &mut Context<'_, Self>) -> AnyElement {
+        let colors = *ui_theme::colors(cx);
+        let tree = self.undo_tree.as_ref().filter(|t| t.run == r.id);
+        let picked = tree.map(|t| t.picked());
+        let n = picked.map_or(r.quarantined, |p| p.0);
+        let ready = picked.is_some_and(|p| p.0 > 0);
+        let label = match picked {
+            None => "Loading…".to_owned(),
+            Some((0, _)) => "Nothing selected".to_owned(),
+            Some((n, _)) => format!("Put back {} files", format_count(n)),
+        };
+        v_flex()
+            .id("cleanup-undo-confirmation")
+            .test_support()
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .p(Tokens::space(2.0))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(colors.raised)
+            .child(
+                div()
+                    .w_full()
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text)
+                    .child(format!(
+                        "Move {} files back to their places on {}? Untick folders or files to leave them in \
+                         quarantine. A path that is in use now is never overwritten; that file stays in quarantine.",
+                        format_count(n),
+                        r.source_name
+                    )),
+            )
+            .child(self.tree_box(TreeOf::Undo, cx))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap(Tokens::space(2.0))
+                    .justify_end()
+                    .child(kit::button(
+                        "cleanup-undo-cancel",
+                        "Cancel",
+                        None,
+                        Tone::Ghost,
+                        kit::on(cx.listener(|this, _, _, cx| this.cancel_undo(cx))),
+                        cx,
+                    ))
+                    .child(kit::button(
+                        "cleanup-undo-confirm",
+                        label,
+                        Some(IconName::Undo2),
+                        Tone::Primary,
+                        ready
+                            .then(|| kit::on(cx.listener(|this, _, _, cx| this.undo(cx))))
+                            .flatten(),
+                        cx,
+                    )),
+            )
+            .into_any_element()
+    }
+
     fn history(&self, runs: &[CleanupRunRow], cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
         let mut list = v_flex().id("cleanup-history").test_support().w_full();
+        let reviewed = self.review.as_ref().map(|r| r.run.id);
         for r in runs.iter().take(20) {
             let id = r.id;
             let confirming = self.undo_confirm == Some(id);
             let undoing = self.undoing == Some(id);
+            let discarding = self.discarding == Some(id);
             let can_undo = r.quarantined > 0 && !self.busy();
-            let summary = format!(
+            let mut summary = format!(
                 "{} · {} quarantined ({}) · {} skipped · {} restored",
                 state_label(r),
                 format_count(r.quarantined),
@@ -775,6 +1211,9 @@ impl CleanupView {
                 format_count(r.skipped),
                 format_count(r.restored)
             );
+            if r.unselected > 0 && r.state != CleanupRunState::Discarded {
+                summary.push_str(&format!(" · {} left out", format_count(r.unselected)));
+            }
             let mut row = h_flex()
                 .id(SharedString::from(format!("cleanup-run-{id}")))
                 .test_support()
@@ -808,7 +1247,12 @@ impl CleanupView {
                         .text_color(colors.text_muted)
                         .child(format!("{summary} · planned {}", kit::ago(r.created_at_ms))),
                 );
-            if r.planned > 0 && r.state != CleanupRunState::Undone {
+            if r.planned > 0
+                && !matches!(
+                    r.state,
+                    CleanupRunState::Undone | CleanupRunState::Discarded
+                )
+            {
                 row = row.child(kit::button(
                     SharedString::from(format!("cleanup-review-{id}")),
                     "Review",
@@ -822,10 +1266,28 @@ impl CleanupView {
                     cx,
                 ));
             }
+            if Self::discardable(r) {
+                row = row.child(kit::button(
+                    SharedString::from(format!("cleanup-discard-{id}")),
+                    if discarding {
+                        "Discarding…"
+                    } else {
+                        "Discard"
+                    },
+                    None,
+                    Tone::Ghost,
+                    (!self.busy() && self.discard_confirm != Some(id))
+                        .then(|| {
+                            kit::on(cx.listener(move |this, _, _, cx| this.ask_discard(id, cx)))
+                        })
+                        .flatten(),
+                    cx,
+                ));
+            }
             if r.quarantined > 0 {
                 row = row.child(kit::button(
                     SharedString::from(format!("cleanup-undo-{id}")),
-                    if undoing { "Undoing…" } else { "Undo" },
+                    if undoing { "Undoing…" } else { "Undo…" },
                     Some(IconName::Undo2),
                     Tone::Secondary,
                     (can_undo && !confirming)
@@ -836,53 +1298,299 @@ impl CleanupView {
             }
             list = list.child(row);
             if confirming {
-                list = list.child(
-                    h_flex()
-                        .id("cleanup-undo-confirmation")
-                        .test_support()
-                        .w_full()
-                        .gap(Tokens::space(2.0))
-                        .p(Tokens::space(2.0))
-                        .items_center()
-                        .rounded(Tokens::RADIUS_MD)
-                        .bg(colors.raised)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(Tokens::text_sm())
-                                .text_color(colors.text)
-                                .child(format!(
-                                    "Move {} files back to their places on {}? A path that is in use now is never \
-                                     overwritten; that file stays in quarantine.",
-                                    format_count(r.quarantined),
-                                    r.source_name
-                                )),
-                        )
-                        .child(kit::button(
-                            "cleanup-undo-cancel",
-                            "Cancel",
-                            None,
-                            Tone::Ghost,
-                            kit::on(cx.listener(|this, _, _, cx| {
-                                this.undo_confirm = None;
-                                cx.notify();
-                            })),
-                            cx,
-                        ))
-                        .child(kit::button(
-                            "cleanup-undo-confirm",
-                            format!("Put back {} files", format_count(r.quarantined)),
-                            Some(IconName::Undo2),
-                            Tone::Primary,
-                            kit::on(cx.listener(|this, _, _, cx| this.undo(cx))),
-                            cx,
-                        )),
-                );
+                list = list.child(self.undo_confirmation(r, cx));
+            }
+            // The review card asks for its own plan; other plans ask here.
+            if self.discard_confirm == Some(id) && reviewed != Some(id) {
+                list = list.child(self.discard_confirmation(r, cx));
             }
         }
         list.into_any_element()
     }
+
+    /// A selection tree: a header with a check box for everything, then the visible rows in a virtualized
+    /// list (only the rows on screen are built).
+    fn tree_box(&self, which: TreeOf, cx: &mut Context<'_, Self>) -> AnyElement {
+        let colors = *ui_theme::colors(cx);
+        let prefix = which.prefix();
+        let Some(tree) = self.tree(which) else {
+            return div()
+                .id(SharedString::from(format!("{prefix}-loading")))
+                .test_support()
+                .py(Tokens::space(1.0))
+                .text_size(Tokens::text_sm())
+                .text_color(colors.text_muted)
+                .child("Loading folders…")
+                .into_any_element();
+        };
+        let editable = self.tree_editable(which);
+        let n = tree.rows().len();
+        let (picked, picked_bytes) = tree.picked();
+        let (total, _) = tree.total();
+        let header = h_flex()
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .py(Tokens::space(1.0))
+            .items_center()
+            .border_b_1()
+            .border_color(colors.border)
+            .text_size(Tokens::text_2xs())
+            .text_color(colors.text_faint)
+            .child(
+                div()
+                    .id(SharedString::from(format!("{prefix}-all")))
+                    .test_support()
+                    .role(Role::CheckBox)
+                    .aria_label(SharedString::from(format!(
+                        "{} of {} files selected ({})",
+                        picked,
+                        total,
+                        kit::format_bytes(picked_bytes)
+                    )))
+                    .when(editable, |d| {
+                        d.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| this.toggle_all(which, cx)))
+                    })
+                    .child(check_box(tree.all_tick(), editable, &colors)),
+            )
+            .child(div().w(Tokens::size(16.0)).flex_none())
+            .child(div().flex_1().child("FOLDER"))
+            .child(div().w(Tokens::size(96.0)).text_right().child("FILES"))
+            .child(div().w(Tokens::size(96.0)).text_right().child("SIZE"));
+        let list = uniform_list(
+            SharedString::from(format!("{prefix}-list")),
+            n,
+            cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                this.tree_rows(which, range, cx)
+            }),
+        )
+        .track_scroll(match which {
+            TreeOf::Plan => &self.plan_scroll,
+            TreeOf::Undo => &self.undo_scroll,
+        })
+        .w_full()
+        .h(Tokens::size(
+            TREE_ROW * n.clamp(1, TREE_VISIBLE_ROWS) as f32,
+        ));
+        v_flex()
+            .id(SharedString::from(prefix))
+            .test_support()
+            .aria_label(SharedString::from(format!(
+                "{} folders, {} rows",
+                tree.folder_count(),
+                n
+            )))
+            .w_full()
+            .child(header)
+            .child(list)
+            .into_any_element()
+    }
+
+    /// The rows `range` of a tree (called by its [`uniform_list`] for the rows on screen only).
+    fn tree_rows(
+        &mut self,
+        which: TreeOf,
+        range: std::ops::Range<usize>,
+        cx: &mut Context<'_, Self>,
+    ) -> Vec<AnyElement> {
+        let colors = *ui_theme::colors(cx);
+        let editable = self.tree_editable(which);
+        let prefix = which.prefix();
+        let Some(tree) = self.tree(which) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(range.len());
+        for ix in range {
+            let Some(row) = tree.row(ix).cloned() else {
+                continue;
+            };
+            let base = h_flex()
+                .id(SharedString::from(format!("{prefix}-row-{ix}")))
+                .test_support()
+                .w_full()
+                .h(Tokens::size(TREE_ROW))
+                .gap(Tokens::space(2.0))
+                .items_center()
+                .border_b_1()
+                .border_color(colors.border);
+            let indent = |depth: usize| div().flex_none().w(Tokens::space(4.0 * depth as f32));
+            let el =
+                match row {
+                    Row::Folder(n) => {
+                        let f = tree.folder(n);
+                        let state = match f.tick {
+                            Tick::All => "selected",
+                            Tick::Some => "partly selected",
+                            Tick::None => "not selected",
+                        };
+                        base.aria_label(SharedString::from(format!(
+                            "{}: {} of {} files, {}",
+                            f.path, f.picked, f.files, state
+                        )))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{prefix}-check-{ix}")))
+                                .test_support()
+                                .role(Role::CheckBox)
+                                .aria_label(SharedString::from(format!("{} {state}", f.path)))
+                                .when(editable, |d| {
+                                    d.cursor_pointer().on_click(cx.listener(
+                                        move |this, _, _, cx| this.toggle_row(which, ix, cx),
+                                    ))
+                                })
+                                .child(check_box(f.tick, editable, &colors)),
+                        )
+                        .child(indent(f.depth))
+                        .child(
+                            h_flex()
+                                .id(SharedString::from(format!("{prefix}-expand-{ix}")))
+                                .test_support()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(Tokens::space(1.0))
+                                .items_center()
+                                .when(f.expandable, |d| {
+                                    d.cursor_pointer().on_click(cx.listener(
+                                        move |this, _, _, cx| this.expand_row(which, ix, cx),
+                                    ))
+                                })
+                                .child(
+                                    Icon::new(if f.expanded {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronRight
+                                    })
+                                    .size(Tokens::icon_sm())
+                                    .text_color(
+                                        if f.expandable {
+                                            colors.text_faint
+                                        } else {
+                                            colors.border
+                                        },
+                                    ),
+                                )
+                                .child(
+                                    Icon::new(IconName::Folder)
+                                        .size(Tokens::icon_sm())
+                                        .text_color(colors.text_muted),
+                                )
+                                .child(mono(
+                                    f.name.clone(),
+                                    if f.tick == Tick::None {
+                                        colors.text_faint
+                                    } else {
+                                        colors.text
+                                    },
+                                )),
+                        )
+                        .child(num_cell(
+                            if f.tick == Tick::Some {
+                                format!("{} / {}", format_count(f.picked), format_count(f.files))
+                            } else {
+                                format_count(f.files)
+                            },
+                            colors.text,
+                        ))
+                        .child(num_cell(
+                            kit::format_bytes(if f.tick == Tick::None {
+                                f.bytes
+                            } else {
+                                f.picked_bytes
+                            }),
+                            colors.text_muted,
+                        ))
+                    }
+                    Row::File(n, k) => {
+                        let f = tree.file(n, k);
+                        let tick = if f.picked { Tick::All } else { Tick::None };
+                        base.aria_label(SharedString::from(format!(
+                            "{}: {}",
+                            f.name,
+                            if f.picked { "selected" } else { "not selected" }
+                        )))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{prefix}-check-{ix}")))
+                                .test_support()
+                                .role(Role::CheckBox)
+                                .when(editable, |d| {
+                                    d.cursor_pointer().on_click(cx.listener(
+                                        move |this, _, _, cx| this.toggle_row(which, ix, cx),
+                                    ))
+                                })
+                                .child(check_box(tick, editable, &colors)),
+                        )
+                        .child(indent(f.depth))
+                        .child(div().w(Tokens::size(16.0)).flex_none())
+                        .child(mono(
+                            f.name.clone(),
+                            if f.picked {
+                                colors.text
+                            } else {
+                                colors.text_faint
+                            },
+                        ))
+                        .child(num_cell(String::new(), colors.text))
+                        .child(num_cell(kit::format_bytes(f.size), colors.text_muted))
+                    }
+                    Row::Loading(n) => {
+                        let depth = tree.folder(n).depth + 1;
+                        base.child(div().w(Tokens::size(16.0)).flex_none())
+                            .child(indent(depth))
+                            .child(
+                                div()
+                                    .text_size(Tokens::text_xs())
+                                    .text_color(colors.text_faint)
+                                    .child("Loading files…"),
+                            )
+                    }
+                };
+            out.push(el.into_any_element());
+        }
+        out
+    }
+}
+
+/// A tri-state check box (ticked, partly ticked, empty).
+fn check_box(tick: Tick, enabled: bool, colors: &Colors) -> Div {
+    let on = tick != Tick::None;
+    div()
+        .size(Tokens::size(16.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(Tokens::RADIUS_SM)
+        .border_1()
+        .border_color(if on {
+            colors.accent
+        } else {
+            colors.border_strong
+        })
+        .when(on, |d| d.bg(colors.accent))
+        .when(!enabled, |d| d.opacity(0.6))
+        .when(on, |d| {
+            d.child(
+                Icon::new(if tick == Tick::All {
+                    IconName::Check
+                } else {
+                    IconName::Minus
+                })
+                .size(Tokens::icon_sm())
+                .text_color(colors.on_accent),
+            )
+        })
+}
+
+fn num_cell(text: String, color: Hsla) -> Div {
+    div()
+        .w(Tokens::size(96.0))
+        .flex_none()
+        .text_right()
+        .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+        .text_size(Tokens::text_mono())
+        .text_color(color)
+        .child(text)
 }
 
 impl Render for CleanupView {
@@ -903,7 +1611,7 @@ impl Render for CleanupView {
                     ),
                 );
             }
-            CleanupPhase::Review | CleanupPhase::Confirming => {
+            CleanupPhase::Review | CleanupPhase::Confirming | CleanupPhase::Selecting => {
                 if let Some(review) = self.review.clone() {
                     root = root.child(self.review_card(&review, cx));
                 }
