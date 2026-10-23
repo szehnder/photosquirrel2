@@ -121,15 +121,24 @@ fn load_inputs(catalog: &Catalog, ids: Option<&[FileId]>) -> Result<Vec<DedupInp
     Ok(out)
 }
 
+/// The stored keeper reasons: `{"text", "reason"}` each; the first, which names the deciding criterion against
+/// the runner-up, also carries that member's file id as `"runner_up"` (ADR-0074; rows stored before it have none).
 fn reasons_json(g: &Group) -> serde_json::Value {
     serde_json::Value::Array(
         g.keeper_reasons
             .iter()
-            .map(|r| {
-                serde_json::json!({
+            .enumerate()
+            .map(|(i, r)| {
+                let mut v = serde_json::json!({
                     "text": r.to_string(),
                     "reason": serde_json::to_value(r).unwrap_or(serde_json::Value::Null),
-                })
+                });
+                if i == 0
+                    && let Some(f) = g.runner_up
+                {
+                    v["runner_up"] = serde_json::json!(f.0);
+                }
+                v
             })
             .collect(),
     )

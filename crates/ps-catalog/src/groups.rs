@@ -102,6 +102,21 @@ impl GroupRow {
     pub fn reason_texts(&self) -> Vec<String> {
         reason_texts(&self.reasons)
     }
+
+    /// The member the keeper reasons compare against ([`reason_runner_up`]).
+    pub fn runner_up(&self) -> Option<FileId> {
+        reason_runner_up(&self.reasons)
+    }
+}
+
+/// The member a stored reasons array was explained against: the first reason's `runner_up` (ADR-0074), absent
+/// in rows stored before it.
+pub fn reason_runner_up(v: &serde_json::Value) -> Option<FileId> {
+    v.as_array()?
+        .first()?
+        .get("runner_up")?
+        .as_i64()
+        .map(FileId)
 }
 
 /// The `text` fields of a stored reasons array.

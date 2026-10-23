@@ -473,6 +473,46 @@ fn scenario_best_copy_keeper_reasons_listed() {
         text.contains("4000x3000") && text.contains("1024x768"),
         "{text}"
     );
+    assert_eq!(
+        r.runner_up,
+        Some(FileId(2)),
+        "the ranking names the runner-up it used"
+    );
+}
+
+#[test]
+fn scenario_best_copy_reasons_compare_against_the_best_different_copy() {
+    let keeper = camera_jpeg(1, "a/IMG_1.JPG", 0);
+    // Byte-identical, one folder deeper: ranks second on depth alone.
+    let same = copy_of(&keeper, 2, "a/backup/IMG_1.JPG");
+    // Resized in camera (same format tier), so pixel count decides.
+    let mut half = camera_jpeg(3, "small/IMG_1.JPG", 0);
+    half.meta.width = Some(2000);
+    half.meta.height = Some(1500);
+    half.size = 1_000_000;
+    let r = rank(&[&half, &same, &keeper], &BTreeSet::new());
+    assert_eq!(r.keeper, FileId(1));
+    assert_eq!(
+        r.order,
+        [FileId(1), FileId(2), FileId(3)],
+        "the order is unchanged"
+    );
+    assert_eq!(r.runner_up, Some(FileId(3)), "{:?}", r.reasons);
+    let text = r.reasons[0].to_string();
+    assert!(
+        text.starts_with("more pixels") && text.contains("4000x3000") && text.contains("2000x1500"),
+        "{text}"
+    );
+    // Without a different copy the identical one is the runner-up, as before.
+    let r = rank(&[&same, &keeper], &BTreeSet::new());
+    assert_eq!((r.keeper, r.runner_up), (FileId(1), Some(FileId(2))));
+    assert!(
+        r.reasons[0].to_string().starts_with("shallower folder"),
+        "{:?}",
+        r.reasons
+    );
+    // A single member has none.
+    assert_eq!(rank(&[&keeper], &BTreeSet::new()).runner_up, None);
 }
 
 #[test]
@@ -516,6 +556,8 @@ fn scenario_best_copy_raw_and_jpeg_kept_together() {
             .iter()
             .any(|r| matches!(r, KeeperReason::RawJpegSet { .. }))
     );
+    // The reasons explain the pair against the thumbnail, not against the keeper's own JPEG (ADR-0074).
+    assert_eq!(grp.runner_up, Some(FileId(3)));
 }
 
 #[test]

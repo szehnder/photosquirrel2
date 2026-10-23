@@ -115,6 +115,10 @@ pub struct GroupDetail {
     pub display: FileId,
     pub keeper_set: Vec<FileId>,
     pub keeper_reasons: Vec<String>,
+    /// The member the keeper reasons compare against (ADR-0074); `None` for groups stored before it (and
+    /// single-member groups).
+    #[serde(default)]
+    pub runner_up: Option<FileId>,
     /// The keeper is a user override ("chosen by you").
     pub chosen_by_you: bool,
     pub reclaimable_bytes: u64,
@@ -314,6 +318,9 @@ impl<'a> Groups<'a> {
             keeper_set: g.keeper_set.clone(),
             chosen_by_you: keeper_reasons.iter().any(|r| r == "chosen by you"),
             keeper_reasons,
+            runner_up: g
+                .runner_up()
+                .filter(|f| g.members.iter().any(|m| m.file == *f)),
             reclaimable_bytes: g.reclaimable_bytes,
             reviewed: g.reviewed_at_ms.is_some(),
             members,

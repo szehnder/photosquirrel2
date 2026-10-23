@@ -27,7 +27,9 @@ fn template() -> &'static Template {
     T.get_or_init(|| {
         let root = ps_fixtures::shared_dir(
             std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
-            "duplicates-template",
+            // Bump the name when what a scan stores changes (v2: groups record their runner-up, ADR-0074), so
+            // a template built by an older build is not reused.
+            "duplicates-template-v2",
             |root| {
                 let corpus = root.join("corpus");
                 let dir = root.join("data");
@@ -797,4 +799,61 @@ fn scenario_duplicate_review_copy_badge_stays_within_its_card(cx: &mut TestAppCo
             );
         }
     }
+}
+
+/// "Why this copy" and "Next best" compare the keeper with the same member: the best copy that differs from it,
+/// not a byte-identical copy that ranks second (ADR-0074).
+#[gpui_kit::test]
+fn scenario_duplicate_review_why_this_copy_and_next_best_name_the_same_copy(
+    cx: &mut TestAppContext,
+) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let identical = |d: &ReviewDetail, m: &ps_service::groups::GroupMember| {
+        m.edge == MemberEdge::Exact && d.matched_against(m.file) == Some(d.group.keeper)
+    };
+    let smaller = |d: &ReviewDetail, m: &ps_service::groups::GroupMember| {
+        let px = |m: &ps_service::groups::GroupMember| {
+            u64::from(m.width.unwrap_or(0)) * u64::from(m.height.unwrap_or(0))
+        };
+        d.group
+            .member(d.group.keeper)
+            .is_some_and(|k| px(m) < px(k))
+    };
+    let d = open_group(&view, &backend, &mut cx, |d| {
+        let others: Vec<_> = d
+            .members()
+            .iter()
+            .filter(|m| !m.keeper && !m.in_keeper_set)
+            .collect();
+        others.first().is_some_and(|m| identical(d, m))
+            && others.iter().any(|m| !identical(d, m) && smaller(d, m))
+            && d.group
+                .keeper_reasons
+                .first()
+                .is_some_and(|r| r.starts_with("more pixels"))
+    });
+    let others: Vec<_> = d
+        .members()
+        .iter()
+        .filter(|m| !m.keeper && !m.in_keeper_set)
+        .collect();
+    let copy = others.iter().find(|m| !identical(&d, m)).unwrap();
+    assert!(identical(&d, others[0]), "an identical copy ranks second");
+    assert_eq!(
+        d.group.runner_up,
+        Some(copy.file),
+        "the group records its runner-up"
+    );
+    let (w, h) = (copy.width.unwrap(), copy.height.unwrap());
+    let reason = &d.group.keeper_reasons[0];
+    assert!(
+        reason.contains(&format!("{w}x{h}")),
+        "{reason} does not name the resized copy"
+    );
+    let line = duplicates::why_compare_line(&d).unwrap();
+    let n = d.number_of(copy.file).unwrap();
+    assert!(line.contains(&format!("Next best #{n}: {w}×{h}")), "{line}");
+    assert_ne!(d.number_of(others[0].file), Some(n));
+    assert!(exists("duplicates-why-compare", &mut cx));
 }

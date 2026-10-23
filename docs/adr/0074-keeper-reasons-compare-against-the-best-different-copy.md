@@ -1,6 +1,6 @@
 # 0074. Keeper reasons compare against the best different copy (amends 0014)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-22
 - Deciders: maintainers
 - Amends: [0014](0014-best-copy-ranking.md)
@@ -17,8 +17,8 @@ member below them.
 - The ranking (order and keeper) is unchanged. The runner-up used for the reasons is the best-ranked member
   outside the keeper set whose content identity differs from the keeper's; if there is none, the best-ranked
   member outside the keeper set; if there is none, the second-ranked member.
-- The ranking records that runner-up with the group, and the review UI's "Next best" line uses it instead of
-  choosing its own.
+- The ranking records that runner-up with the group (in the stored keeper reasons, beside the deciding reason, so
+  the catalog schema does not change), and the review UI's "Next best" line uses it instead of choosing its own.
 - Stored groups without a recorded runner-up are read as before and get one at the next full regroup, which
   happens on the first scan of each app process.
 

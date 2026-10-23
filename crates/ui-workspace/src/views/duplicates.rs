@@ -144,16 +144,21 @@ pub fn current(cx: &App) -> Option<Entity<DuplicatesView>> {
     cx.try_global::<Current>()?.0.upgrade()
 }
 
-/// "Keeper #1 4032×3024 · 3.1 MB   vs   next best #2 1024×768 · 210 KB": the keeper beside the best copy that
-/// lost, so "Why this copy" names both members' dimensions. Byte-identical copies of the keeper are skipped
-/// (comparing a file with itself explains nothing); when every other copy is one, the line says so.
+/// "Keeper #1 4032×3024 · 3.1 MB   vs   next best #2 1024×768 · 210 KB": the keeper beside the copy the keeper
+/// reasons were explained against (the group's runner-up, ADR-0074), so "Why this copy" and this line name the
+/// same member. Groups stored before the runner-up was recorded fall back to the first copy that is not
+/// byte-identical to the keeper. When every other copy is identical, the line says so.
 pub fn why_compare_line(d: &ReviewDetail) -> Option<String> {
     let k = d.group.member(d.group.keeper)?;
     let others = d.members().iter().filter(|m| !m.in_keeper_set && !m.keeper);
     let identical = |m: &GroupMember| {
         m.edge == MemberEdge::Exact && d.matched_against(m.file) == Some(d.group.keeper)
     };
-    let Some(r) = others.clone().find(|m| !identical(m)) else {
+    let next = match d.group.runner_up.and_then(|f| d.group.member(f)) {
+        Some(r) if !r.keeper && !r.in_keeper_set => (!identical(r)).then_some(r),
+        _ => others.clone().find(|m| !identical(m)),
+    };
+    let Some(r) = next else {
         let n = others.count();
         if n == 0 {
             return None;

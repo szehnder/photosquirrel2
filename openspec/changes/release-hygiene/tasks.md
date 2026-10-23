@@ -18,7 +18,11 @@
 ## 3. Copy-card badge
 
 - [x] 3.1 `edge_chip` label "Resized copy{via}" with the full sentence as tooltip and the id `duplicates-edge-{n}`; `review_kit::chip` caps its width and ellipsizes its label; verify `scenario_duplicate_review_copy_badge_stays_within_its_card` (default and largest UI font size)
-- [ ] 3.2 Recapture `docs/screenshots/duplicates-group-dark.png` and `-light.png` (`cargo xtask screenshot` on the demo library, duplicates view) and review: badge inside the card, nothing else clipped
+- [x] 3.2 Recapture `docs/screenshots/duplicates-group-dark.png` and `-light.png` (`cargo xtask screenshot` on the demo library, duplicates view) and review: badge inside the card, nothing else clipped
+  Notes: recaptured on a fresh `photosquirrel-cli demo` library with `PHOTOSQUIRREL_REVIEW_GROUP=111`
+  (IMG_3437-Edit.jpg: keeper, a byte-identical backup copy ranked second, a 1024x829 resized copy): the badges read
+  "Exact copy of the keeper" and "Resized copy of the keeper" inside their cards, "Why this copy" says more pixels
+  1944x1574 vs 1024x829 and "Next best #3" names the resized copy; nothing else clipped, both themes.
 
 ## 4. Flaky timing tests
 
@@ -54,10 +58,20 @@
 
 ## 5. Small fixes
 
-- [ ] 5.1 Library toolbar: filter clusters as non-wrapping groups separated by spacing, divider elements removed; verify `scenario_gallery_toolbar_has_no_stray_divider`, then a 1280 px screenshot with the inspector open reviewed
-- [ ] 5.2 ADR-0074 accepted and listed in `docs/adr/README.md`; `Ranking::runner_up` and `Group::runner_up` (serde default), chosen as the best different copy outside the keeper set; verify `scenario_best_copy_reasons_compare_against_the_best_different_copy` and `scenario_best_copy_keeper_reasons_listed`
-- [ ] 5.3 `GroupDetail`/`ReviewDetail` expose the runner-up and `why_compare_line` uses it (old rows fall back); verify `scenario_duplicate_review_why_this_copy_and_next_best_name_the_same_copy` and `scenario_duplicate_review_why_this_copy_shown`
-- [ ] 5.4 Keepers unchanged: `photosquirrel-cli eval-corpus` on the small corpus reports the same precision, recall and keeper accuracy as before the change (verify: identical numbers in the task notes)
+- [x] 5.1 Library toolbar: filter clusters as non-wrapping groups separated by spacing, divider elements removed; verify `scenario_gallery_toolbar_has_no_stray_divider`, then a 1280 px screenshot with the inspector open reviewed
+  Notes: 1280x800 window, inspector open (target/screenshots/library-toolbar-1280-dark.png, not committed): the
+  kind and metadata clusters share the first line with the wider gap between them, the AI and export-status pair
+  wraps to the second line as a unit, no divider anywhere. Clusters also get `max_w_full().flex_wrap()`: at 960 px
+  with the inspector open the filter area is ~110 px, narrower than any cluster.
+- [x] 5.2 ADR-0074 accepted and listed in `docs/adr/README.md`; `Ranking::runner_up` and `Group::runner_up` (serde default), chosen as the best different copy outside the keeper set; verify `scenario_best_copy_reasons_compare_against_the_best_different_copy` and `scenario_best_copy_keeper_reasons_listed`
+- [x] 5.3 `GroupDetail`/`ReviewDetail` expose the runner-up and `why_compare_line` uses it (old rows fall back); verify `scenario_duplicate_review_why_this_copy_and_next_best_name_the_same_copy` and `scenario_duplicate_review_why_this_copy_shown`
+- [x] 5.4 Keepers unchanged: `photosquirrel-cli eval-corpus` on the small corpus reports the same precision, recall and keeper accuracy as before the change (verify: identical numbers in the task notes)
+  Notes (medium preset, seed 42, drives a, b, c; the gate the owner runs): before the change precision 1.0000,
+  recall 1.0000, keeper accuracy 1.0000, 0 must-not-merge violations (19,381 true pairs, 1,843 keeper groups);
+  after, on a fresh scan with the new build, exactly the same. Regrouping the *same* pre-change catalog with the new
+  build rewrote all 1,843 group rows (digests now include the runner-up) and gave the identical keeper for every
+  group (path list diff empty). Two separate scans may pick different byte-identical copies as keeper (file ids
+  break that tie and the parallel scan assigns them), which the gate scores as correct either way.
 
 ## 6. Verification
 

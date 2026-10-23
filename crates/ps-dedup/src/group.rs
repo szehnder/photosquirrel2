@@ -85,6 +85,9 @@ pub struct Group {
     /// The keeper and its RAW+JPEG companion, sorted.
     pub keeper_set: Vec<FileId>,
     pub display: FileId,
+    /// The member the keeper reasons compare against (ADR-0074).
+    #[serde(default)]
+    pub runner_up: Option<FileId>,
     pub keeper_reasons: Vec<KeeperReason>,
     /// Members best first.
     pub ranking: Vec<FileId>,
@@ -1026,6 +1029,7 @@ impl<'a> Grouper<'a> {
             keeper: r.keeper,
             keeper_set: r.keeper_set,
             display: r.display,
+            runner_up: r.runner_up,
             keeper_reasons: r.reasons,
             ranking: r.order,
             reclaimable_bytes,

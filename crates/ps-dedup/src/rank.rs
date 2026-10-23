@@ -177,6 +177,11 @@ pub struct Ranking {
     pub keeper_set: Vec<FileId>,
     /// The member to show: the set's JPEG, else the keeper.
     pub display: FileId,
+    /// What the keeper is explained against (ADR-0074): the best-ranked member outside the keeper set whose
+    /// content differs from the keeper's; else the best-ranked member outside the keeper set; else the
+    /// second-ranked member. `None` for a single member.
+    #[serde(default)]
+    pub runner_up: Option<FileId>,
     pub reasons: Vec<KeeperReason>,
 }
 
@@ -329,16 +334,18 @@ pub fn rank(members: &[&DedupInput], overrides: &BTreeSet<ContentId>) -> Ranking
     let order: Vec<FileId> = idx.iter().map(|&i| members[i].file).collect();
     let k = idx[0];
     let keeper = members[k];
-    let mut reasons = if idx.len() == 1 {
-        vec![KeeperReason::OnlyMember]
-    } else {
-        let (_, crit) = ctx.cmp(k, idx[1]);
-        ctx.reason(crit, k, idx[1])
+    let companion = keeper_set::companion(keeper, idx[1..].iter().map(|&i| members[i]));
+    let runner_up = runner_up(members, &idx, companion.map(|c| c.file));
+    let mut reasons = match runner_up {
+        None => vec![KeeperReason::OnlyMember],
+        Some(j) => {
+            let (_, crit) = ctx.cmp(k, j);
+            ctx.reason(crit, k, j)
+        }
     };
     if ctx.overridden[k] && reasons.first() != Some(&KeeperReason::ChosenByYou) {
         reasons.insert(0, KeeperReason::ChosenByYou);
     }
-    let companion = keeper_set::companion(keeper, idx[1..].iter().map(|&i| members[i]));
     let (keeper_set, display) = match companion {
         Some(c) => {
             let (raw, jpeg) = if keeper.format.is_raw() {
@@ -358,6 +365,27 @@ pub fn rank(members: &[&DedupInput], overrides: &BTreeSet<ContentId>) -> Ranking
         keeper: keeper.file,
         keeper_set,
         display,
+        runner_up: runner_up.map(|j| members[j].file),
         reasons,
     }
+}
+
+/// The index of the member the keeper is explained against (ADR-0074), from the ranked indices `idx`
+/// (`idx[0]` is the keeper) and the keeper's RAW+JPEG companion: a byte-identical copy or the companion says
+/// nothing about why the keeper beat the other copies.
+fn runner_up(members: &[&DedupInput], idx: &[usize], companion: Option<FileId>) -> Option<usize> {
+    let (&k, rest) = idx.split_first()?;
+    let keeper = members[k].exact_key();
+    let outside: Vec<usize> = rest
+        .iter()
+        .copied()
+        .filter(|&i| Some(members[i].file) != companion)
+        .collect();
+    let identical = |i: usize| keeper.is_some() && members[i].exact_key() == keeper;
+    outside
+        .iter()
+        .copied()
+        .find(|&i| !identical(i))
+        .or_else(|| outside.first().copied())
+        .or_else(|| rest.first().copied())
 }
