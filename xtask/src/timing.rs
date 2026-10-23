@@ -51,6 +51,10 @@ pub fn run(root: &Path, runs: u32) -> Result<()> {
     if runs == 0 {
         bail!("--runs must be at least 1");
     }
+    eprintln!(
+        "timing pass: {} tests marked #[ignore = \"{IGNORE_REASON}\"], one at a time",
+        TESTS.len()
+    );
     for i in 1..=runs {
         for package in ["ui-workspace", "ui-gallery"] {
             let tests: Vec<&TimingTest> = TESTS.iter().filter(|t| t.package == package).collect();
