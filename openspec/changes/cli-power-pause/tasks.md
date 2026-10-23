@@ -36,7 +36,7 @@
 - [x] 6.2 `scan resume --ignore-battery` against a live scan prints a stderr note that the flag has no effect; README says when the flag applies (verify: `resume_request_on_battery_keeps_the_scan_running` checks the note; README diff reviewed)
 - [x] 6.3 `scenario_settings_cli_setting_off_does_not_pause` is the binary test (setting off, unplugged mid-scan: no power line, no paused snapshot, completed); the ps-service gate test is renamed `cli_policy_off_without_the_setting_or_with_the_flag` (verify: both pass; `cargo xtask spec-coverage` still maps every scenario of this change)
 - [x] 6.4 The sysfs reader skips non-regular files and caps each read at 64 bytes; the override logs a warning, and another when its folder is missing; `doctor` shows the power probe (verify: `sysfs_skips_non_regular_files_and_caps_reads`, `sysfs_does_not_block_on_a_fifo` (unix), `override_is_warned_about_and_shown_by_doctor`)
-- [ ] 6.5 `cargo xtask ci` is green in a clean worktree, and GitHub CI is green on all four jobs
+- [x] 6.5 `cargo xtask ci` is green in a clean worktree, and GitHub CI is green on all four jobs
 
 ## Workflow follow-up
 
