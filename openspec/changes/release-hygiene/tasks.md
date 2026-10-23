@@ -76,6 +76,6 @@
 ## 6. Verification
 
 - [ ] 6.1 `cargo xtask ci` is green
-- [ ] 6.2 `cargo xtask package --docker` passes and the extracted AppImage's `THIRD-PARTY-LICENSES` contains the AppImage runtime section
-- [ ] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
-- [ ] 6.4 `openspec validate release-hygiene --strict` passes
+- [x] 6.2 `cargo xtask package --docker` passes and the extracted AppImage's `THIRD-PARTY-LICENSES` contains the AppImage runtime section
+- [x] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
+- [x] 6.4 `openspec validate release-hygiene --strict` passes
