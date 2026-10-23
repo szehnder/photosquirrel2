@@ -5950,6 +5950,7 @@ dependencies = [
  "ps-media",
  "ps-model",
  "ps-service",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

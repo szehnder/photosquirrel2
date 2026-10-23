@@ -24,6 +24,10 @@ struct PlannedFileOut {
     /// Where the target folder's date came from (ADR-0043).
     date_origin: ps_export::DateOrigin,
     date_source: String,
+    /// The filing date to its precision: `YYYY-MM` (month), `YYYY-MM-DD` (day) or `YYYY-MM-DD HH:MM:SS`.
+    date: Option<String>,
+    /// `second`, `day` or `month` (ADR-0069).
+    precision: ps_model::DatePrecision,
 }
 
 #[derive(Serialize)]
@@ -34,6 +38,9 @@ struct DryRunOut<'a> {
     required_bytes: u64,
     free_bytes: Option<u64>,
     blocked: Option<String>,
+    /// Plan warnings (`other_catalog_library`, ADR-0071) and their text.
+    warnings: &'a [ps_export::PlanWarning],
+    warning_texts: Vec<String>,
     files: Vec<PlannedFileOut>,
     unavailable: &'a [ps_export::Unavailable],
     /// Library copies changed by another application since the export (not copied again, ADR-0046).
@@ -48,6 +55,8 @@ fn plan_out(plan: &Plan) -> DryRunOut<'_> {
         required_bytes: plan.required_bytes,
         free_bytes: plan.free_bytes,
         blocked: plan.blocker().map(|b| b.to_string()),
+        warnings: &plan.warnings,
+        warning_texts: plan.warnings.iter().map(ToString::to_string).collect(),
         files: plan
             .files()
             .map(|f| PlannedFileOut {
@@ -58,6 +67,8 @@ fn plan_out(plan: &Plan) -> DryRunOut<'_> {
                 action: f.action,
                 date_origin: f.date_origin,
                 date_source: f.date_origin.describe(),
+                date: f.capture.map(|t| f.date_precision.iso(&t)),
+                precision: f.date_precision,
             })
             .collect(),
         unavailable: &plan.unavailable,
@@ -78,9 +89,19 @@ fn print_totals(o: &DryRunOut<'_>) {
     );
     let d = &o.totals.dates;
     println!(
-        "dates: {} own, {} from another copy in the group, {} from file names, {} from sidecars, {} undated",
-        d.own, d.other_copy, d.file_name, d.sidecar, d.undated
+        "dates: {} own, {} from another copy in the group, {} from file names, {} from sidecars, {} from folder \
+         names, {} undated",
+        d.own, d.other_copy, d.file_name, d.sidecar, d.folder_name, d.undated
     );
+    if o.totals.filed_under_earlier_rules > 0 {
+        println!(
+            "{} exported copies are filed under earlier date rules and stay where they are",
+            o.totals.filed_under_earlier_rules
+        );
+    }
+    for w in &o.warning_texts {
+        println!("warning: {w}");
+    }
     if let Some(free) = o.free_bytes {
         println!(
             "needs {} in {}, {} free",

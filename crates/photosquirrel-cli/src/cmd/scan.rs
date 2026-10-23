@@ -205,6 +205,7 @@ pub fn start(
     resume: bool,
     run: Option<i64>,
     ignore_battery: bool,
+    refresh_analysis: bool,
 ) -> Result<()> {
     let data = ctx.data_dir()?;
     if control::is_live(&data, Job::Scan) {
@@ -216,6 +217,10 @@ pub fn start(
         .into());
     }
     let svc = ctx.service()?;
+    if refresh_analysis {
+        // This process's runs (a new one or a resumed one) refresh old rows' analysis (ADR-0071).
+        svc.engine().update_options(|o| o.refresh_analysis = true);
+    }
     let power = PowerGuard::new(ctx.settings()?.general.pause_on_battery, ignore_battery);
     let ids: Vec<SourceId> = sources.iter().map(|s| SourceId(*s)).collect();
     let run = if resume {
@@ -241,7 +246,7 @@ pub fn resume(ctx: &Ctx, run: Option<i64>, ignore_battery: bool) -> Result<()> {
         }
         return control_live(ctx, "resume");
     }
-    start(ctx, &[], true, run, ignore_battery)
+    start(ctx, &[], true, run, ignore_battery, false)
 }
 
 fn foreground(
@@ -367,6 +372,19 @@ fn print_summary(run: ScanRunId, s: &RunSummary) {
         s.diff.quarantined,
         s.errors
     );
+    if s.diff.redated > 0 {
+        println!(
+            "{} capture dates updated by the current date rules (folder names, local days; no file read)",
+            s.diff.redated
+        );
+    }
+    if s.diff.needs_refresh > 0 {
+        println!(
+            "{} files were analysed by an older version and keep their class; rescan with \
+             `photosquirrel-cli scan --refresh-analysis` to re-classify them (reads up to 256 KB of each)",
+            s.diff.needs_refresh
+        );
+    }
     if let Some(g) = &s.grouping {
         println!(
             "duplicate groups: {} groups with {} files, {} similar-shot suggestions ({} regrouped in {} ms)",

@@ -32,6 +32,8 @@ env_logger.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Tests turn catalog rows into rows of an older version (capture-dates refresh).
+rusqlite.workspace = true
 blake3.workspace = true
 insta.workspace = true
 ps-llm = { workspace = true, features = ["testing"] }

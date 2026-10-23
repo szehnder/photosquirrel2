@@ -329,4 +329,44 @@ mod tests {
         assert_eq!(r.origin, DateOrigin::MTIME);
         assert_eq!(r.capture, Some(t(2024, 1, 1, 0, 0, 0)));
     }
+
+    #[test]
+    fn folder_dates_rank_below_names_and_sidecars() {
+        let folder = |d| Some((DateProvenance::FolderName, t(2019, 7, d, 0, 0, 0)));
+        let mtime = Some((DateProvenance::FileMtime, t(2024, 1, 1, 0, 0, 0)));
+        let none = |_: &DateFacts<'_>| None;
+        // The keeper's own folder date before a copy's.
+        let keeper = facts(1, "IMG_0001.jpg", folder(4));
+        let r = resolve(&keeper, &[facts(2, "b.jpg", folder(5))], none);
+        assert_eq!(r.capture, Some(t(2019, 7, 4, 0, 0, 0)));
+        assert_eq!(r.origin, DateOrigin::own(DateSource::FolderName));
+        assert_eq!(r.origin.describe(), "folder name");
+        assert_eq!(r.precision, DatePrecision::Day);
+        assert!(!r.undated);
+        // A copy's folder date files a keeper dated only by its file time.
+        let plain = facts(1, "IMG_0001.jpg", mtime);
+        let r = resolve(&plain, &[facts(2, "b.jpg", folder(5))], none);
+        assert_eq!(r.capture, Some(t(2019, 7, 5, 0, 0, 0)));
+        assert_eq!(r.origin.copy, Some(FileId(2)));
+        assert_eq!(r.origin.describe(), "folder name of another copy");
+        // A file name or a sidecar of any copy wins over every folder.
+        let r = resolve(&keeper, &[facts(2, "IMG_20180101_120000.jpg", mtime)], none);
+        assert_eq!(r.origin.source, DateSource::FileName);
+        let r = resolve(&keeper, &[facts(2, "b.jpg", mtime)], |f| {
+            (f.file == FileId(2)).then(|| t(2017, 1, 1, 0, 0, 0))
+        });
+        assert_eq!(r.origin.source, DateSource::Sidecar);
+        // An embedded date of any copy wins over the keeper's folder.
+        let r = resolve(
+            &keeper,
+            &[facts(
+                2,
+                "b.jpg",
+                Some((DateProvenance::DateTimeOriginal, t(2019, 7, 3, 21, 0, 0))),
+            )],
+            none,
+        );
+        assert_eq!(r.capture, Some(t(2019, 7, 3, 21, 0, 0)));
+        assert_eq!(r.precision, DatePrecision::Second);
+    }
 }

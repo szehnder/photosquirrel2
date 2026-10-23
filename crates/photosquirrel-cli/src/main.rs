@@ -130,6 +130,10 @@ struct ScanStartArgs {
     /// Do not pause on battery power for this scan, although `general.pause_on_battery` is on.
     #[arg(long)]
     ignore_battery: bool,
+    /// Also refresh the analysis of unchanged files analysed by a version before classification facts were
+    /// stored: re-read their first 256 KB (read-only) and re-classify them. Can take long on large catalogs.
+    #[arg(long)]
+    refresh_analysis: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -432,10 +436,16 @@ fn run(cli: Cli) -> Result<()> {
                 a.start.resume,
                 a.start.run,
                 a.start.ignore_battery,
+                a.start.refresh_analysis,
             ),
-            Some(ScanCommand::Start(s)) => {
-                cmd::scan::start(&ctx, &s.sources, s.resume, s.run, s.ignore_battery)
-            }
+            Some(ScanCommand::Start(s)) => cmd::scan::start(
+                &ctx,
+                &s.sources,
+                s.resume,
+                s.run,
+                s.ignore_battery,
+                s.refresh_analysis,
+            ),
             Some(ScanCommand::Resume {
                 run,
                 ignore_battery,

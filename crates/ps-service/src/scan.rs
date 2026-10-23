@@ -119,6 +119,13 @@ impl ScanService {
         self.unless_busy(|e| e.start_scan(sources))
     }
 
+    /// Start scanning `sources` (all when empty) and refresh the analysis of their unchanged files analysed
+    /// before classification facts were stored: their first 256 KB are re-read, read-only, and they are
+    /// re-classified (ADR-0071). The scan summary's `needs_refresh` counts such files.
+    pub fn start_refreshing_analysis(&self, sources: &[SourceId]) -> Result<ScanRunId> {
+        self.unless_busy(|e| e.start_scan_with(sources, true))
+    }
+
     pub fn pause(&self) -> Result<ScanRunId> {
         self.engine.pause()
     }

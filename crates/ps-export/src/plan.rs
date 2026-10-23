@@ -51,6 +51,8 @@ pub struct PlannedFile {
     pub date_origin: DateOrigin,
     /// The precision of that date (a month folder for `month`, ADR-0069).
     pub date_precision: DatePrecision,
+    /// The filing date itself (wall clock), when the keeper has one.
+    pub capture: Option<ps_model::CaptureTime>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -663,6 +665,7 @@ pub fn plan(
                 action,
                 date_origin: f.date_origin,
                 date_precision: f.precision,
+                capture: f.capture,
             });
             out.totals.dates.add(f.date_origin);
         }

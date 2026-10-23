@@ -326,6 +326,16 @@ impl DatePrecision {
         }
     }
 
+    /// `t` to this precision: `YYYY-MM`, `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS` (machine output).
+    pub fn iso(self, t: &CaptureTime) -> String {
+        let (y, m, d) = t.ymd();
+        match self {
+            DatePrecision::Month => format!("{y:04}-{m:02}"),
+            DatePrecision::Day => format!("{y:04}-{m:02}-{d:02}"),
+            DatePrecision::Second => t.display(),
+        }
+    }
+
     pub fn from_code(c: u8) -> Option<Self> {
         Some(match c {
             0 => DatePrecision::Second,
@@ -387,12 +397,7 @@ impl CaptureDate {
 
     /// `YYYY-MM` (month), `YYYY-MM-DD` (day) or `YYYY-MM-DD HH:MM:SS` (second): machine output.
     pub fn iso(&self) -> String {
-        let (y, m, d) = self.value.ymd();
-        match self.precision {
-            DatePrecision::Month => format!("{y:04}-{m:02}"),
-            DatePrecision::Day => format!("{y:04}-{m:02}-{d:02}"),
-            DatePrecision::Second => self.value.display(),
-        }
+        self.precision.iso(&self.value)
     }
 }
 
