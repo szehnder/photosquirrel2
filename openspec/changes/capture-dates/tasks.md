@@ -41,7 +41,7 @@
 - [x] 6.1 CLI: `scan --refresh-analysis`; `files --json`/`show` and `export plan --json` carry `precision` and the folder-name provenance (the CLI has no `files` command: the per-file date, its precision and provenance are in `export dry-run --json`, fields `date`, `precision`, `date_source`); verify `cargo test -p photosquirrel-cli` and `scenario_media_metadata_month_folder_stays_a_month` (CLI JSON half)
 - [x] 6.2 Inspector shows precision ("July 2019", "4 July 2019", full time) with provenance; verify the headless `#[gpui_kit::test]` `scenario_photo_inspector_month_precision_date_shown_as_a_month`
 - [x] 6.3 Scan summary shows re-dated count and "N files need an analysis refresh" with a Refresh analysis action that rescans those sources with the option; verify a headless UI test that the action starts a run with `refresh_analysis` set, and `cargo xtask tokens`
-- [ ] 6.4 README (dates section: folder dates, precision, local days, existing libraries keep their folders, other-catalog warning) and `docs/performance.md` (re-date cost); verify the README commands run as written on the small corpus
+- [x] 6.4 README (dates section: folder dates, precision, local days, existing libraries keep their folders, other-catalog warning) and `docs/performance.md` (re-date cost); verify the README commands run as written on the small corpus
 
 ## 7. Verification
 

@@ -125,6 +125,17 @@ average below 2). Repeated runs on this machine vary by up to about 60% for the 
 budgets and 10-25% for the I/O-bound ones (catalog, export re-plan), so compare a regression with a second
 run before acting on it; CI re-measures a suspected regression twice and keeps the best run.
 
+### Re-dating an existing catalog (ADR-0071)
+
+When the capture-date rules change, the first rescan of each source re-dates its unchanged rows from stored facts
+(path, modification time, metadata JSON) without reading any file. It is not a budget: it runs once per rule
+change, chunked and resumable. Measured on the reference machine (release build,
+`cargo test --release -p ps-scan --test redate_scale -- --ignored --nocapture`): a synthetic catalog of 1,000,000
+rows, 30% of them dated only by their file time, re-dates its 300,000 stale rows in 14.9 s (every date changed,
+Los Angeles zone), on top of 3.2 s for the diff's page reads; the no-change rescan of 100k files stayed at
+0.43 s. All 1M rows stale would take about 50 s. The opt-in analysis refresh of rows from before catalog
+migration 13 reads up to 256 KB per row: minutes on an SSD, hours for 1M rows on a USB hard drive or a NAS.
+
 `gallery-scroll-p95` needs a visible window: Wayland sends no frames to the render bench while the desktop
 session is locked (it reports "frames stalled" and prints no measurement, which fails the check). It was
 recorded separately from an unlocked session on 2026-10-21 with

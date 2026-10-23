@@ -141,6 +141,40 @@ terminal. `PHOTOSQUIRREL_POWER_SUPPLY_DIR` points the power check at a folder la
 `/sys/class/power_supply` instead of the system's own (on any platform; for testing and support; a warning says
 it is in use, and `doctor` shows it).
 
+## Capture dates
+
+Each photo is filed by the best date known for it, in this order: the camera's DateTimeOriginal, CreateDate, the
+video's creation date, a date in the name of a folder holding it, and only then the file's modification time.
+For the library, a copy without a date of its own borrows the date another copy of the same photo has (its EXIF,
+a date in its file name or XMP sidecar, then its folder).
+
+- **Folder dates.** Folders inside a source whose names start with a date count: `2019-07-04`, `2019_07_04 Beach`,
+  `2019.07.04`, `20190704`, a dated tree such as `2019/07/04`, and month folders such as `2019-07 Italy` or
+  `2019/07`. A year alone (`2019`), a date later in the name (`Backup 2019-07-04`) and the source folder's own name
+  are never used, and a folder date more than a day after the file was last modified is ignored (it names a
+  backup or an import, not the photo). Folder dates never decide duplicates or keepers.
+- **Honest precision.** A month folder dates its photos to the month only: the inspector shows "July 2019", from
+  the folder name, and the library files them under `<YYYY>/<YYYY-MM>/` instead of inventing a day.
+- **Local days.** A file's modification time, and a video creation time recorded in UTC, count on the day it was
+  where you are: the offset the file records, else your computer's time zone at that moment (daylight saving
+  included). Camera dates keep their own clock and are never shifted. Files with only a modification time go
+  under `Undated/<YYYY>/<YYYY-MM-DD>/`.
+- **Existing catalogs and libraries.** After an update that changes these rules, the next rescan re-dates the
+  catalog from what it already knows, without reading any file, and says how many dates changed. Copies already
+  in your library stay where they are and are never copied again; only photos not yet exported use the new
+  folders, and the export plan says how many copies are filed under earlier rules. A library written by another
+  catalog (for example after starting over with a new data folder) gets a warning in the plan: files already in
+  it may be copied again into different folders, and nothing in it is ever overwritten.
+- **Older catalogs.** Files analysed by a version before classification facts were stored keep their class; the
+  scan summary counts them and offers **Refresh analysis** (`photosquirrel-cli scan --refresh-analysis`), which
+  re-reads only the first 256 KB of each such file, read-only, to classify it again.
+
+```sh
+photosquirrel-cli scan                                         # re-dates old rows, reads nothing for them
+photosquirrel-cli scan --refresh-analysis                      # also re-classifies files from older versions
+photosquirrel-cli --json export dry-run --library ~/Pictures/Library   # each file's date, precision and source
+```
+
 ## Freeing up space (optional)
 
 In Reports, **Free up space** appears on every drive that has files whose best copy is already in your library
