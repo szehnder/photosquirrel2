@@ -175,6 +175,13 @@ What was observed while writing this design (read-only; nothing was built or run
   siblings and clocks are shared). Both bounds are kept; the loaded verification of tasks 4.3 and 4.4 stays open.
   The `scan_real` bound now counts from the click (after the frame the click lands on), because the click's
   handler itself waits for the engine; counting after the handler, as before, would exclude the engine's stop.
+- **Scheduling, not thresholds (ADR-0075).** Decided after the diagnosis: the flakes came from running beside the
+  rest of the suite in `cargo xtask ci` and Linux CI. Every UI test that asserts a wall-clock or frame-time budget
+  (`dashboard_controls_on_the_real_engine`, `scenario_scan_progress_ui_cost_independent_of_rate`,
+  `scenario_app_shell_slow_query_keeps_ui_responsive`, `scenario_gallery_jump_to_any_position`,
+  `gallery_frame_cpu_cost_flinging_1m`) is `#[ignore = "timing"]`; `cargo xtask timing` runs exactly those with
+  `--ignored --exact --test-threads=1`, and `cargo xtask ci` runs it right after `cargo test`. A unit test keeps the
+  list in `xtask/src/timing.rs` equal to the marked tests. Spec coverage is by test name, so they stay mapped.
 
 ### (e) Small fixes
 - **Toolbar.** Remove the two divider `div`s; wrap the three filter clusters in `h_flex().flex_none()` groups

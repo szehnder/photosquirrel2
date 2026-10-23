@@ -124,7 +124,7 @@ source = { kind = "test", package = "ps-dedup", test = "scale", name = "regroup_
 # warm textures (3,000 distinct thumbnails decoded and uploaded first) and prints `frame interval ms: p50=..
 # p95=..`; the window must be visible and focused (Wayland sends no frames otherwise). First gallery frame:
 # launch to the first frame with gallery cells on a synthetic 1M catalog (built once into the temp folder).
-# `cargo test --release -p ui-gallery --test render_cost` measures the headless CPU cost of the same frames.
+# `cargo test --release -p ui-gallery --test render_cost -- --ignored` measures the headless CPU cost of the same frames.
 [[budget]]
 name = "gallery-scroll-p95"
 metric = "p95"

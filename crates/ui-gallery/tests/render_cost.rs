@@ -2,7 +2,7 @@
 //! whole window's layout, prepaint and paint per frame on the test platform (no GPU). A proxy for the
 //! windowed `photosquirrel --render-bench`, which needs a focused window on a real display.
 //!
-//! `cargo test --release -p ui-gallery --test render_cost -- --nocapture`
+//! `cargo test --release -p ui-gallery --test render_cost -- --ignored --nocapture` (a timing test: `cargo xtask timing`)
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -19,6 +19,8 @@ use ui_gallery::source::{GalleryQuery, ThumbKey};
 use ui_gallery::{GalleryGrid, GalleryModel};
 
 #[gpui_kit::test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`).
+#[ignore = "timing"]
 fn gallery_frame_cpu_cost_flinging_1m(cx: &mut TestAppContext) {
     support::init(cx);
     let source = Arc::new(SyntheticSource::new(1_000_000, 3_000));

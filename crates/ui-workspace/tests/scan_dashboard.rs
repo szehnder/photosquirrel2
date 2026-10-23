@@ -501,6 +501,8 @@ fn p95(mut times: Vec<Duration>) -> Duration {
 }
 
 #[gpui_kit::test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`).
+#[ignore = "timing"]
 fn scenario_scan_progress_ui_cost_independent_of_rate(cx: &mut TestAppContext) {
     // Two apps, each with a live run on the simulated engine sampled by the dashboard's own loop.
     let mut slow_app = cx.new_app();

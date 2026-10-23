@@ -236,6 +236,8 @@ fn scenario_app_shell_palette_finds_commands(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`).
+#[ignore = "timing"]
 fn scenario_app_shell_slow_query_keeps_ui_responsive(cx: &mut TestAppContext) {
     let backend = Arc::new(FakeBackend::small_corpus());
     *backend.summary_delay.lock().unwrap() = Duration::from_secs(2);

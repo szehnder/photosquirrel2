@@ -37,6 +37,8 @@ fn scenario_gallery_scrollbar_reflects_total(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`).
+#[ignore = "timing"]
 fn scenario_gallery_jump_to_any_position(cx: &mut TestAppContext) {
     let (grid, _, cx) = open_grid(cx, Arc::new(SyntheticSource::new(1_000_000, 3_000)));
     let start = Instant::now();

@@ -4,7 +4,9 @@
 //! `dashboard_controls_on_the_real_engine` runs on a tiny generated corpus with a simulated slow device.
 //! The gate on the medium corpus is opt-in (reads ~5 GB):
 //! `cargo run --release -p photosquirrel-cli -- fixtures generate --preset medium --out target/corpus-medium`, then
-//! `cargo test -p ui-workspace --test scan_real -- --ignored --test-threads=1`.
+//! `cargo test -p ui-workspace --test scan_real -- --ignored --exact dashboard_controls_on_the_medium_corpus`.
+//! `dashboard_controls_on_the_real_engine` asserts a wall-clock bound, so it is ignored in the main test pass and
+//! run alone by `cargo xtask timing` (part of `cargo xtask ci`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -198,6 +200,8 @@ fn exercise(r: &mut Real, sources: usize, limit: Duration) {
 }
 
 #[gpui_kit::test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`).
+#[ignore = "timing"]
 fn dashboard_controls_on_the_real_engine(cx: &mut TestAppContext) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("corpus");

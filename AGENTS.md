@@ -24,7 +24,7 @@ Scale: 100k-1M+ files on mixed SSD/HDD/NAS.
   - core (no tokio, no gpui-kit): `ps-model`, `ps-media`, `ps-hash`, `ps-dedup`, `ps-fixtures`
   - I/O (no gpui-kit): `ps-catalog`, `ps-scan`, `ps-llm`, `ps-export`, `ps-service` (the facade), `photosquirrel-cli`
   - UI: `ui-theme` (tokens), `ui-gallery` (virtualized grid), `ui-workspace` (shell, panels), `photosquirrel` (binary)
-- `xtask/`: `cargo xtask <ci|doctor|bench|screenshot|package|spec-coverage|layering|tokens>`.
+- `xtask/`: `cargo xtask <ci|doctor|bench|timing|screenshot|package|spec-coverage|layering|tokens>`.
 - `packaging/`: Linux packaging Docker image, desktop file, release notes template (ADR-0030).
 - `docs/gpui-notes.md`: hard-won GPUI API knowledge. Read it before UI work; add to it when an API surprises you.
 
@@ -69,7 +69,8 @@ they run, so even leaks land on disk; when running `cargo test` by hand, set `TM
 ## Useful commands
 ```
 cargo xtask doctor                         # prerequisites (libheif, ffmpeg, LM Studio are optional)
-cargo xtask ci                             # everything CI runs
+cargo xtask ci                             # everything CI runs (the timing pass last)
+cargo xtask timing --runs 20               # only the wall-clock budget tests, alone (ADR-0075)
 cargo run --release -p photosquirrel       # the app
 cargo run --release -p photosquirrel-cli -- fixtures generate --out corpus --seed 7
 cargo run --release -p photosquirrel-cli -- scan corpus && cargo run -p photosquirrel-cli -- report

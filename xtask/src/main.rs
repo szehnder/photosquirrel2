@@ -6,6 +6,7 @@ mod layering;
 mod package;
 mod screenshot;
 mod spec_coverage;
+mod timing;
 mod tokens;
 
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Everything CI runs: fmt, clippy, layering, tokens, tests, openspec validate.
+    /// Everything CI runs: fmt, clippy, layering, tokens, tests, the timing pass, openspec validate.
     Ci {
         /// Skip `cargo test` (useful for quick pre-commit checks).
         #[arg(long)]
@@ -42,6 +43,12 @@ enum Cmd {
         /// Refuse to build unless this release tag equals `v<workspace version>`.
         #[arg(long)]
         tag: Option<String>,
+    },
+    /// The timing pass: the UI tests that assert wall-clock budgets, alone and one at a time (ADR-0075).
+    Timing {
+        /// Run the pass this many times (stops at the first failure).
+        #[arg(long, default_value_t = 1)]
+        runs: u32,
     },
     /// Check crate layering rules (ADR-0003).
     Layering,
@@ -115,6 +122,7 @@ fn main() -> Result<()> {
                 tag,
             },
         ),
+        Cmd::Timing { runs } => timing::run(&root, runs),
         Cmd::Layering => layering::check(&root),
         Cmd::Tokens => tokens::check(&root),
         Cmd::SpecCoverage { enforce } => spec_coverage::run(&root, enforce),
@@ -228,6 +236,8 @@ fn ci(root: &Path, no_test: bool) -> Result<()> {
             "cargo test",
             cargo(root)?.args(["test", "--workspace", "--no-fail-fast"]),
         )?;
+        // The wall-clock budget tests, skipped above (`#[ignore = "timing"]`), alone and one at a time.
+        timing::run(root, 1)?;
     }
     if which("openspec") {
         run(
