@@ -2,14 +2,14 @@
 
 ## 1. Decision
 
-- [ ] 1.1 ADR-0072 "CLI scans pause on battery and resume on mains power" moved from proposed to accepted (verify: status line reads accepted and the `docs/adr/README.md` row links the file)
+- [x] 1.1 ADR-0072 "CLI scans pause on battery and resume on mains power" moved from proposed to accepted (verify: status line reads accepted and the `docs/adr/README.md` row links the file)
 
 ## 2. Shared pause rule (`ps-service::power`)
 
-- [ ] 2.1 Extract `PowerPolicy` (`ResumeOnMains::{Offer, Auto}`, `tick`, `user_paused`, `note`, `PowerEvent`) from `PowerWatch::tick`; `PowerWatch` delegates with `Offer` (verify: `scenario_settings_scan_pauses_on_battery` passes unchanged, and the existing `power.rs` unit tests pass)
-- [ ] 2.2 `probe_from_env()` with `PHOTOSQUIRREL_POWER_SUPPLY_DIR` over `SysfsPower` (verify: unit test in `power.rs` that a temp folder with `BAT0` discharging and no online mains reads battery, an empty variable falls back to `SystemPower`)
-- [ ] 2.3 `Auto` resumes only runs it paused, on a slow `ScanService` (`max_readers: 1`, `read_delay`) with a fake source in `crates/ps-service/tests/pause_on_battery.rs` (verify: `scenario_settings_cli_scan_pauses_on_battery`, `scenario_settings_cli_scan_resumes_on_mains_power`, `scenario_settings_cli_setting_off_does_not_pause`)
-- [ ] 2.4 `user_paused` and the resume-on-battery override with `Auto` (verify: `scenario_settings_cli_user_pause_not_auto_resumed`, `scenario_settings_cli_resume_on_battery_overrides`)
+- [x] 2.1 Extract `PowerPolicy` (`ResumeOnMains::{Offer, Auto}`, `tick`, `user_paused`, `note`, `PowerEvent`) from `PowerWatch::tick`; `PowerWatch` delegates with `Offer` (verify: `scenario_settings_scan_pauses_on_battery` passes unchanged, and the existing `power.rs` unit tests pass)
+- [x] 2.2 `probe_from_env()` with `PHOTOSQUIRREL_POWER_SUPPLY_DIR` over `SysfsPower` (verify: unit test in `power.rs` that a temp folder with `BAT0` discharging and no online mains reads battery, an empty variable falls back to `SystemPower`)
+- [x] 2.3 `Auto` resumes only runs it paused, on a slow `ScanService` (`max_readers: 1`, `read_delay`) with a fake source in `crates/ps-service/tests/pause_on_battery.rs` (verify: `scenario_settings_cli_scan_pauses_on_battery`, `scenario_settings_cli_scan_resumes_on_mains_power`, `scenario_settings_cli_setting_off_does_not_pause`)
+- [x] 2.4 `user_paused` and the resume-on-battery override with `Auto` (verify: `scenario_settings_cli_user_pause_not_auto_resumed`, `scenario_settings_cli_resume_on_battery_overrides`)
 
 ## 3. CLI wiring (`photosquirrel-cli`)
 

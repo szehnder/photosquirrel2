@@ -1,6 +1,9 @@
 //! Pause on battery (`general.pause_on_battery`, ADR-0053): the power-source probe and the watcher that pauses a
 //! running scan when the machine switches to battery power and offers to resume when mains power returns.
 //!
+//! [`PowerPolicy`] is the rule both the app's watcher thread and the CLI's foreground loop apply (ADR-0072): the
+//! app offers to resume on mains power, the CLI resumes by itself.
+//!
 //! [`PowerSource`] is one question, asked every few seconds; [`SystemPower`] answers it per platform without a
 //! dependency (sysfs on Linux, IOKit on macOS, kernel32 on Windows) and tests fake it. Unknown means mains, so the
 //! setting never pauses a scan by mistake.
@@ -169,11 +172,147 @@ impl PowerPause {
 /// How often the watcher asks the power source.
 pub const POLL: Duration = Duration::from_secs(3);
 
-#[derive(Default)]
-struct WatchState {
+/// What a power poll did, for the CLI's output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PowerEvent {
+    /// The running scan was paused because the machine is on battery power.
+    PausedOnBattery(ScanRunId),
+    /// Mains power is back and the scan the policy paused was resumed ([`ResumeOnMains::Auto`]).
+    ResumedOnMains(ScanRunId),
+    /// Mains power is back and the scan the policy paused is still paused: offer to resume
+    /// ([`ResumeOnMains::Offer`]).
+    MainsBack(ScanRunId),
+}
+
+/// What happens to a scan paused for battery when mains power returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeOnMains {
+    /// The app: note it and let the user decide.
+    Offer,
+    /// The CLI (ADR-0072): resume it, unless the user has since made the pause theirs.
+    Auto,
+}
+
+/// The pause-on-battery rule without a thread (ADR-0053, ADR-0072): the app's watcher and the CLI's foreground
+/// loop call [`PowerPolicy::tick`] with what the probe said. A running scan is paused on battery; a run the user
+/// resumed on battery is left running until mains power returns; on mains, a run the policy paused is offered
+/// for resume or resumed, as configured. A pause the user asked for ([`PowerPolicy::user_paused`]) is never
+/// resumed by the policy.
+#[derive(Debug)]
+pub struct PowerPolicy {
+    resume: ResumeOnMains,
     note: Option<PowerPause>,
     /// The user resumed this run while on battery: leave it running until mains power returns.
     overridden: Option<ScanRunId>,
+    /// The user paused this run: never resume it on mains.
+    held: Option<ScanRunId>,
+}
+
+impl PowerPolicy {
+    pub fn new(resume: ResumeOnMains) -> Self {
+        Self {
+            resume,
+            note: None,
+            overridden: None,
+            held: None,
+        }
+    }
+
+    /// A foreground CLI scan's policy (ADR-0072): [`ResumeOnMains::Auto`] when `general.pause_on_battery` is on
+    /// and `--ignore-battery` was not given, else none (nothing is probed).
+    pub fn for_cli(pause_on_battery: bool, ignore_battery: bool) -> Option<Self> {
+        (pause_on_battery && !ignore_battery).then(|| Self::new(ResumeOnMains::Auto))
+    }
+
+    /// Why the active scan is paused for power, if it is.
+    pub fn note(&self) -> Option<PowerPause> {
+        self.note
+    }
+
+    /// The user paused `run` (before or during a power pause): mains power must not resume it.
+    pub fn user_paused(&mut self, run: ScanRunId) {
+        self.held = Some(run);
+    }
+
+    /// One poll: pause a running scan on battery; on mains, offer or resume a scan this policy paused.
+    pub fn tick(&mut self, engine: &ScanService, on_battery: bool) -> Option<PowerEvent> {
+        let snap = engine.snapshot().filter(|_| engine.active().is_some());
+        let active = snap.as_ref().map(|s| (s.run, s.status));
+        // A user pause ends when its run is no longer paused (resumed, cancelled, finished).
+        if let Some(run) = self.held
+            && active != Some((run, RunStatus::Paused))
+        {
+            self.held = None;
+        }
+        // Forget a note whose run is no longer paused (resumed, cancelled, finished).
+        if let Some(note) = self.note
+            && active != Some((note.run(), RunStatus::Paused))
+        {
+            if on_battery && active == Some((note.run(), RunStatus::Running)) {
+                self.overridden = Some(note.run());
+            }
+            self.note = None;
+        }
+        if !on_battery {
+            self.overridden = None;
+            let Some(PowerPause::OnBattery(run)) = self.note else {
+                return None;
+            };
+            if self.held == Some(run) {
+                // The user made the pause theirs: it is no longer a power pause.
+                self.note = None;
+                return None;
+            }
+            return match self.resume {
+                ResumeOnMains::Offer => {
+                    self.note = Some(PowerPause::MainsBack(run));
+                    Some(PowerEvent::MainsBack(run))
+                }
+                ResumeOnMains::Auto => match engine.resume() {
+                    Ok(_) => {
+                        log::info!("scan run {run} resumed: mains power is back");
+                        self.note = None;
+                        Some(PowerEvent::ResumedOnMains(run))
+                    }
+                    Err(e) => {
+                        // Keep the note: the next poll tries again.
+                        log::warn!("could not resume the scan on mains power: {e}");
+                        None
+                    }
+                },
+            };
+        }
+        if let Some((run, RunStatus::Running)) = active
+            && self.overridden != Some(run)
+        {
+            match engine.pause() {
+                Ok(run) => {
+                    log::info!("scan run {run} paused: on battery power");
+                    self.note = Some(PowerPause::OnBattery(run));
+                    return Some(PowerEvent::PausedOnBattery(run));
+                }
+                Err(e) => log::warn!("could not pause the scan on battery: {e}"),
+            }
+        }
+        None
+    }
+}
+
+/// The variable that replaces the platform probe with [`SysfsPower`] over a folder (ADR-0072).
+pub const POWER_SUPPLY_DIR_ENV: &str = "PHOTOSQUIRREL_POWER_SUPPLY_DIR";
+
+/// The folder [`probe_from_env`] reads, from the variable's value: `None` when unset or empty.
+fn supply_dir(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The power probe for the CLI: [`SysfsPower`] over `PHOTOSQUIRREL_POWER_SUPPLY_DIR` when it is set and not
+/// empty (on every platform, so the behaviour is tested without a battery), else [`SystemPower`].
+pub fn probe_from_env() -> Arc<dyn PowerSource> {
+    match supply_dir(std::env::var_os(POWER_SUPPLY_DIR_ENV)) {
+        Some(root) => Arc::new(SysfsPower { root }),
+        None => Arc::new(SystemPower),
+    }
 }
 
 /// The watcher's shared state; the thread holds the engine weakly and stops when the library is dropped.
@@ -181,7 +320,7 @@ pub(crate) struct PowerWatch {
     enabled: AtomicBool,
     started: AtomicBool,
     source: Mutex<(Arc<dyn PowerSource>, Duration)>,
-    state: Mutex<WatchState>,
+    policy: Mutex<PowerPolicy>,
 }
 
 impl Default for PowerWatch {
@@ -190,7 +329,7 @@ impl Default for PowerWatch {
             enabled: AtomicBool::new(false),
             started: AtomicBool::new(false),
             source: Mutex::new((Arc::new(SystemPower), POLL)),
-            state: Mutex::new(WatchState::default()),
+            policy: Mutex::new(PowerPolicy::new(ResumeOnMains::Offer)),
         }
     }
 }
@@ -208,12 +347,12 @@ impl PowerWatch {
     pub(crate) fn set_enabled(&self, on: bool) {
         self.enabled.store(on, Ordering::SeqCst);
         if !on {
-            *lock(&self.state) = WatchState::default();
+            *lock(&self.policy) = PowerPolicy::new(ResumeOnMains::Offer);
         }
     }
 
     pub(crate) fn note(&self) -> Option<PowerPause> {
-        lock(&self.state).note
+        lock(&self.policy).note()
     }
 
     /// Start the watcher thread over `engine` once (when enabled).
@@ -233,42 +372,14 @@ impl PowerWatch {
         }
     }
 
-    /// One poll: pause a running scan on battery, note when mains power returns.
+    /// One poll through the shared rule (the app offers to resume, it never resumes by itself).
     fn tick(&self, engine: &ScanService, on_battery: bool) {
-        let mut st = lock(&self.state);
+        let mut policy = lock(&self.policy);
         if !self.enabled.load(Ordering::SeqCst) {
-            *st = WatchState::default();
+            *policy = PowerPolicy::new(ResumeOnMains::Offer);
             return;
         }
-        let snap = engine.snapshot().filter(|_| engine.active().is_some());
-        let active = snap.as_ref().map(|s| (s.run, s.status));
-        // Forget a note whose run is no longer paused (resumed, cancelled, finished).
-        if let Some(note) = st.note
-            && active != Some((note.run(), RunStatus::Paused))
-        {
-            if on_battery && active == Some((note.run(), RunStatus::Running)) {
-                st.overridden = Some(note.run());
-            }
-            st.note = None;
-        }
-        if !on_battery {
-            st.overridden = None;
-            if let Some(PowerPause::OnBattery(run)) = st.note {
-                st.note = Some(PowerPause::MainsBack(run));
-            }
-            return;
-        }
-        if let Some((run, RunStatus::Running)) = active
-            && st.overridden != Some(run)
-        {
-            match engine.pause() {
-                Ok(run) => {
-                    log::info!("scan run {run} paused: on battery power");
-                    st.note = Some(PowerPause::OnBattery(run));
-                }
-                Err(e) => log::warn!("could not pause the scan on battery: {e}"),
-            }
-        }
+        policy.tick(engine, on_battery);
     }
 }
 
@@ -330,6 +441,28 @@ mod tests {
             root: tmp.path().join("nope"),
         };
         assert!(!missing.on_battery(), "unknown means mains");
+    }
+
+    #[test]
+    fn probe_override_reads_the_given_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        supply(
+            tmp.path(),
+            "BAT0",
+            &[("type", "Battery"), ("status", "Discharging")],
+        );
+        supply(tmp.path(), "AC", &[("type", "Mains"), ("online", "0")]);
+        let dir = supply_dir(Some(tmp.path().as_os_str().to_owned())).expect("a folder");
+        assert_eq!(dir, tmp.path());
+        assert!(
+            SysfsPower { root: dir }.on_battery(),
+            "BAT0 discharging, no mains online"
+        );
+        // Unset or empty: the platform probe.
+        assert_eq!(supply_dir(None), None);
+        assert_eq!(supply_dir(Some(std::ffi::OsString::new())), None);
+        // Whatever the variable holds in this process, the probe answers.
+        let _ = probe_from_env().on_battery();
     }
 
     #[test]

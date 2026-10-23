@@ -1,6 +1,6 @@
 # 0072. CLI scans pause on battery and resume on mains power (amends 0053)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-22
 - Deciders: maintainers
 
