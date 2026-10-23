@@ -24,11 +24,15 @@ Every file SHALL have one capture date with its provenance and precision, chosen
 ## ADDED Requirements
 
 ### Requirement: Folder-name dates
-A folder name SHALL give a date only when it starts with `YYYY-MM-DD`, `YYYY_MM_DD`, `YYYY.MM.DD` or `YYYYMMDD` followed by the end of the name or a non-digit (day precision), or with `YYYY-MM`, `YYYY_MM` or `YYYY.MM` (month precision), or when consecutive folders read `YYYY/MM/DD` (day) or `YYYY/MM` (month). Only folders inside the source count, the folder nearest the file wins, and a year alone is never a date.
+A folder name SHALL give a date only when it starts with `YYYY-MM-DD`, `YYYY_MM_DD`, `YYYY.MM.DD` or `YYYYMMDD` followed by the end of the name or a non-digit (day precision), or with `YYYY-MM`, `YYYY_MM` or `YYYY.MM` (month precision), or when consecutive folders read `YYYY/MM/DD` (day) or `YYYY/MM` (month). Only folders inside the source count, the folder nearest the file wins, and a year alone is never a date. A name that starts with a range of two years is never a month date: `YYYY-YY`, `YYYY_YY` or `YYYY.YY` where `YY` is the last two digits of the following year (`2011-12 School Year`), and `YYYY-YYYY` (`2011-2012`).
 
 #### Scenario: Folder date patterns
 - **WHEN** EXIF-less files modified on 2024-03-01 are analyzed in folders `2019-07-04`, `2019_07_04 Beach`, `20190704`, `2019/07/04`, `2019-07 Italy`, `2019/07`, `2019`, `Backup 2019-07-04` and `DSC_19871234`
 - **THEN** they are dated 2019-07-04 (day) for the first four, July 2019 (month) for the next two, and by their file time for the last three
+
+#### Scenario: School-year folder is not a month
+- **WHEN** EXIF-less files modified on 2024-03-01 are analyzed in folders `2011-12 School Year`, `2008_09 Season`, `2011-2012` and `2011-11 Thanksgiving`
+- **THEN** the first three are dated by their file time and the last is dated November 2011 (month)
 
 #### Scenario: Nearest folder wins
 - **WHEN** an EXIF-less file is at `2018/2019-07-04 Beach/raw/IMG_0001.JPG` inside the source
@@ -57,7 +61,7 @@ A capture date with month precision SHALL be stored as the first day of that mon
 - **THEN** the date is 2019-07 with precision month and no day or time is reported
 
 ### Requirement: Local day of a time instant
-A file modification time, and a container creation date recorded as UTC (+00:00), SHALL become a capture date by applying the UTC offset the file records for that time, else the machine's local time-zone rules at that instant, and the offset used SHALL be stored with the date. An EXIF date SHALL keep its recorded wall-clock time, with or without an offset.
+A file modification time, and a container creation date that is only the movie header's UTC time (`mvhd`), SHALL become a capture date by applying the UTC offset the file records for that time, else the machine's local time-zone rules at that instant, and the offset used SHALL be stored with the date. An EXIF date, and a keyed QuickTime creation date (`com.apple.quicktime.creationdate`, which records the device's offset, +00:00 included), SHALL keep the recorded wall-clock time and offset.
 
 #### Scenario: File time in the local zone
 - **WHEN** an EXIF-less JPEG modified at 2019-07-05 03:30 UTC is analyzed with the local zone America/Los_Angeles
@@ -70,6 +74,10 @@ A file modification time, and a container creation date recorded as UTC (+00:00)
 #### Scenario: UTC video creation time made local
 - **WHEN** a MOV whose only creation date is 2019-07-05T02:00:00Z is analyzed with the local zone America/New_York
 - **THEN** its capture date is 2019-07-04 22:00 with offset -04:00 and provenance container
+
+#### Scenario: Keyed QuickTime date never shifted
+- **WHEN** a MOV whose keyed creation date is 2019-07-04T00:30:00+00:00 is analyzed with the local zone America/Los_Angeles
+- **THEN** its capture date is 2019-07-04 00:30 with offset +00:00 and provenance container
 
 #### Scenario: EXIF wall clock never shifted
 - **WHEN** JPEGs with DateTimeOriginal 2019-07-04 23:30:00, one without an offset and one with OffsetTimeOriginal +09:00, are analyzed with the local zone Europe/Berlin

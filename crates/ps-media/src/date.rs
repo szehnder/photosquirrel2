@@ -4,8 +4,9 @@
 //! re-date pass (from stored facts, [`EmbeddedDates::from_stored`]) and by tests, so the three cannot disagree:
 //!
 //! 1. EXIF DateTimeOriginal, 2. EXIF CreateDate (both wall clocks, never shifted);
-//! 3. the container creation date: a wall clock with its recorded offset, or, recorded as +00:00, a UTC instant
-//!    made local ([`LocalZone`]);
+//! 3. the container creation date: a wall clock with its recorded offset (a keyed QuickTime date, whatever its
+//!    offset, ADR-0081), or, when only the `mvhd` time at +00:00 is known, a UTC instant made local
+//!    ([`LocalZone`]);
 //! 4. a date in the name of a folder inside the source ([`date_in_folders`]), with its precision and the
 //!    plausibility check against the file time;
 //! 5. the file modification time, an instant made local, marked undated.
@@ -188,8 +189,12 @@ pub struct EmbeddedDates {
     pub original: Option<CaptureTime>,
     /// EXIF CreateDate.
     pub create: Option<CaptureTime>,
-    /// QuickTime/MP4 creation date: a wall clock with its offset; +00:00 is a UTC instant (`mvhd`).
+    /// QuickTime/MP4 creation date: a wall clock with its offset; +00:00 is a UTC instant (`mvhd`) unless
+    /// `container_keyed`.
     pub container: Option<CaptureTime>,
+    /// `container` is the keyed `com.apple.quicktime.creationdate`: a wall clock with a real offset, never
+    /// shifted, even at +00:00 (ADR-0081).
+    pub container_keyed: bool,
     /// An offset the file records without a matching date (EXIF `OffsetTime`, `OffsetTimeOriginal`,
     /// `OffsetTimeDigitized`), applied to instants before the local zone (ADR-0070).
     pub recorded_offset: Option<i16>,
@@ -211,7 +216,12 @@ impl EmbeddedDates {
         if let Some(t) = m.fields.capture_time {
             match m.capture_date.map(|d| d.provenance) {
                 Some(DateProvenance::CreateDate) => e.create = Some(t),
-                Some(DateProvenance::Container) => e.container = Some(t),
+                Some(DateProvenance::Container) => {
+                    e.container = Some(t);
+                    e.container_keyed = m.fields.all_tags.iter().any(|(g, n, v)| {
+                        g == "QuickTime" && n == CREATION_DATE_SOURCE_TAG && v == "keyed"
+                    });
+                }
                 // DateTimeOriginal, or a capture time without a matching provenance (treated as the original,
                 // as the export always has).
                 _ => e.original = Some(t),
@@ -220,6 +230,10 @@ impl EmbeddedDates {
         e
     }
 }
+
+/// The QuickTime tag naming where a video's creation date came from: `keyed` (`com.apple.quicktime.creationdate`)
+/// or `mvhd` (ADR-0081). Rows analysed before it read as `mvhd`.
+pub const CREATION_DATE_SOURCE_TAG: &str = "CreationDateSource";
 
 /// The offset recorded in the tag list: `OffsetTime`, else `OffsetTimeOriginal`, else `OffsetTimeDigitized`
 /// (by name, or by code for tags the RAW walker lists).
@@ -288,7 +302,7 @@ pub fn resolve_capture_date(
         local_of(utc, millis, off)
     };
     if let Some(t) = embedded.container {
-        let value = if t.offset_minutes == Some(0) {
+        let value = if t.offset_minutes == Some(0) && !embedded.container_keyed {
             instant(t.local_seconds, t.millis)
         } else {
             t
@@ -352,7 +366,9 @@ fn start_date(name: &[u8]) -> Option<(CaptureTime, DatePrecision)> {
                 return (ends(10) && d >= 1 && d <= days_in_month(y, m))
                     .then(|| date_value(y, m, d, DatePrecision::Day));
             }
-            ends(7).then(|| date_value(y, m, 1, DatePrecision::Month))
+            // `2011-12 School Year`, `2008_09 Season`: a range of two years, not December 2011 (ADR-0080).
+            let school_year = i32::from(m) == (y + 1) % 100;
+            (ends(7) && !school_year).then(|| date_value(y, m, 1, DatePrecision::Month))
         }
         _ => {
             let m = num(name, 4, 2)? as u8;

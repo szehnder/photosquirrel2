@@ -120,6 +120,23 @@ pub fn xmp_content_identifier(bytes: &[u8]) -> Option<String> {
 /// The `com.apple.quicktime.content.identifier` value of `moov/meta` (QuickTime `meta` boxes have no
 /// version/flags; ISO-BMFF ones do: both are accepted).
 pub fn quicktime_content_identifier(buf: &[u8], moov: &BoxRef) -> Option<String> {
+    quicktime_key_value(buf, moov, QUICKTIME_KEY).and_then(|v| clean(&v))
+}
+
+/// The keyed QuickTime creation date (`com.apple.quicktime.creationdate`, an ISO 8601 local time with its
+/// offset), as text.
+pub fn quicktime_creation_date(buf: &[u8], moov: &BoxRef) -> Option<String> {
+    let v = quicktime_key_value(buf, moov, QUICKTIME_CREATION_KEY)?;
+    let end = v.iter().position(|b| *b == 0).unwrap_or(v.len());
+    let s = std::str::from_utf8(&v[..end]).ok()?.trim();
+    (!s.is_empty() && s.len() <= 64).then(|| s.to_owned())
+}
+
+/// The key of the keyed QuickTime creation date.
+pub const QUICKTIME_CREATION_KEY: &str = "com.apple.quicktime.creationdate";
+
+/// The raw value of the `mdta` key `key` in `moov/meta`.
+fn quicktime_key_value(buf: &[u8], moov: &BoxRef, key: &str) -> Option<Vec<u8>> {
     let kids = bmff::children(buf, moov, 0);
     let meta = bmff::find(&kids, b"meta")?;
     let items = [0usize, 4]
@@ -137,7 +154,7 @@ pub fn quicktime_content_identifier(buf: &[u8], moov: &BoxRef) -> Option<String>
             return None;
         }
         let name = keys.get(pos + 8..pos + size)?;
-        if name == QUICKTIME_KEY.as_bytes() {
+        if name == key.as_bytes() {
             index = Some(i);
             break;
         }
@@ -152,7 +169,7 @@ pub fn quicktime_content_identifier(buf: &[u8], moov: &BoxRef) -> Option<String>
         let data = bmff::children(buf, &item, 0);
         let data = bmff::find(&data, b"data")?.body(buf);
         // data: type indicator (4), locale (4), value.
-        return clean(data.get(8..)?);
+        return data.get(8..).map(<[u8]>::to_vec);
     }
     None
 }

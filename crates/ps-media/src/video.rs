@@ -15,6 +15,9 @@ pub struct VideoInfo {
     pub height: Option<u32>,
     pub duration_ms: Option<u64>,
     pub creation: Option<CaptureTime>,
+    /// `creation` is the keyed `com.apple.quicktime.creationdate` (a wall clock with the offset the device
+    /// recorded, even +00:00), not the `mvhd` time (a UTC instant; ADR-0081).
+    pub creation_keyed: bool,
     pub make: Option<String>,
     pub model: Option<String>,
     pub software: Option<String>,
@@ -92,6 +95,11 @@ pub fn movie_info(buf: &[u8], moov: &BoxRef) -> VideoInfo {
                         millis: 0,
                         offset_minutes: i16::try_from(offset).ok(),
                     });
+                    // nom-exif prefers the keyed date and falls back to `mvhd`: the date is keyed when the key
+                    // holds this very wall clock.
+                    v.creation_keyed = crate::apple::quicktime_creation_date(buf, moov)
+                        .and_then(|k| crate::date::parse_date_text(&k))
+                        .is_some_and(|k| k.local_seconds == local.timestamp());
                 }
             }
             if let Some(g) = info.gps_info()

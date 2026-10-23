@@ -93,6 +93,9 @@ fn resolving_from_stored_facts_equals_the_analysis_for_1000_files() {
             4 => {
                 let spec = fx::MovieSpec {
                     creation_unix: Some(rng.random_range(800_000_000..1_900_000_000)),
+                    // A keyed local date (also at +00:00, ADR-0081) or only the mvhd instant.
+                    keyed_offset_min: [None, Some(0), Some(-420), Some(540)]
+                        [rng.random_range(0..4)],
                     ..fx::MovieSpec::iphone()
                 };
                 (fx::movie(&spec), "IMG.MOV")

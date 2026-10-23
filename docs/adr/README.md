@@ -83,4 +83,6 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0077](0077-appimage-runtime-relinking-sources-attached.md) | The release attaches the AppImage runtime's relinking sources, all byte-stable (amends 0073) |
 | [0078](0078-control-latency-compared-by-medians-in-ci.md) | CI compares control latency by the median of five runs, not the best of three (amends 0057) |
 | [0079](0079-month-folder-plausibility-against-the-start-of-the-month.md) | A month folder's plausibility check compares against the start of the month (amends 0069) |
+| [0080](0080-two-year-range-folders-are-not-month-dates.md) | Folders named for a range of two years are not month dates (amends 0069) |
+| [0081](0081-keyed-quicktime-creation-dates-are-wall-clocks.md) | A keyed QuickTime creation date is a wall clock, also at +00:00 (amends 0070) |
 | [0082](0082-a-scan-run-remembers-its-analysis-refresh.md) | A scan run remembers its analysis refresh (migration 18; amends 0071) |

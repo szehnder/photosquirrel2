@@ -73,6 +73,7 @@ pub fn extract_metadata(
     m.fields.orientation = probe.orientation;
     let mut exif_dates = ExifDates::default();
     let mut container_date = None;
+    let mut container_keyed = false;
 
     match probe.format {
         Some(f) if f.kind() == MediaKind::Video => {
@@ -90,6 +91,7 @@ pub fn extract_metadata(
                 m.fields.content_identifier = v.content_identifier.clone();
                 m.rotation_deg = Some(v.rotation);
                 container_date = v.creation;
+                container_keyed = v.creation_keyed;
                 push_tag(
                     &mut m.fields,
                     "QuickTime",
@@ -104,6 +106,14 @@ pub fn extract_metadata(
                     "QuickTime",
                     "CreationDate",
                     v.creation.map(|c| c.display()),
+                );
+                // Where the creation date came from, so re-dating from stored facts treats it alike (ADR-0081).
+                push_tag(
+                    &mut m.fields,
+                    "QuickTime",
+                    crate::date::CREATION_DATE_SOURCE_TAG,
+                    v.creation
+                        .map(|_| if v.creation_keyed { "keyed" } else { "mvhd" }.to_owned()),
                 );
                 push_tag(
                     &mut m.fields,
@@ -184,6 +194,7 @@ pub fn extract_metadata(
         original: exif_dates.original,
         create: exif_dates.create,
         container: container_date,
+        container_keyed,
         recorded_offset: crate::date::recorded_offset(&m.fields.all_tags),
     };
     m.fields.capture_time = embedded.capture_time();

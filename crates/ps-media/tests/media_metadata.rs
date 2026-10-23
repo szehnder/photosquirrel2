@@ -442,6 +442,41 @@ fn scenario_media_metadata_folder_date_patterns() {
 }
 
 #[test]
+fn scenario_media_metadata_school_year_folder_is_not_a_month() {
+    let mtime = utc(2024, 3, 1, 12, 0);
+    for folder in [
+        "2011-12 School Year",
+        "2008_09 Season",
+        "2011-2012",
+        "2011-2012 School Year",
+        "1999.00 Winter",
+    ] {
+        let (_, m) = analyze(&stripped(), &format!("{folder}/a.jpg"), Some(mtime));
+        let d = date(&m);
+        assert_eq!(
+            (d.value.ymd(), d.provenance, d.undated),
+            ((2024, 3, 1), DateProvenance::FileMtime, true),
+            "{folder}"
+        );
+    }
+    for (folder, ymd) in [
+        ("2011-11 Thanksgiving", (2011, 11, 1)),
+        ("2011/12", (2011, 12, 1)),
+    ] {
+        let (_, m) = analyze(&stripped(), &format!("{folder}/a.jpg"), Some(mtime));
+        let d = date(&m);
+        assert_eq!(
+            (d.value.ymd(), d.provenance, d.precision),
+            (ymd, DateProvenance::FolderName, DatePrecision::Month),
+            "{folder}"
+        );
+    }
+    // A day after the range's month is still a day.
+    let (_, m) = analyze(&stripped(), "2011-12-25 Christmas/a.jpg", Some(mtime));
+    assert_eq!(date(&m).value.ymd(), (2011, 12, 25));
+}
+
+#[test]
 fn scenario_media_metadata_nearest_folder_wins() {
     let (_, m) = analyze(
         &stripped(),
@@ -571,6 +606,8 @@ fn scenario_media_metadata_daylight_saving_of_the_file_s_date_applies() {
 fn scenario_media_metadata_utc_video_creation_time_made_local() {
     let spec = fx::MovieSpec {
         creation_unix: Some(CaptureTime::from_parts(2019, 7, 5, 2, 0, 0).local_seconds),
+        // Only the mvhd time: a UTC instant.
+        keyed_offset_min: None,
         make: None,
         model: None,
         ..fx::MovieSpec::iphone()
@@ -591,6 +628,50 @@ fn scenario_media_metadata_utc_video_creation_time_made_local() {
     assert_eq!(
         m.fields.capture_time.map(|t| t.display()),
         Some("2019-07-05 02:00:00".into())
+    );
+}
+
+#[test]
+fn scenario_media_metadata_keyed_quicktime_date_never_shifted() {
+    // 2019-07-04 00:30 at +00:00 from the keyed creation date (and the same instant in mvhd).
+    let spec = fx::MovieSpec {
+        creation_unix: Some(CaptureTime::from_parts(2019, 7, 4, 0, 30, 0).local_seconds),
+        keyed_offset_min: Some(0),
+        ..fx::MovieSpec::iphone()
+    };
+    let (_, m) = analyze_at(
+        &fx::movie(&spec),
+        "IMG_0002.MOV",
+        Some(utc(2024, 3, 1, 12, 0)),
+        &RuleZone::LOS_ANGELES,
+    );
+    let d = date(&m);
+    assert_eq!(d.provenance, DateProvenance::Container);
+    assert_eq!(d.value.display(), "2019-07-04 00:30:00", "stays on its day");
+    assert_eq!(d.value.offset_minutes, Some(0));
+    // A keyed date with another offset keeps its wall clock too.
+    let spec = fx::MovieSpec {
+        keyed_offset_min: Some(-420),
+        ..spec
+    };
+    let (_, m) = analyze_at(
+        &fx::movie(&spec),
+        "IMG_0003.MOV",
+        Some(utc(2024, 3, 1, 12, 0)),
+        &RuleZone::NEW_YORK,
+    );
+    let d = date(&m);
+    assert_eq!(d.value.display(), "2019-07-03 17:30:00");
+    assert_eq!(d.value.offset_minutes, Some(-420));
+    // Re-dating from stored facts agrees (ADR-0071).
+    assert_eq!(
+        ps_media::resolve_capture_date(
+            &ps_media::EmbeddedDates::from_stored(&m),
+            None,
+            None,
+            &RuleZone::NEW_YORK
+        ),
+        m.capture_date
     );
 }
 

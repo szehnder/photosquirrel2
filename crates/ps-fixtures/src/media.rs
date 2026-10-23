@@ -740,6 +740,9 @@ pub struct MovieSpec {
     pub duration_ms: u64,
     /// Seconds since 1970-01-01T00:00:00Z.
     pub creation_unix: Option<i64>,
+    /// QuickTime only: also write the keyed `com.apple.quicktime.creationdate` of `creation_unix` as the wall
+    /// clock at this UTC offset in minutes (iPhones record their zone); `None` leaves only the `mvhd` time.
+    pub keyed_offset_min: Option<i16>,
     pub make: Option<String>,
     pub model: Option<String>,
     /// Clockwise rotation in degrees (0, 90, 180, 270) in the track matrix.
@@ -758,6 +761,7 @@ impl MovieSpec {
             height: 1080,
             duration_ms: 12_500,
             creation_unix: Some(1_562_265_000),
+            keyed_offset_min: Some(0),
             make: Some("Apple".into()),
             model: Some("iPhone XS".into()),
             rotation: 0,
@@ -885,8 +889,8 @@ pub fn movie(spec: &MovieSpec) -> Vec<u8> {
     if let Some(m) = &spec.model {
         keys.push(("com.apple.quicktime.model", m.clone()));
     }
-    if let Some(t) = spec.creation_unix {
-        keys.push(("com.apple.quicktime.creationdate", iso8601_utc(t)));
+    if let (Some(t), Some(off)) = (spec.creation_unix, spec.keyed_offset_min) {
+        keys.push(("com.apple.quicktime.creationdate", iso8601_at(t, off)));
     }
     if spec.brand == MovieBrand::QuickTime && !keys.is_empty() {
         let mut mhdlr = vec![0u8; 4];
@@ -923,14 +927,24 @@ pub fn movie(spec: &MovieSpec) -> Vec<u8> {
 
 /// `YYYY-MM-DDTHH:MM:SS+00:00` for a Unix time.
 pub fn iso8601_utc(t: i64) -> String {
-    let days = t.div_euclid(86_400);
-    let secs = t.rem_euclid(86_400);
+    iso8601_at(t, 0)
+}
+
+/// `YYYY-MM-DDTHH:MM:SS+HH:MM`: the wall clock of Unix time `t` at UTC offset `off` minutes.
+pub fn iso8601_at(t: i64, off: i16) -> String {
+    let local = t + i64::from(off) * 60;
+    let days = local.div_euclid(86_400);
+    let secs = local.rem_euclid(86_400);
     let (y, m, d) = ps_model::civil_from_days(days);
+    let sign = if off < 0 { '-' } else { '+' };
+    let a = off.unsigned_abs();
     format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}+00:00",
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}{sign}{:02}:{:02}",
         secs / 3600,
         (secs / 60) % 60,
-        secs % 60
+        secs % 60,
+        a / 60,
+        a % 60
     )
 }
 
@@ -1060,6 +1074,7 @@ pub fn media_set(seed: u64) -> Vec<MediaFixture> {
                 height: 720,
                 duration_ms: 1_500,
                 creation_unix: None,
+                keyed_offset_min: None,
                 make: None,
                 model: None,
                 rotation: 0,
