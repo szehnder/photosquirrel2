@@ -36,18 +36,19 @@ pub struct RedateOutcome {
     pub cancelled: bool,
 }
 
-/// Re-date `stale` rows of `source` (module docs), submitting each chunk through `submit` and checking `ctl`
-/// for a cancel before each chunk.
+/// Re-date `stale` rows of `source` (module docs) in chunks of `chunk` rows ([`REDATE_CHUNK`] in scans),
+/// submitting each through `submit` and checking `ctl` for a cancel before each.
 pub fn redate(
     source: SourceId,
     stale: &[StaleDate],
     readers: &Readers,
     zone: &dyn LocalZone,
     ctl: &Control,
+    chunk: usize,
     mut submit: impl FnMut(Command),
 ) -> ps_catalog::Result<RedateOutcome> {
     let mut out = RedateOutcome::default();
-    for chunk in stale.chunks(REDATE_CHUNK) {
+    for chunk in stale.chunks(chunk.max(1)) {
         if ctl.is_cancelled() {
             out.cancelled = true;
             break;

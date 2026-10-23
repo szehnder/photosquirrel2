@@ -325,6 +325,7 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
             ctx.catalog.read(),
             &*ctx.zone,
             &ctx.ctl,
+            crate::redate::REDATE_CHUNK,
             |cmd| ctx.submit(cmd),
         ) {
             Ok(r) => {

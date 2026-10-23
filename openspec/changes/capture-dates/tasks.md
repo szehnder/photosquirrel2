@@ -18,15 +18,15 @@
 - [x] 3.1 Migration 17 `0017_capture_dates.sql` (`capture_precision`, `date_version`, the UPDATE marking embedded-date rows current) registered in `CATALOG_MIGRATIONS`; verify a migration test upgrading a version-16 fixture: EXIF rows at version 2, file-mtime and +00:00 container rows at version 1
 - [x] 3.2 `FileRecord` gains offset, provenance, precision and date version; the upsert writes precision and `DATE_LOGIC_VERSION`; verify `cargo test -p ps-catalog` and a round-trip test of a month-precision row
 - [x] 3.3 `Readers::date_facts` and `Command::Redate` (five date columns + version, batched like `Reclassify`); verify a writer test that a redate of 10,000 rows commits once and leaves other columns untouched
-- [ ] 3.4 Drop `capture_ts` from `Readers::dedup_stamps`; verify a test that a `capture_ts`-only change produces no dedup work and identical groups and keepers
+- [x] 3.4 Drop `capture_ts` from `Readers::dedup_stamps`; verify a test that a `capture_ts`-only change produces no dedup work and identical groups and keepers
 
 ## 4. Scanning
 
-- [ ] 4.1 Pipeline dates new and changed files with the run's zone (`OsZone` created once in `Scanner::run`, overridable in `ScanOptions` for tests); verify `scenario_media_metadata_folder_date_does_not_change_duplicate_groups` (corpus with stripped copies moved into dated folders: groups and keepers identical)
-- [ ] 4.2 Diff re-dating of stale unchanged rows, `DiffCounts::redated`, progress and summary line; verify `scenario_incremental_rescan_old_catalog_re_dated_on_rescan` (byte-counting layer reads 0 bytes) and `scenario_incremental_rescan_re_dating_happens_once`
-- [ ] 4.3 Cancel during the re-date pass leaves unwritten rows at version 1 and the next rescan finishes them; verify an integration test with a cancel after the first chunk
-- [ ] 4.4 Measure the re-date pass on a synthetic 1M-row catalog (30% file-mtime rows) and the no-change rescan budget; verify `cargo xtask bench --check` passes `rescan-nochange-100k` and record the measured 1M re-date time here (estimate: 5-15 s, ADR-0071)
-- [ ] 4.5 Opt-in analysis refresh: `DiffCounts::needs_refresh`, `ScanOptions::refresh_analysis`, the refresh stage reading at most `PROBE_LIMIT` bytes read-only, then re-classification as in ADR-0051; verify `scenario_incremental_rescan_files_without_facts_counted_not_read` and `scenario_incremental_rescan_refresh_re_classifies_old_rows` (byte-counting layer: at most 256 KB per refreshed file, nothing for others)
+- [x] 4.1 Pipeline dates new and changed files with the run's zone (`OsZone` created once in `Scanner::run`, overridable in `ScanOptions` for tests); verify `scenario_media_metadata_folder_date_does_not_change_duplicate_groups` (corpus with stripped copies moved into dated folders: groups and keepers identical)
+- [x] 4.2 Diff re-dating of stale unchanged rows, `DiffCounts::redated`, progress and summary line; verify `scenario_incremental_rescan_old_catalog_re_dated_on_rescan` (byte-counting layer reads 0 bytes) and `scenario_incremental_rescan_re_dating_happens_once`
+- [x] 4.3 Cancel during the re-date pass leaves unwritten rows at version 1 and the next rescan finishes them; verify an integration test with a cancel after the first chunk
+- [x] 4.4 Measure the re-date pass on a synthetic 1M-row catalog (30% file-mtime rows) and the no-change rescan budget; verify `cargo xtask bench --check` passes `rescan-nochange-100k` and record the measured 1M re-date time here (estimate: 5-15 s, ADR-0071). Measured (release build, dev machine, `cargo test --release -p ps-scan --test redate_scale -- --ignored`): 300,000 stale rows of 1,000,000 re-dated in 14.9 s (Los Angeles zone, every date changed), plus 3.2 s listing the rows (the diff's page reads); `rescan-nochange-100k` 0.43 s (budget 4 s)
+- [x] 4.5 Opt-in analysis refresh: `DiffCounts::needs_refresh`, `ScanOptions::refresh_analysis`, the refresh stage reading at most `PROBE_LIMIT` bytes read-only, then re-classification as in ADR-0051; verify `scenario_incremental_rescan_files_without_facts_counted_not_read` and `scenario_incremental_rescan_refresh_re_classifies_old_rows` (byte-counting layer: at most 256 KB per refreshed file, nothing for others)
 
 ## 5. Export
 
