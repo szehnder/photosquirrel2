@@ -77,8 +77,10 @@ What was observed while writing this design (read-only; nothing was built or run
 ### (a) AppImage runtime pin and notice (ADR-0073)
 - **Pin file.** `packaging/linux/appimage-runtime.toml`:
   `[runtime] commit, url, sha256, size`; `[[component]] name, version, licence, text` (text = path under
-  `packaging/linux/appimage-runtime/`); `[apprun] url, sha256, licence, text`; `[[source]] name, version, url,
-  sha256` (libfuse; and the type2-runtime tree at the commit). Parsed by a `RuntimePin` struct in
+  `packaging/linux/appimage-runtime/`); `[apprun] url, sha256, licence, text`; `[[source]] name, version, file, url,
+  sha256` (the libfuse 3.15.0 release tarball and the `patches/libfuse/mount.c.diff` type2-runtime applies to it,
+  from raw.githubusercontent.com at the pinned commit; GitHub's generated tree archives are not byte-stable, so the
+  build scripts are referenced by URL at the commit instead of attached). Parsed by a `RuntimePin` struct in
   `xtask/src/package.rs` (serde + `toml`, already xtask dependencies).
 - **Feed the pin to the packager.** Before `cargo packager` on Linux: download `runtime.url` and `apprun.url`
   into `target/packager-tools/` with `ureq`, check SHA-256 with `sha2` (both already xtask dependencies), set `LDAI_RUNTIME_FILE` on the packager `Command`, and copy the pinned `AppRun` to
@@ -103,7 +105,10 @@ What was observed while writing this design (read-only; nothing was built or run
   AppImage.
 - **URL choice.** The pin uses a tagged type2-runtime release asset if one exists for the chosen build;
   otherwise the runtime file is vendored as `packaging/linux/runtime-x86_64` (about 0.9 MB) with the same
-  hash check (ADR-0073 alternatives). Decided in task 1.1 by looking at the upstream releases.
+  hash check (ADR-0073 alternatives). Decided in task 1.1: release `20251108` (commit `dd6cebe`, libfuse 3.15.0,
+  squashfuse 0.5.2, zstd 1.5.6, zlib 1.3.1, musl 1.2.5 from Alpine 3.21), SHA-256 `2fca8b44...`, 944,632 bytes; its
+  four tool sections are zero, so the file's plain hash is the pin. The dry run's `fedfad5` came from `continuous`
+  and normalizes to a different hash, which is exactly what the check now refuses.
 - **Release job.** After the LGPL crate step, a step reads `[[source]]` from the pin (a small `python3 -c 'import tomllib'` read;
   the job has no Rust toolchain), downloads each archive, checks SHA-256, attaches it; failure
   stops the release. Release notes (`packaging/release-notes.md`) mention the runtime and libfuse source.
@@ -126,10 +131,13 @@ What was observed while writing this design (read-only; nothing was built or run
   the keeper").
 - `review_kit::chip`: `max_w_full().min_w_0().overflow_hidden()`, its label in a child with `min_w_0()`,
   `whitespace_nowrap()`, `overflow_hidden()`, `text_ellipsis()` (docs/gpui-notes.md "Toolbars and tooltips").
-  This protects every chip; chips already fit today are unchanged.
+  This protects every chip; chips already fit today are unchanged. (`chip_frame`, `chip_label` and `chip_icon`
+  are the parts, so the edge chip can give its label an id.)
 - Headless test in `crates/ui-workspace/tests/duplicates.rs`: open a group whose second member is a derivative
-  of the keeper, assert `bounds("duplicates-edge-2")` is inside `bounds("duplicates-member-2")` minus padding,
-  at the default and the largest UI font size the settings allow.
+  of the keeper, assert `bounds("duplicates-edge-2")` and `bounds("duplicates-edge-2-label")` are inside
+  `bounds("duplicates-member-2")` minus padding, at the default and the largest UI font size the settings allow.
+  The label matters: the card's column stretches the chip's box to the content width, so the old chip's box
+  always fit and only its text ran past the card (with the old wording and chip the label check fails).
 - Recapture `docs/screenshots/duplicates-group-{dark,light}.png` with `cargo xtask screenshot` on the demo
   library and review them.
 

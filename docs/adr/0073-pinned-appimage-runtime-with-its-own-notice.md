@@ -1,6 +1,6 @@
 # 0073. The AppImage runtime is pinned and has its own notice (amends 0060)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-22
 - Deciders: maintainers
 - Amends: [0060](0060-packages-redistribute-only-what-they-license.md)
@@ -23,7 +23,9 @@ ship a different one without any review. The image also carries cargo-packager's
 - `packaging/linux/appimage-runtime.toml` pins the runtime: its upstream commit, download URL and SHA-256,
   the components it contains (name, version, licence, licence text file under
   `packaging/linux/appimage-runtime/`), and the source archives the release attaches for its LGPL components
-  (URL and SHA-256). It pins `AppRun` the same way.
+  (URL and SHA-256). It pins `AppRun` the same way. The runtime comes from a tagged type2-runtime release
+  (`20251108`, commit `dd6cebe`, when this was accepted), whose asset URL does not move; vendoring the file
+  stays the fallback.
 - `cargo xtask package` downloads the pinned runtime, checks its SHA-256 and passes it to appimagetool through
   linuxdeploy-plugin-appimage's `LDAI_RUNTIME_FILE`, and pre-places the pinned `AppRun` in cargo-packager's
   tool cache so it is not fetched.

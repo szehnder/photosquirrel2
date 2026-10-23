@@ -219,3 +219,10 @@ rawler = { path = "../rawler-0.8.0" }
 ```
 
 to the workspace `Cargo.toml` and run `cargo build --profile dist -p photosquirrel -p photosquirrel-cli`.
+
+**AppImage runtime.** The Linux AppImage starts with the [AppImage runtime](https://github.com/AppImage/type2-runtime),
+the small program that mounts the image. PhotoSquirrel ships the build pinned in
+[`packaging/linux/appimage-runtime.toml`](packaging/linux/appimage-runtime.toml); it contains musl, squashfuse, zstd,
+zlib and libfuse 3.15.0, which is LGPL-2.1 and linked statically. Every release attaches the libfuse source the
+runtime was built from (`fuse-3.15.0.tar.xz`) and the patch the runtime applies to it, and the AppImage's
+`THIRD-PARTY-LICENSES` lists each component with its licence.

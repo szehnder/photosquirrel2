@@ -96,11 +96,11 @@ jobs:
           fi
           sha256sum -c PhotoSquirrel-*.sha256
       # LGPL-2.1 components are linked statically; the release carries the source of each one at the version in
-      # Cargo.lock (ADR-0060). The download is checked against Cargo.lock's checksum.
+      # Cargo.lock (ADR-0060). The download is checked against Cargo.lock's checksum. Every platform lists its own
+      # LGPL crates (lgpl-sources-<os>.txt); the lists are merged and must agree.
       - name: Attach the source of the LGPL components
         run: |
-          test -f packages/lgpl-sources.txt || { echo "::error::packages/lgpl-sources.txt is missing"; exit 1; }
-          cat packages/lgpl-sources.txt
+          bash packaging/merge-lgpl-sources.sh packages linux macos windows
           while read -r name ver; do
             [ -n "$name" ] || continue
             sum=$(awk -v n="name = \"$name\"" -v v="version = \"$ver\"" \
@@ -114,11 +114,33 @@ jobs:
           if [ "$expected" -lt 1 ] || [ "$found" -ne "$expected" ]; then
             echo "::error::expected the source of $expected LGPL components, found $found"; exit 1
           fi
+      # The AppImage starts with the AppImage runtime, which links libfuse (LGPL-2.1) statically. The release
+      # carries the source the pinned runtime was built from, checked against the pin (ADR-0073).
+      - name: Attach the source of the AppImage runtime's LGPL component
+        run: |
+          python3 - > runtime-sources.txt <<'EOF'
+          import tomllib
+          with open("packaging/linux/appimage-runtime.toml", "rb") as f:
+              pin = tomllib.load(f)
+          for s in pin["source"]:
+              print(s["file"], s["url"], s["sha256"])
+          EOF
+          test -s runtime-sources.txt || { echo "::error::the AppImage runtime pin lists no [[source]]"; exit 1; }
+          mkdir -p packages/runtime-source
+          while read -r file url sum; do
+            curl -fsSL --retry 3 -o "packages/runtime-source/$file" "$url"
+            (cd packages/runtime-source && echo "$sum  $file" | sha256sum -c)
+          done < runtime-sources.txt
+          if [ "$(ls packages/runtime-source | wc -l)" -ne "$(wc -l < runtime-sources.txt)" ]; then
+            echo "::error::expected $(wc -l < runtime-sources.txt) AppImage runtime source files"; exit 1
+          fi
       - name: Release notes
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           lgpl=$(awk '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2 }' packages/lgpl-sources.txt)
-          sed -e "s/{{version}}/$version/g" -e "s/{{lgpl}}/$lgpl/g" packaging/release-notes.md > notes.md
+          runtime_sources=$(ls packages/runtime-source | awk '{ printf "%s`%s`", (NR > 1 ? ", " : ""), $0 }')
+          sed -e "s/{{version}}/$version/g" -e "s/{{lgpl}}/$lgpl/g" -e "s/{{runtime_sources}}/$runtime_sources/g" \
+            packaging/release-notes.md > notes.md
           # Platforms built without libheif (ADR-0059).
           if ls packages/heic-*.txt >/dev/null 2>&1; then
             printf '\n### HEIC photos\n\n' >> notes.md
@@ -131,6 +153,9 @@ jobs:
           path: |
             notes.md
             packages/*.crate
+            packages/lgpl-sources.txt
+            packages/lgpl-sources-*.txt
+            packages/runtime-source/*
           if-no-files-found: error
       - name: Create the release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -140,5 +165,6 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           prerelease=""
           if [[ "$version" == *-* ]]; then prerelease="--prerelease"; fi
-          gh release create "$GITHUB_REF_NAME" packages/PhotoSquirrel-* packages/*.crate $prerelease \
+          gh release create "$GITHUB_REF_NAME" packages/PhotoSquirrel-* packages/*.crate packages/runtime-source/* \
+            $prerelease \
             --title "PhotoSquirrel $version" --notes-file notes.md

@@ -8,7 +8,9 @@
 //! in each finished package. HEIC decoding is built in only where a recent enough libheif is found; otherwise
 //! the build leaves it out and writes `target/packages/heic-<os>.txt` for the release notes (ADR-0059). Packages
 //! carry nothing their notices do not cover (ADR-0060): the notices offer the source of the statically linked LGPL
-//! crates, the AppImage bundles no system library, and the Windows programs need no Visual C++ runtime.
+//! crates, the AppImage bundles no system library, and the Windows programs need no Visual C++ runtime. The AppImage
+//! starts with the runtime pinned in `packaging/linux/appimage-runtime.toml`, whose components the Linux notices name
+//! (ADR-0073).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -283,8 +285,12 @@ pub fn merge_notices(reports: &[serde_json::Value]) -> Result<Vec<Notice>> {
 
 /// The public repository: the complete corresponding source of a release is its `v<version>` tag.
 pub const REPOSITORY: &str = "https://github.com/szehnder/photosquirrel2";
-/// Where the release job lists the LGPL crates whose source it attaches to the release (ADR-0060).
-pub const LGPL_SOURCES_FILE: &str = "lgpl-sources.txt";
+/// Where each platform's package job lists the LGPL crates whose source the release attaches (ADR-0060). Every
+/// platform has its own name, so the release job keeps all three lists and merges them
+/// (`packaging/merge-lgpl-sources.sh`) into `lgpl-sources.txt`.
+pub fn lgpl_sources_file(os: Os) -> String {
+    format!("lgpl-sources-{}.txt", os.name())
+}
 
 /// The crates under an LGPL licence, as `name version`, sorted. They are linked statically, so each release
 /// offers their source and says how to relink (LGPL-2.1 section 6, ADR-0060).
@@ -335,8 +341,9 @@ pub fn render_lgpl_section(version: &str, notices: &[Notice]) -> String {
     out
 }
 
-/// The text of `THIRD-PARTY-LICENSES`.
-pub fn render_notices(version: &str, notices: &[Notice]) -> String {
+/// The text of `THIRD-PARTY-LICENSES`. The Linux notices pass the AppImage runtime pin, which adds its section
+/// after the LGPL one and its licence texts at the end (ADR-0073).
+pub fn render_notices(version: &str, notices: &[Notice], runtime: Option<&RuntimePin>) -> String {
     let rule = "=".repeat(78);
     let mut out = format!(
         "PhotoSquirrel {version}: third-party software notices\n\n\
@@ -346,6 +353,9 @@ pub fn render_notices(version: &str, notices: &[Notice]) -> String {
          The source of every component is published on crates.io at the version shown.\n\n"
     );
     out.push_str(&render_lgpl_section(version, notices));
+    if let Some(pin) = runtime {
+        out.push_str(&render_runtime_section(version, pin));
+    }
     let mut ids: Vec<&str> = notices.iter().map(|n| n.id.as_str()).collect();
     ids.dedup();
     out.push_str("Licences used:\n");
@@ -370,6 +380,9 @@ pub fn render_notices(version: &str, notices: &[Notice]) -> String {
             n.crates.join(", "),
             n.text.trim_end()
         ));
+    }
+    if let Some(pin) = runtime {
+        out.push_str(&render_runtime_texts(pin));
     }
     out
 }
@@ -482,6 +495,341 @@ pub fn check_windows_imports(program: &str, imports: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The AppImage runtime pin (ADR-0073), relative to the workspace root.
+pub const RUNTIME_PIN: &str = "packaging/linux/appimage-runtime.toml";
+/// The licence texts the pin's `text` fields name, relative to the workspace root.
+const RUNTIME_TEXTS: &str = "packaging/linux/appimage-runtime";
+/// The sections appimagetool fills in after copying the runtime: an MD5 digest of the image, update information
+/// and the signature with its key. They are zero in the pristine runtime and left out of its pinned hash.
+const RUNTIME_TOOL_SECTIONS: [&str; 4] = [".digest_md5", ".upd_info", ".sha256_sig", ".sig_key"];
+
+/// `packaging/linux/appimage-runtime.toml`: the AppImage runtime, its components, the AppRun launcher and the source
+/// archives the release attaches for the LGPL components.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RuntimePin {
+    pub runtime: PinnedRuntime,
+    #[serde(rename = "component")]
+    pub components: Vec<RuntimeComponent>,
+    pub apprun: PinnedAppRun,
+    #[serde(rename = "source", default)]
+    pub sources: Vec<PinnedSource>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PinnedRuntime {
+    pub release: String,
+    pub commit: String,
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RuntimeComponent {
+    /// The name the runtime's help text gives the component.
+    pub name: String,
+    pub title: String,
+    pub version: String,
+    pub licence: String,
+    /// The licence text file under `packaging/linux/appimage-runtime/`.
+    pub text: String,
+    pub upstream: String,
+    /// The licence text itself, read by [`RuntimePin::load`].
+    #[serde(skip)]
+    pub body: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PinnedAppRun {
+    pub title: String,
+    pub url: String,
+    pub sha256: String,
+    pub licence: String,
+    pub text: String,
+    pub upstream: String,
+    #[serde(skip)]
+    pub body: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PinnedSource {
+    pub name: String,
+    pub version: String,
+    /// The file name the release attaches it under.
+    pub file: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+impl RuntimePin {
+    pub fn parse(text: &str) -> Result<Self> {
+        let pin: RuntimePin =
+            toml::from_str(text).with_context(|| format!("parsing {RUNTIME_PIN}"))?;
+        let hex = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+        let sums = [&pin.runtime.sha256, &pin.apprun.sha256]
+            .into_iter()
+            .chain(pin.sources.iter().map(|s| &s.sha256));
+        for sum in sums {
+            if !hex(sum) {
+                bail!("{RUNTIME_PIN}: {sum:?} is not a SHA-256");
+            }
+        }
+        for c in pin
+            .components
+            .iter()
+            .filter(|c| c.licence.starts_with("LGPL"))
+        {
+            if !pin
+                .sources
+                .iter()
+                .any(|s| s.name == c.name && s.version == c.version)
+            {
+                bail!(
+                    "{RUNTIME_PIN}: the LGPL component {} {} has no [[source]] at that version",
+                    c.name,
+                    c.version
+                );
+            }
+        }
+        Ok(pin)
+    }
+
+    /// The pin with every licence text read from `packaging/linux/appimage-runtime/`.
+    pub fn load(root: &Path) -> Result<Self> {
+        let mut pin = Self::parse(&fs::read_to_string(root.join(RUNTIME_PIN))?)?;
+        let read = |name: &str| -> Result<String> {
+            let path = root.join(RUNTIME_TEXTS).join(name);
+            let text =
+                fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+            if text.trim().is_empty() {
+                bail!("{} is empty", path.display());
+            }
+            Ok(text)
+        };
+        for c in &mut pin.components {
+            c.body = read(&c.text)?;
+        }
+        pin.apprun.body = read(&pin.apprun.text)?;
+        Ok(pin)
+    }
+
+    pub fn short_commit(&self) -> &str {
+        self.runtime.commit.get(..7).unwrap_or(&self.runtime.commit)
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The sections of an ELF64 little-endian file: (name, file offset, size in the file).
+fn elf_sections(elf: &[u8]) -> Result<Vec<(String, usize, usize)>> {
+    let u32_at = |at: usize| -> Result<usize> {
+        let b = elf.get(at..at + 4).context("ELF file truncated")?;
+        Ok(u32::from_le_bytes(b.try_into().expect("4 bytes")) as usize)
+    };
+    let u64_at = |at: usize| -> Result<usize> {
+        let b = elf.get(at..at + 8).context("ELF file truncated")?;
+        usize::try_from(u64::from_le_bytes(b.try_into().expect("8 bytes")))
+            .context("ELF offset too large")
+    };
+    let (shoff, shentsize, shnum, shstrndx) = elf_header(elf)?;
+    let header = |i: usize| shoff + i * shentsize;
+    let strtab = u64_at(header(shstrndx) + 24)?;
+    let mut sections = Vec::with_capacity(shnum);
+    for i in 0..shnum {
+        let at = header(i);
+        let name_at = strtab + u32_at(at)?;
+        let len = elf
+            .get(name_at..)
+            .and_then(|rest| rest.iter().position(|&b| b == 0))
+            .context("ELF section name unterminated")?;
+        let name = String::from_utf8_lossy(&elf[name_at..name_at + len]).into_owned();
+        // SHT_NOBITS (8) occupies no file bytes.
+        let size = if u32_at(at + 4)? == 8 {
+            0
+        } else {
+            u64_at(at + 32)?
+        };
+        sections.push((name, u64_at(at + 24)?, size));
+    }
+    Ok(sections)
+}
+
+/// `(e_shoff, e_shentsize, e_shnum, e_shstrndx)` of an ELF64 little-endian file.
+fn elf_header(elf: &[u8]) -> Result<(usize, usize, usize, usize)> {
+    if elf.get(..4) != Some(b"\x7fELF".as_slice()) {
+        bail!("the AppImage does not start with an ELF runtime");
+    }
+    if elf.get(4) != Some(&2) || elf.get(5) != Some(&1) {
+        bail!("the AppImage runtime is not a 64-bit little-endian ELF file");
+    }
+    let u16_at = |at: usize| u16::from_le_bytes([elf[at], elf[at + 1]]) as usize;
+    if elf.len() < 0x40 {
+        bail!("ELF header truncated");
+    }
+    let shoff = usize::try_from(u64::from_le_bytes(
+        elf[0x28..0x30].try_into().expect("8 bytes"),
+    ))
+    .context("e_shoff too large")?;
+    Ok((shoff, u16_at(0x3a), u16_at(0x3c), u16_at(0x3e)))
+}
+
+/// The runtime at the front of an AppImage: the ELF image up to the end of its section header table, where the
+/// squashfs image (`hsqs`) starts.
+pub fn appimage_runtime(appimage: &[u8]) -> Result<&[u8]> {
+    let (shoff, shentsize, shnum, _) = elf_header(appimage)?;
+    let end = shoff + shentsize * shnum;
+    let runtime = appimage
+        .get(..end)
+        .context("the AppImage ends inside its runtime")?;
+    if appimage.get(end..end + 4) != Some(b"hsqs".as_slice()) {
+        bail!("no squashfs image (hsqs) right after the AppImage runtime at byte {end}");
+    }
+    Ok(runtime)
+}
+
+/// SHA-256 of the runtime with the sections appimagetool fills in zeroed, so the pristine runtime file and the copy
+/// in a built AppImage hash alike.
+pub fn normalized_runtime_sha256(runtime: &[u8]) -> Result<String> {
+    let mut bytes = runtime.to_vec();
+    let sections = elf_sections(runtime)?;
+    for wanted in RUNTIME_TOOL_SECTIONS {
+        let (_, offset, size) = sections
+            .iter()
+            .find(|(name, _, _)| name == wanted)
+            .with_context(|| format!("the AppImage runtime has no {wanted} section"))?;
+        bytes
+            .get_mut(*offset..offset + size)
+            .with_context(|| format!("{wanted} lies outside the runtime"))?
+            .fill(0);
+    }
+    Ok(sha256_hex(&bytes))
+}
+
+/// The components the runtime's help text lists (`  * <name>, licensed under the terms of`), in its order.
+pub fn runtime_components(runtime: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(runtime)
+        .split(['\0', '\n'])
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("* ")?
+                .strip_suffix(", licensed under the terms of")
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// A built AppImage's runtime is the pinned one and declares the components the notice names.
+pub fn check_runtime(pin: &RuntimePin, appimage: &[u8]) -> Result<()> {
+    let runtime = appimage_runtime(appimage)?;
+    let found = normalized_runtime_sha256(runtime)?;
+    if found != pin.runtime.sha256 {
+        bail!(
+            "the AppImage runtime is not the pinned one: pinned SHA-256 {}, found {found} ({} bytes, pinned {}). \
+             If the AppImage tooling now ships another runtime, update {RUNTIME_PIN} and its notice texts in \
+             {RUNTIME_TEXTS}/ (ADR-0073)",
+            pin.runtime.sha256,
+            runtime.len(),
+            pin.runtime.size
+        );
+    }
+    check_runtime_components(pin, &runtime_components(runtime))
+}
+
+/// The runtime's declared components must be exactly the pin's, so the notice names every one.
+pub fn check_runtime_components(pin: &RuntimePin, declared: &[String]) -> Result<()> {
+    let pinned: Vec<&str> = pin.components.iter().map(|c| c.name.as_str()).collect();
+    if declared != pinned.as_slice() {
+        bail!(
+            "the AppImage runtime declares the components {declared:?}, but {RUNTIME_PIN} names {pinned:?}: update \
+             the pin and its notice texts in {RUNTIME_TEXTS}/ (ADR-0073)"
+        );
+    }
+    Ok(())
+}
+
+/// The "AppImage runtime" overview section of `THIRD-PARTY-LICENSES` (Linux notices only).
+pub fn render_runtime_section(version: &str, pin: &RuntimePin) -> String {
+    let rule = "-".repeat(78);
+    let mut out = format!(
+        "AppImage runtime\n{rule}\n\
+         This section concerns the AppImage package only; the .deb and .tar.gz packages do not contain it.\n\
+         The AppImage starts with the AppImage runtime {} (type2-runtime release {},\n\
+         https://github.com/AppImage/type2-runtime/tree/{}), a program that mounts the\n\
+         image and starts PhotoSquirrel. It contains:\n",
+        pin.short_commit(),
+        pin.runtime.release,
+        pin.runtime.commit
+    );
+    for c in &pin.components {
+        out.push_str(&format!(
+            "  - {} {} ({}), {}\n",
+            c.title, c.version, c.licence, c.upstream
+        ));
+    }
+    out.push_str(&format!(
+        "The image also contains the {} launcher ({}), {}.\n",
+        pin.apprun.title, pin.apprun.licence, pin.apprun.upstream
+    ));
+    for c in pin
+        .components
+        .iter()
+        .filter(|c| c.licence.starts_with("LGPL"))
+    {
+        let sources: Vec<&PinnedSource> = pin
+            .sources
+            .iter()
+            .filter(|s| s.name == c.name && s.version == c.version)
+            .collect();
+        out.push_str(&format!(
+            "{} {} ({}) is statically linked into the runtime.\n- Its source, as the runtime was built from it:\n",
+            c.title, c.version, c.licence
+        ));
+        for s in &sources {
+            out.push_str(&format!("  {}\n", s.url));
+        }
+        out.push_str(&format!(
+            "  the GitHub Release of PhotoSquirrel {version} also carries {}.\n\
+             - The runtime's build scripts, which apply that patch and link it statically:\n  \
+             https://github.com/AppImage/type2-runtime/tree/{}/scripts\n",
+            sources
+                .iter()
+                .map(|s| s.file.as_str())
+                .collect::<Vec<_>>()
+                .join(" and "),
+            pin.runtime.commit
+        ));
+    }
+    out.push_str("The licence texts follow the other notices at the end of this file.\n\n");
+    out
+}
+
+/// The licence texts of the runtime's components and AppRun, at the end of `THIRD-PARTY-LICENSES`.
+pub fn render_runtime_texts(pin: &RuntimePin) -> String {
+    let rule = "=".repeat(78);
+    let mut out = String::new();
+    let entries = pin
+        .components
+        .iter()
+        .map(|c| (format!("{} {}", c.title, c.version), &c.licence, &c.body))
+        .chain(std::iter::once((
+            pin.apprun.title.clone(),
+            &pin.apprun.licence,
+            &pin.apprun.body,
+        )));
+    for (title, licence, body) in entries {
+        out.push_str(&format!(
+            "\n{rule}\n{title} ({licence})\nPart of the AppImage runtime and launcher\n{rule}\n\n{}\n",
+            body.trim_end()
+        ));
+    }
+    out
+}
+
 pub fn run(root: &Path, opts: Options) -> Result<()> {
     let version = workspace_version(root)?;
     if let Some(tag) = &opts.tag {
@@ -540,7 +888,12 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
             eprintln!("{exe} imports: {}", imports.join(", "));
         }
     }
-    let licences = licence_notices(root, &target_dir, &out, &version)?;
+    let runtime = if os == Os::Linux {
+        Some(RuntimePin::load(root)?)
+    } else {
+        None
+    };
+    let licences = licence_notices(root, os, &target_dir, &out, &version, runtime.as_ref())?;
 
     let kinds = kinds(os);
     let formats: Vec<&str> = kinds
@@ -572,6 +925,10 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
     if opts.universal {
         packager.args(["--target", "universal-apple-darwin"]);
     }
+    if let Some(pin) = &runtime {
+        let file = appimage_tools(&target_dir, pin, &arch)?;
+        packager.env("LDAI_RUNTIME_FILE", file);
+    }
     crate::run("cargo packager", &mut packager)?;
 
     let mut written = Vec::new();
@@ -586,7 +943,7 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
             }
             None => archive(root, os, &bins, &licences, &name, &staging, &dest, &version)?,
         }
-        verify_licences(os, kind, &dest, &staging, &version)?;
+        verify_licences(os, kind, &dest, &staging, &version, runtime.as_ref())?;
         written.push(name);
     }
 
@@ -663,10 +1020,95 @@ fn probe_libheif(os: Os) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+/// Download the pinned AppImage runtime and AppRun (ADR-0073), check their SHA-256 and pre-place AppRun in
+/// cargo-packager's tool cache, where it would otherwise fetch one itself. Returns the runtime file for
+/// appimagetool (`LDAI_RUNTIME_FILE`).
+fn appimage_tools(target_dir: &Path, pin: &RuntimePin, arch: &str) -> Result<PathBuf> {
+    if arch != "x86_64" {
+        bail!("{RUNTIME_PIN} pins the x86_64 AppImage runtime only; this build is {arch}");
+    }
+    let dir = target_dir.join("packager-tools");
+    fs::create_dir_all(&dir)?;
+    let runtime = fetch_pinned(
+        &dir.join("runtime-x86_64"),
+        &pin.runtime.url,
+        &pin.runtime.sha256,
+    )?;
+    let apprun = fetch_pinned(
+        &dir.join("AppRun-x86_64"),
+        &pin.apprun.url,
+        &pin.apprun.sha256,
+    )?;
+    // cargo-packager 0.11.8 keeps its tools in `dirs::cache_dir()/.cargo-packager/AppImage` and downloads only
+    // what is missing there.
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .context("neither XDG_CACHE_HOME nor HOME is set")?
+        .join(".cargo-packager/AppImage");
+    fs::create_dir_all(&cache)?;
+    let placed = cache.join("AppRun-x86_64");
+    fs::copy(&apprun, &placed).with_context(|| format!("placing {}", placed.display()))?;
+    set_executable(&placed)?;
+    eprintln!(
+        "AppImage runtime: {} (type2-runtime {}), AppRun pinned in {}",
+        pin.short_commit(),
+        pin.runtime.release,
+        cache.display()
+    );
+    Ok(runtime)
+}
+
+/// `path`, downloaded from `url` unless it is already there with the pinned hash; fails on any other hash.
+fn fetch_pinned(path: &Path, url: &str, sha256: &str) -> Result<PathBuf> {
+    let cached = fs::read(path).ok().filter(|b| sha256_hex(b) == sha256);
+    if cached.is_none() {
+        eprintln!("downloading {url}");
+        let bytes = ureq::get(url)
+            .call()
+            .with_context(|| format!("downloading {url}"))?
+            .into_body()
+            .with_config()
+            .limit(64 << 20)
+            .read_to_vec()
+            .with_context(|| format!("reading {url}"))?;
+        let found = sha256_hex(&bytes);
+        if found != sha256 {
+            bail!(
+                "{url} has SHA-256 {found}, but {RUNTIME_PIN} pins {sha256}: the upstream file changed; review it \
+                 and update the pin and its notice texts (ADR-0073)"
+            );
+        }
+        fs::write(path, &bytes)?;
+    }
+    set_executable(path)?;
+    Ok(path.to_path_buf())
+}
+
+#[cfg(unix)]
+fn set_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("making {} executable", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_executable(_: &Path) -> Result<()> {
+    Ok(())
+}
+
 /// Generate `THIRD-PARTY-LICENSES` with cargo-about for each shipped binary's dependency graph (all release
-/// targets, see `about.toml`), check it and return its path. The LGPL crates go to `out/lgpl-sources.txt`, one
-/// `name version` per line, for the release job to attach their source (ADR-0060).
-fn licence_notices(root: &Path, target_dir: &Path, out: &Path, version: &str) -> Result<PathBuf> {
+/// targets, see `about.toml`), check it and return its path. The LGPL crates go to `out/lgpl-sources-<os>.txt`,
+/// one `name version` per line, for the release job to attach their source (ADR-0060).
+fn licence_notices(
+    root: &Path,
+    os: Os,
+    target_dir: &Path,
+    out: &Path,
+    version: &str,
+    runtime: Option<&RuntimePin>,
+) -> Result<PathBuf> {
     let installed = Command::new("cargo")
         .args(["about", "--version"])
         .output()
@@ -699,10 +1141,10 @@ fn licence_notices(root: &Path, target_dir: &Path, out: &Path, version: &str) ->
     let dir = root.join(LICENCES_DIR);
     fs::create_dir_all(&dir)?;
     let path = dir.join(LICENCES_FILE);
-    fs::write(&path, render_notices(version, &notices))?;
+    fs::write(&path, render_notices(version, &notices, runtime))?;
     let lgpl = lgpl_crates(&notices);
     fs::write(
-        out.join(LGPL_SOURCES_FILE),
+        out.join(lgpl_sources_file(os)),
         lgpl.iter().map(|c| format!("{c}\n")).collect::<String>(),
     )?;
     eprintln!(
@@ -720,6 +1162,7 @@ fn verify_licences(
     package: &Path,
     staging: &Path,
     version: &str,
+    runtime: Option<&RuntimePin>,
 ) -> Result<()> {
     let listing = |cmd: &mut Command| -> Result<String> {
         let out = cmd
@@ -770,7 +1213,8 @@ fn verify_licences(
                     .current_dir(&dir),
             )?;
             let root = dir.join("squashfs-root");
-            let checked = check_appimage(&root, version);
+            let pin = runtime.context("the AppImage check needs the runtime pin")?;
+            let checked = check_appimage(&root, package, version, pin);
             let text = walk(&root).map(|files| files.join("\n"));
             fs::remove_dir_all(&dir).ok();
             checked?;
@@ -818,12 +1262,27 @@ fn verify_licences(
     Ok(())
 }
 
-/// An extracted AppImage bundles no shared library without a notice, its programs find every library they link
-/// on this (build) machine, and its CLI runs.
-fn check_appimage(root: &Path, version: &str) -> Result<()> {
+/// An AppImage starts with the pinned runtime and carries the pinned AppRun (ADR-0073); extracted, it bundles no
+/// shared library without a notice, its notices have the runtime section, its programs find every library they
+/// link on this (build) machine, and its CLI runs.
+fn check_appimage(root: &Path, package: &Path, version: &str, pin: &RuntimePin) -> Result<()> {
+    check_runtime(pin, &fs::read(package)?)?;
+    let apprun = sha256_hex(&fs::read(root.join("AppRun")).context("the AppImage has no AppRun")?);
+    if apprun != pin.apprun.sha256 {
+        bail!(
+            "the AppImage's AppRun is not the pinned one: pinned SHA-256 {}, found {apprun}; update {RUNTIME_PIN} \
+             and its notice texts (ADR-0073)",
+            pin.apprun.sha256
+        );
+    }
     let files = walk(root)?;
     let notices = fs::read_to_string(root.join("usr/lib/photosquirrel").join(LICENCES_FILE))
         .with_context(|| format!("the AppImage has no usr/lib/photosquirrel/{LICENCES_FILE}"))?;
+    if !notices.contains(&render_runtime_section(version, pin)) {
+        bail!(
+            "the AppImage's {LICENCES_FILE} has no AppImage runtime section for the pinned runtime"
+        );
+    }
     let missing = bundled_libs_without_notice(&files, &notices);
     if !missing.is_empty() {
         bail!(
@@ -843,7 +1302,10 @@ fn check_appimage(root: &Path, version: &str) -> Result<()> {
     let cli = root.join("usr/bin/photosquirrel-cli");
     let out = Command::new(&cli).arg("--version").output()?;
     check_smoke(&String::from_utf8_lossy(&out.stdout), version)?;
-    eprintln!("AppImage: no bundled libraries without notices; its CLI runs");
+    eprintln!(
+        "AppImage: pinned runtime {} and AppRun, no bundled libraries without notices; its CLI runs",
+        pin.short_commit()
+    );
     Ok(())
 }
 
@@ -1296,6 +1758,372 @@ mod tests {
         assert_least_privilege(&text, None);
     }
 
+    const HELP: &str = "Licenses:\n  * runtime, licensed under the terms of\n    https://x/LICENSE\n  * musl libc, \
+                        licensed under the terms of\n    https://x\n  * libfuse, licensed under the terms of\n    \
+                        https://x/LGPL2.txt\n  * squashfuse, licensed under the terms of\n    https://x\n  * libzstd, \
+                        licensed under the terms of\n    https://x\n  * zlib, licensed under the terms of\n    https://x\n";
+
+    /// A minimal ELF64 runtime: a `.text` section holding `help`, the four sections appimagetool fills in (filled
+    /// with `fill`), the section name table and the section header table at the end, followed by a squashfs magic.
+    fn fake_appimage(help: &str, fill: u8) -> Vec<u8> {
+        let names = b"\0.shstrtab\0.text\0.digest_md5\0.upd_info\0.sha256_sig\0.sig_key\0";
+        let name_at = |n: &str| {
+            names
+                .windows(n.len())
+                .position(|w| w == n.as_bytes())
+                .expect("name") as u32
+        };
+        let mut elf = vec![0u8; 64];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        let mut sections = vec![(0u32, 0u32, 0usize, 0usize)];
+        let mut push = |elf: &mut Vec<u8>, name: &str, kind: u32, data: &[u8]| {
+            let offset = elf.len();
+            elf.extend_from_slice(data);
+            sections.push((name_at(name), kind, offset, data.len()));
+        };
+        push(&mut elf, ".text", 1, help.as_bytes());
+        for (name, size) in [
+            (".digest_md5", 16),
+            (".upd_info", 32),
+            (".sha256_sig", 32),
+            (".sig_key", 64),
+        ] {
+            push(&mut elf, name, 1, &vec![fill; size]);
+        }
+        push(&mut elf, ".shstrtab", 3, names);
+        let shoff = elf.len();
+        for (name, kind, offset, size) in &sections {
+            let mut header = [0u8; 64];
+            header[..4].copy_from_slice(&name.to_le_bytes());
+            header[4..8].copy_from_slice(&kind.to_le_bytes());
+            header[24..32].copy_from_slice(&(*offset as u64).to_le_bytes());
+            header[32..40].copy_from_slice(&(*size as u64).to_le_bytes());
+            elf.extend_from_slice(&header);
+        }
+        elf[0x28..0x30].copy_from_slice(&(shoff as u64).to_le_bytes());
+        elf[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes());
+        elf[0x3c..0x3e].copy_from_slice(&(sections.len() as u16).to_le_bytes());
+        elf[0x3e..0x40].copy_from_slice(&((sections.len() - 1) as u16).to_le_bytes());
+        elf.extend_from_slice(b"hsqs and the image");
+        elf
+    }
+
+    fn pin_for(runtime_sha256: &str) -> RuntimePin {
+        let mut pin = RuntimePin::load(&root()).expect("pin");
+        pin.runtime.sha256 = runtime_sha256.to_owned();
+        pin
+    }
+
+    #[test]
+    fn runtime_pin_parses_and_names_every_component() {
+        let pin = RuntimePin::load(&root()).expect("the runtime pin parses");
+        let names: Vec<&str> = pin.components.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "runtime",
+                "musl libc",
+                "libfuse",
+                "squashfuse",
+                "libzstd",
+                "zlib"
+            ]
+        );
+        for c in &pin.components {
+            assert!(!c.version.is_empty() && !c.licence.is_empty(), "{c:?}");
+            assert!(c.body.len() > 200, "{} licence text too short", c.name);
+        }
+        let licence = |name: &str| {
+            pin.components
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.licence.as_str())
+        };
+        assert_eq!(licence("libfuse"), Some("LGPL-2.1"));
+        assert_eq!(licence("squashfuse"), Some("BSD-2-Clause"));
+        assert_eq!(licence("libzstd"), Some("BSD-3-Clause"));
+        assert_eq!(licence("zlib"), Some("Zlib"));
+        assert!(pin.apprun.body.contains("MIT"));
+        // The libfuse source is pinned at the version the runtime reports (3.15.0), with the patch it applies.
+        let libfuse = pin
+            .components
+            .iter()
+            .find(|c| c.name == "libfuse")
+            .expect("libfuse");
+        let sources: Vec<&PinnedSource> =
+            pin.sources.iter().filter(|s| s.name == "libfuse").collect();
+        assert!(!sources.is_empty());
+        assert!(sources.iter().all(|s| s.version == libfuse.version));
+        assert!(
+            sources
+                .iter()
+                .any(|s| s.file == format!("fuse-{}.tar.xz", libfuse.version))
+        );
+        // A tagged release asset, never the moving `continuous` one.
+        assert!(
+            pin.runtime
+                .url
+                .contains(&format!("/download/{}/", pin.runtime.release)),
+            "{}",
+            pin.runtime.url
+        );
+        assert!(!pin.runtime.url.contains("continuous"));
+        assert!(
+            pin.runtime.commit.starts_with(pin.short_commit()) && pin.short_commit().len() == 7
+        );
+        // An LGPL component without a pinned source is rejected.
+        let text = fs::read_to_string(root().join(RUNTIME_PIN)).expect("pin");
+        let without_sources = text.split("\n[[source]]").next().expect("head");
+        let err = RuntimePin::parse(without_sources).expect_err("no LGPL source");
+        assert!(err.to_string().contains("libfuse"), "{err}");
+    }
+
+    #[test]
+    fn scenario_release_packaging_changed_appimage_runtime_fails_packaging() {
+        let pristine = fake_appimage(HELP, 0);
+        let runtime = appimage_runtime(&pristine).expect("runtime");
+        assert_eq!(&pristine[runtime.len()..runtime.len() + 4], b"hsqs");
+        let pinned = normalized_runtime_sha256(runtime).expect("hash");
+        // The pristine runtime file has the tool sections zeroed, so its plain hash is the pin.
+        assert_eq!(pinned, sha256_hex(runtime));
+        assert_eq!(runtime_components(runtime).len(), 6);
+        let pin = pin_for(&pinned);
+        check_runtime(&pin, &pristine).expect("the pinned runtime passes");
+
+        // Only the update information, digest and signature differ: still the pinned runtime.
+        let signed = fake_appimage(HELP, 0xab);
+        assert_ne!(sha256_hex(&signed), sha256_hex(&pristine));
+        check_runtime(&pin, &signed).expect("tool-filled sections are ignored");
+
+        // A runtime with different code fails, naming both checksums and the files to update.
+        let changed = fake_appimage(&HELP.replace("https://x/LICENSE", "https://y/LICENSE"), 0);
+        let found =
+            normalized_runtime_sha256(appimage_runtime(&changed).expect("runtime")).expect("hash");
+        let err = check_runtime(&pin, &changed)
+            .expect_err("changed runtime")
+            .to_string();
+        for needle in [pinned.as_str(), found.as_str(), RUNTIME_PIN, RUNTIME_TEXTS] {
+            assert!(err.contains(needle), "{needle} missing from: {err}");
+        }
+
+        // No squashfs right after the section header table, or not an ELF file at all.
+        let mut truncated = pristine.clone();
+        truncated.truncate(runtime.len());
+        assert!(appimage_runtime(&truncated).is_err());
+        assert!(appimage_runtime(b"#!/bin/sh\nexit 0\n").is_err());
+
+        // The pin is the runtime file the release URL serves (checked when that file is at hand).
+        // `cargo xtask package --docker` keeps it under target/docker.
+        let real = ["target/docker", "target"]
+            .map(|dir| root().join(dir).join("packager-tools/runtime-x86_64"))
+            .into_iter()
+            .find_map(|path| fs::read(path).ok());
+        if let Some(bytes) = real {
+            let real_pin = RuntimePin::load(&root()).expect("pin");
+            assert_eq!(sha256_hex(&bytes), real_pin.runtime.sha256);
+            assert_eq!(
+                normalized_runtime_sha256(&bytes).expect("hash"),
+                real_pin.runtime.sha256
+            );
+            assert_eq!(bytes.len() as u64, real_pin.runtime.size);
+        }
+        // And a package built with it passes the check.
+        if let Ok(bytes) =
+            fs::read(root().join("target/packages/PhotoSquirrel-0.1.0-linux-x86_64.AppImage"))
+        {
+            check_runtime(&RuntimePin::load(&root()).expect("pin"), &bytes)
+                .expect("the built AppImage");
+        }
+    }
+
+    #[test]
+    fn scenario_release_packaging_appimage_runtime_notice_matches_the_pinned_runtime() {
+        let pin = RuntimePin::load(&root()).expect("pin");
+        let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let notices = merge_notices(&[about_report(&[
+            ("LGPL-2.1", "lgpl text", &[("rawler", registry)]),
+            ("MIT", "mit text", &[("anyhow", registry)]),
+        ])])
+        .expect("merge");
+        let text = render_notices("0.1.0", &notices, Some(&pin));
+        let section = text.find("AppImage runtime\n").expect("runtime section");
+        assert!(text.find("LGPL components").expect("LGPL") < section);
+        assert!(section < text.find("Licences used:").expect("overview"));
+        for needle in [
+            "AppImage runtime dd6cebe",
+            "AppImage type2-runtime dd6cebe (MIT)",
+            "type2-runtime release 20251108",
+            "musl libc 1.2.5",
+            "libfuse 3.15.0 (LGPL-2.1)",
+            "squashfuse 0.5.2 (BSD-2-Clause)",
+            "Zstandard (libzstd) 1.5.6 (BSD-3-Clause)",
+            "zlib 1.3.1 (Zlib)",
+            "AppImageKit AppRun launcher (MIT)",
+            "https://github.com/libfuse/libfuse/releases/download/fuse-3.15.0/fuse-3.15.0.tar.xz",
+            "fuse-3.15.0.tar.xz and libfuse-3.15.0-type2-runtime-mount.c.diff",
+            "concerns the AppImage package only",
+            // The licence texts themselves.
+            "GNU LESSER GENERAL PUBLIC LICENSE",
+            "Rich Felker",
+            "Jean-loup Gailly and Mark Adler",
+            "For Zstandard software",
+            "Dave\nVasilevsky",
+            "probonopd",
+        ] {
+            assert!(text.contains(needle), "{needle} missing from the notices");
+        }
+        // Without the pin (macOS, Windows) there is no runtime section.
+        assert!(!render_notices("0.1.0", &notices, None).contains("AppImage runtime"));
+
+        // The runtime's declared components must equal the notice's.
+        let declared = runtime_components(HELP.as_bytes());
+        check_runtime_components(&pin, &declared).expect("same components");
+        let mut extra = declared.clone();
+        extra.push("liblzma".to_owned());
+        let err = check_runtime_components(&pin, &extra)
+            .expect_err("an unlisted component")
+            .to_string();
+        assert!(
+            err.contains("liblzma") && err.contains(RUNTIME_PIN),
+            "{err}"
+        );
+        assert!(check_runtime_components(&pin, &declared[1..]).is_err());
+    }
+
+    #[test]
+    fn scenario_release_packaging_release_attaches_the_appimage_runtime_lgpl_source() {
+        let workflow = release_workflow();
+        let release = workflow
+            .split("\n  release:\n")
+            .nth(1)
+            .expect("release job");
+        for needle in [
+            "packaging/linux/appimage-runtime.toml",
+            "tomllib",
+            "pin[\"source\"]",
+            "curl -fsSL --retry 3",
+            "sha256sum -c",
+            "packages/runtime-source/*",
+        ] {
+            assert!(release.contains(needle), "the release job lacks {needle}");
+        }
+        // The archives are attached to the release and kept with the dry run's notes.
+        let create = release
+            .lines()
+            .find(|l| l.trim().starts_with("gh release create"))
+            .expect("gh release create");
+        assert!(create.contains("packages/runtime-source/*"), "{create}");
+        let upload = release
+            .split("name: release-notes")
+            .nth(1)
+            .expect("notes artifact");
+        assert!(upload.contains("packages/runtime-source/*"));
+        // The step fails without a pinned source.
+        assert!(release.contains("lists no [[source]]"));
+        // Every pinned source is reachable from the notes and README.
+        let notes = fs::read_to_string(root().join("packaging/release-notes.md")).expect("notes");
+        assert!(notes.contains("AppImage runtime") && notes.contains("{{runtime_sources}}"));
+        let readme = fs::read_to_string(root().join("README.md")).expect("README");
+        assert!(readme.contains("AppImage runtime") && readme.contains("libfuse"));
+    }
+
+    /// Run `packaging/merge-lgpl-sources.sh` over `lists` (platform, contents; `None` leaves the file out).
+    #[cfg(unix)]
+    fn merge_lists(lists: &[(&str, Option<&str>)]) -> (bool, String, PathBuf) {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("photosquirrel-lgpl-{}-{n}", std::process::id()));
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("temp dir");
+        for (os, list) in lists {
+            if let Some(list) = list {
+                fs::write(dir.join(format!("lgpl-sources-{os}.txt")), list).expect("list");
+            }
+        }
+        let out = Command::new("bash")
+            .arg(root().join("packaging/merge-lgpl-sources.sh"))
+            .arg(&dir)
+            .args(lists.iter().map(|(os, _)| os))
+            .output()
+            .expect("bash");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.success(), text, dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scenario_release_packaging_lgpl_source_lists_merged_per_platform() {
+        let list = "rawler 0.7.1\n";
+        let (ok, text, dir) = merge_lists(&[
+            ("linux", Some(list)),
+            ("macos", Some(list)),
+            ("windows", Some("rawler 0.7.1\r\n")),
+        ]);
+        assert!(ok, "{text}");
+        assert_eq!(
+            fs::read_to_string(dir.join("lgpl-sources.txt")).expect("merged"),
+            "rawler 0.7.1\n"
+        );
+        for os in ["linux", "macos", "windows"] {
+            assert!(
+                dir.join(format!("lgpl-sources-{os}.txt")).is_file(),
+                "{os} list lost"
+            );
+        }
+        fs::remove_dir_all(&dir).ok();
+        // The release job merges before it reads the merged list, and keeps the per-platform lists.
+        let workflow = release_workflow();
+        let merge = workflow
+            .find("packaging/merge-lgpl-sources.sh packages linux macos windows")
+            .expect("release.yml merges the lists");
+        assert!(
+            merge
+                < workflow
+                    .find("done < packages/lgpl-sources.txt")
+                    .expect("download loop")
+        );
+        assert!(workflow.contains("packages/lgpl-sources-*.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scenario_release_packaging_differing_lgpl_source_lists_fail_the_release() {
+        let list = "rawler 0.7.1\n";
+        let (ok, text, dir) = merge_lists(&[
+            ("linux", Some(list)),
+            ("macos", Some("other-lgpl 1.0.0\nrawler 0.7.1\n")),
+            ("windows", Some(list)),
+        ]);
+        assert!(!ok, "a differing list passed: {text}");
+        // Linux and Windows lack the macOS-only component; the union is still written for the error.
+        assert!(
+            text.contains("linux") && text.contains("windows") && text.contains("other-lgpl 1.0.0"),
+            "{text}"
+        );
+        assert!(!text.contains("error: the macos"), "{text}");
+        assert_eq!(
+            fs::read_to_string(dir.join("lgpl-sources.txt")).expect("merged"),
+            "other-lgpl 1.0.0\nrawler 0.7.1\n"
+        );
+        fs::remove_dir_all(&dir).ok();
+
+        let (ok, text, dir) = merge_lists(&[
+            ("linux", Some(list)),
+            ("macos", None),
+            ("windows", Some(list)),
+        ]);
+        assert!(!ok, "a missing list passed: {text}");
+        assert!(text.contains("macos") && text.contains("missing"), "{text}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
     fn about_report(entries: &[(&str, &str, &[(&str, Option<&str>)])]) -> serde_json::Value {
         let licenses: Vec<_> = entries
             .iter()
@@ -1348,7 +2176,7 @@ mod tests {
             notices.iter().all(|n| n.id != "MIT"),
             "workspace-only licence kept"
         );
-        let text = render_notices("0.1.0", &notices);
+        let text = render_notices("0.1.0", &notices, None);
         for needle in [
             "IJG text",
             "zlib text",
@@ -1389,7 +2217,11 @@ mod tests {
         ]);
         let notices = merge_notices(&[report]).expect("merge");
         assert_eq!(lgpl_crates(&notices), ["rawler 1.0.0"]);
-        let text = render_notices("0.1.0", &notices);
+        // Each platform writes its own list, so the release keeps all three.
+        assert_eq!(lgpl_sources_file(Os::Linux), "lgpl-sources-linux.txt");
+        assert_eq!(lgpl_sources_file(Os::Macos), "lgpl-sources-macos.txt");
+        assert_eq!(lgpl_sources_file(Os::Windows), "lgpl-sources-windows.txt");
+        let text = render_notices("0.1.0", &notices, None);
         let section = text.find("LGPL components").expect("LGPL section");
         assert!(
             section < text.find("Licences used:").expect("overview"),
@@ -1410,7 +2242,7 @@ mod tests {
         // Without an LGPL component there is no section.
         let mit = merge_notices(&[about_report(&[("MIT", "mit", &[("anyhow", registry)])])])
             .expect("merge");
-        assert!(!render_notices("0.1.0", &mit).contains("LGPL components"));
+        assert!(!render_notices("0.1.0", &mit, None).contains("LGPL components"));
 
         // about.toml accepts LGPL-2.1 for rawler only.
         let about: toml::Value =
