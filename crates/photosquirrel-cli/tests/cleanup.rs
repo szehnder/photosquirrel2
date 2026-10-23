@@ -287,3 +287,79 @@ fn scenario_cleanup_cli_select_and_discard() {
     assert_eq!(snapshot(&drive), before);
     assert!(!drive.join(QUARANTINE_DIR).exists());
 }
+
+/// Gate review of `cleanup-selection`: a selection term that matches nothing is warned about (stderr and
+/// `unmatched` in `--json`), with the folder that differs only in case; matching stays case-sensitive; and the
+/// help says that each select replaces the previous one.
+#[test]
+fn cleanup_cli_select_warns_about_terms_that_match_nothing() {
+    let env = Env::new("select-unmatched");
+    let drive = env.corpus().join("drive-b");
+    let plan = env.plan("2");
+    let id = plan["data"]["run"].as_i64().unwrap().to_string();
+    let moves = plan["data"]["moves"].as_array().unwrap();
+    let first = Path::new(moves[0]["path"].as_str().unwrap());
+    let folder = first
+        .parent()
+        .unwrap()
+        .strip_prefix(&drive)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let lower = folder.to_lowercase();
+    assert_ne!(lower, folder, "the corpus folder has capitals");
+    let n_in = moves
+        .iter()
+        .filter(|m| Path::new(m["path"].as_str().unwrap()).starts_with(drive.join(&folder)))
+        .count() as u64;
+    let o = ok(
+        &env.data(),
+        &[
+            "--json",
+            "cleanup",
+            "select",
+            &id,
+            "--folder",
+            &folder,
+            "--except-folder",
+            &lower,
+            "--except-file",
+            "999999",
+        ],
+    );
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(
+        err.contains(&format!(
+            "warning: --except-folder {lower} matches no file of the plan (cleanup run {id})"
+        )) && err.contains(&format!("did you mean --except-folder {folder:?}?")),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "warning: --except-file 999999 matches no file of the plan (cleanup run {id})"
+        )),
+        "{err}"
+    );
+    let sel = json(&o);
+    // The lower-case exclusion matched nothing, so the whole folder is selected.
+    assert_eq!(sel["data"]["counts"]["planned"], n_in, "{sel}");
+    let unmatched = sel["data"]["unmatched"].as_array().unwrap();
+    assert_eq!(unmatched.len(), 2, "{sel}");
+    assert_eq!(unmatched[0]["flag"], "except-folder");
+    assert_eq!(unmatched[0]["term"], lower.as_str());
+    assert_eq!(unmatched[0]["did_you_mean"], folder.as_str());
+    assert_eq!(unmatched[1]["flag"], "except-file");
+    assert!(unmatched[1]["did_you_mean"].is_null());
+    // A selection whose terms all match warns about nothing.
+    let o = ok(&env.data(), &["--json", "cleanup", "select", &id, "--all"]);
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("warning"));
+    assert!(json(&o)["data"]["unmatched"].as_array().unwrap().is_empty());
+    // The help says that a select replaces the previous selection.
+    let help = String::from_utf8_lossy(&ok(&env.data(), &["cleanup", "select", "--help"]).stdout)
+        .into_owned();
+    assert!(
+        help.contains("replaces the run's previous selection"),
+        "{help}"
+    );
+}

@@ -79,6 +79,8 @@ pub enum CleanupError {
     EmptySelection { id: i64 },
     #[error("cleanup run {id} cannot be discarded: {why}")]
     NotDiscardable { id: i64, why: String },
+    #[error("cleanup run {id} cannot be narrowed: {why}")]
+    NotNarrowable { id: i64, why: String },
     #[error("the catalog is open read-only (another PhotoSquirrel process owns it)")]
     ReadOnly,
 }
@@ -234,6 +236,77 @@ impl Selection {
                 && !except.contains(&m.file)
         }
     }
+}
+
+/// A term of a [`Selection`] that picks none of the moves it was matched against (change `cleanup-selection`,
+/// gate review): `cleanup select` and `cleanup undo` warn about each one instead of ignoring it silently.
+/// Matching stays exact and case-sensitive; `did_you_mean` only names a folder of the run that equals the term
+/// ignoring case.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UnmatchedTerm {
+    /// The command-line flag without its dashes: `folder`, `file`, `except-folder` or `except-file`.
+    pub flag: &'static str,
+    /// The folder path or file id as given.
+    pub term: String,
+    /// A folder (or file path) of the run equal to `term` ignoring case.
+    pub did_you_mean: Option<String>,
+}
+
+impl Selection {
+    /// The terms of this selection that pick none of `moves` (each folder must contain one of them, each file id
+    /// must be one of them), in the order folders, files, except-folders, except-files.
+    pub fn unmatched(&self, moves: &[&CleanupMove]) -> Vec<UnmatchedTerm> {
+        let ids: std::collections::HashSet<FileId> = moves.iter().map(|m| m.file).collect();
+        let folder = |flag: &'static str, f: &RelPath| {
+            (!moves.iter().any(|m| m.rel_path.is_within(f))).then(|| UnmatchedTerm {
+                flag,
+                term: f.display().into_owned(),
+                did_you_mean: same_ignoring_case(moves, f),
+            })
+        };
+        let file = |flag: &'static str, id: &FileId| {
+            (!ids.contains(id)).then(|| UnmatchedTerm {
+                flag,
+                term: id.0.to_string(),
+                did_you_mean: None,
+            })
+        };
+        let mut out: Vec<UnmatchedTerm> = Vec::new();
+        out.extend(self.folders.iter().filter_map(|f| folder("folder", f)));
+        out.extend(self.files.iter().filter_map(|f| file("file", f)));
+        out.extend(
+            self.except_folders
+                .iter()
+                .filter_map(|f| folder("except-folder", f)),
+        );
+        out.extend(
+            self.except_files
+                .iter()
+                .filter_map(|f| file("except-file", f)),
+        );
+        out
+    }
+}
+
+/// The first folder (or file path) of `moves`, in path order, that equals `term` ignoring case.
+fn same_ignoring_case(moves: &[&CleanupMove], term: &RelPath) -> Option<String> {
+    let want = term.display().to_lowercase();
+    let mut found: Option<String> = None;
+    for m in moves {
+        let path = m.rel_path.display();
+        let ends = path
+            .char_indices()
+            .filter(|(_, c)| *c == '/')
+            .map(|(i, _)| i)
+            .chain(std::iter::once(path.len()));
+        for end in ends {
+            let candidate = &path[..end];
+            if candidate.to_lowercase() == want && found.as_deref().is_none_or(|f| candidate < f) {
+                found = Some(candidate.to_owned());
+            }
+        }
+    }
+    found
 }
 
 /// A source as a run sees it now.
@@ -670,7 +743,7 @@ impl<'a> Cleanups<'a> {
         self.reconcile_locked()?;
         let r = self.catalog().read();
         let run = r.cleanup_run(id)?.ok_or(CleanupError::UnknownRun(id))?;
-        let not = |why: String| CleanupError::NotRunnable { id, why };
+        let not = |why: String| CleanupError::NotNarrowable { id, why };
         match run.state {
             CleanupRunState::Planned => {}
             CleanupRunState::Discarded => {
@@ -912,6 +985,42 @@ mod tests {
             .collect();
         assert_eq!(by_picks, by_picker, "picks and picker agree");
         by_picks
+    }
+
+    #[test]
+    fn selection_terms_that_match_nothing_are_named_with_a_case_insensitive_hint() {
+        let all = moves();
+        let refs: Vec<&CleanupMove> = all.iter().collect();
+        let s = Selection {
+            folders: vec![rel("dcim/100"), rel("DCIM")],
+            files: vec![FileId(2), FileId(99)],
+            except_folders: vec![rel("backup"), rel("Nowhere")],
+            except_files: vec![FileId(98)],
+        };
+        let u = s.unmatched(&refs);
+        let got: Vec<(&str, &str, Option<&str>)> = u
+            .iter()
+            .map(|t| (t.flag, t.term.as_str(), t.did_you_mean.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("folder", "dcim/100", Some("DCIM/100")),
+                ("file", "99", None),
+                ("except-folder", "backup", Some("Backup")),
+                ("except-folder", "Nowhere", None),
+                ("except-file", "98", None),
+            ]
+        );
+        // Matching itself stays case-sensitive: the lower-case folder picks nothing.
+        assert!(picked(&Selection::folder(rel("dcim"))).is_empty());
+        assert!(Selection::all().unmatched(&refs).is_empty());
+        // A folder whose files are not among the moves matched against (already quarantined, say) is named.
+        let planned: Vec<&CleanupMove> = refs.iter().copied().filter(|m| m.file.0 != 6).collect();
+        assert_eq!(
+            Selection::folder(rel("Backup")).unmatched(&planned)[0].did_you_mean,
+            None
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use ps_export::quarantine::{RunProgress, RunReport, UndoReport};
 use ps_model::{CleanupMove, FileId, RelPath, SourceId};
-use ps_service::cleanup::{CleanupPlan, RunOptions, RunSummary, Selection};
+use ps_service::cleanup::{CleanupPlan, RunOptions, RunSummary, Selection, UnmatchedTerm};
 
 use super::Ctx;
 use crate::control::{self, Interrupted};
@@ -52,6 +52,27 @@ impl SelectionArgs<'_> {
             && self.files.is_empty()
             && self.except_folders.is_empty()
             && self.except_files.is_empty()
+    }
+}
+
+/// Warn on standard error about every selection term that picks none of the files `what` covers (matching is
+/// exact and case-sensitive; a folder that differs only in case is suggested).
+fn warn_unmatched(id: i64, what: &str, unmatched: &[UnmatchedTerm]) {
+    for t in unmatched {
+        let hint = t
+            .did_you_mean
+            .as_ref()
+            .map(|f| {
+                format!(
+                    " (did you mean --{} {f:?}? folder names are case-sensitive)",
+                    t.flag
+                )
+            })
+            .unwrap_or_default();
+        eprintln!(
+            "warning: --{} {} matches no {what} (cleanup run {id}); it was ignored{hint}",
+            t.flag, t.term
+        );
     }
 }
 
@@ -186,6 +207,8 @@ struct SelectOut<'a> {
     #[serde(flatten)]
     summary: &'a RunSummary,
     selection: &'a Selection,
+    /// Terms of the selection that matched no file of the plan (also warned on standard error).
+    unmatched: &'a [UnmatchedTerm],
     /// The planned (selected) files per folder.
     totals: ps_export::quarantine::MoveTotals,
 }
@@ -194,6 +217,19 @@ struct SelectOut<'a> {
 pub fn select(ctx: &Ctx, id: i64, args: SelectionArgs<'_>) -> Result<()> {
     let svc = ctx.service()?;
     let selection = args.selection()?;
+    // Each select replaces the previous selection; terms are matched against the files it can still change.
+    let (_, before) = svc.cleanups().run_detail(id)?;
+    let selectable: Vec<&CleanupMove> = before
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.state,
+                ps_model::MoveState::Planned | ps_model::MoveState::Unselected
+            )
+        })
+        .collect();
+    let unmatched = selection.unmatched(&selectable);
+    warn_unmatched(id, "file of the plan", &unmatched);
     let summary = svc.cleanups().select(id, &selection)?;
     let (_, moves) = svc.cleanups().run_detail(id)?;
     let totals = ps_service::cleanup::totals_of(
@@ -204,6 +240,7 @@ pub fn select(ctx: &Ctx, id: i64, args: SelectionArgs<'_>) -> Result<()> {
     let out = SelectOut {
         summary: &summary,
         selection: &selection,
+        unmatched: &unmatched,
         totals,
     };
     emit(ctx.json, "cleanup select", &out, |o| {
@@ -450,6 +487,8 @@ struct UndoOut<'a> {
     root: &'a Path,
     #[serde(flatten)]
     report: &'a UndoReport,
+    /// Terms of the selection that matched no quarantined file (also warned on standard error).
+    unmatched: &'a [UnmatchedTerm],
 }
 
 /// `cleanup undo <id>`: move quarantined files back (needs `--yes`); never onto an occupied path.
@@ -457,10 +496,11 @@ pub fn undo(ctx: &Ctx, id: i64, args: SelectionArgs<'_>, yes: bool) -> Result<()
     let svc = ctx.service()?;
     let (summary, moves) = svc.cleanups().run_detail(id)?;
     let selection = args.selection()?;
-    let picked = moves
-        .iter()
-        .filter(|m| m.state.is_quarantined() && selection.picks(m))
-        .count();
+    let quarantined: Vec<&CleanupMove> =
+        moves.iter().filter(|m| m.state.is_quarantined()).collect();
+    let unmatched = selection.unmatched(&quarantined);
+    warn_unmatched(id, "quarantined file", &unmatched);
+    let picked = quarantined.iter().filter(|m| selection.picks(m)).count();
     let question = format!(
         "Move {picked} quarantined files of run {id} back to their places in {}? Occupied paths are never overwritten.",
         summary.root.display()
@@ -473,6 +513,7 @@ pub fn undo(ctx: &Ctx, id: i64, args: SelectionArgs<'_>, yes: bool) -> Result<()
         run: id,
         root: &summary.root,
         report: &report,
+        unmatched: &unmatched,
     };
     emit(ctx.json, "cleanup undo", &out, |o| {
         println!(

@@ -154,7 +154,11 @@ same drive, so the space is only freed once you delete the quarantine folder you
   saves your selection with the plan and the confirmation shows exactly what will move; until the run moves a
   file you can tick it again. On the command line, `cleanup select <run>` does the same with repeatable
   `--folder`, `--file` (ids from `cleanup show`), `--except-folder` and `--except-file`, or `--all` for the whole
-  plan again; `cleanup show` lists left-out files as `unselected`.
+  plan again; `cleanup show` lists left-out files as `unselected`. Each `cleanup select` **replaces** the previous
+  selection rather than adding to it, so name everything you want in one command. Folder names match exactly
+  and case-sensitively; a `--folder`, `--file`, `--except-folder` or `--except-file` that matches nothing is
+  reported as a warning (on standard error and as `unmatched` in `--json`), with the folder that differs only
+  in case if there is one, and `cleanup undo` warns the same way.
 - **Discard a plan** you will not run with **Discard plan** (or **Discard** in the history), or
   `photosquirrel-cli cleanup discard <run>`. Nothing on the drive changes and the plan stays in the history as
   discarded. A run that has moved any file cannot be discarded, even after an undo.

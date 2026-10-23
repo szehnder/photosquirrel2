@@ -1149,7 +1149,14 @@ fn scenario_cleanup_planned_run_discarded() {
             )
             .unwrap_err(),
     );
-    not_runnable(svc.cleanups().select(id, &Selection::all()).unwrap_err());
+    let narrow = svc.cleanups().select(id, &Selection::all()).unwrap_err();
+    assert!(
+        matches!(narrow, CleanupError::NotNarrowable { .. })
+            && narrow.to_string().contains("cannot be narrowed")
+            && !narrow.to_string().contains("cannot run"),
+        "{narrow}"
+    );
+    not_runnable(narrow);
     not_runnable(svc.cleanups().undo(id, &Selection::all()).unwrap_err());
     not_runnable(svc.cleanups().discard(id).unwrap_err());
     assert_eq!(snapshot(&root), before);

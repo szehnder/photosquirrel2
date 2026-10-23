@@ -288,6 +288,10 @@ enum CleanupCommand {
     Show { run: i64 },
     /// Narrow a planned run to chosen folders and files before running it (or widen it again with --all).
     /// Files left out stay in the plan as unselected and are never moved. Moves nothing.
+    ///
+    /// Each select replaces the run's previous selection (it does not add to it): give every folder and file
+    /// you want in one command. Folder names are matched exactly and case-sensitively; a term that matches no
+    /// file of the plan is reported as a warning (with a folder that differs only in case, if there is one).
     #[command(group(
         clap::ArgGroup::new("pick")
             .required(true)
