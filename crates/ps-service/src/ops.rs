@@ -1,6 +1,7 @@
 //! One operation that changes files or their catalog records at a time (ADR-0065).
 //!
-//! A scan (started or resumed), an export, a cleanup plan, run or undo, cleanup reconciliation and adding,
+//! A scan (started or resumed), an export, a cleanup plan, selection, discard, run or undo, cleanup
+//! reconciliation and adding,
 //! re-linking or removing a source exclude each other within a process: [`ScanService::begin`] takes the slot
 //! for an export or a cleanup operation (refused while a scan is active or another operation holds it), and
 //! the scan entry points refuse while the slot is held. Reconciliation never touches a run that is live in
@@ -20,6 +21,10 @@ pub enum Operation {
     CleanupPlan,
     CleanupRun(i64),
     CleanupUndo(i64),
+    /// Setting a planned run's selection (ADR-0068).
+    CleanupSelect(i64),
+    /// Discarding a planned run (ADR-0068).
+    CleanupDiscard(i64),
     CleanupReconcile,
 }
 
@@ -30,6 +35,8 @@ impl std::fmt::Display for Operation {
             Operation::CleanupPlan => f.write_str("a cleanup plan"),
             Operation::CleanupRun(id) => write!(f, "cleanup run {id}"),
             Operation::CleanupUndo(id) => write!(f, "the undo of cleanup run {id}"),
+            Operation::CleanupSelect(id) => write!(f, "the selection of cleanup run {id}"),
+            Operation::CleanupDiscard(id) => write!(f, "the discard of cleanup run {id}"),
             Operation::CleanupReconcile => f.write_str("cleanup reconciliation"),
         }
     }

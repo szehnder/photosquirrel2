@@ -286,16 +286,51 @@ enum CleanupCommand {
     List,
     /// One run with every file and its state.
     Show { run: i64 },
-    /// Move a run's quarantined files back (all, one folder, or some files). Occupied paths are never
+    /// Narrow a planned run to chosen folders and files before running it (or widen it again with --all).
+    /// Files left out stay in the plan as unselected and are never moved. Moves nothing.
+    #[command(group(
+        clap::ArgGroup::new("pick")
+            .required(true)
+            .multiple(true)
+            .args(["folders", "files", "except_folders", "except_files", "all"])
+    ))]
+    Select {
+        run: i64,
+        /// Only files under this folder, relative to the source root (repeatable).
+        #[arg(long = "folder")]
+        folders: Vec<String>,
+        /// Only this file, by file id as `cleanup show` lists it (repeatable).
+        #[arg(long = "file")]
+        files: Vec<i64>,
+        /// Leave out the files under this folder (repeatable).
+        #[arg(long = "except-folder")]
+        except_folders: Vec<String>,
+        /// Leave out this file (repeatable).
+        #[arg(long = "except-file")]
+        except_files: Vec<i64>,
+        /// Every file of the plan again.
+        #[arg(long, conflicts_with_all = ["folders", "files", "except_folders", "except_files"])]
+        all: bool,
+    },
+    /// Drop a planned run that never moved a file. Touches no file; the run stays in the history as
+    /// discarded. Refused for any run that moved a file, even one that was undone.
+    Discard { run: i64 },
+    /// Move a run's quarantined files back (all, some folders, or some files). Occupied paths are never
     /// overwritten.
     Undo {
         run: i64,
-        /// Only files under this folder, relative to the source root.
-        #[arg(long)]
-        folder: Option<String>,
+        /// Only files under this folder, relative to the source root (repeatable).
+        #[arg(long = "folder")]
+        folders: Vec<String>,
         /// Only these files (repeatable).
         #[arg(long = "file")]
         files: Vec<i64>,
+        /// Leave the files under this folder in quarantine (repeatable).
+        #[arg(long = "except-folder")]
+        except_folders: Vec<String>,
+        /// Leave this file in quarantine (repeatable).
+        #[arg(long = "except-file")]
+        except_files: Vec<i64>,
         /// Confirm. Without it nothing is moved (at a terminal you are asked).
         #[arg(long, short = 'y')]
         yes: bool,
@@ -462,12 +497,42 @@ fn run(cli: Cli) -> Result<()> {
             } => cmd::cleanup::run(&ctx, run, yes, network_ok),
             CleanupCommand::List => cmd::cleanup::list(&ctx),
             CleanupCommand::Show { run } => cmd::cleanup::show(&ctx, run),
+            CleanupCommand::Select {
+                run,
+                folders,
+                files,
+                except_folders,
+                except_files,
+                all: _,
+            } => cmd::cleanup::select(
+                &ctx,
+                run,
+                cmd::cleanup::SelectionArgs {
+                    folders: &folders,
+                    files: &files,
+                    except_folders: &except_folders,
+                    except_files: &except_files,
+                },
+            ),
+            CleanupCommand::Discard { run } => cmd::cleanup::discard(&ctx, run),
             CleanupCommand::Undo {
                 run,
-                folder,
+                folders,
                 files,
+                except_folders,
+                except_files,
                 yes,
-            } => cmd::cleanup::undo(&ctx, run, folder.as_deref(), &files, yes),
+            } => cmd::cleanup::undo(
+                &ctx,
+                run,
+                cmd::cleanup::SelectionArgs {
+                    folders: &folders,
+                    files: &files,
+                    except_folders: &except_folders,
+                    except_files: &except_files,
+                },
+                yes,
+            ),
         },
         Command::Ai { command } => match command {
             AiCommand::Providers => cmd::ai::providers(&ctx),

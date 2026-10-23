@@ -4,7 +4,9 @@
 //! [`Cleanups`] plans a cleanup of one source (or one folder of it) from the derived dispositions, stores the
 //! plan in the catalog (`cleanup_run`, `cleanup_move`), runs a confirmed plan through
 //! [`ps_export::quarantine::run`] with the catalog as the durable half of the journal ([`CatalogJournal`]),
-//! undoes whole runs or a folder or files of one, and reconciles moves a crash left mid-way. Every command
+//! undoes whole runs or a folder or files of one, and reconciles moves a crash left mid-way. A stored plan can
+//! be narrowed to a [`Selection`] before it runs (the moves left out become `unselected`) and a plan that
+//! never moved a file can be discarded (change `cleanup-selection`, ADR-0068); both write catalog rows only. Every command
 //! reconciles first, so a restart after a crash always resolves the journal before anything else happens.
 //!
 //! Each command holds the service's operation slot ([`crate::ops`], ADR-0065): no scan, export or other cleanup
@@ -71,6 +73,12 @@ pub enum CleanupError {
     NetworkNotConfirmed(i64),
     #[error("cleanup run {id} cannot run: {why}")]
     NotRunnable { id: i64, why: String },
+    #[error(
+        "this selection leaves no file of cleanup run {id} to move: discard the plan instead (cleanup discard {id})"
+    )]
+    EmptySelection { id: i64 },
+    #[error("cleanup run {id} cannot be discarded: {why}")]
+    NotDiscardable { id: i64, why: String },
     #[error("the catalog is open read-only (another PhotoSquirrel process owns it)")]
     ReadOnly,
 }
@@ -174,23 +182,57 @@ pub struct RunOptions {
     pub network_confirmed: bool,
 }
 
-/// What to undo of a run.
-#[derive(Clone, Debug, Default)]
-pub struct UndoSelection {
-    /// Only moves under this folder.
-    pub folder: Option<RelPath>,
-    /// Only these files (empty: every file).
+/// Which moves of a run a selection picks: for narrowing a plan ([`Cleanups::select`]) and for undo
+/// ([`Cleanups::undo`]). Folders mean their whole subtree ([`RelPath::is_within`]), as `cleanup plan --folder`.
+///
+/// A move is picked when (`folders` and `files` are both empty, or it is within one of `folders`, or it is one
+/// of `files`) and it is neither within one of `except_folders` nor one of `except_files`. The inclusion lists
+/// serve the CLI; the exclusion lists serve the app, which starts with everything ticked and records what the
+/// user unticks, so a selection stays small however big the plan is. The empty selection picks everything.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Selection {
+    pub folders: Vec<RelPath>,
     pub files: Vec<FileId>,
+    pub except_folders: Vec<RelPath>,
+    pub except_files: Vec<FileId>,
 }
 
-impl UndoSelection {
+impl Selection {
+    /// Every move.
     pub fn all() -> Self {
         Self::default()
     }
 
-    fn picks(&self, m: &CleanupMove) -> bool {
-        self.folder.as_ref().is_none_or(|f| m.rel_path.is_within(f))
-            && (self.files.is_empty() || self.files.contains(&m.file))
+    /// Only the moves under `folder`.
+    pub fn folder(folder: RelPath) -> Self {
+        Self {
+            folders: vec![folder],
+            ..Self::default()
+        }
+    }
+
+    /// Whether the selection picks `m` (only its path and file id are looked at).
+    pub fn picks(&self, m: &CleanupMove) -> bool {
+        let included = (self.folders.is_empty() && self.files.is_empty())
+            || self.folders.iter().any(|f| m.rel_path.is_within(f))
+            || self.files.contains(&m.file);
+        included
+            && !self.except_folders.iter().any(|f| m.rel_path.is_within(f))
+            && !self.except_files.contains(&m.file)
+    }
+
+    /// A [`Selection::picks`] that is fast for long file lists (the app's exclusions can name many files).
+    fn picker(&self) -> impl Fn(&CleanupMove) -> bool + '_ {
+        let files: std::collections::HashSet<FileId> = self.files.iter().copied().collect();
+        let except: std::collections::HashSet<FileId> = self.except_files.iter().copied().collect();
+        move |m| {
+            let included = (self.folders.is_empty() && files.is_empty())
+                || self.folders.iter().any(|f| m.rel_path.is_within(f))
+                || files.contains(&m.file);
+            included
+                && !self.except_folders.iter().any(|f| m.rel_path.is_within(f))
+                && !except.contains(&m.file)
+        }
     }
 }
 
@@ -499,7 +541,21 @@ impl<'a> Cleanups<'a> {
             &moves,
             &mut journal,
         )?;
+        let adopted = report
+            .resolved
+            .iter()
+            .any(|(_, s, _)| s.is_quarantined() || *s == MoveState::Restored);
         if run.state == CleanupRunState::Running {
+            self.catalog()
+                .writer()
+                .cleanup_set_run_state(id, CleanupRunState::Completed)?;
+        } else if run.state == CleanupRunState::Discarded && adopted {
+            // Its journal file records a move the catalog had lost (ADR-0068): the run did move files, so it
+            // is a completed run again and can be undone.
+            log::warn!(
+                "cleanup run {id} was discarded, but its journal records moved files: it is a completed run \
+                 again (undo it to put them back)"
+            );
             self.catalog()
                 .writer()
                 .cleanup_set_run_state(id, CleanupRunState::Completed)?;
@@ -540,6 +596,9 @@ impl<'a> Cleanups<'a> {
         };
         if run.state == CleanupRunState::Undone {
             return Err(not_runnable("it was undone"));
+        }
+        if run.state == CleanupRunState::Discarded {
+            return Err(not_runnable("it was discarded"));
         }
         if !moves.iter().any(|m| m.state == MoveState::Planned) {
             return Err(not_runnable("no planned file is left to move"));
@@ -595,15 +654,148 @@ impl<'a> Cleanups<'a> {
         Ok(result?)
     }
 
+    /// Narrow (or widen again) a stored plan to the moves `selection` picks (ADR-0068): of the moves still
+    /// planned or unselected, the picked ones become planned and the others unselected, in one durable
+    /// transaction. Only a `planned` run (also one that was stopped part-way) can be selected; a selection that
+    /// leaves nothing planned is refused ([`CleanupError::EmptySelection`]). Writes catalog rows only: the
+    /// source need not be connected.
+    pub fn select(&self, id: i64, selection: &Selection) -> Result<RunSummary> {
+        self.writable()?;
+        let _op = self.begin(crate::ops::Operation::CleanupSelect(id))?;
+        self.reconcile_locked()?;
+        let r = self.catalog().read();
+        let run = r.cleanup_run(id)?.ok_or(CleanupError::UnknownRun(id))?;
+        let not = |why: String| CleanupError::NotRunnable { id, why };
+        match run.state {
+            CleanupRunState::Planned => {}
+            CleanupRunState::Discarded => {
+                return Err(not("it was discarded; plan again instead".into()));
+            }
+            other => {
+                return Err(not(format!(
+                    "it is {}; only a planned run can be narrowed",
+                    other.as_str()
+                )));
+            }
+        }
+        let moves = r.cleanup_moves(id)?;
+        let picks = selection.picker();
+        let picked: Vec<FileId> = moves
+            .iter()
+            .filter(|m| matches!(m.state, MoveState::Planned | MoveState::Unselected))
+            .filter(|m| picks(m))
+            .map(|m| m.file)
+            .collect();
+        if picked.is_empty() {
+            return Err(CleanupError::EmptySelection { id });
+        }
+        self.catalog().writer().cleanup_select_moves(id, picked)?;
+        Ok(self.run_detail(id)?.0)
+    }
+
+    /// Discard a run that never moved a file (ADR-0068): it stays in the history as `discarded`, its planned
+    /// moves become unselected, and it can no longer be run, selected or undone. Refused when any of its moves
+    /// is or was moving, quarantined, restoring or restored, and when its quarantine folder holds a journal
+    /// that records a move (reconciliation runs first, so such a move is adopted and named). Touches no file
+    /// or folder; works with the drive disconnected (the catalog half of the journal is durable before every
+    /// rename, ADR-0064, and reconciliation keeps watching discarded runs).
+    pub fn discard(&self, id: i64) -> Result<RunSummary> {
+        self.writable()?;
+        let _op = self.begin(crate::ops::Operation::CleanupDiscard(id))?;
+        self.reconcile_locked()?;
+        let r = self.catalog().read();
+        let run = r.cleanup_run(id)?.ok_or(CleanupError::UnknownRun(id))?;
+        let refuse = |why: String| CleanupError::NotDiscardable { id, why };
+        if run.state == CleanupRunState::Discarded {
+            return Err(refuse("it was already discarded".into()));
+        }
+        let moves = r.cleanup_moves(id)?;
+        let moved: Vec<&CleanupMove> = moves
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m.state,
+                    MoveState::Moving
+                        | MoveState::Quarantined
+                        | MoveState::Restoring
+                        | MoveState::Restored
+                )
+            })
+            .collect();
+        if !moved.is_empty() {
+            let names: Vec<String> = moved
+                .iter()
+                .take(3)
+                .map(|m| format!("{} ({})", m.rel_path, m.state.as_str()))
+                .collect();
+            let more = if moved.len() > 3 {
+                format!(" and {} more", moved.len() - 3)
+            } else {
+                String::new()
+            };
+            return Err(refuse(format!(
+                "it moved {} files: {}{more}. Only a plan that never moved a file can be discarded; the run \
+                 stays in the history (undo puts quarantined files back)",
+                moved.len(),
+                names.join(", ")
+            )));
+        }
+        if run.state != CleanupRunState::Planned {
+            return Err(refuse(format!(
+                "it is {}; only a plan that never moved a file can be discarded",
+                run.state.as_str()
+            )));
+        }
+        let (root, _) = self.run_root(&run)?;
+        let journal = quarantine::run_dir_rel(id)
+            .under(&root)
+            .join(quarantine::JOURNAL_FILE);
+        if root.is_dir() && journal.is_file() {
+            let lines = quarantine::read_journal(&journal).map_err(|e| {
+                refuse(format!(
+                    "its journal {} could not be read ({e})",
+                    journal.display()
+                ))
+            })?;
+            let moving = lines.iter().filter(|l| {
+                matches!(
+                    l.event,
+                    quarantine::JournalEvent::Intent
+                        | quarantine::JournalEvent::Done
+                        | quarantine::JournalEvent::UndoIntent
+                        | quarantine::JournalEvent::Restored
+                )
+            });
+            if let Some(l) = moving.clone().next() {
+                return Err(refuse(format!(
+                    "its journal {} records {} move(s), e.g. of {}",
+                    journal.display(),
+                    moving.count(),
+                    l.original.as_deref().unwrap_or("a file")
+                )));
+            }
+        }
+        if !self.catalog().writer().cleanup_discard_run(id)? {
+            return Err(refuse("it changed while it was being discarded".into()));
+        }
+        Ok(self.run_detail(id)?.0)
+    }
+
     /// Undo a run, or the part `selection` picks: rename quarantined files back to their paths, never onto
     /// an occupied path (reported, left in quarantine). The run is `undone` once none of its files is in
     /// quarantine any more.
-    pub fn undo(&self, id: i64, selection: &UndoSelection) -> Result<UndoReport> {
+    pub fn undo(&self, id: i64, selection: &Selection) -> Result<UndoReport> {
         self.writable()?;
         let _op = self.begin(crate::ops::Operation::CleanupUndo(id))?;
         self.reconcile_locked()?;
         let r = self.catalog().read();
         let run = r.cleanup_run(id)?.ok_or(CleanupError::UnknownRun(id))?;
+        if run.state == CleanupRunState::Discarded {
+            return Err(CleanupError::NotRunnable {
+                id,
+                why: "it was discarded and moved nothing; there is nothing to undo".into(),
+            });
+        }
         let moves = r.cleanup_moves(id)?;
         let (root, _) = self.run_root(&run)?;
         if !root.is_dir() {
@@ -634,7 +826,7 @@ impl<'a> Cleanups<'a> {
         let report = quarantine::undo(
             &Self::config(&run, &root, Path::new(""), &[]),
             &moves,
-            &|m| selection.picks(m),
+            &selection.picker(),
             &mut journal,
         )?;
         let left = self
@@ -660,5 +852,116 @@ impl<'a> Cleanups<'a> {
             e.1 += s.counts.quarantined_bytes;
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn rel(s: &str) -> RelPath {
+        RelPath::from_bytes(s.as_bytes().to_vec()).unwrap()
+    }
+
+    fn mv(file: i64, path: &str) -> CleanupMove {
+        CleanupMove {
+            file: FileId(file),
+            rel_path: rel(path),
+            quarantine_rel_path: quarantine::quarantine_rel_path(1, &rel(path)),
+            size: 1,
+            mtime_ns: 0,
+            file_index: None,
+            content: ps_model::ContentId::full([0; 32]),
+            disposition: ps_model::Disposition::Exported,
+            covering_library_path: rel("lib.jpg"),
+            state: MoveState::Planned,
+            note: None,
+            at_ms: None,
+        }
+    }
+
+    fn moves() -> Vec<CleanupMove> {
+        vec![
+            mv(1, "root.jpg"),
+            mv(2, "DCIM/a.jpg"),
+            mv(3, "DCIM/100/b.jpg"),
+            mv(4, "DCIM/100/c.jpg"),
+            mv(5, "DCIMX/d.jpg"),
+            mv(6, "Backup/2008/e.jpg"),
+        ]
+    }
+
+    fn picked(s: &Selection) -> Vec<i64> {
+        let by_picks: Vec<i64> = moves()
+            .iter()
+            .filter(|m| s.picks(m))
+            .map(|m| m.file.0)
+            .collect();
+        let fast = s.picker();
+        let by_picker: Vec<i64> = moves()
+            .iter()
+            .filter(|m| fast(m))
+            .map(|m| m.file.0)
+            .collect();
+        assert_eq!(by_picks, by_picker, "picks and picker agree");
+        by_picks
+    }
+
+    #[test]
+    fn empty_selection_picks_everything() {
+        assert_eq!(picked(&Selection::all()), vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn selection_inclusion_by_folder_and_file() {
+        // A folder means its subtree, and never a sibling that only shares a prefix (DCIMX).
+        assert_eq!(picked(&Selection::folder(rel("DCIM"))), vec![2, 3, 4]);
+        let s = Selection {
+            folders: vec![rel("DCIM/100"), rel("Backup")],
+            files: vec![FileId(1)],
+            ..Selection::default()
+        };
+        assert_eq!(picked(&s), vec![1, 3, 4, 6]);
+        let files_only = Selection {
+            files: vec![FileId(5), FileId(42)],
+            ..Selection::default()
+        };
+        assert_eq!(picked(&files_only), vec![5], "an unknown id picks nothing");
+    }
+
+    #[test]
+    fn selection_exclusion_by_folder_and_file() {
+        let s = Selection {
+            except_folders: vec![rel("DCIM/100")],
+            except_files: vec![FileId(6)],
+            ..Selection::default()
+        };
+        assert_eq!(picked(&s), vec![1, 2, 5]);
+        // Exclusions win over inclusions.
+        let s = Selection {
+            folders: vec![rel("DCIM")],
+            files: vec![FileId(3)],
+            except_folders: vec![rel("DCIM/100")],
+            except_files: vec![FileId(2)],
+        };
+        assert_eq!(picked(&s), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn selection_subtree_semantics() {
+        // Excluding a parent excludes its children; excluding a child keeps the parent's other files.
+        let s = Selection {
+            except_folders: vec![rel("DCIM")],
+            ..Selection::default()
+        };
+        assert_eq!(picked(&s), vec![1, 5, 6]);
+        let s = Selection {
+            folders: vec![rel("DCIM")],
+            except_folders: vec![rel("DCIM/100")],
+            ..Selection::default()
+        };
+        assert_eq!(picked(&s), vec![2]);
     }
 }

@@ -1,6 +1,7 @@
-//! `cleanup plan|run|list|show|undo` (change `quarantine-cleanup`; ADR-0024, ADR-0061).
+//! `cleanup plan|select|run|list|show|discard|undo` (changes `quarantine-cleanup`, `cleanup-selection`;
+//! ADR-0024, ADR-0061, ADR-0068).
 //!
-//! `plan` stores a dry run and moves nothing. `run` and `undo` move files only with `--yes` (or a "yes"
+//! `plan` stores a dry run and moves nothing; `select` narrows it and `discard` drops it, both catalog-only. `run` and `undo` move files only with `--yes` (or a "yes"
 //! typed at a terminal); without it they print what they would do and exit 1.
 
 use std::io::{BufRead, IsTerminal, Write};
@@ -13,7 +14,7 @@ use serde::Serialize;
 
 use ps_export::quarantine::{RunProgress, RunReport, UndoReport};
 use ps_model::{CleanupMove, FileId, RelPath, SourceId};
-use ps_service::cleanup::{CleanupPlan, RunOptions, RunSummary, UndoSelection};
+use ps_service::cleanup::{CleanupPlan, RunOptions, RunSummary, Selection};
 
 use super::Ctx;
 use crate::control::{self, Interrupted};
@@ -24,6 +25,33 @@ fn rel_arg(s: &str) -> Result<RelPath> {
     match RelPath::from_path(p) {
         Some(r) => Ok(r),
         None => bail!("--folder must be a folder relative to the source root, like DCIM/100CANON"),
+    }
+}
+
+/// `--folder`, `--file`, `--except-folder` and `--except-file` of `select` and `undo`.
+pub struct SelectionArgs<'a> {
+    pub folders: &'a [String],
+    pub files: &'a [i64],
+    pub except_folders: &'a [String],
+    pub except_files: &'a [i64],
+}
+
+impl SelectionArgs<'_> {
+    fn selection(&self) -> Result<Selection> {
+        let rels = |v: &[String]| v.iter().map(|f| rel_arg(f)).collect::<Result<Vec<_>>>();
+        Ok(Selection {
+            folders: rels(self.folders)?,
+            files: self.files.iter().map(|f| FileId(*f)).collect(),
+            except_folders: rels(self.except_folders)?,
+            except_files: self.except_files.iter().map(|f| FileId(*f)).collect(),
+        })
+    }
+
+    fn is_all(&self) -> bool {
+        self.folders.is_empty()
+            && self.files.is_empty()
+            && self.except_folders.is_empty()
+            && self.except_files.is_empty()
     }
 }
 
@@ -151,6 +179,75 @@ pub fn plan(ctx: &Ctx, source: i64, folder: Option<&str>, library: Option<&Path>
              to move them: photosquirrel-cli cleanup run {run} --yes"
         );
     })
+}
+
+#[derive(Serialize)]
+struct SelectOut<'a> {
+    #[serde(flatten)]
+    summary: &'a RunSummary,
+    selection: &'a Selection,
+    /// The planned (selected) files per folder.
+    totals: ps_export::quarantine::MoveTotals,
+}
+
+/// `cleanup select <id>`: narrow a stored plan (or widen it again); nothing on disk changes.
+pub fn select(ctx: &Ctx, id: i64, args: SelectionArgs<'_>) -> Result<()> {
+    let svc = ctx.service()?;
+    let selection = args.selection()?;
+    let summary = svc.cleanups().select(id, &selection)?;
+    let (_, moves) = svc.cleanups().run_detail(id)?;
+    let totals = ps_service::cleanup::totals_of(
+        moves
+            .iter()
+            .filter(|m| m.state == ps_model::MoveState::Planned),
+    );
+    let out = SelectOut {
+        summary: &summary,
+        selection: &selection,
+        totals,
+    };
+    emit(ctx.json, "cleanup select", &out, |o| {
+        print_folders(&o.totals);
+        println!(
+            "cleanup run {id}: {} files ({}) selected to move, {} files ({}) left out{}",
+            o.summary.counts.planned,
+            bytes(o.summary.counts.planned_bytes),
+            o.summary.counts.unselected,
+            bytes(o.summary.counts.unselected_bytes),
+            if args.is_all() {
+                " (every file of the plan)"
+            } else {
+                ""
+            }
+        );
+        println!(
+            "selection only: nothing was moved. Left-out files are never touched by the run.\n\
+             to move the selected files: photosquirrel-cli cleanup run {id} --yes"
+        );
+    })
+}
+
+#[derive(Serialize)]
+struct DiscardOut<'a> {
+    #[serde(flatten)]
+    summary: &'a RunSummary,
+}
+
+/// `cleanup discard <id>`: drop a plan that never moved a file (no `--yes`: it moves nothing).
+pub fn discard(ctx: &Ctx, id: i64) -> Result<()> {
+    let svc = ctx.service()?;
+    let summary = svc.cleanups().discard(id)?;
+    emit(
+        ctx.json,
+        "cleanup discard",
+        &DiscardOut { summary: &summary },
+        |o| {
+            println!(
+                "cleanup run {id} discarded: {} files stay where they are; nothing on the drive changed",
+                o.summary.counts.unselected
+            );
+        },
+    )
 }
 
 #[derive(Serialize)]
@@ -282,6 +379,7 @@ pub fn list(ctx: &Ctx) -> Result<()> {
                     s.run.state.as_str().to_owned(),
                     s.root.display().to_string(),
                     s.counts.planned.to_string(),
+                    s.counts.unselected.to_string(),
                     format!(
                         "{} ({})",
                         s.counts.quarantined,
@@ -298,6 +396,7 @@ pub fn list(ctx: &Ctx) -> Result<()> {
                 "STATE",
                 "SOURCE",
                 "PLANNED",
+                "UNSELECTED",
                 "QUARANTINED",
                 "SKIPPED",
                 "RESTORED",
@@ -324,11 +423,12 @@ pub fn show(ctx: &Ctx, id: i64) -> Result<()> {
     };
     emit(ctx.json, "cleanup show", &out, |o| {
         println!(
-            "cleanup run {} ({}) of {}: {} planned, {} quarantined, {} skipped, {} restored",
+            "cleanup run {} ({}) of {}: {} planned, {} unselected, {} quarantined, {} skipped, {} restored",
             o.summary.run.id,
             o.summary.run.state.as_str(),
             o.summary.root.display(),
             o.summary.counts.planned,
+            o.summary.counts.unselected,
             o.summary.counts.quarantined,
             o.summary.counts.skipped,
             o.summary.counts.restored
@@ -353,15 +453,16 @@ struct UndoOut<'a> {
 }
 
 /// `cleanup undo <id>`: move quarantined files back (needs `--yes`); never onto an occupied path.
-pub fn undo(ctx: &Ctx, id: i64, folder: Option<&str>, files: &[i64], yes: bool) -> Result<()> {
+pub fn undo(ctx: &Ctx, id: i64, args: SelectionArgs<'_>, yes: bool) -> Result<()> {
     let svc = ctx.service()?;
-    let (summary, _) = svc.cleanups().run_detail(id)?;
-    let selection = UndoSelection {
-        folder: folder.map(rel_arg).transpose()?,
-        files: files.iter().map(|f| FileId(*f)).collect(),
-    };
+    let (summary, moves) = svc.cleanups().run_detail(id)?;
+    let selection = args.selection()?;
+    let picked = moves
+        .iter()
+        .filter(|m| m.state.is_quarantined() && selection.picks(m))
+        .count();
     let question = format!(
-        "Move the quarantined files of run {id} back to their places in {}? Occupied paths are never overwritten.",
+        "Move {picked} quarantined files of run {id} back to their places in {}? Occupied paths are never overwritten.",
         summary.root.display()
     );
     if !confirmed(yes, &question)? {

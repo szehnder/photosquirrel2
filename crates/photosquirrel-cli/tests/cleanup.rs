@@ -218,3 +218,72 @@ fn scenario_cleanup_cli_undo_round_trip() {
             .is_file()
     );
 }
+
+#[test]
+fn scenario_cleanup_cli_select_and_discard() {
+    let env = Env::new("select-discard");
+    let drive = env.corpus().join("drive-b");
+    let before = snapshot(&drive);
+    let plan = env.plan("2");
+    let id = plan["data"]["run"].as_i64().unwrap().to_string();
+    let moves = plan["data"]["moves"].as_array().unwrap();
+    // The folder of the first planned file, relative to the drive.
+    let first = Path::new(moves[0]["path"].as_str().unwrap());
+    let folder = first
+        .parent()
+        .unwrap()
+        .strip_prefix(&drive)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let under = |m: &Value| Path::new(m["path"].as_str().unwrap()).starts_with(drive.join(&folder));
+    let n_in = moves.iter().filter(|m| under(m)).count() as u64;
+    assert!(n_in > 0 && n_in < moves.len() as u64);
+    let sel = json(&ok(
+        &env.data(),
+        &["--json", "cleanup", "select", &id, "--folder", &folder],
+    ));
+    assert_eq!(sel["command"], "cleanup select");
+    assert_eq!(sel["data"]["counts"]["planned"], n_in, "{sel}");
+    assert_eq!(sel["data"]["totals"]["files"], n_in);
+    let show = json(&ok(&env.data(), &["--json", "cleanup", "show", &id]));
+    assert_eq!(show["data"]["counts"]["planned"], n_in);
+    assert_eq!(
+        show["data"]["counts"]["unselected"],
+        moves.len() as u64 - n_in
+    );
+    for m in show["data"]["moves"].as_array().unwrap() {
+        let want = if under(m) { "planned" } else { "unselected" };
+        assert_eq!(m["state"], want, "{m}");
+    }
+    // A selection without any flag is a usage error; one that picks nothing is refused.
+    assert_eq!(
+        run(&env.data(), &["cleanup", "select", &id]).status.code(),
+        Some(2)
+    );
+    let o = run(
+        &env.data(),
+        &["cleanup", "select", &id, "--folder", "No Such Folder"],
+    );
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("discard"));
+    // Discard: exit 0, reported discarded; nothing on the drive changed.
+    let d = json(&ok(&env.data(), &["--json", "cleanup", "discard", &id]));
+    assert_eq!(d["command"], "cleanup discard");
+    assert_eq!(d["data"]["run"]["state"], "discarded");
+    assert_eq!(d["data"]["counts"]["planned"], 0);
+    let list = json(&ok(&env.data(), &["--json", "cleanup", "list"]));
+    assert_eq!(list["data"][0]["run"]["state"], "discarded");
+    let text = String::from_utf8_lossy(&ok(&env.data(), &["cleanup", "list"]).stdout).into_owned();
+    assert!(text.contains("discarded"), "{text}");
+    // A second discard and a run of it exit 1.
+    let o = run(&env.data(), &["cleanup", "discard", &id]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("already discarded"));
+    let o = run(&env.data(), &["cleanup", "run", &id, "--yes"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("discarded"));
+    assert_eq!(snapshot(&drive), before);
+    assert!(!drive.join(QUARANTINE_DIR).exists());
+}

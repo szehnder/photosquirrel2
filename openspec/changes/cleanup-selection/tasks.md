@@ -9,21 +9,21 @@
 
 ## 2. Service: selection
 
-- [ ] 2.1 `ps-service::cleanup::Selection` (folders, files, except_folders, except_files) replacing `UndoSelection`; `picks` unit tests for inclusion, exclusion, subtree semantics and the empty selection; verify `cargo test -p ps-service selection`
-- [ ] 2.2 `Cleanups::select(run, &Selection)` with `Operation::CleanupSelect`, reconcile first, refused unless `planned`, `EmptySelection` when nothing is picked; verify `scenario_cleanup_plan_narrowed_to_folders`, `scenario_cleanup_plan_narrowed_to_files`, `scenario_cleanup_narrowing_is_reversible_before_the_run`, `scenario_cleanup_empty_selection_refused`
-- [ ] 2.3 `MoveCounts` gains `unselected`/`unselected_bytes`; `RunSummary` and `cleanup list/show` JSON carry them; verify the narrowing scenarios assert the counts and the run's `skipped` stays 0
+- [x] 2.1 `ps-service::cleanup::Selection` (folders, files, except_folders, except_files) replacing `UndoSelection`; `picks` unit tests for inclusion, exclusion, subtree semantics and the empty selection; verify `cargo test -p ps-service selection`
+- [x] 2.2 `Cleanups::select(run, &Selection)` with `Operation::CleanupSelect`, reconcile first, refused unless `planned`, `EmptySelection` when nothing is picked; verify `scenario_cleanup_plan_narrowed_to_folders`, `scenario_cleanup_plan_narrowed_to_files`, `scenario_cleanup_narrowing_is_reversible_before_the_run`, `scenario_cleanup_empty_selection_refused`
+- [x] 2.3 `MoveCounts` gains `unselected`/`unselected_bytes`; `RunSummary` and `cleanup list/show` JSON carry them; verify the narrowing scenarios assert the counts and the run's `skipped` stays 0
 - [x] 2.4 `quarantine::reconcile` treats `Unselected` like `Planned` (suspect only when the JSON journal records a move); verify a `ps-export` test that an unselected move recorded as moved by `journal.jsonl` is adopted as quarantined
 
 ## 3. Service: discard
 
-- [ ] 3.1 `Cleanups::discard(run)` with `Operation::CleanupDiscard`, reconcile first, `NotDiscardable` when any move is or was moving/quarantined/restoring/restored or the run's `journal.jsonl` has an intent; run, select and undo refuse a discarded run; verify `scenario_cleanup_planned_run_discarded`, `scenario_cleanup_discard_refused_after_a_move`
-- [ ] 3.2 `reconcile_locked` keeps reconciling discarded runs that have a journal, and `reconcile_run` returns a discarded run that adopted a move to `completed` with a log line; verify `scenario_cleanup_discard_checks_the_journal_first` (journal planted with a move while the catalog says planned) and `scenario_cleanup_discarded_run_on_an_offline_drive` (source root renamed away for the discard, restored after; tree snapshot unchanged, run still discarded)
-- [ ] 3.3 Operation slot covers select and discard; verify `scenario_cleanup_selection_and_discard_wait_for_a_live_run` (hook pauses a live run; both refused naming it) and that `scenario_cleanup_operations_exclude_each_other` still passes
-- [ ] 3.4 Never-delete holds: extend `scenario_cleanup_cleanup_never_deletes` to narrow, run, partially undo and discard another plan of the same drive; verify the file count of tree plus quarantine is unchanged and every file has unchanged bytes
+- [x] 3.1 `Cleanups::discard(run)` with `Operation::CleanupDiscard`, reconcile first, `NotDiscardable` when any move is or was moving/quarantined/restoring/restored or the run's `journal.jsonl` has an intent; run, select and undo refuse a discarded run; verify `scenario_cleanup_planned_run_discarded`, `scenario_cleanup_discard_refused_after_a_move`
+- [x] 3.2 `reconcile_locked` keeps reconciling discarded runs that have a journal, and `reconcile_run` returns a discarded run that adopted a move to `completed` with a log line; verify `scenario_cleanup_discard_checks_the_journal_first` (journal planted with a move while the catalog says planned) and `scenario_cleanup_discarded_run_on_an_offline_drive` (source root renamed away for the discard, restored after; tree snapshot unchanged, run still discarded)
+- [x] 3.3 Operation slot covers select and discard; verify `scenario_cleanup_selection_and_discard_wait_for_a_live_run` (hook pauses a live run; both refused naming it) and that `scenario_cleanup_operations_exclude_each_other` still passes
+- [x] 3.4 Never-delete holds: extend `scenario_cleanup_cleanup_never_deletes` to narrow, run, partially undo and discard another plan of the same drive; verify the file count of tree plus quarantine is unchanged and every file has unchanged bytes
 
 ## 4. CLI
 
-- [ ] 4.1 `cleanup select <run>` (`--folder`, `--file`, `--except-folder`, `--except-file`, repeatable; `--all`), `cleanup discard <run>`, `undo` on `Selection` (gains `--except-*`), `list`/`show` print unselected files and the discarded state, all with `--json`; verify `scenario_cleanup_cli_select_and_discard` in `photosquirrel-cli/tests/cleanup.rs` and that `scenario_cleanup_cli_undo_round_trip` still passes
+- [x] 4.1 `cleanup select <run>` (`--folder`, `--file`, `--except-folder`, `--except-file`, repeatable; `--all`), `cleanup discard <run>`, `undo` on `Selection` (gains `--except-*`), `list`/`show` print unselected files and the discarded state, all with `--json`; verify `scenario_cleanup_cli_select_and_discard` in `photosquirrel-cli/tests/cleanup.rs` and that `scenario_cleanup_cli_undo_round_trip` still passes
 - [ ] 4.2 README cleanup section: narrowing, partial undo in the app, `cleanup select` and `cleanup discard` examples; verify each documented command line parses (`photosquirrel-cli cleanup select --help` and `discard --help` match the flags named)
 
 ## 5. App

@@ -753,7 +753,7 @@ impl ScanBackend for CatalogBackend {
         let r = self
             .scan()?
             .cleanups()
-            .undo(run, &ps_service::cleanup::UndoSelection::all());
+            .undo(run, &ps_service::cleanup::Selection::all());
         self.forget_dispositions();
         let r = r?;
         Ok(UndoOutcome {

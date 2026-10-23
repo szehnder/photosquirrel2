@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ps_export::ExecConfig;
 use ps_export::quarantine::{QUARANTINE_DIR, QuarantineHooks, RunProgress};
 use ps_model::{CleanupMove, CleanupRunState, Disposition, FileId, MoveState, SourceId};
-use ps_service::cleanup::{RunOptions, UndoSelection};
+use ps_service::cleanup::{CleanupError, RunOptions, Selection};
 use ps_service::export::profile_settings;
 use ps_service::scan::{ScanOptions, ScanService};
 
@@ -262,23 +262,45 @@ fn scenario_cleanup_cleanup_never_deletes() {
     let before = snapshot(&root);
     let plan = svc.cleanups().plan(SourceId(2), None, None).unwrap();
     let id = plan.summary.as_ref().unwrap().run.id;
-    let r = run_all(&svc, id);
-    assert_eq!(r.moved, plan.moves.len() as u64, "{:?}", r.skipped);
-    // Partial undo: the first folder only.
-    let folder = plan.moves[0].rel_path.parent().unwrap();
-    let u = svc
+    // Narrow the plan: one folder is left out (cleanup-selection).
+    let folders = folders_of(&plan.moves);
+    assert!(folders.len() >= 3, "{folders:?}");
+    let left_out = folders.last().unwrap().clone();
+    let narrowed = svc
         .cleanups()
-        .undo(
+        .select(
             id,
-            &UndoSelection {
-                folder: Some(folder.clone()),
-                files: Vec::new(),
+            &Selection {
+                except_folders: vec![left_out.clone()],
+                ..Selection::default()
             },
         )
         .unwrap();
+    assert!(narrowed.counts.unselected > 0);
+    let r = run_all(&svc, id);
+    assert_eq!(r.moved, narrowed.counts.planned, "{:?}", r.skipped);
+    // Partial undo: the first folder only.
+    let folder = plan.moves[0].rel_path.parent().unwrap();
+    assert!(!folder.is_within(&left_out));
+    let u = svc
+        .cleanups()
+        .undo(id, &Selection::folder(folder.clone()))
+        .unwrap();
     assert!(u.restored > 0 && u.conflicts.is_empty());
+    // Another plan of the same drive (the files still at home), discarded.
+    let again = svc.cleanups().plan(SourceId(2), None, None).unwrap();
+    let again_id = again.summary.as_ref().unwrap().run.id;
+    assert!(!again.moves.is_empty());
+    let d = svc.cleanups().discard(again_id).unwrap();
+    assert_eq!(d.run.state, CleanupRunState::Discarded);
     let (_, moves) = svc.cleanups().run_detail(id).unwrap();
     let qdir = root.join(QUARANTINE_DIR).join(id.to_string());
+    assert!(
+        !root
+            .join(QUARANTINE_DIR)
+            .join(again_id.to_string())
+            .exists()
+    );
     let mut in_quarantine = 0;
     for (path, (size, hash)) in &before {
         let here = root.join(path);
@@ -303,9 +325,25 @@ fn scenario_cleanup_cleanup_never_deletes() {
         .count();
     assert_eq!(in_quarantine, still);
     assert!(still > 0 && still < moves.len());
+    // The unselected folder was never touched.
+    for m in moves.iter().filter(|m| m.rel_path.is_within(&left_out)) {
+        assert_eq!(m.state, MoveState::Unselected);
+        assert!(m.rel_path.under(&root).is_file());
+    }
     // The total number of user files in the drive plus its quarantine folder is unchanged.
     let total = snapshot(&root).len() + in_quarantine;
     assert_eq!(total, before.len());
+}
+
+/// The folders holding `moves`' files, sorted, with no folder inside another one of the list (top-most
+/// folders that hold planned files directly or below).
+fn folders_of(moves: &[CleanupMove]) -> Vec<ps_model::RelPath> {
+    let all: BTreeSet<ps_model::RelPath> =
+        moves.iter().filter_map(|m| m.rel_path.parent()).collect();
+    all.iter()
+        .filter(|f| !all.iter().any(|g| g != *f && f.is_within(g)))
+        .cloned()
+        .collect()
 }
 
 #[test]
@@ -358,7 +396,7 @@ fn scenario_cleanup_quarantine_ignored_by_scanner() {
     );
     assert!(s1.counts.fully_accounted());
     // Undo, rescan: every file is back with the disposition it had.
-    let u = svc.cleanups().undo(id, &UndoSelection::all()).unwrap();
+    let u = svc.cleanups().undo(id, &Selection::all()).unwrap();
     assert!(u.run_fully_undone);
     svc.start(&[SourceId(1)]).unwrap();
     svc.wait().unwrap();
@@ -476,7 +514,7 @@ fn scenario_cleanup_crash_mid_run_is_recoverable() {
         KILL_AFTER
     );
     // Undo restores every moved file; the drive is as it was.
-    let u = svc.cleanups().undo(id, &UndoSelection::all()).unwrap();
+    let u = svc.cleanups().undo(id, &Selection::all()).unwrap();
     assert_eq!(u.restored, KILL_AFTER as u64);
     assert!(u.run_fully_undone);
     assert_eq!(snapshot(&root), before);
@@ -749,7 +787,7 @@ fn scenario_cleanup_source_with_quarantined_files_not_removed() {
     // pointing at drive-c.
     assert!(
         svc.cleanups()
-            .undo(id, &UndoSelection::all())
+            .undo(id, &Selection::all())
             .unwrap()
             .run_fully_undone
     );
@@ -890,6 +928,633 @@ fn scenario_cleanup_operations_exclude_each_other() {
     // Once the run is over, everything works again.
     assert_eq!(svc.current_operation(), None);
     assert!(svc.cleanups().reconcile().unwrap().is_empty());
-    let u = svc.cleanups().undo(id, &UndoSelection::all()).unwrap();
+    let u = svc.cleanups().undo(id, &Selection::all()).unwrap();
     assert!(u.run_fully_undone);
+}
+
+// ---- cleanup-selection: narrowing and discarding plans (ADR-0068) ----
+
+fn plan_of(svc: &ScanService, source: i64) -> (i64, Vec<CleanupMove>) {
+    let plan = svc.cleanups().plan(SourceId(source), None, None).unwrap();
+    (plan.summary.as_ref().unwrap().run.id, plan.moves)
+}
+
+fn moves_of(svc: &ScanService, id: i64) -> Vec<CleanupMove> {
+    svc.cleanups().run_detail(id).unwrap().1
+}
+
+fn journal_files(svc: &ScanService, id: i64) -> HashSet<i64> {
+    let (summary, _) = svc.cleanups().run_detail(id).unwrap();
+    let path = summary
+        .quarantine_dir
+        .join(ps_export::quarantine::JOURNAL_FILE);
+    if !path.exists() {
+        return HashSet::new();
+    }
+    ps_export::quarantine::read_journal(&path)
+        .unwrap()
+        .iter()
+        .filter_map(|l| l.file)
+        .collect()
+}
+
+#[test]
+fn scenario_cleanup_plan_narrowed_to_folders() {
+    let env = Env::new("narrow-folders");
+    let svc = env.open();
+    let root = env.drive(2);
+    let (id, planned) = plan_of(&svc, 2);
+    let folders = folders_of(&planned);
+    assert!(folders.len() >= 3);
+    let chosen = vec![folders[0].clone(), folders[folders.len() / 2].clone()];
+    let inside = |m: &CleanupMove| chosen.iter().any(|f| m.rel_path.is_within(f));
+    let summary = svc
+        .cleanups()
+        .select(
+            id,
+            &Selection {
+                folders: chosen.clone(),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+    let n_in = planned.iter().filter(|m| inside(m)).count() as u64;
+    assert_eq!(summary.counts.planned, n_in);
+    assert_eq!(summary.counts.unselected, planned.len() as u64 - n_in);
+    assert_eq!(
+        summary.counts.unselected_bytes,
+        planned
+            .iter()
+            .filter(|m| !inside(m))
+            .map(|m| m.size)
+            .sum::<u64>()
+    );
+    let r = run_all(&svc, id);
+    assert_eq!(r.moved, n_in, "{:?}", r.skipped);
+    for m in moves_of(&svc, id) {
+        if inside(&m) {
+            assert_eq!(m.state, MoveState::Quarantined, "{}", m.rel_path);
+            assert!(m.quarantine_rel_path.under(&root).is_file());
+        } else {
+            assert_eq!(m.state, MoveState::Unselected, "{}", m.rel_path);
+            assert!(m.rel_path.under(&root).is_file(), "{} stays", m.rel_path);
+            assert!(!m.quarantine_rel_path.under(&root).exists());
+        }
+    }
+    let (after, _) = svc.cleanups().run_detail(id).unwrap();
+    assert_eq!(
+        after.counts.skipped, 0,
+        "left-out files are unselected, not skipped"
+    );
+    assert_eq!(after.counts.unselected, planned.len() as u64 - n_in);
+    assert_eq!(after.run.state, CleanupRunState::Completed);
+}
+
+#[test]
+fn scenario_cleanup_plan_narrowed_to_files() {
+    let env = Env::new("narrow-files");
+    let svc = env.open();
+    let root = env.drive(2);
+    let (id, planned) = plan_of(&svc, 2);
+    // Three files of one folder.
+    let mut by_folder: BTreeMap<ps_model::RelPath, Vec<FileId>> = BTreeMap::new();
+    for m in &planned {
+        by_folder
+            .entry(m.rel_path.parent().unwrap())
+            .or_default()
+            .push(m.file);
+    }
+    let three: Vec<FileId> = by_folder
+        .values()
+        .find(|v| v.len() >= 3)
+        .expect("a folder with three planned files")[..3]
+        .to_vec();
+    let before = snapshot(&root);
+    svc.cleanups()
+        .select(
+            id,
+            &Selection {
+                except_files: three.clone(),
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+    let r = run_all(&svc, id);
+    assert_eq!(r.moved, planned.len() as u64 - 3, "{:?}", r.skipped);
+    let journaled = journal_files(&svc, id);
+    for m in moves_of(&svc, id) {
+        if three.contains(&m.file) {
+            assert_eq!(m.state, MoveState::Unselected);
+            let p = m.rel_path.to_path_buf();
+            assert_eq!(
+                snapshot(&root).get(&p),
+                before.get(&p),
+                "{} unchanged at its path",
+                m.rel_path
+            );
+            assert!(!journaled.contains(&m.file.0), "absent from journal.jsonl");
+            assert!(m.note.is_none(), "no catalog journal record");
+        } else {
+            assert_eq!(m.state, MoveState::Quarantined, "{}", m.rel_path);
+        }
+    }
+}
+
+#[test]
+fn scenario_cleanup_narrowing_is_reversible_before_the_run() {
+    let env = Env::new("narrow-reversible");
+    let svc = env.open();
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let (id, planned) = plan_of(&svc, 2);
+    let one = folders_of(&planned)[1].clone();
+    let narrowed = svc.cleanups().select(id, &Selection::folder(one)).unwrap();
+    assert!(narrowed.counts.planned < planned.len() as u64);
+    let whole = svc.cleanups().select(id, &Selection::all()).unwrap();
+    assert_eq!(whole.counts.planned, planned.len() as u64);
+    assert_eq!(whole.counts.unselected, 0);
+    let key = |m: &CleanupMove| {
+        (
+            m.file,
+            m.rel_path.clone(),
+            m.quarantine_rel_path.clone(),
+            m.state,
+        )
+    };
+    assert_eq!(
+        moves_of(&svc, id).iter().map(key).collect::<Vec<_>>(),
+        planned.iter().map(key).collect::<Vec<_>>()
+    );
+    assert_eq!(snapshot(&root), before);
+    assert!(!root.join(QUARANTINE_DIR).exists());
+}
+
+#[test]
+fn scenario_cleanup_empty_selection_refused() {
+    let env = Env::new("narrow-empty");
+    let svc = env.open();
+    let (id, planned) = plan_of(&svc, 2);
+    for empty in [
+        Selection::folder(ps_model::RelPath::from_bytes(b"No Such Folder".to_vec()).unwrap()),
+        Selection {
+            except_folders: folders_of(&planned),
+            except_files: planned
+                .iter()
+                .filter(|m| m.rel_path.parent().is_none())
+                .map(|m| m.file)
+                .collect(),
+            ..Selection::default()
+        },
+    ] {
+        let e = svc.cleanups().select(id, &empty).unwrap_err();
+        assert!(matches!(e, CleanupError::EmptySelection { .. }), "{e}");
+        assert!(e.to_string().contains("discard"), "{e}");
+        assert_eq!(moves_of(&svc, id), planned, "the plan is unchanged");
+    }
+}
+
+#[test]
+fn scenario_cleanup_planned_run_discarded() {
+    let env = Env::new("discard");
+    let svc = env.open();
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let (id, planned) = plan_of(&svc, 2);
+    // A narrowed plan is discarded like any other.
+    svc.cleanups()
+        .select(id, &Selection::folder(folders_of(&planned)[0].clone()))
+        .unwrap();
+    let d = svc.cleanups().discard(id).unwrap();
+    assert_eq!(d.run.state, CleanupRunState::Discarded);
+    assert!(d.run.ended_at_ms.is_some());
+    assert_eq!(d.counts.planned, 0);
+    assert_eq!(d.counts.unselected, planned.len() as u64);
+    let listed = svc.cleanups().runs().unwrap();
+    assert_eq!(listed[0].run.state, CleanupRunState::Discarded);
+    assert_eq!(snapshot(&root), before);
+    assert!(
+        !root.join(QUARANTINE_DIR).exists(),
+        "no quarantine folder made"
+    );
+    let not_runnable = |e: CleanupError| {
+        assert!(e.to_string().contains("discarded"), "{e}");
+    };
+    not_runnable(
+        svc.cleanups()
+            .run(
+                id,
+                RunOptions::default(),
+                &AtomicBool::new(false),
+                &RunProgress::default(),
+            )
+            .unwrap_err(),
+    );
+    not_runnable(svc.cleanups().select(id, &Selection::all()).unwrap_err());
+    not_runnable(svc.cleanups().undo(id, &Selection::all()).unwrap_err());
+    not_runnable(svc.cleanups().discard(id).unwrap_err());
+    assert_eq!(snapshot(&root), before);
+    assert_eq!(
+        svc.cleanups().run_detail(id).unwrap().0.run.state,
+        CleanupRunState::Discarded
+    );
+}
+
+#[test]
+fn scenario_cleanup_discard_refused_after_a_move() {
+    let env = Env::new("discard-moved");
+    let svc = env.open();
+    // Run A quarantined one file.
+    let (a, moves_a) = plan_of(&svc, 2);
+    let one = moves_a[0].clone();
+    svc.cleanups()
+        .select(
+            a,
+            &Selection {
+                files: vec![one.file],
+                ..Selection::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(run_all(&svc, a).moved, 1);
+    // Run B moved files that undo restored.
+    let (b, moves_b) = plan_of(&svc, 3);
+    assert_eq!(run_all(&svc, b).moved, moves_b.len() as u64);
+    assert!(
+        svc.cleanups()
+            .undo(b, &Selection::all())
+            .unwrap()
+            .run_fully_undone
+    );
+    let snaps = (snapshot(&env.drive(2)), snapshot(&env.drive(3)));
+    for (id, named) in [(a, one.rel_path.clone()), (b, moves_b[0].rel_path.clone())] {
+        let before = svc.cleanups().run_detail(id).unwrap();
+        let e = svc.cleanups().discard(id).unwrap_err();
+        assert!(matches!(e, CleanupError::NotDiscardable { .. }), "{e}");
+        assert!(e.to_string().contains(&named.to_string()), "{e}");
+        let after = svc.cleanups().run_detail(id).unwrap();
+        assert_eq!(after.1, before.1, "no move changed");
+        assert_eq!(after.0.run, before.0.run, "the run is unchanged");
+    }
+    assert_eq!(
+        (snapshot(&env.drive(2)), snapshot(&env.drive(3))),
+        snaps,
+        "nothing changed on disk"
+    );
+}
+
+/// The catalog lost the commits of a move (it says planned) but the run's `journal.jsonl` records it and the
+/// file is in quarantine: discard reconciles first, finds it quarantined and refuses; undo restores it.
+#[test]
+fn scenario_cleanup_discard_checks_the_journal_first() {
+    let env = Env::new("discard-journal");
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let (id, one) = {
+        let svc = env.open();
+        let (id, planned) = plan_of(&svc, 2);
+        let one = planned[0].clone();
+        svc.cleanups()
+            .select(
+                id,
+                &Selection {
+                    files: vec![one.file],
+                    ..Selection::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(run_all(&svc, id).moved, 1);
+        (id, one)
+    };
+    // Lose the catalog half: back to a plan that never ran.
+    let c = rusqlite::Connection::open(env.data().join(ps_catalog::CATALOG_FILE)).unwrap();
+    c.execute_batch(&format!(
+        "UPDATE cleanup_move SET state = 0, note = NULL WHERE run_id = {id} AND file_id = {};
+         UPDATE cleanup_run SET state = 'planned', ended_at = NULL WHERE id = {id};",
+        one.file.0
+    ))
+    .unwrap();
+    drop(c);
+    let svc = env.open();
+    assert!(one.quarantine_rel_path.under(&root).is_file());
+    let e = svc.cleanups().discard(id).unwrap_err();
+    assert!(matches!(e, CleanupError::NotDiscardable { .. }), "{e}");
+    assert!(e.to_string().contains(&one.rel_path.to_string()), "{e}");
+    let m = moves_of(&svc, id)
+        .into_iter()
+        .find(|m| m.file == one.file)
+        .unwrap();
+    assert_eq!(m.state, MoveState::Quarantined, "reconciliation found it");
+    let u = svc.cleanups().undo(id, &Selection::all()).unwrap();
+    assert_eq!(u.restored, 1);
+    assert_eq!(snapshot(&root), before);
+}
+
+#[test]
+fn scenario_cleanup_discarded_run_on_an_offline_drive() {
+    let env = Env::new("discard-offline");
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let (id, planned) = {
+        let svc = env.open();
+        plan_of(&svc, 2)
+    };
+    let away = env.tmp.path().join("drive-b-unplugged");
+    fs::rename(&root, &away).unwrap();
+    {
+        let svc = env.open();
+        let d = svc.cleanups().discard(id).unwrap();
+        assert_eq!(d.run.state, CleanupRunState::Discarded);
+        assert_eq!(d.counts.unselected, planned.len() as u64);
+    }
+    assert!(
+        !root.exists(),
+        "nothing was created at the missing drive's path"
+    );
+    fs::rename(&away, &root).unwrap();
+    let svc = env.open();
+    svc.cleanups().reconcile().unwrap();
+    assert_eq!(
+        svc.cleanups().run_detail(id).unwrap().0.run.state,
+        CleanupRunState::Discarded
+    );
+    assert_eq!(snapshot(&root), before);
+    assert!(!root.join(QUARANTINE_DIR).exists());
+}
+
+/// Reconciliation keeps watching discarded runs: when a discarded run's journal turns out to record a move
+/// the catalog had lost, the move is adopted and the run is completed again (and can be undone).
+#[test]
+fn discarded_run_whose_journal_records_a_move_is_revived() {
+    let env = Env::new("discard-revived");
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let (id, one) = {
+        let svc = env.open();
+        let (id, planned) = plan_of(&svc, 2);
+        let one = planned[0].clone();
+        svc.cleanups()
+            .select(
+                id,
+                &Selection {
+                    files: vec![one.file],
+                    ..Selection::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(run_all(&svc, id).moved, 1);
+        (id, one)
+    };
+    // The catalog says the run was discarded and never moved anything (its move commits were lost).
+    let c = rusqlite::Connection::open(env.data().join(ps_catalog::CATALOG_FILE)).unwrap();
+    c.execute_batch(&format!(
+        "UPDATE cleanup_move SET state = 6, note = NULL WHERE run_id = {id};
+         UPDATE cleanup_run SET state = 'discarded' WHERE id = {id};"
+    ))
+    .unwrap();
+    drop(c);
+    let svc = env.open();
+    let rec = svc.cleanups().reconcile().unwrap();
+    assert_eq!(rec.len(), 1, "{rec:?}");
+    let (summary, moves) = svc.cleanups().run_detail(id).unwrap();
+    assert_eq!(summary.run.state, CleanupRunState::Completed);
+    let m = moves.iter().find(|m| m.file == one.file).unwrap();
+    assert_eq!(m.state, MoveState::Quarantined);
+    assert!(m.note.is_some(), "the move says why");
+    assert_eq!(
+        svc.cleanups().undo(id, &Selection::all()).unwrap().restored,
+        1
+    );
+    assert_eq!(snapshot(&root), before);
+}
+
+/// While a cleanup run is live, selecting or discarding another planned run is refused naming it.
+struct SelectWhileLive<'a> {
+    svc: &'a ScanService,
+    other: i64,
+    checked: AtomicUsize,
+}
+
+impl QuarantineHooks for SelectWhileLive<'_> {
+    fn before_rename(&self, _m: &CleanupMove) {
+        if self.checked.fetch_add(1, Ordering::SeqCst) > 0 {
+            return;
+        }
+        let before = self
+            .svc
+            .engine()
+            .catalog()
+            .read()
+            .cleanup_moves(self.other)
+            .unwrap();
+        for e in [
+            self.svc
+                .cleanups()
+                .select(self.other, &Selection::all())
+                .unwrap_err(),
+            self.svc.cleanups().discard(self.other).unwrap_err(),
+        ] {
+            assert!(matches!(e, CleanupError::Busy(_)), "{e}");
+            assert!(e.to_string().contains("cleanup run"), "{e}");
+        }
+        let after = self
+            .svc
+            .engine()
+            .catalog()
+            .read()
+            .cleanup_moves(self.other)
+            .unwrap();
+        assert_eq!(after, before);
+    }
+}
+
+#[test]
+fn scenario_cleanup_selection_and_discard_wait_for_a_live_run() {
+    let env = Env::new("select-busy");
+    let svc = env.open();
+    let (other, planned_other) = plan_of(&svc, 3);
+    svc.cleanups()
+        .select(
+            other,
+            &Selection::folder(folders_of(&planned_other)[0].clone()),
+        )
+        .unwrap();
+    let narrowed = moves_of(&svc, other);
+    let (id, planned) = plan_of(&svc, 2);
+    let hooks = SelectWhileLive {
+        svc: &svc,
+        other,
+        checked: AtomicUsize::new(0),
+    };
+    let r = svc
+        .cleanups()
+        .run_with_hooks(
+            id,
+            RunOptions::default(),
+            &hooks,
+            &AtomicBool::new(false),
+            &RunProgress::default(),
+        )
+        .unwrap();
+    assert!(hooks.checked.load(Ordering::SeqCst) > 0);
+    assert_eq!(r.moved, planned.len() as u64);
+    assert_eq!(
+        moves_of(&svc, other),
+        narrowed,
+        "the planned run is unchanged"
+    );
+    assert_eq!(
+        svc.cleanups().run_detail(other).unwrap().0.run.state,
+        CleanupRunState::Planned
+    );
+}
+
+/// Stops the run after `n` renames.
+struct StopAfter<'a> {
+    n: usize,
+    seen: AtomicUsize,
+    cancel: &'a AtomicBool,
+}
+
+impl QuarantineHooks for StopAfter<'_> {
+    fn after_rename(&self, _m: &CleanupMove) {
+        if self.seen.fetch_add(1, Ordering::SeqCst) + 1 >= self.n {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Narrowing only ever shrinks what a run moves: whatever sequence of selections is applied to a plan
+/// (narrowing, widening again, naming files that are not in the plan, editing the selection value after it
+/// was applied, re-narrowing a run that was stopped part-way), the files that end up moved are exactly those
+/// the stored selection picked when each was attempted, and never a file outside the plan or the selection.
+#[test]
+fn narrowed_plan_never_moves_outside_the_selection() {
+    let env = Env::new("narrow-never-outside");
+    let svc = env.open();
+    let root = env.drive(2);
+    let before = snapshot(&root);
+    let (id, planned) = plan_of(&svc, 2);
+    let in_plan: HashSet<FileId> = planned.iter().map(|m| m.file).collect();
+    let folders = folders_of(&planned);
+    assert!(folders.len() >= 4);
+    // Files of other drives: a selection naming them must not add them.
+    let (_, other_drive) = plan_of(&svc, 3);
+    let strangers: Vec<FileId> = other_drive.iter().take(5).map(|m| m.file).collect();
+    assert!(strangers.iter().all(|f| !in_plan.contains(f)));
+    let e = svc
+        .cleanups()
+        .select(
+            id,
+            &Selection {
+                files: strangers.clone(),
+                ..Selection::default()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(e, CleanupError::EmptySelection { .. }), "{e}");
+    // A deterministic walk through selections; each one replaces the last.
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for _ in 0..12 {
+        let mut s = Selection::default();
+        for f in &folders {
+            match next() % 4 {
+                0 => s.folders.push(f.clone()),
+                1 => s.except_folders.push(f.clone()),
+                _ => {}
+            }
+        }
+        for m in &planned {
+            match next() % 16 {
+                0 => s.files.push(m.file),
+                1 => s.except_files.push(m.file),
+                _ => {}
+            }
+        }
+        s.files.extend(&strangers);
+        let _ = svc.cleanups().select(id, &s);
+    }
+    // The last applied selection, then edited in memory after it was stored: the edit changes nothing.
+    let mut last = Selection {
+        folders: vec![folders[0].clone(), folders[2].clone()],
+        files: strangers.clone(),
+        except_files: planned
+            .iter()
+            .filter(|m| m.rel_path.is_within(&folders[0]))
+            .take(1)
+            .map(|m| m.file)
+            .collect(),
+        ..Selection::default()
+    };
+    let stored = svc.cleanups().select(id, &last).unwrap();
+    let want_first: HashSet<FileId> = planned
+        .iter()
+        .filter(|m| last.picks(m))
+        .map(|m| m.file)
+        .collect();
+    assert_eq!(stored.counts.planned, want_first.len() as u64);
+    last.folders.extend(folders.iter().cloned());
+    last.except_files.clear();
+    // Stop part-way, then narrow the rest further and run again.
+    let cancel = AtomicBool::new(false);
+    let stop = StopAfter {
+        n: 3,
+        seen: AtomicUsize::new(0),
+        cancel: &cancel,
+    };
+    let r1 = svc
+        .cleanups()
+        .run_with_hooks(
+            id,
+            RunOptions::default(),
+            &stop,
+            &cancel,
+            &RunProgress::default(),
+        )
+        .unwrap();
+    assert!(r1.cancelled && r1.moved == 3, "{r1:?}");
+    let moved_first: HashSet<FileId> = moves_of(&svc, id)
+        .iter()
+        .filter(|m| m.state == MoveState::Quarantined)
+        .map(|m| m.file)
+        .collect();
+    assert!(moved_first.is_subset(&want_first));
+    let second = Selection::folder(folders[2].clone());
+    svc.cleanups().select(id, &second).unwrap();
+    let want_second: HashSet<FileId> = moves_of(&svc, id)
+        .iter()
+        .filter(|m| m.state == MoveState::Planned)
+        .map(|m| m.file)
+        .collect();
+    assert!(want_second.iter().all(|f| want_first.contains(f)));
+    let r2 = run_all(&svc, id);
+    assert_eq!(r2.moved, want_second.len() as u64, "{:?}", r2.skipped);
+    let allowed: HashSet<FileId> = moved_first.union(&want_second).copied().collect();
+    let final_moves = moves_of(&svc, id);
+    let quarantined: HashSet<FileId> = final_moves
+        .iter()
+        .filter(|m| m.state == MoveState::Quarantined)
+        .map(|m| m.file)
+        .collect();
+    assert_eq!(quarantined, allowed);
+    // On disk: exactly those files left their paths; every other file is where it was, unchanged.
+    let now = snapshot(&root);
+    for m in &final_moves {
+        let p = m.rel_path.to_path_buf();
+        if allowed.contains(&m.file) {
+            assert!(!now.contains_key(&p) && m.quarantine_rel_path.under(&root).is_file());
+        } else {
+            assert_eq!(now.get(&p), before.get(&p), "{} untouched", m.rel_path);
+        }
+    }
+    assert_eq!(now.len() + allowed.len(), before.len());
+    assert!(
+        journal_files(&svc, id).is_subset(&allowed.iter().map(|f| f.0).collect()),
+        "journal.jsonl names only moved files"
+    );
 }
