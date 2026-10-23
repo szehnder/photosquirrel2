@@ -38,8 +38,20 @@
 
 ## 6. Verification
 
-- [ ] 6.1 `cargo xtask layering` passes with the forbidden-call allow-list unchanged (no new rename/link/unlink/create_dir call site)
-- [ ] 6.2 Round trip on the small corpus via the release CLI: plan a drive, `select --folder` one folder, `run --yes`, `undo --folder` part of it, `undo --yes` the rest, plan again and `discard`; tree snapshots before and after are equal and `report` shows 0 quarantined
-- [ ] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped to a test
+- [x] 6.1 `cargo xtask layering` passes with the forbidden-call allow-list unchanged (no new rename/link/unlink/create_dir call site)
+- [x] 6.2 Round trip on the small corpus via the release CLI: plan a drive, `select --folder` one folder, `run --yes`, `undo --folder` part of it, `undo --yes` the rest, plan again and `discard`; tree snapshots before and after are equal and `report` shows 0 quarantined
+  Notes: release CLI, small corpus seed 42 (649 files): plan of drive-b 193 files; `select --folder "Backup
+  2025" --folder "Desktop Backup 2021"` 23 planned / 170 unselected; run moved 23, 0 skipped, every unselected
+  file unchanged at its path; discard of it refused naming the moved files; `undo --folder "Backup 2025"`
+  restored 9 (14 still quarantined, `report` 14); `undo --yes` restored 14, fully undone; a second plan (193)
+  discarded, its run and a second discard exit 1; path/size/SHA-256 snapshots of all three drives equal,
+  `report` 0 quarantined. Medium corpus seed 42 (9,933 files), same steps plus `--except-file`: plan 2,635;
+  `select --folder "Desktop Backup 2025" --folder "Backup 2018" --except-file 7420` 101 planned / 2,534
+  unselected; run moved 101 (97 MB) in 6.4 s, 0 skipped; `undo --folder "Desktop Backup 2025"` restored 25
+  (76 still quarantined); `undo --yes` restored 76; plan 2 (2,635) discarded; snapshots equal on all drives,
+  0 quarantined. `cargo xtask layering`: the forbidden-call allow-list (`xtask/`) is unchanged.
+- [x] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped to a test
+  Notes: all 15 scenarios of this change map to tests; the 24 unmapped scenarios are those of `capture-dates`
+  (not implemented yet).
 - [ ] 6.4 `cargo xtask ci` is green
-- [ ] 6.5 `openspec validate cleanup-selection --strict` passes
+- [x] 6.5 `openspec validate cleanup-selection --strict` passes
