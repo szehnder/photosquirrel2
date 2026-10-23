@@ -71,3 +71,10 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0065](0065-one-file-changing-operation-at-a-time.md) | One file-changing operation (scan, export, cleanup) at a time per catalog |
 | [0066](0066-quarantined-without-library-copy-is-pending.md) | A quarantined file without a valid library copy is pending; export reads it from quarantine (amends 0034) |
 | [0067](0067-excluded-quarantined-files-need-a-library-copy-too.md) | An excluded quarantined file needs a valid library copy too (amends 0066) |
+| [0068](0068-narrowed-and-discarded-cleanup-runs.md) | Cleanup plans are narrowed by marking moves unselected and discarded by state; no cleanup row is deleted (migration 16; amends 0061) |
+| [0069](0069-capture-dates-from-folder-names.md) | Capture dates from folder names, with honest precision (amends 0022, 0043) |
+| [0070](0070-day-of-a-time-instant-in-the-local-zone.md) | The day of a time instant is taken in the recorded offset, else the local zone (amends 0022) |
+| [0071](0071-date-logic-version-and-existing-libraries.md) | A date-logic version re-dates catalog rows from stored facts; exported libraries keep their layout (migration 17) |
+| [0072](0072-cli-scans-pause-on-battery-and-resume-on-mains.md) | CLI scans pause on battery and resume on mains power (amends 0053) |
+| [0073](0073-pinned-appimage-runtime-with-its-own-notice.md) | The AppImage runtime is pinned and has its own notice (amends 0060) |
+| [0074](0074-keeper-reasons-compare-against-the-best-different-copy.md) | Keeper reasons compare against the best different copy (amends 0014) |

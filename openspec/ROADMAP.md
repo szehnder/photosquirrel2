@@ -25,6 +25,10 @@ A milestone gate must pass before the next milestone starts. Gates are checked b
 | 17 | M5 | `performance-budgets` | performance-budgets | all budgets measured; baseline recorded |
 | 18 | M5 | `release-packaging` | release-packaging | installers for every platform on a GitHub Release; README with screenshots |
 | 19 | M6 Cleanup | `quarantine-cleanup` | cleanup | move + undo round-trip proven on corpus |
+| 20 | M7 Polish | `release-hygiene` | release-packaging, duplicate-review, best-copy, scan-progress, gallery | packaging fails on an unpinned or changed AppImage runtime and the notice lists it; release merges per-platform LGPL lists; both timing tests pass 20/20 under load with unchanged bounds; screenshot review shows no badge overflow or stray divider; corpus gate numbers unchanged |
+| 21 | M7 | `cli-power-pause` | settings, cli | CLI scan on a fake battery pauses, reports it on stderr and in `--json`, resumes on mains; `--ignore-battery` keeps it running; Ctrl-C while paused exits 130 with a resumable run |
+| 22 | M7 | `cleanup-selection` | cleanup | narrowed plan moves only the chosen folders/files and a folder undo restores only that folder (tree snapshots on corpus); discard touches no file and is refused once anything moved; headless UI test of select, undo by folder and discard |
+| 23 | M7 | `capture-dates` | media-metadata, export, incremental-rescan, photo-inspector | **corpus gate unchanged**; folder-dated and month-only files filed correctly; local-zone `Undated/` days; old catalog upgraded, rescanned (0 file bytes read for re-dating) and re-exported copies 0 files with an identical library tree |
 
 ## Later (not v1; propose when needed)
 `similar-shots` (burst suggestions UI), `justified-layout`, `video-perceptual-dedup`, `face-clusters`,
