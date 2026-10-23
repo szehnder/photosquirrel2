@@ -62,10 +62,23 @@ impl Default for SysfsPower {
     }
 }
 
+/// The longest attribute read: sysfs power attributes are a word or a digit.
+const MAX_ATTRIBUTE: u64 = 64;
+
+/// A small attribute file, trimmed: `None` unless it is a regular file (a FIFO or device named `type` would block
+/// the poll forever), and never more than [`MAX_ATTRIBUTE`] bytes.
 fn read_trimmed(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_owned())
+    use std::io::Read as _;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut s = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_ATTRIBUTE)
+        .read_to_string(&mut s)
+        .ok()?;
+    Some(s.trim().to_owned())
 }
 
 impl PowerSource for SysfsPower {
@@ -306,11 +319,29 @@ fn supply_dir(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
     value.filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
+/// The folder `PHOTOSQUIRREL_POWER_SUPPLY_DIR` points the probe at, when it is set and not empty (for `doctor`).
+pub fn override_dir() -> Option<PathBuf> {
+    supply_dir(std::env::var_os(POWER_SUPPLY_DIR_ENV))
+}
+
 /// The power probe for the CLI: [`SysfsPower`] over `PHOTOSQUIRREL_POWER_SUPPLY_DIR` when it is set and not
-/// empty (on every platform, so the behaviour is tested without a battery), else [`SystemPower`].
+/// empty (on every platform, so the behaviour is tested without a battery), else [`SystemPower`]. The override is
+/// logged as a warning, and so is a missing folder (which reads as mains power: scans never pause).
 pub fn probe_from_env() -> Arc<dyn PowerSource> {
-    match supply_dir(std::env::var_os(POWER_SUPPLY_DIR_ENV)) {
-        Some(root) => Arc::new(SysfsPower { root }),
+    match override_dir() {
+        Some(root) => {
+            log::warn!(
+                "power source: reading {} instead of the system's ({POWER_SUPPLY_DIR_ENV})",
+                root.display()
+            );
+            if !root.is_dir() {
+                log::warn!(
+                    "power source: {} is not a folder; it reads as mains power, so scans never pause",
+                    root.display()
+                );
+            }
+            Arc::new(SysfsPower { root })
+        }
         None => Arc::new(SystemPower),
     }
 }
@@ -441,6 +472,47 @@ mod tests {
             root: tmp.path().join("nope"),
         };
         assert!(!missing.on_battery(), "unknown means mains");
+    }
+
+    #[test]
+    fn sysfs_skips_non_regular_files_and_caps_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = SysfsPower {
+            root: tmp.path().to_path_buf(),
+        };
+        // A folder where an attribute should be: skipped, no error.
+        std::fs::create_dir_all(tmp.path().join("BAT0/type")).unwrap();
+        supply(tmp.path(), "BAT0", &[("status", "Discharging")]);
+        assert!(!p.on_battery());
+        // A long attribute is read up to the cap only.
+        let long = format!("Battery\n{}", "x".repeat(1 << 20));
+        std::fs::remove_dir(tmp.path().join("BAT0/type")).unwrap();
+        std::fs::write(tmp.path().join("BAT0/type"), long).unwrap();
+        assert_eq!(
+            read_trimmed(&tmp.path().join("BAT0/type")).unwrap().len() as u64,
+            MAX_ATTRIBUTE
+        );
+        assert!(!p.on_battery(), "a capped, garbled type is not a battery");
+    }
+
+    /// A FIFO named `type` would block an unbounded read forever; the probe skips it (a hang fails this test).
+    #[cfg(unix)]
+    #[test]
+    fn sysfs_does_not_block_on_a_fifo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("BAT0");
+        std::fs::create_dir_all(&dir).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.join("type"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        supply(tmp.path(), "BAT0", &[("status", "Discharging")]);
+        let p = SysfsPower {
+            root: tmp.path().to_path_buf(),
+        };
+        assert!(!p.on_battery());
+        assert_eq!(read_trimmed(&dir.join("type")), None);
     }
 
     #[test]

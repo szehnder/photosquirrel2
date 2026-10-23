@@ -1,11 +1,12 @@
 //! `doctor`: version, data folder, catalog schema, optional decoders (ADR-0017), keychain (ADR-0031) and the
-//! configured AI provider. Opens no network connection (ADR-0029) and creates nothing.
+//! configured AI provider, and the power probe behind pause on battery. Opens no network connection (ADR-0029) and creates nothing.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use serde::Serialize;
 
+use ps_service::power::PowerSource as _;
 use ps_service::secrets::{Keychain, SecretBackend};
 
 use super::Ctx;
@@ -37,6 +38,18 @@ struct Provider {
     requests_per_minute: Option<u32>,
 }
 
+/// The power probe that pause-on-battery uses (ADR-0053, ADR-0072).
+#[derive(Serialize)]
+struct Power {
+    /// `"system"`, or `"override"` with `PHOTOSQUIRREL_POWER_SUPPLY_DIR`.
+    probe: &'static str,
+    override_dir: Option<PathBuf>,
+    /// The override folder exists (a missing one reads as mains power).
+    override_dir_exists: Option<bool>,
+    on_battery: bool,
+    pause_on_battery: bool,
+}
+
 #[derive(Serialize)]
 struct DoctorOut {
     version: &'static str,
@@ -48,6 +61,7 @@ struct DoctorOut {
     keychain_available: bool,
     keychain_detail: String,
     llm_provider: Provider,
+    power: Power,
     network_used: bool,
 }
 
@@ -106,6 +120,19 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             hosted_consent: ps_service::ai::consent_covers(&settings.ai),
             requests_per_minute: settings.ai.effective_requests_per_minute(),
         },
+        power: {
+            let dir = ps_service::power::override_dir();
+            Power {
+                probe: if dir.is_some() { "override" } else { "system" },
+                override_dir_exists: dir.as_ref().map(|d| d.is_dir()),
+                on_battery: match &dir {
+                    Some(root) => ps_service::power::SysfsPower { root: root.clone() }.on_battery(),
+                    None => ps_service::power::SystemPower.on_battery(),
+                },
+                override_dir: dir,
+                pause_on_battery: settings.general.pause_on_battery,
+            }
+        },
         network_used: false,
     };
     emit(ctx.json, "doctor", &out, |o| {
@@ -161,6 +188,25 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             } else {
                 ""
             }
+        );
+        let p = &o.power;
+        println!(
+            "power:       {}, {}; pause scans on battery {}",
+            match (&p.override_dir, p.override_dir_exists) {
+                (Some(d), Some(false)) => format!(
+                    "override {} (PHOTOSQUIRREL_POWER_SUPPLY_DIR), missing: reads as mains",
+                    d.display()
+                ),
+                (Some(d), _) =>
+                    format!("override {} (PHOTOSQUIRREL_POWER_SUPPLY_DIR)", d.display()),
+                (None, _) => "system probe".to_owned(),
+            },
+            if p.on_battery {
+                "on battery"
+            } else {
+                "on mains"
+            },
+            if p.pause_on_battery { "on" } else { "off" }
         );
     })
 }

@@ -360,15 +360,91 @@ fn scenario_settings_cli_ignore_battery_flag() {
 }
 
 #[test]
-fn setting_off_prints_no_power_line() {
+fn scenario_settings_cli_setting_off_does_not_pause() {
     let m = Machine::new(false);
+    let mut scan = m.spawn_json_scan(&[]);
+    // Unplugged once the scan is under way.
+    scan.until("a snapshot", |v| v["type"] == "snapshot");
     m.set_mains(false);
-    let (code, err, lines) = m.spawn_json_scan(&[]).finish();
+    let (code, err, lines) = scan.finish();
     assert_eq!(code, Some(0), "{err}");
     assert!(lines.iter().all(|v| v["type"] != "power"), "{lines:?}");
     assert!(!lines.iter().any(|v| is_snapshot(v, "paused")), "{lines:?}");
     assert_eq!(lines.last().unwrap()["data"]["status"], "completed");
-    assert!(!err.contains("battery"), "{err}");
+    assert!(
+        !err.contains("battery") && !err.contains("power source"),
+        "the setting off probes nothing: {err}"
+    );
+}
+
+/// Gate review fix: a `pause` request written just before mains power returns (with no wait for the running
+/// command to take it) is applied before the probe reading that saw mains, so the run is never auto-resumed.
+#[test]
+fn pause_request_queued_before_mains_wins() {
+    let m = Machine::new(true);
+    m.set_mains(false);
+    let mut scan = m.spawn_json_scan(&[]);
+    scan.until("paused on battery", |v| is_power(v, "paused_on_battery"));
+    let drain = std::thread::spawn(move || scan.finish());
+    live_until(&m, "power pause in the heartbeat", |l| {
+        l["power_pause"] == "on_battery"
+    });
+    // Queued the way `scan pause` queues it (written and renamed), without waiting for it to be taken.
+    let req = m.data.path().join("cli/scan.request");
+    std::fs::write(req.with_extension("tmp-test"), "pause").unwrap();
+    std::fs::rename(req.with_extension("tmp-test"), &req).unwrap();
+    m.set_mains(true);
+    live_until(&m, "the power note cleared", |l| l["power_pause"].is_null());
+    std::thread::sleep(Duration::from_millis(1500));
+    let live = live_until(&m, "still live", |l| l.is_object());
+    assert_eq!(live["status"], "paused", "a user pause is not auto-resumed");
+    m.ok(&["scan", "cancel"]);
+    let (code, err, lines) = drain.join().unwrap();
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        !lines.iter().any(|v| is_power(v, "resumed_on_mains")),
+        "{lines:?}"
+    );
+    assert_eq!(lines.last().unwrap()["data"]["status"], "cancelled");
+}
+
+#[test]
+fn override_is_warned_about_and_shown_by_doctor() {
+    let m = Machine::new(true);
+    m.set_mains(false);
+    let d = m.json(&["--json", "doctor"]);
+    let p = &d["data"]["power"];
+    assert_eq!(p["probe"], "override");
+    assert_eq!(p["override_dir_exists"], true);
+    assert_eq!(p["on_battery"], true);
+    assert_eq!(p["pause_on_battery"], true);
+    let text = String::from_utf8(m.ok(&["doctor"]).stdout).unwrap();
+    assert!(
+        text.contains("PHOTOSQUIRREL_POWER_SUPPLY_DIR") && text.contains("on battery"),
+        "{text}"
+    );
+
+    // A missing folder reads as mains power: doctor and a scan say so.
+    let missing = m.supply.path().join("nope");
+    let o = m
+        .cli()
+        .env("PHOTOSQUIRREL_POWER_SUPPLY_DIR", &missing)
+        .args(["--json", "doctor"])
+        .output()
+        .unwrap();
+    let d: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(d["data"]["power"]["override_dir_exists"], false);
+    assert_eq!(d["data"]["power"]["on_battery"], false);
+    let o = m
+        .cli()
+        .env("PHOTOSQUIRREL_POWER_SUPPLY_DIR", &missing)
+        .args(["--json", "scan"])
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("instead of the system's"), "{err}");
+    assert!(err.contains("is not a folder"), "{err}");
 }
 
 /// Poll `--json scan status` until `f` holds for its `live` object (bounded; only a hang fails it).
@@ -432,7 +508,10 @@ fn resume_request_on_battery_keeps_the_scan_running() {
     scan.until("paused on battery", |v| is_power(v, "paused_on_battery"));
     let drain = std::thread::spawn(move || scan.finish());
     live_until(&m, "heartbeat", |l| l["power_pause"] == "on_battery");
-    m.json(&["--json", "scan", "resume"]);
+    // `--ignore-battery` cannot change the running scan's rule, and says so.
+    let o = m.ok(&["--json", "scan", "resume", "--ignore-battery"]);
+    let note = String::from_utf8_lossy(&o.stderr);
+    assert!(note.contains("--ignore-battery has no effect"), "{note}");
     // Still on battery: the run completes without another power pause.
     let (code, err, lines) = drain.join().unwrap();
     assert_eq!(code, Some(0), "{err}");

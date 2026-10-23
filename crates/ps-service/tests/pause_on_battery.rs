@@ -240,8 +240,10 @@ fn scenario_settings_cli_scan_resumes_on_mains_power() {
     assert_eq!(summary.status, RunStatus::Completed);
 }
 
+/// The CLI's gate. The scenario `CLI setting off does not pause` is checked end to end by the binary test of
+/// that name in `crates/photosquirrel-cli/tests/power.rs`.
 #[test]
-fn scenario_settings_cli_setting_off_does_not_pause() {
+fn cli_policy_off_without_the_setting_or_with_the_flag() {
     // Setting off, or `--ignore-battery`: the CLI has no policy and never probes.
     assert!(PowerPolicy::for_cli(false, false).is_none());
     assert!(PowerPolicy::for_cli(false, true).is_none());

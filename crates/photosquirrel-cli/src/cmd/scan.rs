@@ -92,13 +92,18 @@ impl PowerGuard {
         })
     }
 
-    /// Ask the probe if a poll is due, and apply the rule.
-    fn tick(&mut self, svc: &ScanService) -> Option<PowerEvent> {
+    /// Ask the probe if a poll is due: on battery or not. Apply the reading with [`PowerGuard::apply`] after the
+    /// pending control requests.
+    fn probe(&mut self) -> Option<bool> {
         if self.last_poll.is_some_and(|t| t.elapsed() < POWER_EVERY) {
             return None;
         }
         self.last_poll = Some(Instant::now());
-        let on_battery = self.source.on_battery();
+        Some(self.source.on_battery())
+    }
+
+    /// Apply the rule to one probe reading.
+    fn apply(&mut self, svc: &ScanService, on_battery: bool) -> Option<PowerEvent> {
         self.policy.tick(svc, on_battery)
     }
 
@@ -228,6 +233,12 @@ pub fn start(
 /// `scan resume [RUN]`: un-pause the live scan, or continue a run in the foreground.
 pub fn resume(ctx: &Ctx, run: Option<i64>, ignore_battery: bool) -> Result<()> {
     if control::is_live(&ctx.data_dir()?, Job::Scan) {
+        if ignore_battery {
+            eprintln!(
+                "--ignore-battery has no effect here: the scan running in another terminal keeps its own pause on \
+                 battery; this only asks it to resume (on battery, it then keeps running until mains power returns)"
+            );
+        }
         return control_live(ctx, "resume");
     }
     start(ctx, &[], true, run, ignore_battery)
@@ -253,6 +264,14 @@ fn foreground(
             cancel_requested = true;
             let _ = svc.cancel();
         }
+        // The probe is read before the pending requests are taken, and applied after them: a request written
+        // before the probe saw mains power return (`scan pause` replies at once when the run is already paused for
+        // power) is always applied first, so a user pause wins over the automatic resume.
+        let reading = if cancel_requested {
+            None
+        } else {
+            power.as_mut().and_then(PowerGuard::probe)
+        };
         if let Some(req) = control::take_request(&data, Job::Scan) {
             let r = match req.as_str() {
                 // The pause is the user's: mains power must not resume it.
@@ -279,7 +298,8 @@ fn foreground(
         let finished = svc.active().is_none();
         if !finished
             && !cancel_requested
-            && let Some(ev) = power.as_mut().and_then(|g| g.tick(svc))
+            && let Some(on_battery) = reading
+            && let Some(ev) = power.as_mut().and_then(|g| g.apply(svc, on_battery))
         {
             report_power(ctx, tty, ev)?;
         }

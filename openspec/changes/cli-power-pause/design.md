@@ -48,13 +48,18 @@ Observed today (read from the code, nothing run):
 - **Probe selection: `ps_service::power::probe_from_env() -> Arc<dyn PowerSource>`** returns
   `SysfsPower { root }` when `PHOTOSQUIRREL_POWER_SUPPLY_DIR` is set and non-empty, else `SystemPower` (ADR-0072).
   The CLI uses it; the app keeps `SystemPower` (the env override is a CLI test and support hook, documented in the
-  CLI reference; extending it to the app is not needed by any scenario).
+  CLI reference; extending it to the app is not needed by any scenario). Using the override logs a warning, and
+  so does a folder that is missing (it reads as mains power, so scans never pause); `doctor` shows the probe in
+  use, the override folder and whether it exists. The sysfs reader skips anything that is not a regular file (a
+  FIFO named `type` would block the poll forever) and reads at most 64 bytes per attribute.
 - **CLI wiring in `cmd/scan.rs`.** `start()` reads `ctx.settings()?.general.pause_on_battery` and the new
   `--ignore-battery` flag (on `ScanStartArgs` and `ScanCommand::Resume` in `main.rs`; `scan resume` passes it to
-  `start` when no scan is live) and passes `Option<PowerGuard>` to `foreground`, where `PowerGuard { policy,
+  `start` when no scan is live; when one is, the flag cannot change that scan's rule and a stderr note says so) and passes `Option<PowerGuard>` to `foreground`, where `PowerGuard { policy,
   source, poll: 1 s, last_poll }`. `foreground` ticks it right after the run starts (so a scan started on
-  battery pauses at once) and then every second, after the interrupt and request handling and only while no
-  cancel has been requested (Ctrl-C or a `cancel` request), so a cancel is never followed by a power action. A
+  battery pauses at once) and then every second, only while no cancel has been requested (Ctrl-C or a `cancel` request), so a cancel is never followed by a power action. Each
+  loop pass reads the probe before it takes the pending control request and applies the reading after it:
+  `scan pause` replies at once when the run is already paused for power, so a request queued before the probe
+  saw mains return is always applied first and the user's pause wins over the automatic resume. A
   `pause` request calls `policy.user_paused(run)` after `svc.pause()`, so a later mains return does not resume
   it. A `resume` request on battery needs nothing new: the policy already treats a power-paused run seen running
   on battery as overridden. With `--ignore-battery` and the setting on, one stderr note is printed if the probe

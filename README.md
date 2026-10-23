@@ -133,9 +133,11 @@ finishes. A pause you asked for with `scan pause` is never resumed for you, and 
 scan going until the next unplug. Each pause and resume is one line on standard error; with `--json` it is also an
 NDJSON line `{"type": "power", "data": {"event": "paused_on_battery" | "resumed_on_mains", "run": ..., "at_ms":
 ...}}`, and while a scan is paused its snapshot lines slow to one every 5 seconds. `scan status` shows a scan
-paused on battery. `--ignore-battery` on `scan`, `scan start` or `scan resume` skips the pause for that one scan.
-`PHOTOSQUIRREL_POWER_SUPPLY_DIR` points the power check at a folder laid out like Linux's
-`/sys/class/power_supply` instead of the system's own (on any platform; for testing and support).
+paused on battery. `--ignore-battery` on `scan`, `scan start` or `scan resume` skips the pause for the scan that
+command runs; it has no effect (and says so) when `scan resume` only resumes a scan already running in another
+terminal. `PHOTOSQUIRREL_POWER_SUPPLY_DIR` points the power check at a folder laid out like Linux's
+`/sys/class/power_supply` instead of the system's own (on any platform; for testing and support; a warning says
+it is in use, and `doctor` shows it).
 
 ## Freeing up space (optional)
 
