@@ -53,5 +53,6 @@
 - [x] 6.3 `cargo xtask spec-coverage` reports every scenario of this change mapped to a test
   Notes: all 15 scenarios of this change map to tests; the 24 unmapped scenarios are those of `capture-dates`
   (not implemented yet).
-- [ ] 6.4 `cargo xtask ci` is green
+- [x] 6.4 `cargo xtask ci` is green
+  Notes: clean-worktree run at 91cf7a3 passed (fmt, clippy, layering, tokens, tests, timing pass, openspec, spec coverage).
 - [x] 6.5 `openspec validate cleanup-selection --strict` passes
