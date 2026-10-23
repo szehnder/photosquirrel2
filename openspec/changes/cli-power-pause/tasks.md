@@ -27,7 +27,7 @@
 
 - [x] 5.1 `cargo test -p ps-service --test pause_on_battery` and `cargo test -p photosquirrel-cli --test power` pass (with `CARGO_BUILD_JOBS=4`, `--test-threads=4`, TMPDIR under `target/`)
 - [x] 5.2 `cargo xtask spec-coverage` maps every scenario of this change
-- [ ] 5.3 `cargo xtask ci` is green
+- [x] 5.3 `cargo xtask ci` is green
 - [x] 5.4 `openspec validate cli-power-pause --strict` passes
 
 ## Workflow follow-up
