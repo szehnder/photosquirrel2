@@ -43,7 +43,11 @@ impl std::fmt::Debug for Readers {
 
 pub(crate) const FILE_COLUMNS: &str = "id, source_id, rel_path, size, mtime_ns, file_index, stage, class, reasons, format,
     width, height, content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_undated,
-    camera_model, has_gps, attempts, missing_since, first_seen";
+    camera_model, has_gps, attempts, missing_since, first_seen, capture_offset_min, capture_provenance,
+    capture_precision, date_version";
+
+/// Number of columns in [`FILE_COLUMNS`]: the index of the first column a query appends after them.
+pub(crate) const FILE_COLUMN_COUNT: usize = 28;
 
 impl Readers {
     pub(crate) fn open(path: &Path, size: usize) -> Result<Readers> {
@@ -168,7 +172,9 @@ impl Readers {
             let mut out = Vec::with_capacity(limit.min(4096));
             while let Some(r) = rows.next()? {
                 let mut rec = file_record(r)?;
-                rec.classifier_hash = r.get::<_, Option<i64>>(24)?.map(|h| h as u64);
+                rec.classifier_hash = r
+                    .get::<_, Option<i64>>(FILE_COLUMN_COUNT)?
+                    .map(|h| h as u64);
                 out.push(rec);
             }
             Ok(out)
@@ -189,6 +195,27 @@ impl Readers {
                 let json: String = r.get(1)?;
                 let facts = serde_json::from_str(&json).map_err(|e| corrupt(&e.to_string()))?;
                 out.insert(FileId(r.get(0)?), facts);
+            }
+            Ok(out)
+        })
+    }
+
+    /// What re-dating needs of `ids` (ADR-0071): path, modification time and stored metadata. Rows without
+    /// metadata (never analysed) are left out.
+    pub fn date_facts(&self, ids: &[FileId]) -> Result<Vec<(FileId, RelPath, i64, Metadata)>> {
+        self.with(|c| {
+            let values: Rc<Vec<Value>> = Rc::new(ids.iter().map(|i| Value::Integer(i.0)).collect());
+            let mut stmt = c.prepare_cached(
+                "SELECT id, rel_path, mtime_ns, metadata FROM file
+                 WHERE id IN rarray(?1) AND metadata IS NOT NULL ORDER BY id",
+            )?;
+            let mut rows = stmt.query([values])?;
+            let mut out = Vec::with_capacity(ids.len());
+            while let Some(r) = rows.next()? {
+                let rel = RelPath::from_bytes(r.get(1)?).ok_or_else(|| corrupt("rel_path"))?;
+                let json = r.get_ref(3)?.as_str().map_err(rusqlite::Error::from)?;
+                let meta = serde_json::from_str(json).map_err(|e| corrupt(&e.to_string()))?;
+                out.push((FileId(r.get(0)?), rel, r.get(2)?, meta));
             }
             Ok(out)
         })
@@ -592,6 +619,19 @@ pub(crate) fn file_record(r: &Row<'_>) -> Result<FileRecord> {
         attempts: r.get(21)?,
         missing_since_ms: r.get(22)?,
         first_seen_ms: r.get(23)?,
+        capture_offset_min: r.get(24)?,
+        capture_provenance: match r.get_ref(25)? {
+            ValueRef::Text(t) => Some(
+                std::str::from_utf8(t)
+                    .ok()
+                    .and_then(ps_model::DateProvenance::parse)
+                    .ok_or_else(|| corrupt("capture_provenance"))?,
+            ),
+            _ => None,
+        },
+        capture_precision: ps_model::DatePrecision::from_code(r.get::<_, i64>(26)? as u8)
+            .ok_or_else(|| corrupt("capture_precision"))?,
+        date_version: r.get::<_, i64>(27)? as u8,
         classifier_hash: None,
     })
 }

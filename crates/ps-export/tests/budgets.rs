@@ -50,6 +50,7 @@ fn replan_50k_exported_within_budget() {
             capture,
             undated: false,
             date_origin: ps_export::DateOrigin::OWN_EXIF,
+            precision: ps_model::DatePrecision::Second,
             content_identifier: None,
             library_name: None,
             read_from: None,

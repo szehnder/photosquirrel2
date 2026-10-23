@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 ps-model.workspace = true
+# Date parsers and the OS zone for undated files (ADR-0069, ADR-0070).
+ps-media = { workspace = true, features = ["os-zone"] }
 ps-catalog.workspace = true
 ps-hash.workspace = true
 blake3.workspace = true

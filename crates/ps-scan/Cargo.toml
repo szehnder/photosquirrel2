@@ -8,7 +8,8 @@ license.workspace = true
 
 [dependencies]
 ps-model.workspace = true
-ps-media.workspace = true
+# The run's local zone for instants (ADR-0070).
+ps-media = { workspace = true, features = ["os-zone"] }
 ps-hash.workspace = true
 ps-catalog.workspace = true
 ps-dedup.workspace = true

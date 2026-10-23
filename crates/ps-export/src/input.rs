@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use crate::date::DateOrigin;
 use ps_model::{
-    CaptureTime, ContentId, FileId, Format, GroupId, ImageInsight, MediaKind, RelPath, SourceId,
+    CaptureTime, ContentId, DatePrecision, FileId, Format, GroupId, ImageInsight, MediaKind,
+    RelPath, SourceId,
 };
 
 /// A registered source.
@@ -37,6 +38,8 @@ pub struct KeeperFile {
     pub undated: bool,
     /// Where `capture` came from (shown in the plan, the CLI and the manifest).
     pub date_origin: DateOrigin,
+    /// Second, day or month: a month-precision date files under `<YYYY>/<YYYY-MM>/` (ADR-0069).
+    pub precision: DatePrecision,
     /// Apple ContentIdentifier pairing a Live Photo still with its video.
     pub content_identifier: Option<String>,
     /// The name to give the library copy when it differs from the source name: a keeper called

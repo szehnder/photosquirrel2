@@ -249,6 +249,7 @@ fn sidecar_kill_input(dir: &std::path::Path) -> ps_export::ExportInput {
                 capture: day(2018, 4, 4),
                 undated: false,
                 date_origin: ps_export::DateOrigin::OWN_EXIF,
+                precision: ps_model::DatePrecision::Second,
                 content_identifier: None,
                 library_name: None,
                 read_from: None,

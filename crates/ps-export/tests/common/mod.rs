@@ -136,6 +136,7 @@ impl Sources {
             } else {
                 ps_export::DateOrigin::OWN_EXIF
             },
+            precision: ps_model::DatePrecision::Second,
             capture,
             content_identifier: None,
             library_name: None,
@@ -268,6 +269,7 @@ pub fn corpus_model(c: &SmallCorpus, drives: &[&str], offline: &[&str]) -> Corpu
             capture: None,
             undated: true,
             date_origin: ps_export::DateOrigin::MTIME,
+            precision: ps_model::DatePrecision::Second,
             content_identifier: None,
             library_name: None,
             read_from: None,

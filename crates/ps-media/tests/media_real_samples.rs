@@ -27,7 +27,15 @@ fn real_camera_samples_probe_metadata_and_thumbnail() {
         let probe = ps_media::probe_path(&p);
         let bytes = ps_media::read_all(&p).expect("read-only read");
         let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
-        let meta = ps_media::extract_metadata(&bytes, &probe, mtime);
+        let meta = ps_media::extract_metadata(
+            &bytes,
+            &probe,
+            mtime,
+            &ps_media::DateContext {
+                rel_path: None,
+                zone: &ps_media::FixedZone(0),
+            },
+        );
         let (class, reasons) = ps_media::classify(&probe, &p, &settings);
         let thumb = if probe.kind() == Some(MediaKind::Image) {
             ps_media::make_thumbnail(&bytes, &probe)

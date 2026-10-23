@@ -11,16 +11,22 @@
 //! - **re-classified**: an unchanged, finished file whose stored classifier hash differs from the run's
 //!   settings is classified again from its stored [`ps_model::ClassFacts`] (ADR-0051), without reading it. A
 //!   skipped file that becomes a candidate goes back to `probed` and is processed; every other stage is kept.
+//! - **re-dated**: an unchanged, analysed file dated by an older version of the capture-date rules is dated
+//!   again from its stored facts ([`crate::redate`], ADR-0071), without reading it.
+//! - **needs refresh**: an unchanged, finished file probed before classification facts were stored (catalog
+//!   migration 13) is counted; only with [`ScanOptions::refresh_analysis`](crate::ScanOptions) is its probe
+//!   data read again (at most [`ps_media::PROBE_LIMIT`] bytes, read-only) to re-classify it (ADR-0071).
 
 use std::collections::HashMap;
 
 use ps_catalog::{FileKey, FileRow, Readers, Reclassification};
 use ps_media::FolderHints;
 use ps_model::{
-    ClassifierSettings, ContentId, DiffCounts, FileId, PhotoClass, RelPath, SourceId, Stage,
-    StageCounts, StatFingerprint,
+    ClassifierSettings, ContentId, DATE_LOGIC_VERSION, DiffCounts, FileId, PhotoClass, RelPath,
+    SourceId, Stage, StageCounts, StatFingerprint,
 };
 
+use crate::redate::StaleDate;
 use crate::walk::WalkEntry;
 
 /// Runs in which a failing file is attempted: the first one plus at most two retries (ADR-0008).
@@ -40,6 +46,10 @@ pub struct Todo {
     pub stage: Stage,
     /// The path is new to the catalog (a move candidate).
     pub is_new: bool,
+    /// An analysis refresh of an unchanged file without stored class facts: read the probe data only (at most
+    /// [`ps_media::PROBE_LIMIT`] bytes) and re-classify; the file is processed further only if it wakes from
+    /// `skipped` to a candidate (ADR-0071).
+    pub refresh: bool,
 }
 
 /// The diff of one source.
@@ -53,6 +63,8 @@ pub struct DiffOutput {
     /// Unchanged files classified again under new classifier settings (every stale one, so its hash is
     /// brought up to date; [`DiffCounts::reclassified`] counts those whose class changed).
     pub reclassified: Vec<Reclassification>,
+    /// Unchanged, analysed files dated by an older version of the date rules (re-dated before processing).
+    pub stale_dates: Vec<StaleDate>,
     /// Work, in walk order.
     pub todo: Vec<Todo>,
     /// Stage of every present file once the diff is applied.
@@ -75,13 +87,15 @@ struct Stale {
 }
 
 /// Merge-join `entries` (sorted by path) with the catalog rows of `source`. `classifier` and its
-/// `classifier_hash` are the run's settings (re-classification).
+/// `classifier_hash` are the run's settings (re-classification); `refresh_analysis` queues unchanged files
+/// without stored class facts for a probe-only refresh.
 pub fn diff(
     source: SourceId,
     entries: Vec<WalkEntry>,
     readers: &Readers,
     classifier: &ClassifierSettings,
     classifier_hash: u64,
+    refresh_analysis: bool,
 ) -> ps_catalog::Result<DiffOutput> {
     let mut stale = Vec::new();
     let mut out = DiffOutput {
@@ -144,6 +158,7 @@ pub fn diff(
                     thumbs_db_sibling: w.thumbs_db_sibling,
                     stage,
                     is_new,
+                    refresh: false,
                 };
                 match rec {
                     None => {
@@ -181,15 +196,35 @@ pub fn diff(
                         if unfinished {
                             out.todo.push(todo(r.stage, false));
                             out.bytes_to_process += w.stat.size;
-                        } else if matches!(r.stage, Stage::Thumbed | Stage::Skipped)
-                            && r.classifier_hash.is_some_and(|h| h != classifier_hash)
-                        {
-                            stale.push(Stale {
-                                id: r.id,
-                                todo: todo(r.stage, false),
-                                size: w.stat.size,
-                                class: r.class,
-                            });
+                        } else if matches!(r.stage, Stage::Thumbed | Stage::Skipped) {
+                            match r.classifier_hash {
+                                Some(h) if h != classifier_hash => stale.push(Stale {
+                                    id: r.id,
+                                    todo: todo(r.stage, false),
+                                    size: w.stat.size,
+                                    class: r.class,
+                                }),
+                                Some(_) => {}
+                                None => {
+                                    out.counts.needs_refresh += 1;
+                                    if refresh_analysis {
+                                        out.todo.push(Todo {
+                                            refresh: true,
+                                            ..todo(r.stage, false)
+                                        });
+                                        out.bytes_to_process +=
+                                            w.stat.size.min(ps_media::PROBE_LIMIT as u64);
+                                    }
+                                }
+                            }
+                            if r.date_version < DATE_LOGIC_VERSION && r.capture_provenance.is_some()
+                            {
+                                out.stale_dates.push(StaleDate {
+                                    id: r.id,
+                                    path: r.key.path.clone(),
+                                    current: r.capture_date(),
+                                });
+                            }
                         }
                     }
                 }
@@ -243,6 +278,7 @@ fn reclassify(
                 reasons: reasons.iter().map(ToString::to_string).collect(),
                 classifier_hash,
                 stage: wakes.then_some(Stage::Probed),
+                facts: None,
             });
             if wakes {
                 *out.stages.get_mut(Stage::Skipped) -= 1;

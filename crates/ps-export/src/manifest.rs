@@ -45,6 +45,10 @@ pub struct ManifestRecord {
     /// The other copy whose date was used, when it was not the file's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_from: Option<String>,
+    /// `day` or `month` when the date is not known to the second (a folder-name date, ADR-0069). Absent for
+    /// dates to the second and in records written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_precision: Option<String>,
 }
 
 /// An open manifest for appending.

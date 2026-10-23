@@ -94,6 +94,7 @@ fn row(source: ps_model::SourceId, i: u64) -> Option<FileRow> {
                         value: capture,
                         provenance: DateProvenance::DateTimeOriginal,
                         undated: false,
+                        precision: ps_model::DatePrecision::Second,
                     }),
                     ..Metadata::default()
                 },

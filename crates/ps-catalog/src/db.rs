@@ -45,6 +45,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     CLEANUP_MIGRATION,
     CLEANUP_SOURCE_MIGRATION,
     CLEANUP_SELECTION_MIGRATION,
+    CAPTURE_DATES_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -139,6 +140,14 @@ pub const CLEANUP_SELECTION_MIGRATION: Migration = Migration {
     version: 16,
     name: "cleanup_selection",
     sql: include_str!("../migrations/0016_cleanup_selection.sql"),
+};
+
+/// Migration 17 (ADR-0069, ADR-0070, ADR-0071: `file.capture_precision`, `file.date_version`; rows whose date
+/// cannot change are marked current).
+pub const CAPTURE_DATES_MIGRATION: Migration = Migration {
+    version: 17,
+    name: "capture_dates",
+    sql: include_str!("../migrations/0017_capture_dates.sql"),
 };
 
 /// `thumbs.db` migrations.

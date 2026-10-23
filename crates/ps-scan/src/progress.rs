@@ -68,6 +68,8 @@ struct Diff {
     moved: AtomicU64,
     reclassified: AtomicU64,
     quarantined: AtomicU64,
+    redated: AtomicU64,
+    needs_refresh: AtomicU64,
 }
 
 impl Diff {
@@ -81,6 +83,8 @@ impl Diff {
             moved: self.moved.load(Ordering::Relaxed),
             reclassified: self.reclassified.load(Ordering::Relaxed),
             quarantined: self.quarantined.load(Ordering::Relaxed),
+            redated: self.redated.load(Ordering::Relaxed),
+            needs_refresh: self.needs_refresh.load(Ordering::Relaxed),
         }
     }
 
@@ -93,6 +97,8 @@ impl Diff {
         self.moved.store(d.moved, Ordering::Relaxed);
         self.reclassified.store(d.reclassified, Ordering::Relaxed);
         self.quarantined.store(d.quarantined, Ordering::Relaxed);
+        self.redated.store(d.redated, Ordering::Relaxed);
+        self.needs_refresh.store(d.needs_refresh, Ordering::Relaxed);
     }
 }
 

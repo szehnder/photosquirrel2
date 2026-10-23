@@ -138,6 +138,14 @@ pub struct DiffCounts {
     /// accounted for, not missing.
     #[serde(default)]
     pub quarantined: u64,
+    /// Unchanged files whose capture date changed when the current date rules re-dated them from stored facts,
+    /// without reading them (counted in `unchanged` too; ADR-0071).
+    #[serde(default)]
+    pub redated: u64,
+    /// Unchanged files analysed before classification facts were stored (catalog migration 13): they keep
+    /// their class until an analysis refresh re-reads their probe data (counted in `unchanged` too; ADR-0071).
+    #[serde(default)]
+    pub needs_refresh: u64,
 }
 
 impl DiffCounts {
@@ -150,6 +158,8 @@ impl DiffCounts {
         self.moved += o.moved;
         self.reclassified += o.reclassified;
         self.quarantined += o.quarantined;
+        self.redated += o.redated;
+        self.needs_refresh += o.needs_refresh;
     }
 }
 

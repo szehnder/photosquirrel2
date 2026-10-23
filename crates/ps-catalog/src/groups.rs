@@ -18,7 +18,7 @@ use ps_model::{ContentId, FileId, Metadata};
 
 use crate::error::{CatalogError, Result};
 use crate::model::{FileRecord, codes, now_ms};
-use crate::read::{FILE_COLUMNS, Readers, file_record};
+use crate::read::{FILE_COLUMN_COUNT, FILE_COLUMNS, Readers, file_record};
 use crate::writer::Writer;
 
 /// How a member joined its group.
@@ -474,12 +474,14 @@ pub enum GroupOrder {
 impl Readers {
     /// A change stamp per grouping input (analyzed, present files with a content identity), ordered by id.
     /// The stamp covers every column grouping and ranking read except the metadata JSON, which only changes
-    /// together with them (re-analysis follows a fingerprint change).
+    /// together with them (re-analysis follows a fingerprint change). Not the capture date columns: grouping
+    /// and ranking read the embedded capture time from the metadata, so re-dating a row (ADR-0071) is no
+    /// grouping change.
     pub fn dedup_stamps(&self) -> Result<Vec<(FileId, u64)>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(&format!(
                 "SELECT id, source_id, rel_path, size, mtime_ns, class, format, width, height, content_id,
-                        identity_kind, phash, dhash, hash_version, capture_ts
+                        identity_kind, phash, dhash, hash_version
                  FROM file WHERE {INPUT_WHERE} ORDER BY id"
             ))?;
             let mut rows = stmt.query([])?;
@@ -495,7 +497,7 @@ impl Readers {
                 s.int(r.get(7)?);
                 s.int(r.get(8)?);
                 s.bytes(r.get_ref(9)?.as_blob().map_err(rusqlite::Error::from)?);
-                for i in 10..=14 {
+                for i in 10..=13 {
                     s.int(r.get(i)?);
                 }
                 out.push((FileId(r.get(0)?), s.0));
@@ -519,7 +521,7 @@ impl Readers {
                 while let Some(r) = rows.next()? {
                     let rec = file_record(r)?;
                     let meta = match r
-                        .get_ref(24)?
+                        .get_ref(FILE_COLUMN_COUNT)?
                         .as_str_or_null()
                         .map_err(rusqlite::Error::from)?
                     {

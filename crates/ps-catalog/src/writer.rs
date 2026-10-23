@@ -27,7 +27,7 @@ use ps_model::{
 use crate::error::{CatalogError, Result, WriteError, WriteErrors};
 use crate::model::{
     AnalysisResult, FileFailure, FileKey, FileRow, NewSource, ProbeResult, Reclassification,
-    Results, codes, now_ms,
+    Redate, Results, codes, now_ms,
 };
 
 /// Batching parameters (ADR-0005 defaults).
@@ -63,6 +63,9 @@ pub enum Command {
     /// New classes of unchanged files after a classifier settings change, decided from their stored
     /// [`ps_model::ClassFacts`] without reading them (ADR-0051). Other results are kept.
     Reclassify(Vec<Reclassification>),
+    /// Capture dates chosen again by the current date rules from stored facts (ADR-0071): only the five date
+    /// columns and `date_version` change. Rows without metadata are left alone.
+    Redate(Vec<Redate>),
     /// Analysis results with stage `analyzed`. The file must have been probed.
     Analyzed(Vec<(FileKey, Box<AnalysisResult>)>),
     /// Stage `thumbed`: the thumbnail is in `thumbs.db`. The file must be analyzed.
@@ -122,6 +125,7 @@ impl Command {
             Command::UpsertFiles(_) => "upsert_files",
             Command::Probed(_) => "probed",
             Command::Reclassify(_) => "reclassify",
+            Command::Redate(_) => "redate",
             Command::Analyzed(_) => "analyzed",
             Command::Thumbed(_) => "thumbed",
             Command::Failed(_) => "failed",
@@ -631,6 +635,13 @@ impl WriterThread {
                     });
                 }
             }
+            Command::Redate(rows) => {
+                for r in &rows {
+                    self.row(name, Some(&r.key), |c| {
+                        expect_one(set_redated(c, r)?, "unknown or unanalysed file")
+                    });
+                }
+            }
             Command::Analyzed(rows) => {
                 for (k, a) in &rows {
                     self.row(name, Some(k), |c| {
@@ -793,6 +804,7 @@ const ANALYSIS_COLUMNS: &[(&str, &str)] = &[
     ("capture_offset_min", "NULL"),
     ("capture_provenance", "NULL"),
     ("capture_undated", "0"),
+    ("capture_precision", "0"),
     ("camera_model", "NULL"),
     ("has_gps", "0"),
     ("metadata", "NULL"),
@@ -853,7 +865,8 @@ const ANALYZED_SQL: &str = "UPDATE file SET stage = 2,
         content_id = ?3, identity_kind = ?4, phash = ?5, dhash = ?6, hash_version = ?7,
         capture_ts = ?8, capture_offset_min = ?9, capture_provenance = ?10, capture_undated = ?11,
         camera_model = ?12, has_gps = ?13, metadata = ?14,
-        width = coalesce(?15, width), height = coalesce(?16, height)
+        width = coalesce(?15, width), height = coalesce(?16, height),
+        capture_precision = ?17, date_version = ?18
     WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
 
 /// All columns at once, for rows that arrive with results and are new (the common synthetic/import case).
@@ -861,9 +874,9 @@ const INSERT_FULL_SQL: &str = "INSERT INTO file (source_id, rel_path, name, size
         stage, class, reasons, format, media_kind, width, height,
         content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_offset_min,
         capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen,
-        class_facts, classifier_hash)
+        class_facts, classifier_hash, capture_precision, date_version)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28)
+            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30)
     ON CONFLICT (source_id, rel_path) DO NOTHING";
 
 fn upsert_file(c: &Connection, r: &FileRow) -> rusqlite::Result<()> {
@@ -907,6 +920,7 @@ struct AnalysisCols {
     capture_offset: Option<i64>,
     provenance: Option<&'static str>,
     undated: bool,
+    precision: i64,
     camera_model: Option<String>,
     has_gps: bool,
     metadata: String,
@@ -927,6 +941,7 @@ fn analysis_cols(a: &AnalysisResult) -> rusqlite::Result<AnalysisCols> {
         capture_offset: capture.and_then(|t| t.offset_minutes).map(i64::from),
         provenance: m.capture_date.map(|d| d.provenance.as_str()),
         undated: m.capture_date.is_some_and(|d| d.undated),
+        precision: i64::from(m.capture_date.map_or(0, |d| d.precision.code())),
         camera_model: m.fields.camera_model.clone(),
         has_gps: m.fields.gps.is_some(),
         metadata: serde_json::to_string(m)
@@ -974,6 +989,8 @@ fn insert_full(
         now_ms(),
         facts_json(p.facts.as_ref())?,
         p.classifier_hash.map(|h| h as i64),
+        x.precision,
+        i64::from(ps_model::DATE_LOGIC_VERSION),
     ])
 }
 
@@ -989,7 +1006,7 @@ fn facts_json(f: Option<&ps_model::ClassFacts>) -> rusqlite::Result<Option<Strin
 }
 
 const RECLASSIFY_SQL: &str = "UPDATE file SET class = ?3, reasons = ?4, classifier_hash = ?5,
-        stage = coalesce(?6, stage), kflags = (?3 | (kflags & 24))
+        stage = coalesce(?6, stage), kflags = (?3 | (kflags & 24)), class_facts = coalesce(?7, class_facts)
     WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
 
 fn set_reclassified(c: &Connection, r: &Reclassification) -> rusqlite::Result<usize> {
@@ -1000,6 +1017,26 @@ fn set_reclassified(c: &Connection, r: &Reclassification) -> rusqlite::Result<us
         reasons_json(&r.reasons)?,
         r.classifier_hash as i64,
         r.stage.map(codes::stage),
+        facts_json(r.facts.as_ref())?,
+    ])
+}
+
+const REDATE_SQL: &str =
+    "UPDATE file SET capture_ts = ?3, capture_offset_min = ?4, capture_provenance = ?5,
+        capture_undated = ?6, capture_precision = ?7, date_version = ?8
+    WHERE source_id = ?1 AND rel_path = ?2 AND metadata IS NOT NULL";
+
+fn set_redated(c: &Connection, r: &Redate) -> rusqlite::Result<usize> {
+    let d = r.capture.as_ref();
+    c.prepare_cached(REDATE_SQL)?.execute(params![
+        r.key.source.0,
+        r.key.path.as_bytes(),
+        d.map(|d| codes::capture_ms(&d.value)),
+        d.and_then(|d| d.value.offset_minutes).map(i64::from),
+        d.map(|d| d.provenance.as_str()),
+        d.is_some_and(|d| d.undated),
+        i64::from(d.map_or(0, |d| d.precision.code())),
+        i64::from(r.version),
     ])
 }
 
@@ -1038,6 +1075,8 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
         x.metadata,
         x.width,
         x.height,
+        x.precision,
+        i64::from(ps_model::DATE_LOGIC_VERSION),
     ])
 }
 

@@ -7,6 +7,7 @@
 pub mod apple;
 pub mod bmff;
 pub mod classify;
+pub mod date;
 pub mod decode;
 pub mod fs;
 pub mod heic;
@@ -22,6 +23,10 @@ pub mod util;
 pub mod video;
 
 pub use classify::{FolderHints, class_facts, classify, classify_facts, classify_with};
+pub use date::{
+    DATE_LOGIC_VERSION, DateContext, EmbeddedDates, FixedZone, LocalZone, RuleZone,
+    resolve_capture_date,
+};
 pub use decode::{DecodeError, Decoded, RgbImage, decode_for_analysis};
 pub use fs::{CountingReader, open_read_only, read_all};
 pub use metadata::extract_metadata;

@@ -52,7 +52,7 @@ pub use ledger::{Ledger, MemoryLedger};
 pub use library::{Existing, FsLibrary, LibraryProbe, LibraryRoot, PARTIAL_SUFFIX};
 pub use plan::{
     AlreadyExported, BundleKind, DateTotals, ModifiedInLibrary, Plan, PlanBlocker, PlanError,
-    PlanTotals, PlannedAction, PlannedBundle, PlannedFile, Unavailable, plan,
+    PlanTotals, PlanWarning, PlannedAction, PlannedBundle, PlannedFile, Unavailable, plan,
 };
 pub use profile::ProfileSettings;
 pub use rename::RenameMethod;

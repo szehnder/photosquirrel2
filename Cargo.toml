@@ -60,6 +60,8 @@ thiserror = "2"
 anyhow = "1"
 smallvec = "1"
 rustc-hash = "2"
+# The OS time-zone rules for ps-media's `os-zone` feature (ADR-0070); already in the build through nom-exif.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 directories = "6"

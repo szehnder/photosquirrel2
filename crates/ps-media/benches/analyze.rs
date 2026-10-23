@@ -28,7 +28,17 @@ fn bench(c: &mut Criterion) {
         b.iter(|| ps_media::analyze_still(black_box(&jpeg), &probe))
     });
     g.bench_function("metadata", |b| {
-        b.iter(|| ps_media::extract_metadata(black_box(&jpeg), &probe, None))
+        b.iter(|| {
+            ps_media::extract_metadata(
+                black_box(&jpeg),
+                &probe,
+                None,
+                &ps_media::DateContext {
+                    rel_path: None,
+                    zone: &ps_media::FixedZone(0),
+                },
+            )
+        })
     });
     g.finish();
 }

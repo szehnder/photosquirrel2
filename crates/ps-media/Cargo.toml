@@ -10,6 +10,9 @@ license.workspace = true
 default = []
 # HEIC/HEIF/AVIF decoding via libheif (ADR-0017). Off by default so the default build needs no system library.
 heic = ["dep:libheif-rs"]
+# The machine's time-zone rules (`date::os::OsZone`, ADR-0070). Enabled only by the I/O crates, so core builds
+# and core tests never depend on the test machine's zone.
+os-zone = ["dep:chrono"]
 
 [dependencies]
 ps-model.workspace = true
@@ -23,6 +26,7 @@ nom-exif.workspace = true
 imagesize.workspace = true
 rawler.workspace = true
 libheif-rs = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
@@ -31,6 +35,7 @@ proptest.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 tempfile.workspace = true
+serde_json.workspace = true
 criterion.workspace = true
 
 [[bench]]

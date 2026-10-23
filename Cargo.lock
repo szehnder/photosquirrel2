@@ -6246,6 +6246,7 @@ dependencies = [
  "ps-catalog",
  "ps-fixtures",
  "ps-hash",
+ "ps-media",
  "ps-model",
  "quick-xml",
  "rustix",
@@ -6312,6 +6313,7 @@ dependencies = [
 name = "ps-media"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "criterion",
  "fast_image_resize",
  "image",
@@ -6327,6 +6329,7 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "rawler",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "zune-jpeg 0.5.15",

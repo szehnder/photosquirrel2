@@ -55,7 +55,15 @@ pub fn analyze(root: &Path, rel: &str, id: FileId) -> DedupInput {
     let mtime = std::fs::metadata(&abs).unwrap().modified().ok();
     let probe = ps_media::probe_bytes(&bytes, bytes.len() as u64, Some(&abs));
     let (class, _) = ps_media::classify(&probe, Path::new(rel), &ClassifierSettings::default());
-    let meta = ps_media::extract_metadata(&bytes, &probe, mtime);
+    let meta = ps_media::extract_metadata(
+        &bytes,
+        &probe,
+        mtime,
+        &ps_media::DateContext {
+            rel_path: ps_model::RelPath::from_bytes(rel.as_bytes().to_vec()).as_ref(),
+            zone: &ps_media::FixedZone(0),
+        },
+    );
     let format = probe.format.unwrap_or(ps_model::Format::Jpeg);
     // Junk and graphics are not fully read or analyzed (ADR-0015).
     let analyzed = class.is_candidate() && probe.format.is_some();

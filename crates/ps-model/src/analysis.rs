@@ -246,6 +246,8 @@ pub enum DateProvenance {
     /// QuickTime/MP4 (or HEIF) container creation date.
     Container,
     FileMtime,
+    /// A date in the name of a folder holding the file (ADR-0069). Not embedded, not undated.
+    FolderName,
 }
 
 impl DateProvenance {
@@ -255,16 +257,143 @@ impl DateProvenance {
             DateProvenance::CreateDate => "CreateDate",
             DateProvenance::Container => "container",
             DateProvenance::FileMtime => "file-mtime",
+            DateProvenance::FolderName => "folder-name",
+        }
+    }
+
+    /// Inverse of [`DateProvenance::as_str`] (the catalog's `capture_provenance` column).
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "DateTimeOriginal" => DateProvenance::DateTimeOriginal,
+            "CreateDate" => DateProvenance::CreateDate,
+            "container" => DateProvenance::Container,
+            "file-mtime" => DateProvenance::FileMtime,
+            "folder-name" => DateProvenance::FolderName,
+            _ => return None,
+        })
+    }
+
+    /// DateTimeOriginal, CreateDate or a container date: recorded in the file itself.
+    pub fn is_embedded(self) -> bool {
+        matches!(
+            self,
+            DateProvenance::DateTimeOriginal
+                | DateProvenance::CreateDate
+                | DateProvenance::Container
+        )
+    }
+
+    /// For people: "DateTimeOriginal", "CreateDate", "container", "file modification time", "folder name".
+    pub fn label(self) -> &'static str {
+        match self {
+            DateProvenance::FileMtime => "file modification time",
+            DateProvenance::FolderName => "folder name",
+            other => other.as_str(),
         }
     }
 }
 
-/// The one capture date of a file, with provenance. `undated` is set when it is only the file time.
+/// How much of a capture date is known (ADR-0069): a month folder says nothing about the day.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DatePrecision {
+    /// Date and time (embedded dates, file times).
+    #[default]
+    Second,
+    /// A calendar day (`2019-07-04` folders); the time is 00:00.
+    Day,
+    /// A month (`2019-07 Italy`); stored as the 1st at 00:00, never shown or filed as a day.
+    Month,
+}
+
+impl DatePrecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DatePrecision::Second => "second",
+            DatePrecision::Day => "day",
+            DatePrecision::Month => "month",
+        }
+    }
+
+    /// The catalog's `capture_precision` code (migration 17: 0 second, 1 day, 2 month).
+    pub fn code(self) -> u8 {
+        match self {
+            DatePrecision::Second => 0,
+            DatePrecision::Day => 1,
+            DatePrecision::Month => 2,
+        }
+    }
+
+    pub fn from_code(c: u8) -> Option<Self> {
+        Some(match c {
+            0 => DatePrecision::Second,
+            1 => DatePrecision::Day,
+            2 => DatePrecision::Month,
+            _ => return None,
+        })
+    }
+}
+
+/// The version of the capture-date rules (ADR-0071): 1 before folder-name dates and local days of instants
+/// (ADR-0069, ADR-0070), 2 with them. Rows dated by an older version are re-dated from stored facts on the next
+/// rescan of their source.
+pub const DATE_LOGIC_VERSION: u8 = 2;
+
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// The one capture date of a file, with provenance and precision. `undated` is set when it is only the file
+/// time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CaptureDate {
     pub value: CaptureTime,
     pub provenance: DateProvenance,
     pub undated: bool,
+    /// Absent in metadata written before ADR-0069: those dates are all to the second.
+    #[serde(default)]
+    pub precision: DatePrecision,
+}
+
+impl CaptureDate {
+    /// Recorded in the file (DateTimeOriginal, CreateDate, container): what grouping and ranking may use.
+    pub fn is_embedded(&self) -> bool {
+        self.provenance.is_embedded()
+    }
+
+    /// "July 2019" (month), "4 July 2019" (day) or `YYYY-MM-DD HH:MM:SS` (second).
+    pub fn display(&self) -> String {
+        let (y, m, d) = self.value.ymd();
+        let month = MONTHS[usize::from(m.clamp(1, 12) - 1)];
+        match self.precision {
+            DatePrecision::Month => format!("{month} {y}"),
+            DatePrecision::Day => format!("{d} {month} {y}"),
+            DatePrecision::Second => self.value.display(),
+        }
+    }
+
+    /// `YYYY-MM` (month), `YYYY-MM-DD` (day) or `YYYY-MM-DD HH:MM:SS` (second): machine output.
+    pub fn iso(&self) -> String {
+        let (y, m, d) = self.value.ymd();
+        match self.precision {
+            DatePrecision::Month => format!("{y:04}-{m:02}"),
+            DatePrecision::Day => format!("{y:04}-{m:02}-{d:02}"),
+            DatePrecision::Second => self.value.display(),
+        }
+    }
 }
 
 /// An unsigned EXIF rational (exposure 1/250 stays exact).
@@ -558,6 +687,7 @@ mod tests {
                 value: CaptureTime::from_parts(2010, 5, 1, 10, 0, 0),
                 provenance: DateProvenance::DateTimeOriginal,
                 undated: false,
+                precision: DatePrecision::Second,
             }),
             warnings: vec!["w".into()],
             ..Default::default()
@@ -586,6 +716,53 @@ mod tests {
             .to_string()
             .contains("200 px minimum side")
         );
+    }
+
+    /// Metadata JSON written before ADR-0069 has no `precision`: it parses as `second`.
+    #[test]
+    fn capture_date_without_precision_is_to_the_second() {
+        let old = r#"{"value":{"local_seconds":1272708000,"millis":0,"offset_minutes":null},
+                      "provenance":"file_mtime","undated":true}"#;
+        let d: CaptureDate = serde_json::from_str(old).expect("old capture date");
+        assert_eq!(d.precision, DatePrecision::Second);
+        assert_eq!(d.provenance, DateProvenance::FileMtime);
+        let mut stored = serde_json::to_value(Metadata::default()).expect("json");
+        stored["capture_date"] = serde_json::from_str(old).expect("value");
+        let m: Metadata = serde_json::from_value(stored).expect("old metadata");
+        assert_eq!(m.capture_date, Some(d));
+        let month = CaptureDate {
+            value: CaptureTime::from_parts(2019, 7, 1, 0, 0, 0),
+            provenance: DateProvenance::FolderName,
+            undated: false,
+            precision: DatePrecision::Month,
+        };
+        round_trip(&month);
+        assert_eq!(month.display(), "July 2019");
+        assert_eq!(month.iso(), "2019-07");
+        assert!(!month.is_embedded());
+        let day = CaptureDate {
+            value: CaptureTime::from_parts(2019, 7, 4, 0, 0, 0),
+            precision: DatePrecision::Day,
+            ..month
+        };
+        assert_eq!(day.display(), "4 July 2019");
+        assert_eq!(day.iso(), "2019-07-04");
+        for p in [
+            DateProvenance::DateTimeOriginal,
+            DateProvenance::CreateDate,
+            DateProvenance::Container,
+            DateProvenance::FileMtime,
+            DateProvenance::FolderName,
+        ] {
+            assert_eq!(DateProvenance::parse(p.as_str()), Some(p));
+        }
+        for p in [
+            DatePrecision::Second,
+            DatePrecision::Day,
+            DatePrecision::Month,
+        ] {
+            assert_eq!(DatePrecision::from_code(p.code()), Some(p));
+        }
     }
 
     #[test]

@@ -255,6 +255,8 @@ impl Ctx<'_> {
             sidecar: sidecar.map(|s| s.display().into_owned()),
             date_source: Some(f.date_origin.describe()),
             date_from: f.date_origin.copy.and_then(|c| self.copy_path(f.unit, c)),
+            date_precision: (f.date_precision != ps_model::DatePrecision::Second)
+                .then(|| f.date_precision.as_str().to_owned()),
         };
         let mtime = self.library_mtime(&f.target);
         let mut s = self.shared.lock();

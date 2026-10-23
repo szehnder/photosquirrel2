@@ -1592,6 +1592,7 @@ impl ScanBackend for DemoBackend {
                 other_copy: 318,
                 file_name: 41,
                 sidecar: 0,
+                folder_name: 0,
                 undated: 82,
             }
             .note(),

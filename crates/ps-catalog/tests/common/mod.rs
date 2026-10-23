@@ -126,6 +126,7 @@ pub fn analysis_of(i: u64) -> AnalysisResult {
                 value,
                 provenance: DateProvenance::DateTimeOriginal,
                 undated: false,
+                precision: ps_model::DatePrecision::Second,
             }),
             ..Metadata::default()
         },

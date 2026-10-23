@@ -4,17 +4,56 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use ps_fixtures::media as fx;
-use ps_media::{extract_metadata, probe_bytes};
-use ps_model::{CaptureTime, DateProvenance, Dimensions, Format, Metadata, URational};
+use ps_media::{DateContext, FixedZone, LocalZone, RuleZone, extract_metadata, probe_bytes};
+use ps_model::{
+    CaptureDate, CaptureTime, DatePrecision, DateProvenance, Dimensions, Format, Metadata, RelPath,
+    URational,
+};
 
+/// Analyse `bytes` as a file `name` at the source root, with instants read in UTC (`FixedZone(0)`): these
+/// scenarios give their dates in UTC, so they hold in every machine's zone.
 fn analyze(
     bytes: &[u8],
     name: &str,
     mtime: Option<SystemTime>,
 ) -> (ps_model::ProbeRecord, Metadata) {
+    analyze_at(bytes, name, mtime, &FixedZone(0))
+}
+
+/// Analyse `bytes` as the file at `rel` (inside its source) with the local zone `zone`.
+fn analyze_at(
+    bytes: &[u8],
+    rel: &str,
+    mtime: Option<SystemTime>,
+    zone: &dyn LocalZone,
+) -> (ps_model::ProbeRecord, Metadata) {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
     let p = probe_bytes(bytes, bytes.len() as u64, Some(Path::new(name)));
-    let m = extract_metadata(bytes, &p, mtime);
+    let rel_path = RelPath::from_bytes(rel.as_bytes().to_vec()).expect("rel path");
+    let m = extract_metadata(
+        bytes,
+        &p,
+        mtime,
+        &DateContext {
+            rel_path: Some(&rel_path),
+            zone,
+        },
+    );
     (p, m)
+}
+
+/// A UTC instant as a `SystemTime`.
+fn utc(y: i32, mo: u8, d: u8, h: u8, mi: u8) -> SystemTime {
+    let s = CaptureTime::from_parts(y, mo, d, h, mi, 0).local_seconds;
+    if s >= 0 {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(s as u64)
+    } else {
+        SystemTime::UNIX_EPOCH - Duration::from_secs(s.unsigned_abs())
+    }
+}
+
+fn date(m: &Metadata) -> CaptureDate {
+    m.capture_date.expect("a capture date")
 }
 
 #[test]
@@ -105,7 +144,8 @@ fn rotated_mp4_reports_rotation() {
 fn scenario_media_metadata_fallback_to_file_time_flagged() {
     let j = fx::jpeg(320, 240, 2, 85);
     let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_330_560_000); // 2012-03-01T00:00:00Z
-    let (_, m) = analyze(&j, "n.jpg", Some(mtime));
+    // The file time is an instant given in UTC: read it in UTC so the day holds in every zone (ADR-0070).
+    let (_, m) = analyze_at(&j, "n.jpg", Some(mtime), &FixedZone(0));
     let c = m.capture_date.expect("date");
     assert_eq!(c.value.ymd(), (2012, 3, 1));
     assert_eq!(c.provenance, DateProvenance::FileMtime);
@@ -121,9 +161,15 @@ fn scenario_media_metadata_datetimeoriginal_preferred() {
         create_date: Some("2015:01:01 00:00:00".into()),
         ..Default::default()
     };
-    let (_, m) = analyze(&fx::jpeg_with_exif(64, 48, 1, 80, &spec), "d.jpg", None);
+    let (_, m) = analyze_at(
+        &fx::jpeg_with_exif(64, 48, 1, 80, &spec),
+        "d.jpg",
+        None,
+        &FixedZone(0),
+    );
     let c = m.capture_date.expect("date");
     assert_eq!(c.provenance, DateProvenance::DateTimeOriginal);
+    assert_eq!(c.precision, DatePrecision::Second);
     assert_eq!(c.value.display(), "2010-05-01 10:00:00");
     let only_create = fx::ExifSpec {
         create_date: Some("2015:01:01 00:00:00".into()),
@@ -319,4 +365,274 @@ fn content_identifier_from_xmp() {
     let j = fx::insert_segment(&fx::jpeg(64, 48, 3, 80), 0xE1, xmp.as_bytes());
     let (_, m) = analyze(&j, "x.jpg", None);
     assert_eq!(m.fields.content_identifier.as_deref(), Some(id));
+}
+
+// ---- capture-dates: folder-name dates (ADR-0069) and local days of instants (ADR-0070) ---------------------
+
+/// An EXIF-less JPEG.
+fn stripped() -> Vec<u8> {
+    fx::jpeg(320, 240, 9, 85)
+}
+
+#[test]
+fn scenario_media_metadata_folder_date_below_exif_and_above_file_time() {
+    let mtime = utc(2024, 3, 1, 12, 0);
+    let (_, plain) = analyze(&stripped(), "2019-07-04 Beach/IMG_0001.JPG", Some(mtime));
+    let d = date(&plain);
+    assert_eq!(d.value, CaptureTime::from_parts(2019, 7, 4, 0, 0, 0));
+    assert_eq!(d.provenance, DateProvenance::FolderName);
+    assert_eq!(d.provenance.as_str(), "folder-name");
+    assert_eq!(d.precision, DatePrecision::Day);
+    assert!(!d.undated);
+    // Never an embedded date: grouping and ranking do not see it (ADR-0069).
+    assert!(plain.fields.capture_time.is_none());
+    assert!(!d.is_embedded());
+
+    let spec = fx::ExifSpec {
+        date_time_original: Some("2018:01:02 10:00:00".into()),
+        ..Default::default()
+    };
+    let (_, exif) = analyze(
+        &fx::jpeg_with_exif(64, 48, 1, 80, &spec),
+        "2019-07-04 Beach/IMG_0002.JPG",
+        Some(mtime),
+    );
+    let d = date(&exif);
+    assert_eq!(d.provenance, DateProvenance::DateTimeOriginal);
+    assert_eq!(d.value.display(), "2018-01-02 10:00:00");
+    assert_eq!(d.precision, DatePrecision::Second);
+}
+
+#[test]
+fn scenario_media_metadata_folder_date_patterns() {
+    let mtime = utc(2024, 3, 1, 12, 0);
+    let day = ["2019-07-04", "2019_07_04 Beach", "20190704", "2019/07/04"];
+    for folder in day {
+        let (_, m) = analyze(&stripped(), &format!("{folder}/a.jpg"), Some(mtime));
+        let d = date(&m);
+        assert_eq!(
+            (d.value.ymd(), d.provenance, d.precision),
+            ((2019, 7, 4), DateProvenance::FolderName, DatePrecision::Day),
+            "{folder}"
+        );
+    }
+    for folder in ["2019-07 Italy", "2019/07"] {
+        let (_, m) = analyze(&stripped(), &format!("{folder}/a.jpg"), Some(mtime));
+        let d = date(&m);
+        assert_eq!(
+            (d.value.ymd(), d.provenance, d.precision),
+            (
+                (2019, 7, 1),
+                DateProvenance::FolderName,
+                DatePrecision::Month
+            ),
+            "{folder}"
+        );
+        assert_eq!(d.display(), "July 2019");
+    }
+    for folder in ["2019", "Backup 2019-07-04", "DSC_19871234"] {
+        let (_, m) = analyze(&stripped(), &format!("{folder}/a.jpg"), Some(mtime));
+        let d = date(&m);
+        assert_eq!(
+            (d.value.ymd(), d.provenance, d.undated),
+            ((2024, 3, 1), DateProvenance::FileMtime, true),
+            "{folder}"
+        );
+    }
+}
+
+#[test]
+fn scenario_media_metadata_nearest_folder_wins() {
+    let (_, m) = analyze(
+        &stripped(),
+        "2018/2019-07-04 Beach/raw/IMG_0001.JPG",
+        Some(utc(2024, 3, 1, 12, 0)),
+    );
+    let d = date(&m);
+    assert_eq!(d.value.ymd(), (2019, 7, 4));
+    assert_eq!(d.provenance, DateProvenance::FolderName);
+    assert_eq!(d.precision, DatePrecision::Day);
+}
+
+#[test]
+fn scenario_media_metadata_source_root_name_not_used() {
+    // A source whose own folder is named like a date: only folders inside the source count.
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tmp.path().join("2019-07-04");
+    std::fs::create_dir_all(&root).expect("mkdir");
+    let file = root.join("IMG_0001.JPG");
+    std::fs::write(&file, stripped()).expect("write");
+    let rel = RelPath::between(&root, &file).expect("inside the source");
+    let bytes = std::fs::read(&file).expect("read");
+    let p = probe_bytes(&bytes, bytes.len() as u64, Some(&file));
+    let m = extract_metadata(
+        &bytes,
+        &p,
+        Some(utc(2024, 3, 1, 12, 0)),
+        &DateContext {
+            rel_path: Some(&rel),
+            zone: &FixedZone(0),
+        },
+    );
+    let d = date(&m);
+    assert_eq!(d.provenance, DateProvenance::FileMtime);
+    assert_eq!(d.value.ymd(), (2024, 3, 1));
+    assert!(d.undated);
+}
+
+#[test]
+fn scenario_media_metadata_backup_folder_date_ignored() {
+    let (_, m) = analyze(
+        &stripped(),
+        "2019-07-04/IMG_0001.JPG",
+        Some(utc(2012, 3, 1, 12, 0)),
+    );
+    let d = date(&m);
+    assert_eq!(d.value.ymd(), (2012, 3, 1));
+    assert_eq!(d.provenance, DateProvenance::FileMtime);
+    assert!(d.undated);
+    // One day of slack: a file saved the evening before the folder's day still takes the folder date.
+    let (_, m) = analyze(
+        &stripped(),
+        "2019-07-04/IMG_0002.JPG",
+        Some(utc(2019, 7, 3, 1, 0)),
+    );
+    assert_eq!(date(&m).provenance, DateProvenance::FolderName);
+    // A month folder compares against the start of its month minus one day.
+    let (_, m) = analyze(
+        &stripped(),
+        "2019-07 Italy/IMG_0003.JPG",
+        Some(utc(2019, 6, 29, 12, 0)),
+    );
+    assert_eq!(date(&m).provenance, DateProvenance::FileMtime);
+}
+
+#[test]
+fn scenario_media_metadata_unset_camera_clock_does_not_block_folder_date() {
+    let (_, m) = analyze(
+        &stripped(),
+        "2019-07-04/IMG_0001.JPG",
+        Some(utc(1980, 1, 1, 0, 0)),
+    );
+    let d = date(&m);
+    assert_eq!(d.value.ymd(), (2019, 7, 4));
+    assert_eq!(d.provenance, DateProvenance::FolderName);
+    assert!(!d.undated);
+}
+
+/// The resolver half; the CLI JSON half is in `photosquirrel-cli`'s tests.
+#[test]
+fn scenario_media_metadata_month_folder_stays_a_month() {
+    let (_, m) = analyze(
+        &stripped(),
+        "2019-07 Italy/IMG_0001.JPG",
+        Some(utc(2024, 3, 1, 12, 0)),
+    );
+    let d = date(&m);
+    assert_eq!(d.precision, DatePrecision::Month);
+    assert_eq!(d.value, CaptureTime::from_parts(2019, 7, 1, 0, 0, 0));
+    assert_eq!(d.iso(), "2019-07");
+    assert_eq!(d.display(), "July 2019");
+    // Stored in the metadata JSON with its precision.
+    let json = serde_json::to_value(d).expect("json");
+    assert_eq!(json["precision"], "month");
+}
+
+#[test]
+fn scenario_media_metadata_file_time_in_the_local_zone() {
+    let (_, m) = analyze_at(
+        &stripped(),
+        "IMG_0001.JPG",
+        Some(utc(2019, 7, 5, 3, 30)),
+        &RuleZone::LOS_ANGELES,
+    );
+    let d = date(&m);
+    assert_eq!(d.value.display(), "2019-07-04 20:30:00");
+    assert_eq!(d.value.offset_minutes, Some(-420));
+    assert_eq!(d.provenance, DateProvenance::FileMtime);
+    assert!(d.undated);
+}
+
+#[test]
+fn scenario_media_metadata_daylight_saving_of_the_file_s_date_applies() {
+    // The rules at the file's instant apply (January: standard time), whatever today's offset is.
+    let (_, m) = analyze_at(
+        &stripped(),
+        "IMG_0001.JPG",
+        Some(utc(2019, 1, 15, 7, 30)),
+        &RuleZone::LOS_ANGELES,
+    );
+    let d = date(&m);
+    assert_eq!(d.value.display(), "2019-01-14 23:30:00");
+    assert_eq!(d.value.offset_minutes, Some(-480));
+}
+
+#[test]
+fn scenario_media_metadata_utc_video_creation_time_made_local() {
+    let spec = fx::MovieSpec {
+        creation_unix: Some(CaptureTime::from_parts(2019, 7, 5, 2, 0, 0).local_seconds),
+        make: None,
+        model: None,
+        ..fx::MovieSpec::iphone()
+    };
+    let (p, m) = analyze_at(
+        &fx::movie(&spec),
+        "IMG_0001.MOV",
+        Some(utc(2024, 3, 1, 12, 0)),
+        &RuleZone::NEW_YORK,
+    );
+    assert_eq!(p.format, Some(Format::Mov));
+    let d = date(&m);
+    assert_eq!(d.provenance, DateProvenance::Container);
+    assert_eq!(d.value.display(), "2019-07-04 22:00:00");
+    assert_eq!(d.value.offset_minutes, Some(-240));
+    assert!(!d.undated);
+    // The embedded capture time grouping reads stays as recorded.
+    assert_eq!(
+        m.fields.capture_time.map(|t| t.display()),
+        Some("2019-07-05 02:00:00".into())
+    );
+}
+
+#[test]
+fn scenario_media_metadata_exif_wall_clock_never_shifted() {
+    let plain = fx::ExifSpec {
+        date_time_original: Some("2019:07:04 23:30:00".into()),
+        ..Default::default()
+    };
+    let with_offset = fx::ExifSpec {
+        offset_time_original: Some("+09:00".into()),
+        ..plain.clone()
+    };
+    for (spec, offset) in [(plain, None), (with_offset, Some(540))] {
+        let (_, m) = analyze_at(
+            &fx::jpeg_with_exif(64, 48, 1, 80, &spec),
+            "2020-01-01/IMG_0001.JPG",
+            Some(utc(2024, 3, 1, 12, 0)),
+            &RuleZone::BERLIN,
+        );
+        let d = date(&m);
+        assert_eq!(d.provenance, DateProvenance::DateTimeOriginal);
+        assert_eq!(d.value.display(), "2019-07-04 23:30:00");
+        assert_eq!(d.value.offset_minutes, offset);
+    }
+}
+
+/// An offset the file records without a date (EXIF `OffsetTime`) makes its file time local before the zone.
+#[test]
+fn recorded_offset_beats_the_zone_for_the_file_time() {
+    let spec = fx::ExifSpec {
+        offset_time_original: Some("+09:00".into()),
+        ..Default::default()
+    };
+    let (_, m) = analyze_at(
+        &fx::jpeg_with_exif(64, 48, 1, 80, &spec),
+        "IMG_0001.JPG",
+        Some(utc(2019, 7, 4, 20, 0)),
+        &RuleZone::LOS_ANGELES,
+    );
+    let d = date(&m);
+    assert_eq!(d.provenance, DateProvenance::FileMtime);
+    assert_eq!(d.value.display(), "2019-07-05 05:00:00");
+    assert_eq!(d.value.offset_minutes, Some(540));
 }

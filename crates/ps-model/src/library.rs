@@ -140,9 +140,12 @@ pub struct ItemDetail {
     pub size: u64,
     pub format: Option<String>,
     pub dimensions: Option<(u32, u32)>,
-    /// `YYYY-MM-DD HH:MM:SS` and where the date came from ("DateTimeOriginal", "file-mtime", ...).
+    /// The capture date to its precision ("July 2019", "4 July 2019", `YYYY-MM-DD HH:MM:SS`) and where it came
+    /// from ("DateTimeOriginal", "folder name", "file modification time", ...).
     pub captured: Option<String>,
     pub capture_provenance: Option<String>,
+    /// Second, day or month (ADR-0069).
+    pub capture_precision: Option<crate::DatePrecision>,
     pub camera_make: Option<String>,
     pub camera_model: Option<String>,
     pub lens: Option<String>,

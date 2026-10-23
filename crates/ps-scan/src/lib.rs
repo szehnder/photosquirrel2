@@ -10,6 +10,7 @@
 //! - [`progress`]: atomic counters and the recent ring behind progress snapshots (ADR-0019).
 //! - [`Scanner`]: the engine API the service facade wraps (sources, runs, control, snapshots).
 //! - [`upgrade`]: perceptual-hash upgrades from the thumbnail store (ADR-0012).
+//! - [`redate`]: re-dating unchanged rows from stored facts when the date rules change (ADR-0071).
 //! - [`post`]: the post-scan stage, incremental duplicate regrouping persisted through the catalog writer.
 //!
 //! Threads, not async: one walk thread and one lane (1-16 readers) per source, bounded crossbeam queues, a
@@ -25,6 +26,7 @@ mod options;
 mod pipeline;
 pub mod post;
 pub mod progress;
+pub mod redate;
 mod report;
 mod scanner;
 pub mod source;

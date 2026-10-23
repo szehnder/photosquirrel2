@@ -513,13 +513,28 @@ impl Scanner {
 
     /// Start a scan of `sources` (all sources when empty). Refused while another run is active.
     pub fn start_scan(&self, sources: &[SourceId]) -> Result<ScanRunId> {
+        self.start_scan_with(sources, false)
+    }
+
+    /// [`Scanner::start_scan`], with `refresh_analysis` also refreshing the analysis of unchanged files without
+    /// stored class facts in this run (ADR-0071; as [`ScanOptions::refresh_analysis`] does for every run).
+    pub fn start_scan_with(
+        &self,
+        sources: &[SourceId],
+        refresh_analysis: bool,
+    ) -> Result<ScanRunId> {
         let mut slot = self.active.lock();
         self.ensure_idle(&slot)?;
         let records = self.run_sources(sources)?;
         let ids: Vec<SourceId> = records.iter().map(|r| r.id).collect();
         let run = self.catalog.writer().start_run(ids)?;
-        *slot = Some(self.spawn(run, records)?);
+        *slot = Some(self.spawn(run, records, refresh_analysis)?);
         Ok(run)
+    }
+
+    /// The zone runs make instants local with (ADR-0070): the configured one, else the machine's.
+    pub fn zone(&self) -> Arc<dyn ps_media::LocalZone> {
+        zone_of(&self.opts.lock())
     }
 
     /// Resume a paused, cancelled or interrupted run (or a completed one that left sources incomplete):
@@ -567,7 +582,7 @@ impl Scanner {
             stats: None,
         })?;
         self.catalog.writer().flush()?;
-        *slot = Some(self.spawn(run, records)?);
+        *slot = Some(self.spawn(run, records, false)?);
         Ok(run)
     }
 
@@ -610,7 +625,12 @@ impl Scanner {
         Ok(out)
     }
 
-    fn spawn(&self, run: ScanRunId, records: Vec<SourceRecord>) -> Result<Arc<ActiveRun>> {
+    fn spawn(
+        &self,
+        run: ScanRunId,
+        records: Vec<SourceRecord>,
+        refresh: bool,
+    ) -> Result<Arc<ActiveRun>> {
         let opts = self.options();
         let mut sources = Vec::with_capacity(records.len());
         for r in &records {
@@ -656,6 +676,8 @@ impl Scanner {
             retries_exhausted: AtomicU64::new(0),
             groups: self.groups.clone(),
             classifier_hash: opts.classifier.stable_hash(),
+            zone: zone_of(&opts),
+            refresh_analysis: opts.refresh_analysis || refresh,
         });
         let thread = std::thread::Builder::new()
             .name(format!("ps-scan-run-{run}"))
@@ -792,4 +814,11 @@ fn walk_err(root: &Path, e: WalkError) -> ScanError {
             source,
         },
     }
+}
+
+/// The configured zone, else the machine's (read through the OS once per call).
+fn zone_of(opts: &ScanOptions) -> Arc<dyn ps_media::LocalZone> {
+    opts.zone
+        .clone()
+        .unwrap_or_else(|| Arc::new(ps_media::date::os::OsZone))
 }

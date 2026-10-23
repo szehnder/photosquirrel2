@@ -1,9 +1,9 @@
 //! Row and command payload types of the catalog.
 
 use ps_model::{
-    CaptureTime, ClassFacts, ContentId, ContentIdKind, FileId, Format, MediaKind, Metadata,
-    PerceptualHash, PhotoClass, RelPath, RunStatus, ScanRunId, SourceId, SourceStatus, Stage,
-    StatFingerprint,
+    CaptureDate, CaptureTime, ClassFacts, ContentId, ContentIdKind, DatePrecision, DateProvenance,
+    FileId, Format, MediaKind, Metadata, PerceptualHash, PhotoClass, RelPath, RunStatus, ScanRunId,
+    SourceId, SourceStatus, Stage, StatFingerprint,
 };
 
 /// A file's natural key: its source and its path relative to the source root (ADR-0006).
@@ -74,6 +74,20 @@ pub struct Reclassification {
     pub classifier_hash: u64,
     /// A new stage (`probed` for a skipped file that is now a candidate); `None` keeps the stage.
     pub stage: Option<Stage>,
+    /// Probe facts read again by an analysis refresh (rows probed before migration 13, ADR-0071), stored with
+    /// the class; `None` keeps the stored facts.
+    pub facts: Option<ClassFacts>,
+}
+
+/// A file's capture date chosen again from its stored facts by the current date rules ([`crate::Command::Redate`],
+/// ADR-0071). Only the five date columns and `date_version` change.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Redate {
+    pub key: FileKey,
+    /// `None`: no date at all.
+    pub capture: Option<CaptureDate>,
+    /// The date-logic version the date was chosen under.
+    pub version: u8,
 }
 
 impl ProbeResult {
@@ -172,6 +186,14 @@ pub struct FileRecord {
     /// Wall-clock capture milliseconds (see [`CaptureTime`]).
     pub capture_ms: Option<i64>,
     pub capture_undated: bool,
+    /// UTC offset of the capture time in minutes, when recorded or applied (ADR-0070).
+    pub capture_offset_min: Option<i32>,
+    /// Where the capture date came from; `None` when there is none.
+    pub capture_provenance: Option<DateProvenance>,
+    /// Second, day or month (migration 17, ADR-0069).
+    pub capture_precision: DatePrecision,
+    /// The date rules the date was chosen under (migration 17, ADR-0071).
+    pub date_version: u8,
     pub camera_model: Option<String>,
     pub has_gps: bool,
     pub attempts: u32,
@@ -197,6 +219,22 @@ pub struct FileErrorRecord {
 impl FileRecord {
     pub fn media_kind(&self) -> Option<MediaKind> {
         self.format.map(Format::kind)
+    }
+
+    /// The file's resolved capture date from the catalog columns (ADR-0071: the columns are the date; the
+    /// metadata JSON describes the analysis as it was). `None` when the row has no date or no provenance.
+    pub fn capture_date(&self) -> Option<CaptureDate> {
+        let ms = self.capture_ms?;
+        Some(CaptureDate {
+            value: CaptureTime {
+                local_seconds: ms.div_euclid(1000),
+                millis: ms.rem_euclid(1000) as u16,
+                offset_minutes: self.capture_offset_min.and_then(|o| i16::try_from(o).ok()),
+            },
+            provenance: self.capture_provenance?,
+            undated: self.capture_undated,
+            precision: self.capture_precision,
+        })
     }
 }
 

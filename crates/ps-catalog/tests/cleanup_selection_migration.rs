@@ -100,7 +100,10 @@ fn migration_16_keeps_every_cleanup_row_and_widens_the_states() {
 
     // Open (migrates to the latest version), then check through a plain connection.
     let cat = Catalog::open_file(&path, Default::default()).unwrap();
-    assert_eq!(db::stored_version(&path).unwrap(), Some(16));
+    assert_eq!(
+        db::stored_version(&path).unwrap(),
+        Some(db::latest(db::CATALOG_MIGRATIONS))
+    );
     let read = cat.read();
     assert_eq!(read.cleanup_runs().unwrap().len(), 4);
     assert_eq!(read.cleanup_moves(3).unwrap().len(), 6);

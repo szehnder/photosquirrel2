@@ -84,6 +84,10 @@ pub(crate) struct RunCtx {
     pub groups: Arc<crate::post::GroupEngine>,
     /// `opts.classifier.stable_hash()`, stored with every class this run decides (ADR-0051).
     pub classifier_hash: u64,
+    /// The run's local zone (ADR-0070): `opts.zone`, else the machine's, read once per run.
+    pub zone: Arc<dyn ps_media::LocalZone>,
+    /// Refresh the analysis of unchanged files without stored class facts (ADR-0071).
+    pub refresh_analysis: bool,
 }
 
 impl RunCtx {
@@ -298,6 +302,7 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
         ctx.catalog.read(),
         &ctx.opts.classifier,
         ctx.classifier_hash,
+        ctx.refresh_analysis,
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -310,6 +315,30 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
     }
     for chunk in std::mem::take(&mut d.reclassified).chunks(UPSERT_CHUNK) {
         ctx.submit(Command::Reclassify(chunk.to_vec()));
+    }
+    // Rows dated by older date rules: dated again from stored facts, no file read (ADR-0071).
+    let stale = std::mem::take(&mut d.stale_dates);
+    if !stale.is_empty() {
+        match crate::redate::redate(
+            s.id,
+            &stale,
+            ctx.catalog.read(),
+            &*ctx.zone,
+            &ctx.ctl,
+            |cmd| ctx.submit(cmd),
+        ) {
+            Ok(r) => {
+                d.counts.redated = r.changed;
+                log::info!(
+                    "source {}: {} rows re-dated by the current date rules, {} dates changed{}",
+                    s.id,
+                    r.written,
+                    r.changed,
+                    if r.cancelled { " (cancelled)" } else { "" }
+                );
+            }
+            Err(e) => log::error!("scan run {}: re-dating source {}: {e}", ctx.run, s.id),
+        }
     }
     if !d.newly_missing.is_empty() {
         ctx.submit(Command::MarkMissing {
@@ -735,6 +764,20 @@ fn process_file(
         },
     );
     let skip = !class.is_candidate();
+    if t.refresh && (t.stage != Stage::Skipped || skip) {
+        // Analysis refresh (ADR-0071): store the facts and the class; nothing else changes. A skipped file that
+        // became a candidate is processed further below like any probed file.
+        ctx.submit(Command::Reclassify(vec![ps_catalog::Reclassification {
+            key: FileKey::new(src.id, t.path.clone()),
+            class,
+            reasons: reasons.iter().map(ToString::to_string).collect(),
+            classifier_hash: ctx.classifier_hash,
+            stage: None,
+            facts: Some(facts),
+        }]));
+        ctx.progress.file_done(idx);
+        return;
+    }
     let pr = ProbeResult {
         format: probe.format,
         class,
@@ -902,7 +945,15 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
         Content::Buffer(b) => (ps_hash::identity_from_buffer(&b), b, true),
         Content::Streamed { identity, prefix } => (identity, prefix, false),
     };
-    let metadata = ps_media::extract_metadata(&bytes, &probe, mtime);
+    let metadata = ps_media::extract_metadata(
+        &bytes,
+        &probe,
+        mtime,
+        &ps_media::DateContext {
+            rel_path: Some(&path),
+            zone: &*ctx.zone,
+        },
+    );
     let capture = metadata.capture_date.map(|d| d.value);
     let (hashes, thumb) = if probe.kind() == Some(MediaKind::Video) {
         (

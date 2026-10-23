@@ -1104,6 +1104,7 @@ impl Library {
             return Ok(None);
         };
         let meta = reader.metadata(r.id)?.unwrap_or_default();
+        let capture = r.capture_date().or(meta.capture_date);
         let decisions_available = reader.has_user_decisions()?;
         let decision = reader.user_decision(r.id)?;
         let (path, online, source) = self.path_of(&r)?;
@@ -1133,8 +1134,10 @@ impl Library {
             size: r.stat.size,
             format: r.format.map(|f| f.label().to_owned()),
             dimensions: r.width.zip(r.height),
-            captured: meta.capture_date.map(|d| d.value.display()),
-            capture_provenance: meta.capture_date.map(|d| d.provenance.as_str().to_owned()),
+            // The catalog columns are the date (ADR-0071), shown to its precision (ADR-0069).
+            captured: capture.map(|d| d.display()),
+            capture_provenance: capture.map(|d| d.provenance.label().to_owned()),
+            capture_precision: capture.map(|d| d.precision),
             camera_make: f.camera_make.clone(),
             camera_model: f.camera_model.clone(),
             lens: f.lens_model.clone(),

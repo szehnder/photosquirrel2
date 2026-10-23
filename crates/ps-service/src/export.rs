@@ -115,17 +115,26 @@ impl ScanService {
     }
 }
 
-/// A file's own resolved capture date (with provenance); `undated` when it is only the file time.
+/// A file's own resolved capture date (with provenance and precision); `undated` when it is only the file time.
+/// The catalog columns are the date (ADR-0071: a re-dated row's columns change, its metadata JSON does not); the
+/// JSON's date is used only for a row without a provenance column.
 fn embedded_of(
     rec: &ps_catalog::FileRecord,
     meta: Option<&ps_model::Metadata>,
 ) -> Option<CaptureDate> {
+    if let Some(d) = rec.capture_date() {
+        return Some(d);
+    }
+    if rec.capture_provenance.is_some() {
+        return None;
+    }
     let m = meta?;
     let d = m.capture_date.or_else(|| {
         m.fields.capture_time.map(|value| CaptureDate {
             value,
             provenance: DateProvenance::DateTimeOriginal,
             undated: false,
+            precision: ps_model::DatePrecision::Second,
         })
     })?;
     Some(CaptureDate {
@@ -208,6 +217,8 @@ impl<'a> Exports<'a> {
     /// present photo or likely photo, minus user exclusions. Insights are advisory sidecar content only.
     pub fn input(&self) -> Result<ExportInput> {
         let r = self.catalog().read();
+        // The zone for files without any catalog date, read once per plan (ADR-0070).
+        let zone = self.svc.engine().zone();
         let sources: Vec<SourceInfo> = r
             .sources()?
             .into_iter()
@@ -261,6 +272,10 @@ impl<'a> Exports<'a> {
                 .filter_map(|f| facts(*f))
                 .collect();
             let date = ps_export::date::resolve(&facts(id)?, &others, sidecar);
+            // No catalog date at all: the local day of the file time in the plan's zone (ADR-0070).
+            let capture = date
+                .capture
+                .or_else(|| Some(ps_export::layout::local_mtime(rec.stat.mtime_ns, &*zone)));
             Some(KeeperFile {
                 file: rec.id,
                 source: rec.key.source,
@@ -269,9 +284,10 @@ impl<'a> Exports<'a> {
                 mtime_ns: rec.stat.mtime_ns,
                 content: rec.identity?,
                 format: rec.format,
-                capture: date.capture,
+                capture,
                 undated: date.undated,
                 date_origin: date.origin,
+                precision: date.precision,
                 // Live Photo pairing (`ps_export::pairs`): the Apple ContentIdentifier from the metadata.
                 content_identifier: meta
                     .as_ref()

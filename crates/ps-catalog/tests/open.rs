@@ -184,14 +184,19 @@ fn scenario_catalog_old_catalog_upgraded() {
     assert!(latest_schema_version() > 1);
     cat.close().expect("close");
     // Later migrations may add columns (3: `first_seen`); the existing columns are unchanged and the new
-    // ones are NULL for old rows.
+    // ones are NULL for old rows, except migration 17's two columns with defaults (the last two: capture
+    // precision 0 = second, date version 1 = the rules before ADR-0069/0070; none of these rows has an EXIF
+    // provenance, so none is marked current).
     let width = before[0].len();
     let after = snapshot(&path);
     assert!(
-        after
-            .iter()
-            .all(|r| r[width..].iter().all(|v| *v == Value::Null)),
-        "added columns are empty for old rows"
+        after.iter().all(|r| {
+            let added = &r[width..];
+            let (nullable, defaults) = added.split_at(added.len() - 2);
+            nullable.iter().all(|v| *v == Value::Null)
+                && defaults == [Value::Integer(0), Value::Integer(1)]
+        }),
+        "added columns are empty (or at their defaults) for old rows"
     );
     let after: Vec<Vec<Value>> = after
         .into_iter()

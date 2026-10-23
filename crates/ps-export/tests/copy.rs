@@ -480,6 +480,7 @@ fn kill_input(dir: &Path) -> ExportInput {
                 capture: day(2021, 9, 9),
                 undated: false,
                 date_origin: ps_export::DateOrigin::OWN_EXIF,
+                precision: ps_model::DatePrecision::Second,
                 content_identifier: None,
                 library_name: None,
                 read_from: None,

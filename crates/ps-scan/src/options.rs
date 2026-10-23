@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ps_media::LocalZone;
 use ps_model::{ClassifierSettings, DeviceClass};
 
 use crate::fs::SourceFs;
@@ -43,6 +44,13 @@ pub struct ScanOptions {
     /// At open, mark runs left `running` as `interrupted` (crash recovery, ADR-0008). Only the catalog's owner
     /// (the process holding its exclusive lock) ever does; an observer never does, whatever this says.
     pub recover_interrupted: bool,
+    /// The zone that makes file times and UTC container dates local (ADR-0070). `None`: the machine's zone
+    /// ([`ps_media::date::os::OsZone`]), read once per run. Tests inject fixed or daylight-saving rules.
+    pub zone: Option<Arc<dyn LocalZone>>,
+    /// Re-read, read-only, the probe data (at most [`ps_media::PROBE_LIMIT`] bytes) of unchanged files analysed
+    /// before classification facts were stored, and re-classify them (ADR-0071). Off by default: it reads up to
+    /// 256 KB per such file.
+    pub refresh_analysis: bool,
 }
 
 impl Default for ScanOptions {
@@ -60,6 +68,8 @@ impl Default for ScanOptions {
             chunk_delay: None,
             fs: SourceFs::new(),
             recover_interrupted: true,
+            zone: None,
+            refresh_analysis: false,
         }
     }
 }
@@ -77,6 +87,8 @@ impl std::fmt::Debug for ScanOptions {
             .field("read_delay", &self.read_delay)
             .field("chunk_delay", &self.chunk_delay)
             .field("fs", &self.fs)
+            .field("zone", &self.zone.is_some())
+            .field("refresh_analysis", &self.refresh_analysis)
             .finish_non_exhaustive()
     }
 }

@@ -1,10 +1,12 @@
-//! Library layout (ADR-0022): `<YYYY>/<YYYY-MM-DD>/<name>`, `Undated/<YYYY>/<YYYY-MM-DD>/<name>` for files dated
-//! only by their modification time, and ` (n)` collision suffixes.
+//! Library layout (ADR-0022): `<YYYY>/<YYYY-MM-DD>/<name>`, `<YYYY>/<YYYY-MM>/<name>` for month-precision dates
+//! (a `2019-07 Italy` folder, ADR-0069), `Undated/<YYYY>/<YYYY-MM-DD>/<name>` for files dated only by their
+//! modification time (its local day, ADR-0070), and ` (n)` collision suffixes.
 //!
 //! Names are bytes (source names need not be Unicode). Collision keys are ASCII-case-folded so that two
 //! names differing only in case never land in one folder of a case-insensitive library volume.
 
-use ps_model::{CaptureTime, RelPath, civil_from_days};
+use ps_media::LocalZone;
+use ps_model::{CaptureTime, DatePrecision, RelPath, civil_from_days};
 
 use crate::input::KeeperFile;
 
@@ -19,14 +21,37 @@ fn day_folder((y, m, d): (i32, u8, u8)) -> String {
     format!("{y:04}/{y:04}-{m:02}-{d:02}")
 }
 
-/// The day of a modification time (UTC; a file time carries no camera wall-clock).
+/// The UTC day of a modification time: the last resort for an input without any capture date (the service
+/// gives such files their local day, [`local_mtime`]).
 pub fn mtime_ymd(mtime_ns: i64) -> (i32, u8, u8) {
     civil_from_days(mtime_ns.div_euclid(1_000_000_000).div_euclid(86_400))
 }
 
-/// The library folder of a file, from its capture date or (undated) its modification time.
-pub fn date_folder(capture: Option<&CaptureTime>, undated: bool, mtime_ns: i64) -> String {
+/// The wall clock of a modification time in `zone` at that instant (ADR-0070), for files the catalog has no
+/// date for at all.
+pub fn local_mtime(mtime_ns: i64, zone: &dyn LocalZone) -> CaptureTime {
+    let secs = mtime_ns.div_euclid(1_000_000_000);
+    let offset = zone.offset_at(secs);
+    CaptureTime {
+        local_seconds: secs + i64::from(offset) * 60,
+        millis: 0,
+        offset_minutes: i16::try_from(offset).ok(),
+    }
+}
+
+/// The library folder of a file, from its filing date and precision or (undated without a date) its
+/// modification time.
+pub fn date_folder(
+    capture: Option<&CaptureTime>,
+    undated: bool,
+    precision: DatePrecision,
+    mtime_ns: i64,
+) -> String {
     match capture {
+        Some(c) if !undated && precision == DatePrecision::Month => {
+            let (y, m, _) = c.ymd();
+            format!("{y:04}/{y:04}-{m:02}")
+        }
         Some(c) if !undated => day_folder(c.ymd()),
         Some(c) => format!("{UNDATED_DIR}/{}", day_folder(c.ymd())),
         None => format!("{UNDATED_DIR}/{}", day_folder(mtime_ymd(mtime_ns))),
@@ -34,7 +59,7 @@ pub fn date_folder(capture: Option<&CaptureTime>, undated: bool, mtime_ns: i64) 
 }
 
 pub fn folder_of(f: &KeeperFile) -> String {
-    date_folder(f.capture.as_ref(), f.undated, f.mtime_ns)
+    date_folder(f.capture.as_ref(), f.undated, f.precision, f.mtime_ns)
 }
 
 /// Split a file name into stem and extension (with its dot). A leading dot is part of the stem.
@@ -121,11 +146,25 @@ mod tests {
     #[test]
     fn folders_and_names() {
         let c = CaptureTime::from_parts(2011, 8, 14, 10, 0, 0);
-        assert_eq!(date_folder(Some(&c), false, 0), "2011/2011-08-14");
-        assert_eq!(date_folder(Some(&c), true, 0), "Undated/2011/2011-08-14");
+        let s = DatePrecision::Second;
+        assert_eq!(date_folder(Some(&c), false, s, 0), "2011/2011-08-14");
+        assert_eq!(date_folder(Some(&c), true, s, 0), "Undated/2011/2011-08-14");
+        assert_eq!(
+            date_folder(Some(&c), false, DatePrecision::Day, 0),
+            "2011/2011-08-14"
+        );
+        assert_eq!(
+            date_folder(Some(&c), false, DatePrecision::Month, 0),
+            "2011/2011-08"
+        );
         // 2009-02-03T12:00:00Z
         let ns = (ps_model::days_from_civil(2009, 2, 3) * 86_400 + 43_200) * 1_000_000_000;
-        assert_eq!(date_folder(None, true, ns), "Undated/2009/2009-02-03");
+        assert_eq!(date_folder(None, true, s, ns), "Undated/2009/2009-02-03");
+        // 2019-07-05T03:30Z is the evening of 4 July in Los Angeles.
+        let ns = (ps_model::days_from_civil(2019, 7, 5) * 86_400 + 3 * 3600 + 1800) * 1_000_000_000;
+        let t = local_mtime(ns, &ps_media::RuleZone::LOS_ANGELES);
+        assert_eq!(t.display(), "2019-07-04 20:30:00");
+        assert_eq!(t.offset_minutes, Some(-420));
         assert_eq!(
             split_name(b"IMG_0001.JPG"),
             (&b"IMG_0001"[..], &b".JPG"[..])

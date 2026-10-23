@@ -262,6 +262,7 @@ fn class_facts_are_stored_and_reclassify_keeps_other_results() {
         reasons: vec!["no camera metadata".into()],
         classifier_hash: 7,
         stage: Some(Stage::Probed),
+        facts: None,
     }]))
     .expect("w");
     w.flush().expect("flush");

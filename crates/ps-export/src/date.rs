@@ -10,13 +10,18 @@
 //! 3. a date in a file name (`IMG_20230626_143012.jpg`, `2023-06-26 14.30.12.jpg`), keeper first;
 //! 4. an XMP sidecar next to a copy (`exif:DateTimeOriginal`, `photoshop:DateCreated`, `xmp:CreateDate`),
 //!    keeper first; sidecars are read only when nothing above gave a date, so planning stays cheap;
-//! 5. the keeper's modification time, filed under `Undated/`.
+//! 5. a date in the name of a folder holding a copy (the catalog's `folder-name` date, ADR-0069), keeper
+//!    first, with its precision (a month folder files under `<YYYY>/<YYYY-MM>/`);
+//! 6. the keeper's modification time (its local day, ADR-0070), filed under `Undated/`.
 //!
 //! Every planned file records where its date came from ([`DateOrigin`]); the plan, the CLI and the manifest
 //! show it.
 
-use ps_model::{CaptureDate, CaptureTime, DateProvenance, FileId};
+use ps_model::{CaptureDate, CaptureTime, DatePrecision, DateProvenance, FileId};
 use serde::Serialize;
+
+/// The file-name and date-text parsers live with the other date rules in `ps-media` (re-exported here).
+pub use ps_media::date::{date_in_name, parse_date_text};
 
 /// Where a filing date came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -28,6 +33,8 @@ pub enum DateSource {
     FileName,
     /// An XMP sidecar next to the file.
     Sidecar,
+    /// A date in the name of a folder holding the file (ADR-0069).
+    FolderName,
     /// Only the modification time: the file goes under `Undated/`.
     FileMtime,
 }
@@ -59,6 +66,7 @@ impl DateOrigin {
             DateSource::Embedded { provenance } => provenance.as_str().to_string(),
             DateSource::FileName => "file name".into(),
             DateSource::Sidecar => "XMP sidecar".into(),
+            DateSource::FolderName => "folder name".into(),
             DateSource::FileMtime => return "file modification time (undated)".into(),
         };
         if self.copy.is_some() {
@@ -79,15 +87,21 @@ pub struct DateFacts<'a> {
     pub file: FileId,
     /// File name (bytes; need not be Unicode).
     pub name: &'a [u8],
-    /// The resolved capture date from the metadata, `undated` when it is only the file time.
+    /// The catalog's resolved capture date (embedded, folder name, or `undated` when it is only the file
+    /// time).
     pub embedded: Option<CaptureDate>,
 }
 
 impl DateFacts<'_> {
     fn real_embedded(&self) -> Option<(DateProvenance, CaptureTime)> {
         self.embedded
-            .filter(|c| !c.undated && c.provenance != DateProvenance::FileMtime)
+            .filter(|c| !c.undated && c.is_embedded())
             .map(|c| (c.provenance, c.value))
+    }
+
+    fn folder_date(&self) -> Option<CaptureDate> {
+        self.embedded
+            .filter(|c| c.provenance == DateProvenance::FolderName)
     }
 }
 
@@ -99,6 +113,8 @@ pub struct FilingDate {
     pub capture: Option<CaptureTime>,
     pub undated: bool,
     pub origin: DateOrigin,
+    /// Second, day or month: a month-precision date files under `<YYYY>/<YYYY-MM>/` (ADR-0069).
+    pub precision: DatePrecision,
 }
 
 /// The best filing date for `keeper` given the other copies of its group (module docs). `sidecar` reads a
@@ -112,6 +128,7 @@ pub fn resolve(
         capture: Some(capture),
         undated: false,
         origin: DateOrigin { source, copy },
+        precision: DatePrecision::Second,
     };
     if let Some((provenance, t)) = keeper.real_embedded() {
         return dated(t, DateSource::Embedded { provenance }, None);
@@ -132,159 +149,28 @@ pub fn resolve(
     {
         return dated(t, DateSource::FileName, copy_of(f));
     }
-    if let Some((t, f)) = order
-        .into_iter()
-        .find_map(|o| sidecar(o).map(|t| (t, o.file)))
-    {
+    if let Some((t, f)) = order.clone().find_map(|o| sidecar(o).map(|t| (t, o.file))) {
         return dated(t, DateSource::Sidecar, copy_of(f));
     }
+    if let Some((d, f)) = order
+        .into_iter()
+        .find_map(|o| o.folder_date().map(|d| (d, o.file)))
+    {
+        return FilingDate {
+            precision: d.precision,
+            ..dated(d.value, DateSource::FolderName, copy_of(f))
+        };
+    }
     FilingDate {
-        capture: keeper.embedded.map(|c| c.value),
+        // The keeper's own file time (its local day, from the catalog); `None` lets the layout use `mtime_ns`.
+        capture: keeper
+            .embedded
+            .filter(|c| c.provenance == DateProvenance::FileMtime)
+            .map(|c| c.value),
         undated: true,
         origin: DateOrigin::MTIME,
+        precision: DatePrecision::Second,
     }
-}
-
-fn days_in_month(y: i32, m: u8) -> u8 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-fn num(b: &[u8], at: usize, len: usize) -> Option<u32> {
-    let s = b.get(at..at + len)?;
-    s.iter()
-        .all(u8::is_ascii_digit)
-        .then(|| s.iter().fold(0u32, |acc, d| acc * 10 + u32::from(d - b'0')))
-}
-
-fn digit_at(b: &[u8], i: usize) -> bool {
-    b.get(i).is_some_and(u8::is_ascii_digit)
-}
-
-/// `HH MM SS` at `at` with an optional separator from `seps` used consistently; returns seconds of day and
-/// the end offset.
-fn time_at(b: &[u8], at: usize, seps: &[u8]) -> Option<(u32, usize)> {
-    let h = num(b, at, 2)?;
-    let (sep, mut i) = match b.get(at + 2) {
-        Some(c) if seps.contains(c) => (Some(*c), at + 3),
-        _ => (None, at + 2),
-    };
-    let mi = num(b, i, 2)?;
-    i += 2;
-    if let Some(s) = sep {
-        if b.get(i) != Some(&s) {
-            return None;
-        }
-        i += 1;
-    }
-    let s = num(b, i, 2)?;
-    i += 2;
-    (h < 24 && mi < 60 && s < 60).then_some((h * 3600 + mi * 60 + s, i))
-}
-
-/// A calendar date (and time, when it follows) in a file name: `YYYYMMDD`, `YYYY-MM-DD`, `YYYY_MM_DD` or
-/// `YYYY.MM.DD`, optionally followed by `_HHMMSS`, `-HH-MM-SS`, ` HH.MM.SS`, `THH:MM:SS`. Compact dates must
-/// lie in 1990-2099 (to skip counters like `DSC_19871234`); separated dates in 1900-2099. Digits may not touch
-/// the date on either side, except a compact time (`IMG_20230626_143012345`, milliseconds).
-pub fn date_in_name(name: &[u8]) -> Option<CaptureTime> {
-    let stem = match name.iter().rposition(|b| *b == b'.') {
-        Some(i) if i > 0 => &name[..i],
-        _ => name,
-    };
-    (0..stem.len()).find_map(|i| {
-        if i > 0 && digit_at(stem, i - 1) {
-            return None;
-        }
-        date_at(stem, i)
-    })
-}
-
-fn date_at(b: &[u8], i: usize) -> Option<CaptureTime> {
-    let y = num(b, i, 4)? as i32;
-    let sep = b.get(i + 4).copied().filter(|c| b"-_.".contains(c));
-    let mut j = i + 4 + usize::from(sep.is_some());
-    let m = num(b, j, 2)? as u8;
-    j += 2;
-    if let Some(s) = sep {
-        if b.get(j) != Some(&s) {
-            return None;
-        }
-        j += 1;
-    }
-    let d = num(b, j, 2)? as u8;
-    j += 2;
-    let years = if sep.is_some() {
-        1900..=2099
-    } else {
-        1990..=2099
-    };
-    if !years.contains(&y) || m == 0 || m > 12 || d == 0 || d > days_in_month(y, m) {
-        return None;
-    }
-    // Optional time: after a separator, or directly after a compact date.
-    let time = match b.get(j) {
-        Some(c) if b"_- T".contains(c) => time_at(b, j + 1, b"-.:"),
-        Some(c) if c.is_ascii_digit() && sep.is_none() => time_at(b, j, b""),
-        _ => None,
-    };
-    let secs = match time {
-        // Milliseconds may follow a compact time; any other digit run makes it a counter, not a time.
-        Some((secs, _)) => secs,
-        None if digit_at(b, j) => return None,
-        None => 0,
-    };
-    let base = CaptureTime::from_parts(y, m, d, 0, 0, 0);
-    Some(CaptureTime {
-        local_seconds: base.local_seconds + i64::from(secs),
-        ..base
-    })
-}
-
-/// `YYYY-MM-DD[THH:MM[:SS]]` or `YYYY:MM:DD HH:MM:SS` text (XMP and EXIF date values). Zone suffixes are
-/// ignored: the wall clock is what the library files by.
-pub fn parse_date_text(s: &str) -> Option<CaptureTime> {
-    let b = s.trim().as_bytes();
-    let y = num(b, 0, 4)? as i32;
-    let sep = *b.get(4)?;
-    if sep != b'-' && sep != b':' {
-        return None;
-    }
-    let m = num(b, 5, 2)? as u8;
-    if b.get(7) != Some(&sep) {
-        return None;
-    }
-    let d = num(b, 8, 2)? as u8;
-    if !(1800..=2199).contains(&y) || m == 0 || m > 12 || d == 0 || d > days_in_month(y, m) {
-        return None;
-    }
-    let mut secs = 0u32;
-    if matches!(b.get(10), Some(b'T' | b' ')) {
-        let h = num(b, 11, 2)?;
-        let mi = if b.get(13) == Some(&b':') {
-            num(b, 14, 2)?
-        } else {
-            return None;
-        };
-        let sec = if b.get(16) == Some(&b':') {
-            num(b, 17, 2)?
-        } else {
-            0
-        };
-        if h >= 24 || mi >= 60 || sec >= 60 {
-            return None;
-        }
-        secs = h * 3600 + mi * 60 + sec;
-    }
-    let base = CaptureTime::from_parts(y, m, d, 0, 0, 0);
-    Some(CaptureTime {
-        local_seconds: base.local_seconds + i64::from(secs),
-        ..base
-    })
 }
 
 /// The capture date recorded in an XMP sidecar: `exif:DateTimeOriginal`, else `photoshop:DateCreated`, else
@@ -334,37 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn dates_in_file_names() {
-        let cases: &[(&str, Option<CaptureTime>)] = &[
-            ("IMG_20230626_143012.jpg", Some(t(2023, 6, 26, 14, 30, 12))),
-            (
-                "PXL_20230626_143012345.jpg",
-                Some(t(2023, 6, 26, 14, 30, 12)),
-            ),
-            ("VID_20230626_143012.mp4", Some(t(2023, 6, 26, 14, 30, 12))),
-            ("IMG-20230626-WA0001.jpg", Some(t(2023, 6, 26, 0, 0, 0))),
-            ("2023-06-26 14.30.12.jpg", Some(t(2023, 6, 26, 14, 30, 12))),
-            (
-                "Screenshot_2023-06-26-14-30-12.png",
-                Some(t(2023, 6, 26, 14, 30, 12)),
-            ),
-            ("1984-07-04 picnic.jpg", Some(t(1984, 7, 4, 0, 0, 0))),
-            ("20230626143012.jpg", Some(t(2023, 6, 26, 14, 30, 12))),
-            ("IMG_0042.JPG", None),
-            ("DSC01234.JPG", None),
-            ("P1020345.JPG", None),
-            ("IMG_20230631_120000.jpg", None),
-            ("19871234.jpg", None),
-            ("photo_120230626.jpg", None),
-            ("IMG_20230626123.jpg", None),
-            ("vacation.20230626", None),
-        ];
-        for (name, want) in cases {
-            assert_eq!(date_in_name(name.as_bytes()), *want, "{name}");
-        }
-    }
-
-    #[test]
     fn sidecar_dates() {
         let attr = br#"<x:xmpmeta><rdf:RDF><rdf:Description xmp:CreateDate="2020-01-02T03:04:05"
             exif:DateTimeOriginal="2019-12-31T23:59:58+01:00"/></rdf:RDF></x:xmpmeta>"#;
@@ -391,6 +246,11 @@ mod tests {
                 value,
                 provenance,
                 undated: provenance == DateProvenance::FileMtime,
+                precision: if provenance == DateProvenance::FolderName {
+                    DatePrecision::Day
+                } else {
+                    DatePrecision::Second
+                },
             }),
         }
     }

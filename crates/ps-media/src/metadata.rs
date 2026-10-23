@@ -6,13 +6,11 @@ use std::time::SystemTime;
 
 use nom_exif::{EntryValue, ExifIter, IfdKind, MediaParser, MediaSource, TagOrCode};
 use ps_model::{
-    CaptureDate, CaptureTime, DateProvenance, Format, GpsPosition, MediaKind, MediaMetadata,
-    Metadata, ProbeRecord, URational,
+    CaptureTime, Format, GpsPosition, MediaKind, MediaMetadata, Metadata, ProbeRecord, URational,
 };
 
-use crate::util::{
-    capture_time_from_unix, contain, parse_exif_datetime, parse_offset, parse_subsec,
-};
+use crate::date::{DateContext, EmbeddedDates, resolve_capture_date};
+use crate::util::{contain, parse_exif_datetime, parse_offset, parse_subsec};
 
 /// Software names that mark an image as edited (case-insensitive substring match).
 const EDITORS: &[&str] = &[
@@ -60,9 +58,15 @@ pub fn is_editing_software(software: &str) -> bool {
 }
 
 /// Extract all metadata from the full file `bytes`. `probe` is the probe record for the same file;
-/// `mtime` is the file modification time (the last capture-date fallback). Never fails: problems become
-/// warnings and the fields stay empty.
-pub fn extract_metadata(bytes: &[u8], probe: &ProbeRecord, mtime: Option<SystemTime>) -> Metadata {
+/// `mtime` is the file modification time (the last capture-date fallback); `dates` gives the file's path
+/// inside its source (folder-name dates) and the zone that makes instants local ([`crate::date`]). Never
+/// fails: problems become warnings and the fields stay empty.
+pub fn extract_metadata(
+    bytes: &[u8],
+    probe: &ProbeRecord,
+    mtime: Option<SystemTime>,
+    dates: &DateContext<'_>,
+) -> Metadata {
     let mut m = Metadata::default();
     m.fields.width = probe.stored.map(|d| d.width);
     m.fields.height = probe.stored.map(|d| d.height);
@@ -175,21 +179,20 @@ pub fn extract_metadata(bytes: &[u8], probe: &ProbeRecord, mtime: Option<SystemT
         None => {}
     }
 
-    // Capture date resolution: DateTimeOriginal, CreateDate, container, file mtime (undated).
-    m.fields.capture_time = exif_dates.original.or(exif_dates.create).or(container_date);
-    m.capture_date = if let Some(v) = exif_dates.original {
-        Some(dated(v, DateProvenance::DateTimeOriginal))
-    } else if let Some(v) = exif_dates.create {
-        Some(dated(v, DateProvenance::CreateDate))
-    } else if let Some(v) = container_date {
-        Some(dated(v, DateProvenance::Container))
-    } else {
-        mtime.and_then(unix_secs).map(|s| CaptureDate {
-            value: capture_time_from_unix(s),
-            provenance: DateProvenance::FileMtime,
-            undated: true,
-        })
+    // Capture date resolution (crate::date): DateTimeOriginal, CreateDate, container, folder name, file mtime.
+    let embedded = EmbeddedDates {
+        original: exif_dates.original,
+        create: exif_dates.create,
+        container: container_date,
+        recorded_offset: crate::date::recorded_offset(&m.fields.all_tags),
     };
+    m.fields.capture_time = embedded.capture_time();
+    m.capture_date = resolve_capture_date(
+        &embedded,
+        dates.rel_path,
+        mtime.and_then(unix_secs),
+        dates.zone,
+    );
 
     let f = &m.fields;
     let full_camera =
@@ -200,19 +203,14 @@ pub fn extract_metadata(bytes: &[u8], probe: &ProbeRecord, mtime: Option<SystemT
     m
 }
 
-fn dated(value: CaptureTime, provenance: DateProvenance) -> CaptureDate {
-    CaptureDate {
-        value,
-        provenance,
-        undated: false,
-    }
-}
-
-fn unix_secs(t: SystemTime) -> Option<i64> {
-    match t.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(d) => i64::try_from(d.as_secs()).ok(),
-        Err(e) => i64::try_from(e.duration().as_secs()).ok().map(|s| -s),
-    }
+/// Seconds since the epoch, rounded down (so a file time before 1970 lands on the second it falls in, like the
+/// catalog's `mtime_ns`).
+pub fn unix_secs(t: SystemTime) -> Option<i64> {
+    let ns: i128 = match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => i128::try_from(d.as_nanos()).ok()?,
+        Err(e) => -i128::try_from(e.duration().as_nanos()).ok()?,
+    };
+    i64::try_from(ns.div_euclid(1_000_000_000)).ok()
 }
 
 fn push_tag(m: &mut MediaMetadata, group: &str, name: &str, value: Option<String>) {

@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use ps_model::{ContentId, FileId, LedgerEntry, LedgerKind, LedgerState, RelPath, SourceId};
+use ps_model::{
+    ContentId, DatePrecision, FileId, LedgerEntry, LedgerKind, LedgerState, RelPath, SourceId,
+};
 use serde::Serialize;
 
 use crate::date::{DateOrigin, DateSource};
@@ -47,6 +49,8 @@ pub struct PlannedFile {
     pub action: PlannedAction,
     /// Where the date of the target folder came from (ADR-0043).
     pub date_origin: DateOrigin,
+    /// The precision of that date (a month folder for `month`, ADR-0069).
+    pub date_precision: DatePrecision,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -124,6 +128,30 @@ pub struct PlanTotals {
     pub modified: u64,
     /// Planned files by where their filing date came from.
     pub dates: DateTotals,
+    /// Already exported copies whose library folder differs from the one today's date rules choose: filed
+    /// under earlier date rules, left where they are (ADR-0071). Informational.
+    pub filed_under_earlier_rules: u64,
+}
+
+/// Something the user should know before confirming the plan; the export can still run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PlanWarning {
+    /// The library holds a PhotoSquirrel manifest but this catalog has no ledger rows for it: another catalog
+    /// wrote it, so files already in it may be copied again into different folders (ADR-0071). Nothing is
+    /// ever overwritten (ADR-0038).
+    OtherCatalogLibrary,
+}
+
+impl std::fmt::Display for PlanWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlanWarning::OtherCatalogLibrary => f.write_str(
+                "this library was written by another catalog: files already in it may be copied again into \
+                 different folders (nothing in it is overwritten)",
+            ),
+        }
+    }
 }
 
 /// Planned files by filing-date origin (ADR-0043).
@@ -135,6 +163,8 @@ pub struct DateTotals {
     pub other_copy: u64,
     pub file_name: u64,
     pub sidecar: u64,
+    /// A date in a folder name (ADR-0069).
+    pub folder_name: u64,
     /// Only the modification time: under `Undated/`.
     pub undated: u64,
 }
@@ -147,6 +177,7 @@ impl DateTotals {
             (DateSource::Embedded { .. }, Some(_)) => &mut self.other_copy,
             (DateSource::FileName, _) => &mut self.file_name,
             (DateSource::Sidecar, _) => &mut self.sidecar,
+            (DateSource::FolderName, _) => &mut self.folder_name,
         };
         *slot += 1;
     }
@@ -161,6 +192,7 @@ impl DateTotals {
             ),
             (self.file_name, "dated by their file name"),
             (self.sidecar, "dated by an XMP sidecar"),
+            (self.folder_name, "dated by their folder name"),
             (self.undated, "undated (file time only, under Undated/)"),
         ]
         .iter()
@@ -210,6 +242,8 @@ pub struct Plan {
     pub totals: PlanTotals,
     pub free_bytes: Option<u64>,
     pub required_bytes: u64,
+    /// Warnings shown with the plan (ADR-0071).
+    pub warnings: Vec<PlanWarning>,
 }
 
 impl Plan {
@@ -393,7 +427,17 @@ pub fn plan(
         totals: PlanTotals::default(),
         free_bytes: None,
         required_bytes: 0,
+        warnings: Vec::new(),
     };
+    // A manifest without any ledger row of ours: another catalog wrote this library (one stat, no read).
+    if ledger.is_empty()
+        && matches!(
+            probe.existing(&crate::manifest::Manifest::rel_path())?,
+            Existing::File { .. }
+        )
+    {
+        out.warnings.push(PlanWarning::OtherCatalogLibrary);
+    }
 
     for units in groups {
         let all: Vec<(usize, &KeeperFile)> = units
@@ -470,6 +514,16 @@ pub fn plan(
                 None => todo.push((*u, *f)),
             }
         }
+        // Copies exported under earlier date rules stay where they are (ADR-0071); count them.
+        let today = folder_of(all[0].1);
+        out.totals.filed_under_earlier_rules += already
+            .iter()
+            .filter(|a| {
+                a.library_rel_path
+                    .parent()
+                    .is_none_or(|p| p.as_bytes() != today.as_bytes())
+            })
+            .count() as u64;
         let contents: Vec<ContentId> = all.iter().map(|(_, f)| f.content).collect();
         let kind = if units.len() > 1 {
             BundleKind::LivePhoto
@@ -523,7 +577,12 @@ pub fn plan(
             continue;
         }
 
-        let folder = folder_of(all[0].1);
+        // A bundle that gains a file completes next to its already exported primary (ADR-0071), whatever
+        // folder today's date rules would choose.
+        let folder = already
+            .first()
+            .and_then(|a| a.library_rel_path.parent())
+            .map_or(today, |p| p.display().into_owned());
         let sidecar_stem = split_name(todo[0].1.name()).0.to_vec();
         let mut chosen = None;
         'suffix: for n in 1..=MAX_SUFFIX {
@@ -603,6 +662,7 @@ pub fn plan(
                 content: f.content,
                 action,
                 date_origin: f.date_origin,
+                date_precision: f.precision,
             });
             out.totals.dates.add(f.date_origin);
         }
