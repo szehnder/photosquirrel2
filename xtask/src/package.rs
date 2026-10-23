@@ -2102,12 +2102,18 @@ mod tests {
             ("windows", Some(list)),
         ]);
         assert!(!ok, "a differing list passed: {text}");
-        // Linux and Windows lack the macOS-only component; the union is still written for the error.
+        // macOS lists a component Linux and Windows lack; each platform says which side it is on, and the union is
+        // still written for the error.
         assert!(
-            text.contains("linux") && text.contains("windows") && text.contains("other-lgpl 1.0.0"),
+            text.contains("  + other-lgpl 1.0.0 (not listed by linux, windows)"),
             "{text}"
         );
-        assert!(!text.contains("error: the macos"), "{text}");
+        assert_eq!(
+            text.matches("  - other-lgpl 1.0.0 (listed by macos)")
+                .count(),
+            2,
+            "{text}"
+        );
         assert_eq!(
             fs::read_to_string(dir.join("lgpl-sources.txt")).expect("merged"),
             "other-lgpl 1.0.0\nrawler 0.7.1\n"
@@ -2122,6 +2128,46 @@ mod tests {
         assert!(!ok, "a missing list passed: {text}");
         assert!(text.contains("macos") && text.contains("missing"), "{text}");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Only Windows lists an extra component: Windows is named as listing what the others do not, and Linux and
+    /// macOS as lacking it, listed by Windows alone; a component every platform lists is never reported.
+    #[cfg(unix)]
+    #[test]
+    fn lgpl_merge_names_the_platform_with_an_extra_component() {
+        let list = "rawler 0.7.1\n";
+        let (ok, text, dir) = merge_lists(&[
+            ("linux", Some(list)),
+            ("macos", Some(list)),
+            ("windows", Some("rawler 0.7.1\r\nwin-only 2.0.0\r\n")),
+        ]);
+        fs::remove_dir_all(&dir).ok();
+        assert!(!ok, "{text}");
+        let section = |os: &str| -> String {
+            let head = format!("error: the {os} LGPL source list differs");
+            text.split("error: ")
+                .map(|s| format!("error: {s}"))
+                .find(|s| s.starts_with(&head))
+                .unwrap_or_default()
+        };
+        let windows = section("windows");
+        assert!(
+            windows.contains("  + win-only 2.0.0 (not listed by linux, macos)"),
+            "{text}"
+        );
+        assert!(!windows.contains("  - "), "{text}");
+        for os in ["linux", "macos"] {
+            let s = section(os);
+            assert!(
+                s.contains("  - win-only 2.0.0 (listed by windows)"),
+                "{os}: {text}"
+            );
+            assert!(
+                !s.contains("  + "),
+                "{os} is not the platform with the extra: {text}"
+            );
+        }
+        assert!(!text.contains("rawler 0.7.1 ("), "{text}");
     }
 
     fn about_report(entries: &[(&str, &str, &[(&str, Option<&str>)])]) -> serde_json::Value {
