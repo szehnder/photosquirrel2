@@ -1,5 +1,6 @@
 //! `cli` interrupt scenarios (headless-cli task 2.3), in their own test binary so no other scan competes for the
-//! cores while the 1 s exit bound is measured. The two tests run one at a time.
+//! cores while the 1 s exit bound is measured. The tests run one at a time; the one asserting the 1 s bound is a
+//! timing test, run alone by `cargo xtask timing` (ADR-0076).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
 
@@ -50,8 +51,9 @@ fn medium_or_small() -> PathBuf {
 }
 
 /// Start a scan of the medium corpus (small when absent), interrupt it with SIGINT once files are being
-/// processed; returns the data folder, run id and files processed before the interrupt.
-fn interrupted_scan() -> (tempfile::TempDir, i64, u64) {
+/// processed; returns the data folder, run id, files processed before the interrupt and the time from the interrupt
+/// to the exit.
+fn interrupted_scan() -> (tempfile::TempDir, i64, u64, Duration) {
     let data = tempfile::tempdir().unwrap();
     let root = medium_or_small();
     for d in ["drive-a", "drive-b", "drive-c"] {
@@ -84,7 +86,6 @@ fn interrupted_scan() -> (tempfile::TempDir, i64, u64) {
     let status = child.wait().unwrap();
     let took = t.elapsed();
     assert_eq!(status.code(), Some(130));
-    assert!(took < Duration::from_secs(1), "exited after {took:?}");
     let summary: Value = serde_json::from_str(rest.last().unwrap()).unwrap();
     assert_eq!(summary["type"], "summary");
     assert_eq!(summary["data"]["status"], "cancelled");
@@ -92,15 +93,19 @@ fn interrupted_scan() -> (tempfile::TempDir, i64, u64) {
     let first = summary["data"]["processed"].as_u64().unwrap();
     let st = json(&ok(data.path(), &["--json", "status"]));
     assert_eq!(st["data"]["runs"][0]["status"], "cancelled");
-    (data, run, first)
+    (data, run, first, took)
 }
 
 #[test]
+// A wall-clock bound (exit within 1 s): run alone, after the other tests, by `cargo xtask timing` (ADR-0076).
+#[ignore = "timing"]
 fn scenario_cli_ctrl_c_cancels_scan() {
     let _one = ONE_AT_A_TIME
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    interrupted_scan();
+    let (_data, _run, _first, took) = interrupted_scan();
+    println!("exit after the interrupt: {took:?}");
+    assert!(took < Duration::from_secs(1), "exited after {took:?}");
 }
 
 #[test]
@@ -108,7 +113,7 @@ fn scenario_cli_resume_an_interrupted_run() {
     let _one = ONE_AT_A_TIME
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (data, run, first) = interrupted_scan();
+    let (data, run, first, _) = interrupted_scan();
     let o = ok(data.path(), &["--json", "scan", "--resume"]);
     let s = String::from_utf8_lossy(&o.stdout);
     let last: Value = serde_json::from_str(s.lines().last().unwrap()).unwrap();

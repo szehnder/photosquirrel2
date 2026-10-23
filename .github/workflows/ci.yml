@@ -116,3 +116,9 @@ jobs:
       - run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service
         env:
           PHOTOSQUIRREL_TEST_SCALE: reduced
+      # The engine crates' wall-clock budget tests (`ignore = "timing"`, ADR-0075 and ADR-0076), alone and one at a
+      # time after the main tests. Same packages as above, so cargo resolves the same features and rebuilds nothing.
+      - name: Timing pass (engine crates)
+        run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service --test control -- --ignored --exact --test-threads=1 scenario_scan_control_cancel_within_250_ms scenario_scan_control_pause_within_250_ms
+        env:
+          PHOTOSQUIRREL_TEST_SCALE: reduced

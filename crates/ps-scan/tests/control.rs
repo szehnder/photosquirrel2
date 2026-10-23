@@ -115,6 +115,8 @@ fn scenario_scan_control_second_scan_rejected_while_running() {
 }
 
 #[test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`; ADR-0076).
+#[ignore = "timing"]
 fn scenario_scan_control_cancel_within_250_ms() {
     let _cores = exclusive();
     let e = env();
@@ -141,6 +143,8 @@ fn scenario_scan_control_cancel_within_250_ms() {
 }
 
 #[test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`; ADR-0076).
+#[ignore = "timing"]
 fn scenario_scan_control_pause_within_250_ms() {
     let _cores = exclusive();
     let e = env();
