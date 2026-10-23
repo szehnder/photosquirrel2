@@ -24,15 +24,11 @@ Every file SHALL have one capture date with its provenance and precision, chosen
 ## ADDED Requirements
 
 ### Requirement: Folder-name dates
-A folder name SHALL give a date only when it starts with `YYYY-MM-DD`, `YYYY_MM_DD`, `YYYY.MM.DD` or `YYYYMMDD` followed by the end of the name or a non-digit (day precision), or with `YYYY-MM`, `YYYY_MM` or `YYYY.MM` (month precision), or when consecutive folders read `YYYY/MM/DD` (day) or `YYYY/MM` (month). Only folders inside the source count, the folder nearest the file wins, and a year alone is never a date. A name that starts with a range of two years is never a month date: `YYYY-YY`, `YYYY_YY` or `YYYY.YY` where `YY` is the last two digits of the following year (`2011-12 School Year`), and `YYYY-YYYY` (`2011-2012`).
+A folder name SHALL give a date only when it starts with `YYYY-MM-DD`, `YYYY_MM_DD`, `YYYY.MM.DD` or `YYYYMMDD` followed by the end of the name or a non-digit (day precision), or with `YYYY-MM`, `YYYY_MM` or `YYYY.MM` (month precision), or when consecutive folders read `YYYY/MM/DD` (day) or `YYYY/MM` (month). Only folders inside the source count, the folder nearest the file wins, and a year alone is never a date.
 
 #### Scenario: Folder date patterns
 - **WHEN** EXIF-less files modified on 2024-03-01 are analyzed in folders `2019-07-04`, `2019_07_04 Beach`, `20190704`, `2019/07/04`, `2019-07 Italy`, `2019/07`, `2019`, `Backup 2019-07-04` and `DSC_19871234`
 - **THEN** they are dated 2019-07-04 (day) for the first four, July 2019 (month) for the next two, and by their file time for the last three
-
-#### Scenario: School-year folder is not a month
-- **WHEN** EXIF-less files modified on 2024-03-01 are analyzed in folders `2011-12 School Year`, `2008_09 Season`, `2011-2012` and `2011-11 Thanksgiving`
-- **THEN** the first three are dated by their file time and the last is dated November 2011 (month)
 
 #### Scenario: Nearest folder wins
 - **WHEN** an EXIF-less file is at `2018/2019-07-04 Beach/raw/IMG_0001.JPG` inside the source
@@ -41,6 +37,13 @@ A folder name SHALL give a date only when it starts with `YYYY-MM-DD`, `YYYY_MM_
 #### Scenario: Source root name not used
 - **WHEN** a folder named `2019-07-04` is added as a source and an EXIF-less file directly inside it is analyzed
 - **THEN** the file is dated by its file time
+
+### Requirement: Two-year ranges are not folder dates
+A folder name that starts with a range of two years SHALL NOT give a folder date: `YYYY-YY`, `YYYY_YY` or `YYYY.YY` where `YY` is the last two digits of the following year (`2011-12 School Year`), and `YYYY-YYYY` (`2011-2012`).
+
+#### Scenario: School-year folder is not a month
+- **WHEN** EXIF-less files modified on 2024-03-01 are analyzed in folders `2011-12 School Year`, `2008_09 Season`, `2011-2012` and `2011-11 Thanksgiving`
+- **THEN** the first three are dated by their file time and the last is dated November 2011 (month)
 
 ### Requirement: Folder date plausibility
 A folder date SHALL NOT be used when the file's modification time is on or after 1990-01-01 and lies more than one day before the folder date (for a month folder, before the start of that month minus one day); the file then falls back to its modification time.

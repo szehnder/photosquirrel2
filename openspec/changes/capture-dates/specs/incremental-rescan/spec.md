@@ -14,7 +14,7 @@ When the capture date rules change, the next rescan of a source SHALL re-date it
 - **THEN** no file is re-dated
 
 ### Requirement: Opt-in analysis refresh
-A rescan SHALL, only when the user asks for an analysis refresh, re-read read-only the probe data of unchanged files whose stored classification facts are missing, and then re-classify them as for a settings change; without that request such files SHALL keep their class and the scan summary SHALL report how many there are. A file that cannot be opened or read for the refresh SHALL keep its catalogued analysis and stage unchanged, and the error SHALL be reported. The summary of a refresh SHALL count the files it refreshed and SHALL report as needing a refresh only the files still waiting.
+A rescan SHALL, only when the user asks for an analysis refresh, re-read read-only the probe data of unchanged files whose stored classification facts are missing, and then re-classify them as for a settings change; without that request such files SHALL keep their class and the scan summary SHALL report how many there are.
 
 #### Scenario: Files without facts counted, not read
 - **WHEN** a catalog with 50 files probed before classification facts were stored is rescanned without the refresh
@@ -23,6 +23,9 @@ A rescan SHALL, only when the user asks for an analysis refresh, re-read read-on
 #### Scenario: Refresh re-classifies old rows
 - **WHEN** the same catalog is rescanned from the CLI with `--refresh-analysis` after lowering the minimum side to 100 px
 - **THEN** each of the 50 files is read only up to its probe limit, gets stored facts, and files between 100 and 200 px that were junk are re-classified
+
+### Requirement: An analysis refresh never fails an analysed file
+A file that cannot be opened or read for an analysis refresh SHALL keep its catalogued analysis and stage, and the error SHALL be reported. The summary of a refresh SHALL count the files it refreshed and SHALL report as needing a refresh only the files still waiting.
 
 #### Scenario: Unreadable file keeps its analysis
 - **WHEN** an analysis refresh cannot open an unchanged file that is the keeper of an exported duplicate group
