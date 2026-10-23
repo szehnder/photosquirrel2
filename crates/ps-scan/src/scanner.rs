@@ -527,8 +527,9 @@ impl Scanner {
         self.ensure_idle(&slot)?;
         let records = self.run_sources(sources)?;
         let ids: Vec<SourceId> = records.iter().map(|r| r.id).collect();
-        let run = self.catalog.writer().start_run(ids)?;
-        *slot = Some(self.spawn(run, records, refresh_analysis)?);
+        let refresh = refresh_analysis || self.options().refresh_analysis;
+        let run = self.catalog.writer().start_run_with(ids, refresh)?;
+        *slot = Some(self.spawn(run, records, refresh)?);
         Ok(run)
     }
 
@@ -582,7 +583,8 @@ impl Scanner {
             stats: None,
         })?;
         self.catalog.writer().flush()?;
-        *slot = Some(self.spawn(run, records, false)?);
+        // A refresh run resumes as a refresh run (ADR-0082).
+        *slot = Some(self.spawn(run, records, rec.refresh_analysis)?);
         Ok(run)
     }
 

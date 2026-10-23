@@ -378,11 +378,17 @@ fn print_summary(run: ScanRunId, s: &RunSummary) {
             s.diff.redated
         );
     }
-    if s.diff.needs_refresh > 0 {
+    if s.diff.refreshed > 0 {
         println!(
-            "{} files were analysed by an older version and keep their class; rescan with \
-             `photosquirrel-cli scan --refresh-analysis` to re-classify them (reads up to 256 KB of each)",
-            s.diff.needs_refresh
+            "refreshed the analysis of {} files analysed by an older version (read up to 256 KB of each)",
+            s.diff.refreshed
+        );
+    }
+    let still = s.diff.still_needs_refresh();
+    if still > 0 {
+        println!(
+            "{still} files were analysed by an older version and keep their class; rescan with \
+             `photosquirrel-cli scan --refresh-analysis` to re-classify them (reads up to 256 KB of each)"
         );
     }
     if let Some(g) = &s.grouping {

@@ -154,7 +154,7 @@ enum Msg {
     ExecDurable(ExecFn, Sender<Result<()>>),
     Flush(Sender<WriteErrors>),
     AddSource(NewSource, Sender<Result<SourceId>>),
-    StartRun(Vec<SourceId>, Sender<Result<ScanRunId>>),
+    StartRun(Vec<SourceId>, bool, Sender<Result<ScanRunId>>),
     Shutdown,
 }
 
@@ -362,8 +362,18 @@ impl Writer {
 
     /// Record a new `running` scan run over `sources` and return its id once committed.
     pub fn start_run(&self, sources: Vec<SourceId>) -> Result<ScanRunId> {
+        self.start_run_with(sources, false)
+    }
+
+    /// [`Writer::start_run`], recording whether the run refreshes the analysis of unchanged files without
+    /// stored class facts, so a resume refreshes too (ADR-0082).
+    pub fn start_run_with(
+        &self,
+        sources: Vec<SourceId>,
+        refresh_analysis: bool,
+    ) -> Result<ScanRunId> {
         let (reply, rx) = bounded(1);
-        self.send(Msg::StartRun(sources, reply))?;
+        self.send(Msg::StartRun(sources, refresh_analysis, reply))?;
         rx.recv().map_err(|_| CatalogError::WriterClosed)?
     }
 
@@ -448,8 +458,8 @@ impl WriterThread {
                     let r = self.immediate(|c| add_source(c, &s));
                     let _ = reply.send(r);
                 }
-                Msg::StartRun(sources, reply) => {
-                    let r = self.immediate(|c| start_run(c, &sources));
+                Msg::StartRun(sources, refresh, reply) => {
+                    let r = self.immediate(|c| start_run(c, &sources, refresh));
                     let _ = reply.send(r);
                 }
                 Msg::Shutdown => break,
@@ -1227,13 +1237,13 @@ fn add_source(c: &Connection, s: &NewSource) -> rusqlite::Result<SourceId> {
     Ok(SourceId(c.last_insert_rowid()))
 }
 
-fn start_run(c: &Connection, sources: &[SourceId]) -> rusqlite::Result<ScanRunId> {
+fn start_run(c: &Connection, sources: &[SourceId], refresh: bool) -> rusqlite::Result<ScanRunId> {
     let ids: Vec<i64> = sources.iter().map(|s| s.0).collect();
     let json = serde_json::to_string(&ids)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     c.prepare_cached(
-        "INSERT INTO scan_run (status, started_at, sources) VALUES ('running', ?1, ?2)",
+        "INSERT INTO scan_run (status, started_at, sources, refresh_analysis) VALUES ('running', ?1, ?2, ?3)",
     )?
-    .execute(params![now_ms(), json])?;
+    .execute(params![now_ms(), json, i64::from(refresh)])?;
     Ok(ScanRunId(c.last_insert_rowid()))
 }

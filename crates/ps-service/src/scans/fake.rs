@@ -438,6 +438,7 @@ impl FakeScanService {
                     quarantined: 0,
                     redated: 0,
                     needs_refresh: 0,
+                    refreshed: 0,
                 }
             };
             stages.add(&st);
@@ -574,7 +575,8 @@ impl FakeScanService {
             unchanged: snap.diff.unchanged,
             missing: snap.diff.missing,
             redated: snap.diff.redated,
-            needs_refresh: snap.diff.needs_refresh,
+            needs_refresh: snap.diff.still_needs_refresh(),
+            refreshed: snap.diff.refreshed,
             incomplete_sources: snap
                 .sources
                 .iter()

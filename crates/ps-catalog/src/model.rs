@@ -167,6 +167,8 @@ pub struct RunRecord {
     pub ended_at_ms: Option<i64>,
     pub sources: Vec<SourceId>,
     pub stats: serde_json::Value,
+    /// The run refreshes the analysis of unchanged files without stored class facts (ADR-0071, ADR-0082).
+    pub refresh_analysis: bool,
 }
 
 /// Everything stored about one file (detail pages, inspector, scanner diff).

@@ -46,6 +46,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     CLEANUP_SOURCE_MIGRATION,
     CLEANUP_SELECTION_MIGRATION,
     CAPTURE_DATES_MIGRATION,
+    RUN_REFRESH_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -150,6 +151,12 @@ pub const CAPTURE_DATES_MIGRATION: Migration = Migration {
     sql: include_str!("../migrations/0017_capture_dates.sql"),
 };
 
+/// Migration 18 (ADR-0082: `scan_run.refresh_analysis`, so a resumed refresh run still refreshes).
+pub const RUN_REFRESH_MIGRATION: Migration = Migration {
+    version: 18,
+    name: "run_refresh",
+    sql: include_str!("../migrations/0018_run_refresh.sql"),
+};
 /// `thumbs.db` migrations.
 pub const THUMB_MIGRATIONS: &[Migration] = &[Migration {
     version: 1,

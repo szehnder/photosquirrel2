@@ -720,6 +720,8 @@ fn process_file(
                 });
                 ctx.progress.vanished(idx, t.stage);
                 ctx.progress.file_done(idx);
+            } else if t.refresh {
+                refresh_unreadable(ctx, idx, &t, &e);
             } else {
                 ctx.fail(idx, &t.path, t.stage, Stage::Probed, io_message(&e));
             }
@@ -750,7 +752,11 @@ fn process_file(
     let mut buf = Vec::with_capacity((size as usize).min(ps_media::PROBE_LIMIT));
     if let Err(e) = read_into(&mut r, &mut buf, ps_media::PROBE_LIMIT) {
         if !is_cancel(&e) {
-            read_failed(ctx, idx, &t, Stage::Probed, &e);
+            if t.refresh && ctx.root_available(idx) {
+                refresh_unreadable(ctx, idx, &t, &e);
+            } else {
+                read_failed(ctx, idx, &t, Stage::Probed, &e);
+            }
         }
         return;
     }
@@ -776,6 +782,7 @@ fn process_file(
             stage: None,
             facts: Some(facts),
         }]));
+        ctx.progress.refreshed(idx);
         ctx.progress.file_done(idx);
         return;
     }
@@ -793,6 +800,10 @@ fn process_file(
         FileKey::new(src.id, t.path.clone()),
         pr,
     )]));
+    if t.refresh {
+        // A skipped file the refresh made a candidate: refreshed now, analysed like any probed file.
+        ctx.progress.refreshed(idx);
+    }
     if skip {
         ctx.progress.transition(idx, t.stage, Stage::Skipped);
         ctx.progress.file_done(idx);
@@ -881,6 +892,22 @@ fn changed_during_scan(ctx: &RunCtx, idx: usize, t: &Todo) {
         path: t.path.clone(),
         stage: t.stage,
         message: "changed during the scan; the next rescan picks it up".into(),
+    });
+    ctx.progress.file_done(idx);
+}
+
+/// An unchanged, analysed file could not be read for the analysis refresh (ADR-0071). Its catalogued analysis
+/// stays exactly as it was, stage included, so it keeps its duplicate group and its exported copy; the error is
+/// reported and the next refresh tries again.
+fn refresh_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, e: &io::Error) {
+    ctx.progress.error(RecentError {
+        source: ctx.sources[idx].id,
+        path: t.path.clone(),
+        stage: t.stage,
+        message: format!(
+            "could not be read for the analysis refresh ({}); it keeps its analysis",
+            io_message(e)
+        ),
     });
     ctx.progress.file_done(idx);
 }

@@ -146,6 +146,10 @@ pub struct DiffCounts {
     /// their class until an analysis refresh re-reads their probe data (counted in `unchanged` too; ADR-0071).
     #[serde(default)]
     pub needs_refresh: u64,
+    /// Of `needs_refresh`, the files this run's analysis refresh re-read and re-classified (ADR-0071). The
+    /// files still waiting for a refresh are `needs_refresh - refreshed` ([`DiffCounts::still_needs_refresh`]).
+    #[serde(default)]
+    pub refreshed: u64,
 }
 
 impl DiffCounts {
@@ -160,6 +164,12 @@ impl DiffCounts {
         self.quarantined += o.quarantined;
         self.redated += o.redated;
         self.needs_refresh += o.needs_refresh;
+        self.refreshed += o.refreshed;
+    }
+
+    /// Unchanged files that still keep a class decided before facts were stored, after this run.
+    pub fn still_needs_refresh(&self) -> u64 {
+        self.needs_refresh.saturating_sub(self.refreshed)
     }
 }
 

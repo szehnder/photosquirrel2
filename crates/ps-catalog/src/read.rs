@@ -364,7 +364,7 @@ impl Readers {
     pub fn runs(&self) -> Result<Vec<RunRecord>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
-                "SELECT id, status, started_at, ended_at, sources, stats FROM scan_run ORDER BY id",
+                "SELECT id, status, started_at, ended_at, sources, stats, refresh_analysis FROM scan_run ORDER BY id",
             )?;
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
@@ -381,6 +381,7 @@ impl Readers {
                     ended_at_ms: r.get(3)?,
                     sources: sources.into_iter().map(SourceId).collect(),
                     stats: serde_json::from_str(&stats).map_err(|e| corrupt(&e.to_string()))?,
+                    refresh_analysis: r.get::<_, i64>(6)? != 0,
                 });
             }
             Ok(out)

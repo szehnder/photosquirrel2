@@ -626,11 +626,12 @@ fn card(r: &Readers, roots: &Roots, rec: &FileRecord) -> Result<MemberCard> {
         folder,
         source: roots.source_name(rec.key.source),
         quality: f.and_then(|f| f.jpeg_quality),
-        captured: meta
-            .as_ref()
-            .and_then(|m| m.capture_date.as_ref())
+        // The catalog's date columns (re-dated rows, ADR-0071), shown at their precision (ADR-0069).
+        captured: rec
+            .capture_date()
+            .or_else(|| meta.as_ref().and_then(|m| m.capture_date))
             .filter(|d| !d.undated)
-            .map(|d| d.value.display()),
+            .map(|d| d.display()),
         capture_ms: rec.capture_ms,
         camera: f.and_then(|f| match (&f.camera_make, &f.camera_model) {
             (Some(a), Some(b)) if b.starts_with(a.as_str()) => Some(b.clone()),

@@ -553,3 +553,105 @@ fn scenario_incremental_rescan_refresh_re_classifies_old_rows() {
     let again = o.env.scan(&[o.id]);
     assert_eq!(again.diff.needs_refresh, 0);
 }
+
+/// Gate review (task 8.3): a pause parks the re-date pass between chunks, idle, and a resume finishes it.
+#[test]
+fn pause_parks_the_re_date_pass_between_chunks() {
+    let _g = shared();
+    let d = dated(utc_opts());
+    make_old_catalog(&d.env.dir);
+    let stale: Vec<StaleDate> = rows(&d.env, d.id)
+        .into_values()
+        .filter(|r| r.date_version < DATE_LOGIC_VERSION)
+        .map(|r| StaleDate {
+            id: r.id,
+            path: r.key.path.clone(),
+            current: r.capture_date(),
+        })
+        .collect();
+    assert_eq!(stale.len(), DATED.len() + 1);
+    let ctl = Control::new();
+    let writer = d.env.s().catalog().writer().clone();
+    let chunks = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|sc| {
+        let pass = sc.spawn(|| {
+            redate(
+                d.id,
+                &stale,
+                d.env.readers(),
+                &FixedZone(0),
+                &ctl,
+                2,
+                |cmd| {
+                    writer.submit(cmd).expect("submit");
+                    if chunks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        ctl.pause();
+                    }
+                },
+            )
+            .expect("redate")
+        });
+        wait_until(Duration::from_secs(10), "the pass parks", || {
+            chunks.load(std::sync::atomic::Ordering::SeqCst) == 1 && ctl.busy_count() == 0
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            chunks.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "nothing re-dated while paused"
+        );
+        assert_eq!(ctl.busy_count(), 0, "a parked pass is idle");
+        ctl.resume();
+        let out = pass.join().expect("pass");
+        assert!(!out.cancelled);
+        assert_eq!(out.written, stale.len() as u64);
+    });
+    assert_eq!(
+        chunks.load(std::sync::atomic::Ordering::SeqCst),
+        stale.len().div_ceil(2)
+    );
+}
+
+/// Gate review (task 8.3): a cancelled refresh run, resumed by a scanner whose options do not ask for the
+/// refresh (`photosquirrel-cli scan resume`), still refreshes: the run remembers it (migration 18, ADR-0082).
+#[test]
+fn resumed_refresh_run_still_refreshes() {
+    let _g = shared();
+    let mut o = old_rows();
+    o.env.reopen(ScanOptions {
+        refresh_analysis: true,
+        read_delay: Some(Duration::from_millis(40)),
+        ..utc_opts()
+    });
+    let run = o.env.s().start_scan(&[o.id]).expect("start");
+    wait_until(Duration::from_secs(20), "some files refreshed", || {
+        facts_count(&o.env) > 0
+    });
+    o.env.s().cancel().expect("cancel");
+    o.env.s().wait().expect("summary");
+    let partial = facts_count(&o.env);
+    assert!(partial < 50, "cancelled before the end: {partial}");
+    let rec = o.env.readers().run(run).expect("run").expect("record");
+    assert!(rec.refresh_analysis, "the run records the refresh");
+    // Resume without the option.
+    o.env.reopen(utc_opts());
+    o.env.s().resume_run(run).expect("resume");
+    let summary = o.env.s().wait().expect("summary");
+    completed(&summary);
+    assert_eq!(
+        facts_count(&o.env),
+        50,
+        "the resumed run refreshed the rest"
+    );
+    // A plain scan does not record a refresh.
+    let plain = o.env.s().start_scan(&[o.id]).expect("start");
+    o.env.s().wait().expect("summary");
+    assert!(
+        !o.env
+            .readers()
+            .run(plain)
+            .expect("run")
+            .expect("record")
+            .refresh_analysis
+    );
+}

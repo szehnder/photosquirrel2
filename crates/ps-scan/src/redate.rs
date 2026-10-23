@@ -5,7 +5,7 @@
 //! stored metadata in pages, rebuilds the date inputs ([`ps_media::EmbeddedDates::from_stored`]), chooses the
 //! date again with the run's zone ([`ps_media::resolve_capture_date`], the resolver analysis uses) and submits
 //! [`Command::Redate`] chunks. No file is opened. A cancel between chunks leaves the unwritten rows at their old
-//! version; the next rescan finishes them.
+//! version; the next rescan finishes them. A pause parks the pass between chunks.
 
 use ps_catalog::{Command, FileKey, Readers, Redate};
 use ps_media::{EmbeddedDates, LocalZone};
@@ -37,7 +37,8 @@ pub struct RedateOutcome {
 }
 
 /// Re-date `stale` rows of `source` (module docs) in chunks of `chunk` rows ([`REDATE_CHUNK`] in scans),
-/// submitting each through `submit` and checking `ctl` for a cancel before each.
+/// submitting each through `submit`. Before each chunk the pass stops at `ctl`'s checkpoint: it parks while the
+/// run is paused (not counted busy while parked) and stops when it is cancelled.
 pub fn redate(
     source: SourceId,
     stale: &[StaleDate],
@@ -48,8 +49,9 @@ pub fn redate(
     mut submit: impl FnMut(Command),
 ) -> ps_catalog::Result<RedateOutcome> {
     let mut out = RedateOutcome::default();
+    let busy = ctl.busy();
     for chunk in stale.chunks(chunk.max(1)) {
-        if ctl.is_cancelled() {
+        if busy.checkpoint().is_err() {
             out.cancelled = true;
             break;
         }

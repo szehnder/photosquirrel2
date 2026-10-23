@@ -205,6 +205,17 @@ fn scan_refresh_analysis_flag_refreshes_rows_without_class_facts() {
     );
     let o = ok(data.path(), &["scan", "--refresh-analysis"]);
     assert!(stdout(&o).contains("completed"), "{}", stdout(&o));
+    // Gate review (task 8.4): the summary says what the refresh did, not that it is still needed.
+    assert!(
+        stdout(&o).contains("refreshed the analysis of 3 files"),
+        "{}",
+        stdout(&o)
+    );
+    assert!(
+        !stdout(&o).contains("were analysed by an older version"),
+        "{}",
+        stdout(&o)
+    );
     let c = rusqlite::Connection::open(data.path().join("catalog.db")).unwrap();
     let with_facts: i64 = c
         .query_row(

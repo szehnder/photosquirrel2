@@ -16,6 +16,30 @@ use ps_model::{
 use rusqlite::types::Value;
 use rusqlite::{Connection, params};
 
+/// Gate review (task 8.3, ADR-0082): migration 18 gives every existing run `refresh_analysis = false`; a run
+/// started with the refresh records it.
+#[test]
+fn migration_18_records_the_refresh_of_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog.db");
+    db::create_catalog_at_version(&path, 17).unwrap();
+    {
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(
+            "INSERT INTO scan_run (id, status, started_at) VALUES (1, 'cancelled', 100);",
+        )
+        .unwrap();
+    }
+    let cat = Catalog::open_file(&path, Default::default()).unwrap();
+    assert_eq!(db::stored_version(&path).unwrap(), Some(18));
+    let old = cat.read().run(ps_model::ScanRunId(1)).unwrap().unwrap();
+    assert!(!old.refresh_analysis);
+    let run = cat.writer().start_run_with(vec![], true).unwrap();
+    assert!(cat.read().run(run).unwrap().unwrap().refresh_analysis);
+    let plain = cat.writer().start_run(vec![]).unwrap();
+    assert!(!cat.read().run(plain).unwrap().unwrap().refresh_analysis);
+}
+
 #[test]
 fn migration_17_marks_rows_whose_date_cannot_change() {
     let dir = tempfile::tempdir().unwrap();
@@ -52,7 +76,10 @@ fn migration_17_marks_rows_whose_date_cannot_change() {
         }
     }
     let cat = Catalog::open_file(&path, Default::default()).unwrap();
-    assert_eq!(db::stored_version(&path).unwrap(), Some(17));
+    assert_eq!(
+        db::stored_version(&path).unwrap(),
+        Some(db::latest(db::CATALOG_MIGRATIONS))
+    );
     let versions: Vec<(i64, u8)> = (1..=7)
         .map(|id| {
             let r = cat.read().file_by_id(FileId(id)).unwrap().expect("row");

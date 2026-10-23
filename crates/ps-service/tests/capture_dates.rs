@@ -406,3 +406,139 @@ fn scenario_export_new_keeper_uses_the_current_rules_beside_old_copies() {
         assert_eq!(after.get(k), Some(v), "{} unchanged", k.display());
     }
 }
+
+// ---- gate review: an unreadable file during the analysis refresh keeps its analysis (task 8.1) ----------------
+
+/// Every file row's stage by relative path.
+fn stages(data: &Path) -> BTreeMap<String, i64> {
+    let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(data)).unwrap();
+    c.busy_timeout(Duration::from_secs(10)).unwrap();
+    let mut q = c.prepare("SELECT rel_path, stage FROM file").unwrap();
+    q.query_map([], |r| {
+        let p: Vec<u8> = r.get(0)?;
+        Ok((String::from_utf8_lossy(&p).replace('\\', "/"), r.get(1)?))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+#[test]
+fn scenario_incremental_rescan_unreadable_file_keeps_its_analysis() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let data = tmp.path().join("data");
+    let library = tmp.path().join("Library");
+    let rgb = photo_rgb(1200, 900, 77);
+    write(
+        &src.join("best/IMG_0001.JPG"),
+        &encode_jpeg(&rgb, 1200, 900, 95),
+        at(2024, 3, 1, 12, 0),
+    );
+    write(
+        &src.join("copies/IMG_0001_small.JPG"),
+        &encode_jpeg(&rgb, 1200, 900, 60),
+        at(2024, 3, 1, 12, 0),
+    );
+    for i in 2..4u64 {
+        write(
+            &src.join(format!("other/IMG_{i:04}.JPG")),
+            &stripped(4_000 + i * 31, 90),
+            at(2024, 3, 1, 12, 0),
+        );
+    }
+    {
+        let svc = open(&data, opts(FixedZone(0)), &src);
+        scan(&svc);
+        keep(&svc, "best/IMG_0001.JPG");
+        assert_eq!(run(&svc, &library).copied, 3);
+    }
+    let before = stages(&data);
+    // Rows as if probed before catalog migration 13.
+    {
+        let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&data)).unwrap();
+        c.busy_timeout(Duration::from_secs(10)).unwrap();
+        c.execute(
+            "UPDATE file SET class_facts = NULL, classifier_hash = NULL",
+            [],
+        )
+        .unwrap();
+    }
+    // The keeper's source becomes unreadable, then the refresh runs.
+    let (fs, instr) = ps_scan::SourceFs::instrumented();
+    let svc = open(
+        &data,
+        ScanOptions {
+            fs,
+            refresh_analysis: true,
+            ..opts(FixedZone(0))
+        },
+        &src,
+    );
+    let root = svc.sources().unwrap()[0].root.clone();
+    instr.deny_open(&root.join("best").join("IMG_0001.JPG"));
+    let summary = scan(&svc);
+    assert_eq!(summary.diff.needs_refresh, 4, "{:?}", summary.diff);
+    // The summary counts what the refresh did and what is left (task 8.4).
+    assert_eq!(summary.diff.refreshed, 3, "{:?}", summary.diff);
+    let o = svc.run_overview(summary.run).unwrap();
+    assert_eq!((o.refreshed, o.needs_refresh), (3, 1), "{o:?}");
+    assert!(
+        instr
+            .opens()
+            .iter()
+            .any(|o| !o.ok && o.path.ends_with("IMG_0001.JPG")),
+        "the keeper's open failed"
+    );
+    assert_eq!(stages(&data), before, "every row keeps its stage");
+    let groups = svc
+        .groups()
+        .list(ps_service::groups::GroupOrder::Id, 0, 10)
+        .unwrap();
+    assert_eq!(groups.len(), 1, "the duplicate group survives: {groups:?}");
+    let d = svc.groups().show(groups[0].id).unwrap();
+    assert_eq!(d.members.len(), 2);
+    let p = plan(&svc, &library);
+    assert_eq!(p.totals.files, 0, "nothing new to copy: {:?}", p.totals);
+    assert_eq!(p.totals.already_exported, 3);
+}
+
+// ---- gate review: duplicate review cards show the catalog date at its precision (task 8.2) -------------------
+
+#[test]
+fn review_cards_show_the_catalog_date_at_its_precision() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let rgb = photo_rgb(1200, 900, 93);
+    write(
+        &src.join("2019-07 Italy/IMG_0001.JPG"),
+        &encode_jpeg(&rgb, 1200, 900, 92),
+        at(2024, 3, 1, 12, 0),
+    );
+    write(
+        &src.join("2019_07_04 Beach/beach.jpg"),
+        &encode_jpeg(&rgb, 1200, 900, 80),
+        at(2024, 3, 1, 12, 0),
+    );
+    let data = tmp.path().join("data");
+    let svc = open(&data, opts(FixedZone(0)), &src);
+    scan(&svc);
+    let ids = keep(&svc, "IMG_0001.JPG");
+    let store = ps_service::review::ReviewStore::open(&data);
+    let captured = |name: &str| {
+        let d = ps_service::review::show(&svc, &store, id_of(&ids, "IMG_0001.JPG")).unwrap();
+        d.card(id_of(&ids, name)).unwrap().captured.clone()
+    };
+    assert_eq!(captured("IMG_0001.JPG").as_deref(), Some("July 2019"));
+    assert_eq!(captured("beach.jpg").as_deref(), Some("4 July 2019"));
+    // A re-dated row (columns changed, metadata JSON not) shows the columns.
+    let ts = CaptureTime::from_parts(2019, 7, 5, 0, 0, 0).local_seconds * 1000;
+    let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&data)).unwrap();
+    c.busy_timeout(Duration::from_secs(10)).unwrap();
+    c.execute(
+        "UPDATE file SET capture_ts = ?1, capture_precision = 1 WHERE capture_precision = 1",
+        [ts],
+    )
+    .unwrap();
+    assert_eq!(captured("beach.jpg").as_deref(), Some("5 July 2019"));
+}

@@ -78,7 +78,14 @@ impl SourceFs {
 
     /// Open a file for reading only. Never creates, truncates or writes.
     pub fn open(&self, path: &Path) -> io::Result<SourceFile> {
-        let file = match open_read_only(path) {
+        let opened = match &self.instr {
+            Some(i) if i.denied(path) => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "permission denied (test)",
+            )),
+            _ => open_read_only(path),
+        };
+        let file = match opened {
             Ok(f) => f,
             Err(e) => {
                 if let Some(i) = &self.instr {
@@ -310,6 +317,8 @@ pub struct Instrumentation {
     bytes: Mutex<HashMap<PathBuf, u64>>,
     total_bytes: AtomicU64,
     read_dirs: AtomicU64,
+    /// Paths whose opens fail with `PermissionDenied` (tests of unreadable files on every platform).
+    deny: Mutex<Vec<PathBuf>>,
 }
 
 impl Instrumentation {
@@ -320,6 +329,15 @@ impl Instrumentation {
             access,
             ok: true,
         });
+    }
+
+    /// Make every later open of `path` fail with `PermissionDenied`, as an unreadable file would.
+    pub fn deny_open(&self, path: &Path) {
+        self.deny.lock().push(path.to_path_buf());
+    }
+
+    fn denied(&self, path: &Path) -> bool {
+        self.deny.lock().iter().any(|p| p == path)
     }
 
     fn record_failed_open(&self, path: &Path) {

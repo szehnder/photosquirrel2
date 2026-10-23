@@ -70,6 +70,7 @@ struct Diff {
     quarantined: AtomicU64,
     redated: AtomicU64,
     needs_refresh: AtomicU64,
+    refreshed: AtomicU64,
 }
 
 impl Diff {
@@ -85,6 +86,7 @@ impl Diff {
             quarantined: self.quarantined.load(Ordering::Relaxed),
             redated: self.redated.load(Ordering::Relaxed),
             needs_refresh: self.needs_refresh.load(Ordering::Relaxed),
+            refreshed: self.refreshed.load(Ordering::Relaxed),
         }
     }
 
@@ -99,6 +101,7 @@ impl Diff {
         self.quarantined.store(d.quarantined, Ordering::Relaxed);
         self.redated.store(d.redated, Ordering::Relaxed);
         self.needs_refresh.store(d.needs_refresh, Ordering::Relaxed);
+        // `refreshed` counts during the run (Progress::refreshed), after the diff.
     }
 }
 
@@ -296,6 +299,14 @@ impl Progress {
         s.stages.add(stage, -1);
         s.files.fetch_sub(1, Ordering::Relaxed);
         s.diff.missing.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The analysis refresh re-read and re-classified a file of source `idx` (ADR-0071).
+    pub fn refreshed(&self, idx: usize) {
+        self.sources[idx]
+            .diff
+            .refreshed
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// A new file was re-identified as a moved one (it is no longer counted missing).
