@@ -484,6 +484,84 @@ fn scenario_cleanup_app_undoes_one_folder(cx: &mut TestAppContext) {
     });
 }
 
+/// Gate review of `cleanup-selection`: while an older plan is under review with unsaved unticks, discarding
+/// another plan from the history (which refreshes the panel, and a newer plan exists) keeps that review and its
+/// ticks, and "Move N files…" stores and confirms the reviewed plan, not the newest one. The sample moves say they are the saved
+/// plan's while ticks are unsaved.
+#[gpui_kit::test]
+fn cleanup_review_survives_a_refresh_after_discarding_another_plan(cx: &mut TestAppContext) {
+    let (app, mut cx) = app(cx, "keep-review");
+    let before = snapshot(&app.drive);
+    let older = app.plan(&mut cx);
+    // Two more plans of the same source: `other` will be discarded, `newest` stays the newest planned run.
+    let other = app.plan(&mut cx);
+    let newest = app.plan(&mut cx);
+    assert!(older.id < other.id && other.id < newest.id, "{newest:?}");
+    let in_run = |run: i64| format!("/{run}/");
+    wait(&mut cx, "the newest plan", |cx| {
+        label("cleanup-move-0", cx).is_some_and(|l| l.contains(&in_run(newest.id)))
+    });
+    // Review the older plan and untick its first folder (not saved yet).
+    click(&format!("cleanup-review-{}", older.id), &mut cx);
+    wait(&mut cx, "the older plan", |cx| {
+        label("cleanup-move-0", cx).is_some_and(|l| l.contains(&in_run(older.id)))
+            && exists("cleanup-tree-row-0", cx)
+    });
+    assert!(!exists("cleanup-moves-caption", &mut cx));
+    let (folder, n) = row_folder("cleanup-tree", 0, &mut cx);
+    click("cleanup-tree-check-0", &mut cx);
+    let want = older.planned - n;
+    let unticked = format!("{folder}: 0 of {n} files, not selected");
+    assert_eq!(label("cleanup-tree-row-0", &mut cx).unwrap(), unticked);
+    assert!(
+        label("cleanup-moves-caption", &mut cx).is_some_and(|l| l.contains("saved plan")),
+        "the sample moves say they are the saved plan's"
+    );
+    // Discard another plan from the history; the panel refreshes when it is done.
+    click(&format!("cleanup-discard-{}", other.id), &mut cx);
+    wait(&mut cx, "the discard confirmation", |cx| {
+        exists("cleanup-discard-confirmation", cx)
+    });
+    click("cleanup-discard-confirm", &mut cx);
+    let row = format!("cleanup-run-{}", other.id);
+    wait(&mut cx, "the discard", |cx| {
+        label(&row, cx).is_some_and(|l| l.contains("Discarded"))
+    });
+    for _ in 0..5 {
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+    }
+    // Still the older plan, with the folder still unticked.
+    assert!(
+        label("cleanup-move-0", &mut cx).is_some_and(|l| l.contains(&in_run(older.id))),
+        "the review still shows run {}",
+        older.id
+    );
+    assert_eq!(label("cleanup-tree-row-0", &mut cx).unwrap(), unticked);
+    assert_eq!(
+        label("cleanup-confirm", &mut cx).as_deref(),
+        Some(format!("Move {want} files…").as_str())
+    );
+    // "Move N files…" stores the older plan's selection and confirms it.
+    click("cleanup-confirm", &mut cx);
+    wait(&mut cx, "the confirmation", |cx| {
+        exists("cleanup-confirmation", cx)
+    });
+    let runs = app.backend.cleanup_runs().unwrap();
+    let get = |id: i64| runs.iter().find(|r| r.id == id).unwrap().clone();
+    assert_eq!(get(older.id).planned, want);
+    assert_eq!(get(older.id).unselected, n);
+    assert_eq!(get(other.id).state, CleanupRunState::Discarded);
+    assert_eq!(get(newest.id).state, CleanupRunState::Planned);
+    assert_eq!(get(newest.id).unselected, 0, "the newest plan is untouched");
+    assert!(
+        label("cleanup-confirmation", &mut cx)
+            .unwrap()
+            .starts_with(&format!("Move {want} files ("))
+    );
+    assert_eq!(snapshot(&app.drive), before, "nothing moved");
+}
+
 /// A plan of 20,000 folders: the tree's first frame and a scroll build only the rows on screen (plus the
 /// list's overscan), never one element per folder.
 #[gpui_kit::test]
@@ -514,6 +592,13 @@ fn cleanup_tree_of_20k_folders_builds_only_visible_rows(cx: &mut TestAppContext)
     assert_eq!(
         label("cleanup-tree", &mut cx).unwrap(),
         format!("{FOLDERS} folders, {FOLDERS} rows")
+    );
+    // The 20,000-folder tree was built off the UI thread (here the test's thread, which also runs the
+    // dispatcher's background work).
+    let built_on = cx.update(|_, cx| view.read(cx).plan_tree.as_ref().map(|t| t.built_on));
+    assert!(
+        built_on.is_some_and(|t| t != std::thread::current().id()),
+        "{built_on:?}"
     );
     let built = |cx: &mut VisualTestContext, range: std::ops::Range<usize>| -> Vec<usize> {
         cx.update(|window, cx| {

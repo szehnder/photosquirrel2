@@ -95,21 +95,35 @@ pub struct FileView {
     pub picked: bool,
 }
 
+/// The loaded file names of one folder: by file index, and the folder's file indices sorted by name once, when
+/// they arrive (expanding and collapsing folders never sorts again).
+#[derive(Clone, Debug, Default)]
+struct Names {
+    by_file: HashMap<usize, String>,
+    sorted: Vec<usize>,
+}
+
 /// A run's folders with check boxes.
 #[derive(Clone, Debug)]
 pub struct SelectionTree {
     pub run: i64,
     pub kind: CleanupTreeKind,
+    /// The thread that built the tree. [`SelectionTree::new`] is O(files) plus a sort, so the view builds trees
+    /// on a background thread, never the UI thread; a headless test checks this field.
+    pub built_on: std::thread::ThreadId,
     nodes: Vec<Node>,
     files: Vec<File>,
     picked: Vec<bool>,
     /// The flags as the catalog holds them (to know whether the selection must be stored first).
     stored: Vec<bool>,
     expanded: Vec<bool>,
-    /// Loaded file names per node (by file index), and nodes whose names are loading.
-    names: HashMap<usize, HashMap<usize, String>>,
+    /// Loaded file names per node, and nodes whose names are loading.
+    names: HashMap<usize, Names>,
     loading: Vec<bool>,
     rows: Vec<Row>,
+    /// How many times file names were sorted (once per loaded folder; unit tests).
+    #[cfg(test)]
+    name_sorts: usize,
 }
 
 fn components(rel: &RelPath) -> Vec<&[u8]> {
@@ -233,6 +247,7 @@ impl SelectionTree {
         let mut t = SelectionTree {
             run: tree.run,
             kind: tree.kind,
+            built_on: std::thread::current().id(),
             stored: picked.clone(),
             nodes,
             files,
@@ -241,6 +256,8 @@ impl SelectionTree {
             names: HashMap::new(),
             loading: vec![false; len],
             rows: Vec::new(),
+            #[cfg(test)]
+            name_sorts: 0,
         };
         // A tree with a single top folder opens it, so the first level the user sees is never one row.
         if t.nodes[0].children.len() == 1 && !t.nodes[t.nodes[0].children[0]].children.is_empty() {
@@ -278,15 +295,7 @@ impl SelectionTree {
                     }
                 }
                 Item::Files(n) => match self.names.get(&n) {
-                    Some(names) => {
-                        let mut ids: Vec<usize> = self.nodes[n]
-                            .direct
-                            .clone()
-                            .filter(|k| names.contains_key(k))
-                            .collect();
-                        ids.sort_by(|a, b| names[a].cmp(&names[b]));
-                        rows.extend(ids.into_iter().map(|k| Row::File(n, k)));
-                    }
+                    Some(names) => rows.extend(names.sorted.iter().map(|&k| Row::File(n, k))),
                     None => rows.push(Row::Loading(n)),
                 },
             }
@@ -342,7 +351,7 @@ impl SelectionTree {
             name: self
                 .names
                 .get(&n)
-                .and_then(|m| m.get(&k))
+                .and_then(|m| m.by_file.get(&k))
                 .cloned()
                 .unwrap_or_default(),
             depth: self.nodes[n].depth + 1,
@@ -500,12 +509,18 @@ impl SelectionTree {
             .clone()
             .map(|k| (self.files[k].id, k))
             .collect();
-        let names = rows
+        let by_file: HashMap<usize, String> = rows
             .iter()
             .filter_map(|r| Some((*by_id.get(&r.file)?, r.name.clone())))
             .collect();
+        let mut sorted: Vec<usize> = by_file.keys().copied().collect();
+        sorted.sort_by(|a, b| by_file[a].cmp(&by_file[b]).then(a.cmp(b)));
+        #[cfg(test)]
+        {
+            self.name_sorts += 1;
+        }
         self.loading[n] = false;
-        self.names.insert(n, names);
+        self.names.insert(n, Names { by_file, sorted });
         self.rebuild();
     }
 
@@ -696,6 +711,43 @@ mod tests {
         let mut ids: Vec<i64> = t.picked_ids().iter().map(|f| f.0).collect();
         ids.sort_unstable();
         assert_eq!(ids, vec![1, 5, 6, 7, 8]);
+    }
+
+    /// Gate review of `cleanup-selection`: a folder's names are sorted once, when they load; expanding and
+    /// collapsing folders afterwards lists them in name order without sorting again.
+    #[test]
+    fn file_names_are_sorted_once_when_they_load() {
+        let (tr, _) = tree();
+        let mut t = SelectionTree::new(&tr);
+        let a = node(&t, "A");
+        assert!(t.toggle_expand(a).is_some());
+        let row = |id: i64, name: &str| CleanupFileRow {
+            file: FileId(id),
+            name: name.into(),
+            size: 0,
+            picked: true,
+        };
+        t.set_names(a, &[row(3, "z.jpg"), row(2, "b.jpg")]);
+        assert_eq!(t.name_sorts, 1);
+        let names = |t: &SelectionTree| -> Vec<String> {
+            t.rows()
+                .iter()
+                .filter_map(|r| match r {
+                    Row::File(n, k) => Some(t.file(*n, *k).name),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(names(&t), vec!["b.jpg", "z.jpg"]);
+        for _ in 0..5 {
+            assert_eq!(t.toggle_expand(a), None, "names are not loaded again");
+            assert!(names(&t).is_empty());
+            assert_eq!(t.toggle_expand(a), None);
+            t.toggle_expand(node(&t, "A/B"));
+            t.toggle_expand(node(&t, "D"));
+            assert_eq!(names(&t)[..2], ["b.jpg", "z.jpg"]);
+        }
+        assert_eq!(t.name_sorts, 1, "expand and collapse never sort");
     }
 
     #[test]

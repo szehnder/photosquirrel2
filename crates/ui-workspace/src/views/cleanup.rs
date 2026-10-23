@@ -163,15 +163,23 @@ impl CleanupView {
     fn loaded(&mut self, r: anyhow::Result<Loaded>, cx: &mut Context<'_, Self>) {
         match r {
             Ok((runs, review, tree)) => {
+                // The plan under review stays, with its unsaved ticks, while that run is still planned: a refresh
+                // (after an undo or discard of another run, say) must not swap it for the newest plan.
+                let keep = matches!(self.phase, CleanupPhase::Review)
+                    && self.review.as_ref().is_some_and(|cur| {
+                        runs.iter()
+                            .any(|r| r.id == cur.run.id && r.state == CleanupRunState::Planned)
+                    });
                 if let (Some(t), Some(r)) = (tree, review.as_ref())
                     && t.run == r.run.id
                     && self.plan_tree.is_none()
+                    && !keep
                 {
-                    self.plan_tree = Some(SelectionTree::new(&t));
+                    self.plan_tree = Some(t);
                 }
                 self.runs = Loadable::Ready(runs);
                 // Show the newest planned run for review unless something else is on screen.
-                if matches!(self.phase, CleanupPhase::Idle | CleanupPhase::Review) {
+                if !keep && matches!(self.phase, CleanupPhase::Idle | CleanupPhase::Review) {
                     self.phase = if review.is_some() {
                         CleanupPhase::Review
                     } else {
@@ -201,19 +209,22 @@ impl CleanupView {
         }
     }
 
-    /// Load a run's selection tree on a background thread.
+    /// Load a run's selection tree and build it ([`SelectionTree::new`] is O(files) plus a sort) on a thread of
+    /// its own; the UI thread only receives the finished tree.
     fn load_tree(&mut self, which: TreeOf, run: i64, cx: &mut Context<'_, Self>) {
         let Some(b) = self.backend.clone() else {
             return;
         };
         let kind = which.kind();
-        let reply = cx.background_spawn(async move { b.cleanup_tree(run, kind) });
+        let reply = off_ui_thread(cx, move || {
+            Ok(SelectionTree::new(&b.cleanup_tree(run, kind)?))
+        });
         let task = cx.spawn(async move |this, cx| {
             let r = reply.await;
             let _ = this.update(cx, |this, cx| {
                 match r {
                     Ok(tree) => {
-                        let t = Some(SelectionTree::new(&tree));
+                        let t = Some(tree);
                         match which {
                             TreeOf::Plan
                                 if this.review.as_ref().is_some_and(|r| r.run.id == run) =>
@@ -709,9 +720,28 @@ impl CleanupView {
     }
 }
 
-/// The history and the newest planned run's review.
+/// Run `job` on a thread of its own and resolve to its result. The UI thread never runs it (in headless tests
+/// neither does the test dispatcher's thread, which runs `background_spawn` work): a background task only
+/// waits for the thread's answer.
+fn off_ui_thread<T: Send + 'static>(
+    cx: &mut Context<'_, CleanupView>,
+    job: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> Task<anyhow::Result<T>> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let spawned = std::thread::Builder::new()
+        .name("cleanup-tree".into())
+        .spawn(move || {
+            let _ = tx.send(job());
+        });
+    cx.background_spawn(async move {
+        spawned.map_err(|e| anyhow::anyhow!("could not start loading the folder tree: {e}"))?;
+        rx.recv()
+            .map_err(|_| anyhow::anyhow!("loading the folder tree stopped"))?
+    })
+}
+
 /// The history, the newest planned run's review and, with `with_tree` (at start-up, so the first frame shows
-/// it), that run's selection tree.
+/// it), that run's selection tree, built here (on the caller's background or helper thread).
 fn load(b: &SharedScanBackend, with_tree: bool) -> anyhow::Result<Loaded> {
     let runs = b.cleanup_runs()?;
     let newest = runs
@@ -720,7 +750,9 @@ fn load(b: &SharedScanBackend, with_tree: bool) -> anyhow::Result<Loaded> {
         .map(|r| r.id);
     let review = newest.map(|id| b.cleanup_review(id)).transpose()?;
     let tree = match newest {
-        Some(id) if with_tree => Some(b.cleanup_tree(id, CleanupTreeKind::Plan)?),
+        Some(id) if with_tree => Some(SelectionTree::new(
+            &b.cleanup_tree(id, CleanupTreeKind::Plan)?,
+        )),
         _ => None,
     };
     Ok((runs, review, tree))
@@ -729,7 +761,7 @@ fn load(b: &SharedScanBackend, with_tree: bool) -> anyhow::Result<Loaded> {
 type Loaded = (
     Vec<CleanupRunRow>,
     Option<CleanupReview>,
-    Option<crate::scan_backend::CleanupTree>,
+    Option<SelectionTree>,
 );
 
 fn state_label(r: &CleanupRunRow) -> &'static str {
@@ -894,8 +926,23 @@ impl CleanupView {
         }
         card = card.child(self.tree_box(TreeOf::Plan, cx));
 
-        // Where files go.
+        // Where files go: examples from the stored plan. Unsaved ticks are stored by "Move N files…", so until
+        // then the examples (and the count below them) say that they are the saved plan's.
+        let unsaved = self.plan_tree.as_ref().is_some_and(SelectionTree::changed);
         let mut moves = v_flex().w_full().gap(Tokens::space(0.5));
+        if unsaved {
+            moves = moves.child(
+                div()
+                    .id("cleanup-moves-caption")
+                    .test_support()
+                    .aria_label("Examples from the saved plan, before your changes")
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text_faint)
+                    .child(
+                        "Examples from the saved plan, before your changes (they are saved when you click Move):",
+                    ),
+            );
+        }
         for (i, (from, to)) in review.moves.iter().take(MOVE_ROWS).enumerate() {
             moves = moves.child(
                 h_flex()
@@ -920,8 +967,9 @@ impl CleanupView {
                     .text_size(Tokens::text_xs())
                     .text_color(colors.text_faint)
                     .child(format!(
-                        "and {} more files",
-                        format_count(r.planned - MOVE_ROWS as u64)
+                        "and {} more files{}",
+                        format_count(r.planned - MOVE_ROWS as u64),
+                        if unsaved { " in the saved plan" } else { "" }
                     )),
             );
         }
