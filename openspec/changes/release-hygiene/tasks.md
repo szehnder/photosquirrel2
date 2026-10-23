@@ -13,7 +13,10 @@
 
 - [x] 2.1 `licence_notices` writes `lgpl-sources-<os>.txt`; update `scenario_release_packaging_lgpl_components_offer_their_source` for the new name (verify: that test passes)
 - [x] 2.2 `packaging/merge-lgpl-sources.sh` and its use in `release.yml` before the LGPL download step; verify `scenario_release_packaging_lgpl_source_lists_merged_per_platform` and `scenario_release_packaging_differing_lgpl_source_lists_fail_the_release` (unix-only tests that run the script on temp dirs with fixture lists, plus a check that `release.yml` calls it)
-- [ ] 2.3 Release workflow dry run (`gh workflow run release.yml` on the branch; verify: the `release-notes` artifact holds the merged list, the per-platform lists and the libfuse source)
+- [x] 2.3 Release workflow dry run (`gh workflow run release.yml` on the branch; verify: the `release-notes` artifact holds the merged list, the per-platform lists and the libfuse source)
+  Notes: dry run 39899035479 (main, workflow_dispatch, nothing published): the `release-notes` artifact holds
+  `lgpl-sources-{linux,macos,windows}.txt` (identical) and the merged `lgpl-sources.txt` (rawler 0.8.0),
+  `rawler-0.8.0.crate`, and `runtime-source/fuse-3.15.0.tar.xz` and the mount.c patch with the pinned SHA-256s.
 
 ## 3. Copy-card badge
 
