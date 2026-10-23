@@ -17,11 +17,11 @@ The licence notices SHALL contain an AppImage runtime section naming the runtime
 - **THEN** the notices name the runtime, musl, libfuse with its version under LGPL-2.1, squashfuse, zstd, zlib and the AppRun launcher, each with its licence text; and a runtime declaring a component the pin does not list fails the check
 
 ### Requirement: AppImage runtime LGPL source
-The release SHALL attach the source of the LGPL library inside the AppImage runtime at the version the pin names, checked against the pinned checksum, and SHALL fail without it.
+The release SHALL attach the source of the LGPL library inside the AppImage runtime at the version the pin names and, for relinking against a modified copy, the source of the code linked with it (the runtime program at its pinned commit and squashfuse), each from a byte-stable source and checked against the pinned checksum, and SHALL fail without them.
 
 #### Scenario: Release attaches the AppImage runtime LGPL source
 - **WHEN** the release workflow and the runtime pin are read
-- **THEN** the release job downloads the libfuse source the pin names, checks its checksum, attaches it to the release and fails when the download or the check fails
+- **THEN** the release workflow fetches the libfuse source, the runtime's source and the squashfuse source the pin names, checks each checksum (and the runtime commit's tree), attaches them to the release and fails when a fetch or a check fails
 
 ### Requirement: Per-platform LGPL source lists
 Each platform's package job SHALL write its LGPL source list under a name unique to that platform, and the release job SHALL merge the lists into their union and fail if any platform's list is missing or differs from the union.

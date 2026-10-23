@@ -218,6 +218,19 @@ source lists and the merge script 0.5 day; (c) badge label, chip width cap and t
 diagnosis and the two fixes 1.5 days; (e) toolbar clusters and the shared runner-up 0.5-1 day. On top: one
 `cargo xtask package --docker` run, one release-workflow dry run, a corpus gate run for (e) and a screenshot recapture.
 
+## Gate-review fixes
+
+- **Timing pass (ADR-0076).** The pass ran `cargo test -p <package>`, which resolves features for that package and
+  rebuilt the dependency graph (378 crates, 22 min on GitHub). It now selects `--workspace` with `--test` filters,
+  the main pass's selection, so it reuses its build. The rule covers every crate's debug-build wall-clock bounds:
+  ps-scan's 250 ms pause and cancel and the CLI's 1 s Ctrl-C exit join it, and the macOS and Windows jobs run the
+  engine ones in their own step. The marker check reads every source file and fails on any marker the pass cannot
+  run.
+- **Relinking sources (ADR-0077).** The release also attaches type2-runtime at `dd6cebe` (a deterministic
+  `git archive` tar, checked against the commit's tree hash and a SHA-256) and the squashfuse 0.5.2 release file,
+  made by `cargo xtask runtime-sources` in a read-only job.
+- **Chips.** `review_kit::chip` takes an id and shows its full label as a tooltip.
+
 ## Verification
 
 - `cargo test -p xtask package` (pin parsing, runtime extraction, normalization, components, notices section,
