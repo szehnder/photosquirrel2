@@ -17,7 +17,7 @@
 
 ## 3. Copy-card badge
 
-- [ ] 3.1 `edge_chip` label "Resized copy{via}" with the full sentence as tooltip and the id `duplicates-edge-{n}`; `review_kit::chip` caps its width and ellipsizes its label; verify `scenario_duplicate_review_copy_badge_stays_within_its_card` (default and largest UI font size)
+- [x] 3.1 `edge_chip` label "Resized copy{via}" with the full sentence as tooltip and the id `duplicates-edge-{n}`; `review_kit::chip` caps its width and ellipsizes its label; verify `scenario_duplicate_review_copy_badge_stays_within_its_card` (default and largest UI font size)
 - [ ] 3.2 Recapture `docs/screenshots/duplicates-group-dark.png` and `-light.png` (`cargo xtask screenshot` on the demo library, duplicates view) and review: badge inside the card, nothing else clipped
 
 ## 4. Flaky timing tests

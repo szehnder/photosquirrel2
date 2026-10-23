@@ -748,3 +748,53 @@ fn why_compare_line_skips_byte_identical_copies(cx: &mut TestAppContext) {
     let m = &d.members()[n - 1];
     assert!(!identical(&d, m), "{line} names an identical copy");
 }
+
+/// The copy badge fits its card: short wording ("Resized copy of the keeper"), and at any font size it is cut
+/// with an ellipsis inside the card's content area instead of running past the card's border.
+#[gpui_kit::test]
+fn scenario_duplicate_review_copy_badge_stays_within_its_card(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let resized_of_keeper = |d: &ReviewDetail| {
+        d.members().get(1).is_some_and(|m| {
+            m.edge == MemberEdge::Derivative && d.matched_label(m.file) == " of the keeper"
+        })
+    };
+    let d = open_group(&view, &backend, &mut cx, resized_of_keeper);
+    let (label, tip) = duplicates::edge_label(&d, &d.members()[1]);
+    assert_eq!(label, "Resized copy of the keeper");
+    assert_eq!(
+        tip,
+        "Same image, resized or recompressed, matched against the keeper"
+    );
+    for size in [
+        ps_model::settings::DEFAULT_UI_FONT_SIZE,
+        ps_model::settings::MAX_UI_FONT_SIZE,
+    ] {
+        cx.update(|_, cx| {
+            ui_workspace::settings::AppSettings::update(cx, |s| s.appearance.ui_font_size = size)
+                .unwrap();
+        });
+        settle(&view, &mut cx);
+        let card = bounds("duplicates-member-2", &mut cx);
+        // The card's padding: the chip starts that far from the card's left border.
+        let pad = bounds("duplicates-edge-2", &mut cx).left() - card.left();
+        assert!(
+            pad > gpui_kit::px(0.0),
+            "{size} px: the badge starts at the card's border"
+        );
+        // The label, not just the chip's box: a label wider than its chip spills over it, and the card clips it
+        // at its border.
+        for id in ["duplicates-edge-2", "duplicates-edge-2-label"] {
+            let badge = bounds(id, &mut cx);
+            assert!(
+                badge.left() >= card.left() + pad
+                    && badge.right() <= card.right() - pad
+                    && badge.top() >= card.top()
+                    && badge.bottom() <= card.bottom()
+                    && badge.size.width > gpui_kit::px(0.0),
+                "{size} px: {id} is not inside the card's content area ({badge:?} in {card:?}, padding {pad:?})"
+            );
+        }
+    }
+}

@@ -927,41 +927,70 @@ pub fn group_composition(d: &ReviewDetail) -> Vec<(String, String)> {
     rows
 }
 
-fn edge_chip(d: &ReviewDetail, m: &GroupMember, cx: &App) -> Div {
-    let colors = *ui_theme::colors(cx);
+/// The member's join badge and its tooltip: "Keeper", "Exact copy of the keeper", "Resized copy of #2", ...,
+/// short enough for a card at the default font size, with the full wording in the tooltip.
+pub fn edge_label(d: &ReviewDetail, m: &GroupMember) -> (String, String) {
     let via = d.matched_label(m.file);
+    let against = via.strip_prefix(" of ").unwrap_or_default();
+    let matched = |what: &str| {
+        if against.is_empty() {
+            what.to_owned()
+        } else {
+            format!("{what}, matched against {against}")
+        }
+    };
     match m.edge {
-        MemberEdge::Keeper => icon_chip(
-            IconName::Crown,
-            "Keeper",
-            colors.on_accent,
-            colors.accent,
-            cx,
+        MemberEdge::Keeper => (
+            "Keeper".to_owned(),
+            "Keeper: the copy export takes".to_owned(),
         ),
-        MemberEdge::Exact => chip(
+        MemberEdge::Exact => (
             format!("Exact copy{via}"),
+            matched("Exact copy, byte for byte"),
+        ),
+        MemberEdge::Derivative => (
+            format!("Resized copy{via}"),
+            matched("Same image, resized or recompressed"),
+        ),
+        MemberEdge::UserMerge => (format!("Merged by you{via}"), matched("Merged by you")),
+    }
+}
+
+/// The badge of member `n` ([`edge_label`]): `duplicates-edge-{n}` and its label `duplicates-edge-{n}-label` for
+/// tests.
+fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElement {
+    let colors = *ui_theme::colors(cx);
+    let (label, tip) = edge_label(d, m);
+    let (fg, bg) = match m.edge {
+        MemberEdge::Keeper => (colors.on_accent, colors.accent),
+        MemberEdge::Exact => (
             colors.tone_text(colors.success),
             ui_theme::Colors::chip_bg(colors.success),
-            cx,
         ),
         MemberEdge::Derivative => {
             let close = m.phash_distance.unwrap_or(0) >= CLOSE_PHASH
                 || m.dhash_distance.unwrap_or(0) >= CLOSE_DHASH;
             let tone = if close { colors.warning } else { colors.info };
-            chip(
-                format!("Same image, resized or recompressed{via}"),
-                colors.tone_text(tone),
-                ui_theme::Colors::chip_bg(tone),
-                cx,
-            )
+            (colors.tone_text(tone), ui_theme::Colors::chip_bg(tone))
         }
-        MemberEdge::UserMerge => chip(
-            format!("Merged by you{via}"),
-            colors.accent_text,
-            colors.accent_soft,
-            cx,
-        ),
-    }
+        MemberEdge::UserMerge => (colors.accent_text, colors.accent_soft),
+    };
+    let tip = SharedString::from(tip);
+    chip_frame(fg, bg, cx)
+        .id(SharedString::from(format!("duplicates-edge-{n}")))
+        .test_support()
+        .child(
+            chip_label(label)
+                .id(SharedString::from(format!("duplicates-edge-{n}-label")))
+                .test_support(),
+        )
+        .when(m.edge == MemberEdge::Keeper, |c| {
+            c.child(chip_icon(IconName::Crown, fg))
+        })
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+        })
+        .into_any_element()
 }
 
 impl DuplicatesView {
@@ -1486,7 +1515,7 @@ impl DuplicatesView {
                 v_flex()
                     .p(Tokens::space(3.0))
                     .gap(Tokens::space(2.0))
-                    .child(edge_chip(d, m, cx))
+                    .child(edge_chip(d, m, n, cx))
                     .child(
                         v_flex()
                             .min_w_0()

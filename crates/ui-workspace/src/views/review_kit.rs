@@ -272,11 +272,20 @@ pub fn action_button<V: 'static>(
         .into_any_element()
 }
 
-/// A small rounded label ("Exact copy", "people").
+/// A small rounded label ("Exact copy", "people"). It never grows wider than its container: a label that does
+/// not fit is cut with an ellipsis (give such chips a tooltip with the full wording).
 pub fn chip(text: impl Into<SharedString>, fg: Hsla, bg: Hsla, cx: &App) -> Div {
+    chip_frame(fg, bg, cx).child(chip_label(text))
+}
+
+/// The chip's box without its label: capped at the container's width and clipping what does not fit.
+pub fn chip_frame(fg: Hsla, bg: Hsla, cx: &App) -> Div {
     let _ = cx;
     h_flex()
         .flex_none()
+        .max_w_full()
+        .min_w_0()
+        .overflow_hidden()
         .h(Tokens::size(20.0))
         .px(Tokens::space(2.0))
         .gap(Tokens::space(1.0))
@@ -286,10 +295,19 @@ pub fn chip(text: impl Into<SharedString>, fg: Hsla, bg: Hsla, cx: &App) -> Div 
         .text_size(Tokens::text_xs())
         .font_weight(FontWeight::MEDIUM)
         .text_color(fg)
+}
+
+/// A chip's label: one line that shrinks with the chip and ends in an ellipsis when cut.
+pub fn chip_label(text: impl Into<SharedString>) -> Div {
+    div()
+        .min_w_0()
+        .whitespace_nowrap()
+        .overflow_hidden()
+        .text_ellipsis()
         .child(text.into())
 }
 
-/// A chip with a leading icon.
+/// A chip with an icon after its label.
 pub fn icon_chip(
     icon: IconName,
     text: impl Into<SharedString>,
@@ -297,7 +315,14 @@ pub fn icon_chip(
     bg: Hsla,
     cx: &App,
 ) -> Div {
-    chip(text, fg, bg, cx).child(Icon::new(icon).size(Tokens::icon_sm()).text_color(fg))
+    chip(text, fg, bg, cx).child(chip_icon(icon, fg))
+}
+
+/// The icon of an [`icon_chip`], kept at its size when the label shrinks.
+pub fn chip_icon(icon: IconName, fg: Hsla) -> Div {
+    div()
+        .flex_none()
+        .child(Icon::new(icon).size(Tokens::icon_sm()).text_color(fg))
 }
 
 /// A toggle chip for filter bars.
