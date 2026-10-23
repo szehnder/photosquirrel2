@@ -163,6 +163,18 @@ What was observed while writing this design (read-only; nothing was built or run
 - **Diagnose before fixing.** Task 4.1 runs each test 20 times under a parallel `cargo test` load and records
   the failure rate and, for the frame test, wall vs CPU p95; if the CPU-time diff still exceeds 1 ms, the
   rate-dependent cost is real and is fixed in the dashboard instead.
+- **What the diagnosis found (task 4.1 notes).** Cancel: confirmed; the label lagged the stopped engine by
+  68-200 ms. Frame cost: the preemption hypothesis was refuted (wall and CPU p95 within 1% in 18 of 20 loaded
+  runs); slow periods hitting one rate's 15-frame block moved the p95, which the frame-by-frame alternation
+  addresses, so the comparison also flips which rig renders first each pair and takes 400 frames per rate (the
+  p95 of 120 is the 7th-worst frame and moves with a handful of slow ones). CPU time stays the measure (the spec
+  defines it so, and it does remove preemption where there is some).
+- **Not fixed by this change.** Under a heavy parallel load (load average ~20 on 16 threads) two things remain
+  outside the dashboard: the engine's own stop after a cancel (drain plus the final catalog commit on a shared
+  disk) sometimes exceeds 250 ms from the click, and render-thread CPU time itself inflates past 8.3 ms (SMT
+  siblings and clocks are shared). Both bounds are kept; the loaded verification of tasks 4.3 and 4.4 stays open.
+  The `scan_real` bound now counts from the click (after the frame the click lands on), because the click's
+  handler itself waits for the engine; counting after the handler, as before, would exclude the engine's stop.
 
 ### (e) Small fixes
 - **Toolbar.** Remove the two divider `div`s; wrap the three filter clusters in `h_flex().flex_none()` groups
@@ -171,10 +183,13 @@ What was observed while writing this design (read-only; nothing was built or run
   `crates/ui-workspace/tests/gallery.rs` sweeps window
   widths 960-1920 px with the inspector closed and open.
 - **Why this copy (ADR-0074).** `Ranking` and `Group` get `runner_up: Option<FileId>` (`#[serde(default)]`, so
-  stored rows still deserialize); `rank` picks it as the ADR says (content identity from `DedupInput::content`,
-  keeper set from `keeper_set::companion`) and passes it to `reason`. `GroupDetail`/`ReviewDetail` expose it;
-  `why_compare_line` uses it when present and keeps today's rule only for rows without it. Keeper choice is
-  unchanged, so `photosquirrel-cli eval-corpus` results must be identical.
+  stored rows still deserialize); `rank` picks it as the ADR says (content identity from `DedupInput::exact_key`,
+  keeper set from `keeper_set::companion`) and passes it to `reason`. The catalog keeps no new column: the stored
+  reasons array's first element (the deciding reason, the one stated against the runner-up) carries
+  `"runner_up": <file id>` (`ps_catalog::groups::reason_runner_up`), so no migration is needed and rows stored
+  before have none. `GroupDetail`/`ReviewDetail` expose it; `why_compare_line` uses it when present and keeps
+  today's rule only for rows without it. Keeper choice is unchanged, so `photosquirrel-cli eval-corpus` results
+  must be identical.
 
 ## Risks / Trade-offs
 

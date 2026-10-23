@@ -147,6 +147,12 @@ impl ScanService {
         self.engine.snapshot()
     }
 
+    /// Wait at most `limit` for the current run to stop (after [`ScanService::cancel`]); whether it has. Call
+    /// off the UI thread.
+    pub fn wait_stopped(&self, limit: std::time::Duration) -> bool {
+        self.engine.wait_stopped(limit)
+    }
+
     /// Block until the current run ends (call off the UI thread).
     pub fn wait(&self) -> Option<RunSummary> {
         self.engine.wait()

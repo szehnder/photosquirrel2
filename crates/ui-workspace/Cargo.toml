@@ -29,5 +29,9 @@ rusqlite.workspace = true
 ps-fixtures.workspace = true
 image.workspace = true
 
+# The frame-cost check reads the rendering thread's CPU clock (scan_dashboard.rs).
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["time"] }
+
 [lints]
 workspace = true

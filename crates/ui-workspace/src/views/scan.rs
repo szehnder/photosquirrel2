@@ -22,6 +22,8 @@ use crate::service::Loadable;
 
 /// The dashboard samples at most this often (ADR-0019).
 pub const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
+/// How long a cancel waits for the engine to stop before the dashboard samples anyway.
+pub const CANCEL_WAIT: Duration = Duration::from_secs(2);
 /// Points per sparkline (one per second of run time).
 pub const SPARK_POINTS: usize = 60;
 
@@ -438,8 +440,19 @@ impl ScanMonitor {
         self.control(Control::Resuming, move |b| b.resume_run(run), cx);
     }
 
+    /// Cancel the run and wait (on the background task, at most [`CANCEL_WAIT`]) until the engine has stopped
+    /// it, so the snapshot `control` takes right after already reads cancelled instead of the next periodic
+    /// sample (scan-progress "Pause, resume and cancel").
     pub fn cancel(&mut self, cx: &mut Context<'_, Self>) {
-        self.control(Control::Cancelling, |b| b.cancel(), cx);
+        self.control(
+            Control::Cancelling,
+            |b| {
+                b.cancel()?;
+                b.wait_stopped(CANCEL_WAIT);
+                Ok(())
+            },
+            cx,
+        );
     }
 
     pub fn show_all_errors(&mut self, cx: &mut Context<'_, Self>) {

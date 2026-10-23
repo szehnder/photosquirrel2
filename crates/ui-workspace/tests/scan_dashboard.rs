@@ -363,6 +363,38 @@ fn scenario_scan_progress_cancel_from_dashboard(cx: &mut TestAppContext) {
     assert_eq!(label("scan-resume", &mut r.cx).as_deref(), Some("Resume"));
 }
 
+/// The engine needs 30 ms to stop a cancelled run and the next periodic sample is 100 ms away: the dashboard
+/// shows Cancelled as soon as the run has stopped, with the GPUI clock not advanced at all.
+#[gpui_kit::test]
+fn scenario_scan_progress_cancelled_shown_when_the_run_stops(cx: &mut TestAppContext) {
+    let mut config = FakeConfig::two_sources(500.0);
+    config.cancel_ms = 30;
+    let mut r = rig(cx, config);
+    start_all(&mut r);
+    r.tick(1_000);
+    let before = r.backend.scan.snapshots_taken();
+    click("scan-cancel", &mut r.cx);
+    assert_eq!(
+        label("scan-status", &mut r.cx).as_deref(),
+        Some("Cancelled"),
+        "not shown when the run stopped"
+    );
+    assert_eq!(label("scan-resume", &mut r.cx).as_deref(), Some("Resume"));
+    // Only the sample the cancel itself takes: no periodic sample happened (the clock did not move).
+    assert_eq!(r.backend.scan.snapshots_taken() - before, 1);
+    // Without waiting for the engine the dashboard would still read the running run.
+    let fake = FakeScanService::new({
+        let mut c = FakeConfig::two_sources(500.0);
+        c.cancel_ms = 30;
+        c
+    });
+    fake.start(&[]).unwrap();
+    fake.cancel().unwrap();
+    assert_eq!(fake.peek().unwrap().status, RunStatus::Running);
+    assert!(fake.wait_stopped(100));
+    assert_eq!(fake.peek().unwrap().status, RunStatus::Cancelled);
+}
+
 #[gpui_kit::test]
 fn scenario_scan_progress_resume_from_dashboard(cx: &mut TestAppContext) {
     let mut r = rig(cx, FakeConfig::two_sources(500.0));
@@ -421,17 +453,42 @@ fn scenario_scan_progress_snapshot_sampled_at_most_10_hz(cx: &mut TestAppContext
     assert!(taken >= 40, "the dashboard keeps sampling ({taken})");
 }
 
+/// The calling thread's CPU time, where the platform reports it per thread.
+fn thread_cpu_time() -> Option<Duration> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let t = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+        Some(Duration::new(t.tv_sec as u64, t.tv_nsec as u32))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// One dashboard frame: wall time and the rendering thread's CPU time (wall time where there is no per-thread
+/// clock).
+#[derive(Clone, Copy, Debug)]
+struct Frame {
+    wall: Duration,
+    cpu: Duration,
+}
+
 /// Let the live sampling loop take `frames` snapshots of the running scan (one per 100 ms of the fake clock) and
-/// time the dashboard frame that renders each; returns the frame times.
-fn frame_times(r: &mut Rig, frames: usize) -> Vec<Duration> {
+/// time the dashboard frame that renders each.
+fn frame_times(r: &mut Rig, frames: usize) -> Vec<Frame> {
     let mut times = Vec::with_capacity(frames);
     for _ in 0..frames {
         r.tick(100);
         let t = r.cx.update(|window, cx| {
-            let t0 = Instant::now();
+            let (t0, c0) = (Instant::now(), thread_cpu_time());
             window.refresh();
             window.render_frame(cx);
-            t0.elapsed()
+            let wall = t0.elapsed();
+            let cpu = c0
+                .zip(thread_cpu_time())
+                .map_or(wall, |(c0, c1)| c1.saturating_sub(c0));
+            Frame { wall, cpu }
         });
         times.push(t);
     }
@@ -448,7 +505,7 @@ fn scenario_scan_progress_ui_cost_independent_of_rate(cx: &mut TestAppContext) {
     // Two apps, each with a live run on the simulated engine sampled by the dashboard's own loop.
     let mut slow_app = cx.new_app();
     let mut fast_app = cx.new_app();
-    // Large sources, so the fast run is still going after ~15 s of sampling (the layout is the same at both rates).
+    // Large sources, so the fast run is still going after ~41 s of sampling (the layout is the same at both rates).
     let big = |fps: f64| {
         let mut c = FakeConfig::two_sources(fps);
         for s in &mut c.sources {
@@ -464,14 +521,23 @@ fn scenario_scan_progress_ui_cost_independent_of_rate(cx: &mut TestAppContext) {
     let done = |r: &mut Rig| r.snap(|s| s.processed).unwrap_or(0);
     let (slow0, fast0) = (taken(&slow_rig), taken(&fast_rig));
     let (slow_done0, fast_done0) = (done(&mut slow_rig), done(&mut fast_rig));
-    // Warm up layout and text caches.
-    frame_times(&mut slow_rig, 10);
-    frame_times(&mut fast_rig, 10);
-    // Interleave short rounds so machine noise (other tests running in parallel) hits both rates alike.
+    // Alternate the two rates frame by frame (and which goes first, so neither always renders right after the
+    // other app), so a slow period of the machine (other tests running in parallel) hits both series alike; the
+    // first 10 pairs warm up layout and text caches. 400 frames per rate: on a loaded machine single frames
+    // vary a lot, and the p95 of a short series moves with which frames a slow period happened to hit.
     let (mut slow, mut fast) = (Vec::new(), Vec::new());
-    for _ in 0..8 {
-        slow.extend(frame_times(&mut slow_rig, 15));
-        fast.extend(frame_times(&mut fast_rig, 15));
+    for i in 0..410 {
+        let (s, f) = if i % 2 == 0 {
+            let s = frame_times(&mut slow_rig, 1);
+            (s, frame_times(&mut fast_rig, 1))
+        } else {
+            let f = frame_times(&mut fast_rig, 1);
+            (frame_times(&mut slow_rig, 1), f)
+        };
+        if i >= 10 {
+            slow.extend(s);
+            fast.extend(f);
+        }
     }
     // The loop really sampled both runs and the shown progress moved at very different rates.
     assert!(taken(&slow_rig) - slow0 >= 100, "slow run sampled");
@@ -482,9 +548,19 @@ fn scenario_scan_progress_ui_cost_independent_of_rate(cx: &mut TestAppContext) {
         fast_moved > slow_moved * 20,
         "progress {slow_moved} vs {fast_moved} files"
     );
-    let (slow, fast) = (p95(slow), p95(fast));
+    // Frame time is the rendering thread's CPU time (scan-progress "Constant UI cost"): time the thread spends
+    // preempted by other processes is not the dashboard's cost. Wall time is printed beside it.
+    let wall = |v: &[Frame]| p95(v.iter().map(|f| f.wall).collect());
+    let cpu = |v: &[Frame]| p95(v.iter().map(|f| f.cpu).collect());
+    eprintln!(
+        "dashboard frame p95 (render-thread CPU): {:?} at 100 files/s, {:?} at 20,000 files/s; wall {:?} / {:?}",
+        cpu(&slow),
+        cpu(&fast),
+        wall(&slow),
+        wall(&fast)
+    );
+    let (slow, fast) = (cpu(&slow), cpu(&fast));
     let diff = slow.abs_diff(fast);
-    eprintln!("dashboard frame p95: {slow:?} at 100 files/s, {fast:?} at 20,000 files/s");
     assert!(
         diff < ps_fixtures::ci_slack(Duration::from_millis(1)),
         "p95 differs by {diff:?}"

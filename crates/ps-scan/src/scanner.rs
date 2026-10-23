@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -712,6 +713,25 @@ impl Scanner {
         let a = self.current()?;
         a.ctx.ctl.cancel();
         Ok(a.run)
+    }
+
+    /// Wait at most `limit` for the current (or last) run to stop, without taking its summary: after
+    /// [`Scanner::cancel`], so the run reads `cancelled` in the next snapshot. Whether it has stopped (`true` when
+    /// there is no run).
+    pub fn wait_stopped(&self, limit: Duration) -> bool {
+        let Some(a) = self.active.lock().clone() else {
+            return true;
+        };
+        let start = Instant::now();
+        loop {
+            if a.finished() {
+                return true;
+            }
+            if start.elapsed() >= limit {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 
     /// Block until the current (or last) run ends; its summary.

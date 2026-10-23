@@ -423,3 +423,23 @@ window size) when the delay is long; focus can still move.
 - `--demo-ai-insights N` on a `photosquirrel-cli demo` data folder describes each image from the scene it was
   rendered from (`<data-dir>/demo-corpus/truth.json` -> `ps_fixtures::plan::scenes_by_content`), so the captions
   in AI Review and the inspector match the thumbnails.
+
+## Chips, wrapping toolbars and timing tests (release-hygiene)
+- **A `v_flex` column stretches its children to its width** (`align-items: stretch`), so a `flex_none` chip in a
+  card column always has a box exactly as wide as the card: a too-long label spills out of that box and the card's
+  `overflow_hidden` cuts it at the border. Test the *label's* bounds, not the chip's (`chip_label` in
+  `review_kit.rs` takes an id), and give the label `min_w_0().whitespace_nowrap().overflow_hidden()
+  .text_ellipsis()` inside a `max_w_full().min_w_0().overflow_hidden()` chip.
+- The headless text system (`NoopTextSystem`) lays out every character 0.6 em wide, wider than real proportional
+  fonts, so width tests are on the safe side; `Tokens` sizes are rems, so card and text scale together with the
+  UI font size.
+- Separators between wrapping toolbar groups: use a wider `gap_x` between `flex_none` cluster `div`s instead of
+  divider elements, which a wrap can leave alone at a line end. Give clusters `max_w_full().flex_wrap()` too, or
+  one wider than the narrowest centre (960 px, inspector open) overflows.
+- Timing tests on a loaded machine: `clock_gettime(ThreadCPUTime)` (rustix `time`) gives the render thread's CPU
+  time, but in the dashboard frame test wall and CPU time were equal within 1% even at load 23 on 16 threads:
+  what moved the p95 was a slow period hitting one series' block of frames. Alternate the compared rigs frame by
+  frame (ABAB, flipping which goes first) instead of in rounds.
+- Background work in headless tests runs on the test thread: a control that blocks its background task (the
+  cancel's `wait_stopped`) blocks `run_until_parked` for that long in real time, which is fine for the real
+  engine (its threads keep running) and must not wait on the GPUI fake clock (it would never advance).

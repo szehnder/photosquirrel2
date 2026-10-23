@@ -8526,6 +8526,7 @@ dependencies = [
  "ps-model",
  "ps-service",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

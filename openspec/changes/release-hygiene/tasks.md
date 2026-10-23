@@ -22,10 +22,35 @@
 
 ## 4. Flaky timing tests
 
-- [ ] 4.1 Diagnose: run `dashboard_controls_on_the_real_engine` and `scenario_scan_progress_ui_cost_independent_of_rate` 20 times each while a parallel `cargo test --workspace` runs; record the failure rate, the cancel split (click to engine stopped, engine stopped to label) and wall vs thread-CPU p95 in this task's notes (verify: notes recorded; the split confirms or refutes the sampling-tick cause)
-- [ ] 4.2 `Scanner::wait_stopped`, `ScanService::wait_stopped`, `ScanBackend::wait_stopped` (default no wait; fake backend on its clock), used by `ScanMonitor::cancel`; verify `scenario_scan_progress_cancelled_shown_when_the_run_stops` (fake backend: Cancelled shown with the fake clock not advanced to the next sample) and `scenario_scan_progress_snapshot_sampled_at_most_10_hz` still passing
+- [x] 4.1 Diagnose: run `dashboard_controls_on_the_real_engine` and `scenario_scan_progress_ui_cost_independent_of_rate` 20 times each while a parallel `cargo test --workspace` runs; record the failure rate, the cancel split (click to engine stopped, engine stopped to label) and wall vs thread-CPU p95 in this task's notes (verify: notes recorded; the split confirms or refutes the sampling-tick cause)
+  Notes (16 logical CPUs; load: `cargo test --workspace -- --test-threads=4` in a loop, load average 14-23; each test
+  binary run 20 times directly, with the split and both clocks printed):
+  - Cancel, before the fix: 12 of 20 runs failed. The engine had stopped 106-201 ms after the click in 19 runs (one
+    had not stopped at 272 ms), and the label followed 68-200 ms (median ~150 ms) after that: the next periodic
+    sample, stretched because the test's fake clock advances only 10 ms per 10 ms of real pump time. Confirms the
+    sampling-tick cause.
+  - Frame cost, before the fix: 5 of 20 failed (3 on the 1 ms difference, 2 over 8.3 ms). Wall and render-thread
+    CPU p95 were within 1% of each other in 18 runs: preemption is *not* what moved the p95. The difference came
+    from slow periods of the machine hitting one rate's block of 15 frames (CPU-time diff 1.43 ms in one run), on
+    top of a constant ~0.15 ms the 100 files/s layout costs more (measured unloaded with every frame order: not
+    an order effect, not rate-dependent work). The two over-budget runs had CPU p95 8.6 and 12.5 ms: under that
+    load the CPU time itself inflates (shared SMT cores, lower clocks), which no clock choice removes.
+  - After the fixes (wait_stopped; frame-by-frame alternation with flipped order, 400 frames per rate, CPU time):
+    the label shows 4-18 ms after the engine stopped in all 20 loaded runs (was 68-200 ms). 7 of 20 still missed
+    250 ms because the engine itself took 252-516 ms from the click to stop (draining, plus the final catalog
+    commit on a disk shared with the load; unloaded it stops in 45-80 ms after the request and the label shows
+    150-215 ms after the click, including ~40 ms of headless click dispatch). Frame test: 4 of 20 failed, 3 with
+    CPU p95 10.0-10.6 ms over 8.3 ms and 1 by 1.01 ms at a CPU p95 of 11-12 ms; in the other 16 the two rates
+    were 0.03-0.8 ms apart.
+- [x] 4.2 `Scanner::wait_stopped`, `ScanService::wait_stopped`, `ScanBackend::wait_stopped` (default no wait; fake backend on its clock), used by `ScanMonitor::cancel`; verify `scenario_scan_progress_cancelled_shown_when_the_run_stops` (fake backend: Cancelled shown with the fake clock not advanced to the next sample) and `scenario_scan_progress_snapshot_sampled_at_most_10_hz` still passing
 - [ ] 4.3 `scan_real` prints the cancel split on failure and keeps the 250 ms bound (verify: 20 loaded runs of `dashboard_controls_on_the_real_engine` pass)
+  Status: implemented (split printed on success and failure; the bound is now counted from the click, since the
+  click handler itself waits for the engine); 20 loaded runs do not all pass: 7 of 20 failed on the engine's own
+  stop time under load (see 4.1), with the dashboard adding 4-18 ms. Left open.
 - [ ] 4.4 `frame_times` measures render-thread CPU time (rustix `ThreadCPUTime` on Linux and macOS, wall time elsewhere) and alternates the two rigs frame by frame; bounds unchanged (verify: `scenario_scan_progress_ui_cost_independent_of_rate` passes 20 loaded runs; a deliberate per-file cost injected in a scratch build, e.g. re-keying every recent-photo thumbnail per 1,000 files, makes it fail)
+  Status: implemented; an injected per-file cost (one element per 1,000 processed files) fails it (p95 4.5 ms vs
+  26.6 ms), one per 20,000 files adds 0.6 ms and passes. 20 loaded runs do not all pass: 4 of 20 failed, 3 on the
+  absolute 8.3 ms because render-thread CPU time inflates to 10-10.6 ms under that load (see 4.1). Left open.
 
 ## 5. Small fixes
 

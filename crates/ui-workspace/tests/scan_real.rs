@@ -27,6 +27,7 @@ use ui_workspace::views::scan::ScanHub;
 struct Real {
     shell: Entity<Shell>,
     cx: VisualTestContext,
+    backend: Arc<CatalogBackend>,
 }
 
 impl Real {
@@ -56,18 +57,42 @@ impl Real {
         }
     }
 
-    /// The status line must show `want` within 250 ms of real time.
-    fn status_within(&mut self, want: &str) {
-        let start = Instant::now();
+    /// The engine's own status, read directly (not through the dashboard's samples).
+    fn engine_status(&self) -> Option<RunStatus> {
+        self.backend.scan().ok()?.snapshot().map(|s| s.status)
+    }
+
+    /// Click `id`; the status line must then show `want` within 250 ms of real time from the click (the frame
+    /// the click lands on is rendered first, outside the bound). `engine` is the run status the engine reports
+    /// once it has acted: the time is split into click to engine and engine to label (printed, and in the failure
+    /// message), so a recurrence points at the engine or at the dashboard.
+    fn control(&mut self, id: &str, want: &str, engine: RunStatus) {
+        use gpui_kit::test::TestWindowExt as _;
+        let target = gpui_kit::SharedString::from(id.to_owned());
+        self.cx.update(|window, cx| window.render_frame(cx));
+        let clicked = Instant::now();
+        self.cx.update(|window, cx| window.click(target, cx));
+        self.cx.run_until_parked();
+        let mut engine_at = None;
         loop {
-            if label("scan-status", &mut self.cx).as_deref() == Some(want) {
+            if engine_at.is_none() && self.engine_status() == Some(engine) {
+                engine_at = Some(clicked.elapsed());
+            }
+            let shown = label("scan-status", &mut self.cx);
+            let since = clicked.elapsed();
+            let split = format!(
+                "click to engine {}, engine to label {}",
+                engine_at.map_or("not yet".into(), |t: Duration| format!("{t:?}")),
+                engine_at.map_or("-".into(), |t| format!("{:?}", since.saturating_sub(t)))
+            );
+            assert!(
+                since <= ps_fixtures::ci_slack(Duration::from_millis(250)),
+                "status {shown:?} is not {want:?} within 250 ms: {since:?} since the click; {split}"
+            );
+            if shown.as_deref() == Some(want) {
+                eprintln!("{want} after {since:?}: {split}");
                 return;
             }
-            assert!(
-                start.elapsed() <= ps_fixtures::ci_slack(Duration::from_millis(250)),
-                "status {:?} is not {want:?} within 250 ms",
-                label("scan-status", &mut self.cx)
-            );
             self.pump(10);
         }
     }
@@ -83,13 +108,17 @@ fn open_real(cx: &mut TestAppContext, data: &Path, roots: &[PathBuf], slow: bool
     for r in roots {
         backend.add_source(r).unwrap();
     }
-    init_app(cx, backend, None);
+    init_app(cx, backend.clone(), None);
     let (shell, mut vcx) = open(cx);
     wait_loaded(&shell, &mut vcx);
     let s = shell.clone();
     vcx.update(|w, cx| s.update(cx, |s, cx| s.show_view(ViewId::Sources, w, cx)));
     vcx.run_until_parked();
-    Real { shell, cx: vcx }
+    Real {
+        shell,
+        cx: vcx,
+        backend,
+    }
 }
 
 fn exercise(r: &mut Real, sources: usize, limit: Duration) {
@@ -121,8 +150,7 @@ fn exercise(r: &mut Real, sources: usize, limit: Duration) {
     );
 
     // Pause: shown within 250 ms, then counts stop increasing once the readers have drained.
-    click("scan-pause", &mut r.cx);
-    r.status_within("Paused");
+    r.control("scan-pause", "Paused", RunStatus::Paused);
     r.wait("the workers to drain", limit, |r| {
         r.snap().is_some_and(|s| s.active_workers == 0)
     });
@@ -135,15 +163,13 @@ fn exercise(r: &mut Real, sources: usize, limit: Duration) {
     );
 
     // Resume continues the run.
-    click("scan-resume", &mut r.cx);
-    r.status_within("Scanning");
+    r.control("scan-resume", "Scanning", RunStatus::Running);
     r.wait("more progress", limit, |r| {
         r.snap().is_some_and(|s| s.processed > paused)
     });
 
     // Cancel: shown within 250 ms with Resume offered; resuming continues the same run.
-    click("scan-cancel", &mut r.cx);
-    r.status_within("Cancelled");
+    r.control("scan-cancel", "Cancelled", RunStatus::Cancelled);
     assert_eq!(label("scan-resume", &mut r.cx).as_deref(), Some("Resume"));
     let (run, done) = r.snap().map(|s| (s.run, s.processed)).unwrap();
     click("scan-resume", &mut r.cx);

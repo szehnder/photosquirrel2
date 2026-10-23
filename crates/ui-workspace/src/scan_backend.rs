@@ -182,6 +182,12 @@ pub trait ScanBackend: Send + Sync + 'static {
     fn pause(&self) -> anyhow::Result<()>;
     fn resume(&self) -> anyhow::Result<()>;
     fn cancel(&self) -> anyhow::Result<()>;
+    /// After [`ScanBackend::cancel`]: wait at most `limit` for the run to stop, so the next snapshot reads
+    /// cancelled; whether it has. Blocks: call it on a background task. The default does not wait.
+    fn wait_stopped(&self, limit: std::time::Duration) -> bool {
+        let _ = limit;
+        false
+    }
     /// Continue a cancelled, paused or interrupted run.
     fn resume_run(&self, run: ScanRunId) -> anyhow::Result<()>;
     /// The active (or last) run's progress. Cheap; sampled at most every 100 ms.
@@ -473,6 +479,10 @@ impl ScanBackend for CatalogBackend {
     fn cancel(&self) -> anyhow::Result<()> {
         self.scan()?.cancel()?;
         Ok(())
+    }
+
+    fn wait_stopped(&self, limit: std::time::Duration) -> bool {
+        self.scan().is_ok_and(|s| s.wait_stopped(limit))
     }
 
     fn resume_run(&self, run: ScanRunId) -> anyhow::Result<()> {
@@ -858,6 +868,7 @@ impl DemoBackend {
             tick_ms: 100,
             error_every: (work / 3).max(1),
             skip_percent: 12,
+            cancel_ms: 0,
         };
         let scan = FakeScanService::new(config);
         let all: Vec<SourceId> = real.iter().map(|r| r.id).collect();
@@ -910,6 +921,7 @@ impl DemoBackend {
             tick_ms: 100,
             error_every: 1_900,
             skip_percent: 12,
+            cancel_ms: 0,
         };
         let scan = FakeScanService::new(config);
         let all = [SourceId(1), SourceId(2), SourceId(3)];
@@ -1081,6 +1093,11 @@ impl ScanBackend for DemoBackend {
     fn cancel(&self) -> anyhow::Result<()> {
         self.scan.cancel()?;
         Ok(())
+    }
+
+    /// On the simulated engine's own clock: the GPUI clock does not move.
+    fn wait_stopped(&self, limit: std::time::Duration) -> bool {
+        self.scan.wait_stopped(limit.as_millis() as u64)
     }
 
     fn resume_run(&self, run: ScanRunId) -> anyhow::Result<()> {

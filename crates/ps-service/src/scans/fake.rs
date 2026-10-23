@@ -78,6 +78,9 @@ pub struct FakeConfig {
     pub error_every: u64,
     /// Percent of processed files skipped as not photos.
     pub skip_percent: u64,
+    /// Simulated time from a cancel request until the run has stopped (0: at once). Until then snapshots still
+    /// read running; [`FakeScanService::wait_stopped`] waits it out.
+    pub cancel_ms: u64,
 }
 
 impl FakeConfig {
@@ -99,6 +102,7 @@ impl FakeConfig {
             tick_ms: 100,
             error_every: 0,
             skip_percent: 15,
+            cancel_ms: 0,
         }
     }
 }
@@ -114,6 +118,8 @@ struct State {
     selected: Vec<SourceId>,
     next_run: i64,
     started_at_ms: i64,
+    /// A cancel is under way: the run time at which the run stops.
+    stop_at_ms: Option<u64>,
 }
 
 /// A deterministic, I/O-free scan engine.
@@ -156,6 +162,7 @@ impl FakeScanService {
                 selected: Vec::new(),
                 next_run: 1,
                 started_at_ms: 0,
+                stop_at_ms: None,
             }),
             snapshots: AtomicU64::new(0),
         }
@@ -202,6 +209,7 @@ impl FakeScanService {
         s.status = RunStatus::Running;
         s.elapsed_ms = 0;
         s.started_at_ms = 1_700_000_000_000;
+        s.stop_at_ms = None;
         s.selected = if sources.is_empty() {
             s.config
                 .sources
@@ -250,10 +258,38 @@ impl FakeScanService {
         let mut s = self.lock();
         match (s.run, s.status) {
             (Some(r), RunStatus::Running | RunStatus::Paused) => {
-                s.status = RunStatus::Cancelled;
+                if s.config.cancel_ms == 0 {
+                    s.status = RunStatus::Cancelled;
+                } else if s.stop_at_ms.is_none() {
+                    s.stop_at_ms = Some(s.elapsed_ms + s.config.cancel_ms);
+                }
                 Ok(r)
             }
             _ => Err(FakeError::Idle),
+        }
+    }
+
+    /// Wait for a cancel to take effect, at most `limit_ms` of simulated time; whether the run has stopped.
+    pub fn wait_stopped(&self, limit_ms: u64) -> bool {
+        let mut s = self.lock();
+        let Some(at) = s.stop_at_ms else {
+            return true;
+        };
+        if at <= s.elapsed_ms + limit_ms {
+            s.elapsed_ms = s.elapsed_ms.max(at);
+            Self::stop_if_due(&mut s);
+            true
+        } else {
+            s.elapsed_ms += limit_ms;
+            false
+        }
+    }
+
+    /// A cancel under way takes effect once the run clock reaches its stop time.
+    fn stop_if_due(s: &mut State) {
+        if s.stop_at_ms.is_some_and(|at| at <= s.elapsed_ms) {
+            s.stop_at_ms = None;
+            s.status = RunStatus::Cancelled;
         }
     }
 
@@ -280,6 +316,7 @@ impl FakeScanService {
             s.elapsed_ms += ms;
             Self::settle(&mut s);
         }
+        Self::stop_if_due(&mut s);
     }
 
     fn total_to_process(s: &State) -> u64 {
@@ -311,6 +348,9 @@ impl FakeScanService {
         self.snapshots.fetch_add(1, Ordering::SeqCst);
         let mut s = self.lock();
         let run = s.run?;
+        // A cancel takes effect at this sample if its stop time has passed (the sample right after the request
+        // still reads running); then the clock moves on by one tick.
+        Self::stop_if_due(&mut s);
         if s.status == RunStatus::Running {
             s.elapsed_ms += s.config.tick_ms;
             Self::settle(&mut s);
