@@ -2131,10 +2131,14 @@ mod tests {
             );
             assert_eq!(bytes.len() as u64, real_pin.runtime.size);
         }
-        // And a package built with it passes the check.
-        if let Ok(bytes) =
-            fs::read(root().join("target/packages/PhotoSquirrel-0.1.0-linux-x86_64.AppImage"))
-        {
+        // And a package built with it passes the check (the AppImage of the workspace version, when built).
+        let version = workspace_version(&root()).expect("version");
+        let appimage = artifact_name(&version, Os::Linux, "x86_64", Kind::AppImage);
+        assert!(
+            appimage.ends_with(".AppImage") && appimage.contains(&version),
+            "{appimage}"
+        );
+        if let Ok(bytes) = fs::read(root().join("target/packages").join(&appimage)) {
             check_runtime(&RuntimePin::load(&root()).expect("pin"), &bytes)
                 .expect("the built AppImage");
         }

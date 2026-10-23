@@ -801,17 +801,17 @@ fn scenario_duplicate_review_copy_badge_stays_within_its_card(cx: &mut TestAppCo
     }
 }
 
-/// "Why this copy" and "Next best" compare the keeper with the same member: the best copy that differs from it,
-/// not a byte-identical copy that ranks second (ADR-0074).
-#[gpui_kit::test]
-fn scenario_duplicate_review_why_this_copy_and_next_best_name_the_same_copy(
-    cx: &mut TestAppContext,
-) {
-    let (_tmp, data) = catalog_copy();
-    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
-    let identical = |d: &ReviewDetail, m: &ps_service::groups::GroupMember| {
-        m.edge == MemberEdge::Exact && d.matched_against(m.file) == Some(d.group.keeper)
-    };
+fn identical(d: &ReviewDetail, m: &ps_service::groups::GroupMember) -> bool {
+    m.edge == MemberEdge::Exact && d.matched_against(m.file) == Some(d.group.keeper)
+}
+
+/// A group whose second-ranked copy is byte-identical to the keeper and which also holds a smaller, different copy
+/// (the one "Why this copy" compares against).
+fn open_identical_second_group(
+    view: &Entity<DuplicatesView>,
+    backend: &Arc<CatalogBackend>,
+    cx: &mut VisualTestContext,
+) -> ReviewDetail {
     let smaller = |d: &ReviewDetail, m: &ps_service::groups::GroupMember| {
         let px = |m: &ps_service::groups::GroupMember| {
             u64::from(m.width.unwrap_or(0)) * u64::from(m.height.unwrap_or(0))
@@ -820,7 +820,7 @@ fn scenario_duplicate_review_why_this_copy_and_next_best_name_the_same_copy(
             .member(d.group.keeper)
             .is_some_and(|k| px(m) < px(k))
     };
-    let d = open_group(&view, &backend, &mut cx, |d| {
+    open_group(view, backend, cx, |d| {
         let others: Vec<_> = d
             .members()
             .iter()
@@ -832,7 +832,18 @@ fn scenario_duplicate_review_why_this_copy_and_next_best_name_the_same_copy(
                 .keeper_reasons
                 .first()
                 .is_some_and(|r| r.starts_with("more pixels"))
-    });
+    })
+}
+
+/// "Why this copy" and "Next best" compare the keeper with the same member: the best copy that differs from it,
+/// not a byte-identical copy that ranks second (ADR-0074).
+#[gpui_kit::test]
+fn scenario_duplicate_review_why_this_copy_and_next_best_name_the_same_copy(
+    cx: &mut TestAppContext,
+) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_identical_second_group(&view, &backend, &mut cx);
     let others: Vec<_> = d
         .members()
         .iter()
@@ -856,4 +867,54 @@ fn scenario_duplicate_review_why_this_copy_and_next_best_name_the_same_copy(
     assert!(line.contains(&format!("Next best #{n}: {w}×{h}")), "{line}");
     assert_ne!(d.number_of(others[0].file), Some(n));
     assert!(exists("duplicates-why-compare", &mut cx));
+}
+
+/// A group row stored before groups recorded their runner-up (ADR-0074: `runner_up` defaults to none) still
+/// compares the keeper with the best different copy, not the identical copy ranked second; a group whose other
+/// copies are all identical says so.
+#[gpui_kit::test]
+fn why_compare_line_falls_back_for_rows_without_a_runner_up(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_identical_second_group(&view, &backend, &mut cx);
+    let current = duplicates::why_compare_line(&d).expect("compare line");
+    // The stored row as an older build wrote it: no `runner_up` field.
+    let mut row = serde_json::to_value(&d.group).expect("group json");
+    assert!(
+        row.as_object_mut()
+            .expect("object")
+            .remove("runner_up")
+            .is_some()
+    );
+    let mut old = d.clone();
+    old.group = serde_json::from_value(row).expect("an old row still loads");
+    assert_eq!(old.group.runner_up, None);
+    let line = duplicates::why_compare_line(&old).expect("compare line");
+    assert_eq!(line, current, "the fallback names the same copy");
+    let copy = d
+        .members()
+        .iter()
+        .find(|m| !m.keeper && !m.in_keeper_set && !identical(&d, m))
+        .expect("a different copy");
+    let n = d.number_of(copy.file).expect("its number");
+    assert!(line.contains(&format!("Next best #{n}: ")), "{line}");
+    // With every other copy identical, there is no next best to name: the line says they are identical.
+    let mut same = old.clone();
+    same.group
+        .members
+        .retain(|m| m.keeper || m.in_keeper_set || identical(&d, m));
+    let others = same
+        .members()
+        .iter()
+        .filter(|m| !m.keeper && !m.in_keeper_set)
+        .count();
+    assert!(others >= 1);
+    let line = duplicates::why_compare_line(&same).expect("compare line");
+    let rest = if others == 1 {
+        "The other copy is identical, byte for byte".to_owned()
+    } else {
+        format!("The other {others} copies are identical, byte for byte")
+    };
+    assert!(line.ends_with(&rest), "{line}");
+    assert!(!line.contains("Next best"), "{line}");
 }
