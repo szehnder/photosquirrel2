@@ -402,6 +402,11 @@ window size) when the delay is long; focus can still move.
 - A plain text cell gets a hover tooltip with `.id(..)` (it must be stateful) and
   `.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx))`;
   use it where `text_ellipsis` cuts a value (the Excluded reasons column).
+- `review_kit::chip(id, text, ..)` and `icon_chip(id, ..)` carry that tooltip themselves (release-hygiene gate
+  fixes): a tooltip needs a stateful element, so every chip takes an id, unique among its siblings (a repeated id
+  shares hover state and the tooltips fight). The tooltip is `Tooltip::element(..)` around a `div` with the id
+  `{id}-tip` and `test_support()`, so a headless test can hover it: `simulate_mouse_move(bounds.center(), None,
+  Modifiers::none())`, `advance_clock` past the 500 ms show delay, `run_until_parked`, then look the `-tip` id up.
 - `max_h(window.viewport_size().height * 0.8)` caps an overlay sized in rems (the settings window) so it still
   fits the minimum window size; its body scrolls.
 

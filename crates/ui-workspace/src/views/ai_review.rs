@@ -639,13 +639,21 @@ fn people_badges(i: &InsightItem, cx: &App) -> Vec<AnyElement> {
     let info = colors.tone_text(colors.info);
     if e.people.adults > 0 {
         out.push(
-            icon_chip(IconName::User, e.people.adults.to_string(), info, soft, cx)
-                .into_any_element(),
+            icon_chip(
+                "ai-chip-adults",
+                IconName::User,
+                e.people.adults.to_string(),
+                info,
+                soft,
+                cx,
+            )
+            .into_any_element(),
         );
     }
     if e.people.children > 0 {
         out.push(
             icon_chip(
+                "ai-chip-children",
                 IconName::Baby,
                 format!(
                     "{} child{}",
@@ -668,6 +676,7 @@ fn people_badges(i: &InsightItem, cx: &App) -> Vec<AnyElement> {
         };
         out.push(
             icon_chip(
+                "ai-chip-pets",
                 IconName::PawPrint,
                 label,
                 colors.tone_text(colors.success),
@@ -847,12 +856,12 @@ impl AiReviewView {
                                     .when(demo, |e| {
                                         e.child(
                                             chip(
+                                                "ai-review-demo",
                                                 "Demo data",
                                                 colors.tone_text(colors.warning),
                                                 ui_theme::Colors::chip_bg(colors.warning),
                                                 cx,
-                                            )
-                                            .id("ai-review-demo"),
+                                            ),
                                         )
                                     }),
                             )
@@ -1201,6 +1210,7 @@ impl AiReviewView {
                                             )
                                             .when(!i.corrected.is_empty(), |d| {
                                                 d.child(chip(
+                                                    "ai-chip-edited",
                                                     "edited by you",
                                                     colors.accent_text,
                                                     colors.accent_soft,
@@ -1212,8 +1222,9 @@ impl AiReviewView {
                                         h_flex()
                                             .gap(Tokens::space(1.5))
                                             .flex_wrap()
-                                            .children(cats.into_iter().map(|c| {
+                                            .children(cats.into_iter().enumerate().map(|(n, c)| {
                                                 chip(
+                                                    format!("ai-chip-category-{n}"),
                                                     category_label(c),
                                                     colors.text,
                                                     colors.raised,
@@ -1223,6 +1234,7 @@ impl AiReviewView {
                                             .children(people_badges(i, cx))
                                             .when_some(suggestion, |d, s| {
                                                 d.child(icon_chip(
+                                                    "ai-chip-suggestion",
                                                     IconName::TriangleAlert,
                                                     format!("Exclude as {}?", s.label),
                                                     colors.tone_text(colors.warning),

@@ -498,6 +498,7 @@ impl GalleryInspector {
             )
         });
         let suggestion_chip = crate::views::review_kit::chip(
+            "inspector-ai-suggestion-chip",
             "Suggestion",
             colors.accent_text,
             colors.accent_soft,
@@ -512,6 +513,7 @@ impl GalleryInspector {
         );
         let header = if i.demo {
             header.child(crate::views::review_kit::chip(
+                "inspector-ai-demo",
                 "Demo data",
                 colors.warning,
                 ui_theme::Colors::tint(colors.warning, 0.12),

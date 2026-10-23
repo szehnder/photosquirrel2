@@ -273,9 +273,30 @@ pub fn action_button<V: 'static>(
 }
 
 /// A small rounded label ("Exact copy", "people"). It never grows wider than its container: a label that does
-/// not fit is cut with an ellipsis (give such chips a tooltip with the full wording).
-pub fn chip(text: impl Into<SharedString>, fg: Hsla, bg: Hsla, cx: &App) -> Div {
-    chip_frame(fg, bg, cx).child(chip_label(text))
+/// not fit is cut with an ellipsis, and hovering the chip shows the full label in a tooltip (element `{id}-tip`).
+/// `id` must be unique among the chip's siblings (a tooltip needs a stateful element).
+pub fn chip(
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    fg: Hsla,
+    bg: Hsla,
+    cx: &App,
+) -> impl IntoElement + ParentElement + Styled {
+    let id = id.into();
+    let text = text.into();
+    let tip_id = SharedString::from(format!("{id}-tip"));
+    let tip = text.clone();
+    chip_frame(fg, bg, cx)
+        .id(id)
+        .test_support()
+        .child(chip_label(text))
+        .tooltip(move |window, cx| {
+            let (tip_id, tip) = (tip_id.clone(), tip.clone());
+            gpui_kit::component::tooltip::Tooltip::element(move |_, _| {
+                div().id(tip_id.clone()).test_support().child(tip.clone())
+            })
+            .build(window, cx)
+        })
 }
 
 /// The chip's box without its label: capped at the container's width and clipping what does not fit.
@@ -307,15 +328,16 @@ pub fn chip_label(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// A chip with an icon after its label.
+/// A chip with an icon after its label (and the same tooltip as [`chip`]).
 pub fn icon_chip(
+    id: impl Into<SharedString>,
     icon: IconName,
     text: impl Into<SharedString>,
     fg: Hsla,
     bg: Hsla,
     cx: &App,
-) -> Div {
-    chip(text, fg, bg, cx).child(chip_icon(icon, fg))
+) -> impl IntoElement + ParentElement + Styled {
+    chip(id, text, fg, bg, cx).child(chip_icon(icon, fg))
 }
 
 /// The icon of an [`icon_chip`], kept at its size when the label shrinks.

@@ -1634,7 +1634,7 @@ impl DuplicatesView {
                             .child("Why this copy"),
                     )
                     .when(d.group.chosen_by_you, |e| {
-                        e.child(icon_chip(IconName::Crown, "Chosen by you", colors.accent_text, colors.accent_soft, cx))
+                        e.child(icon_chip("duplicates-chosen", IconName::Crown, "Chosen by you", colors.accent_text, colors.accent_soft, cx))
                     }),
             )
             .children(d.group.keeper_reasons.iter().enumerate().map(|(i, r)| {
@@ -1767,6 +1767,7 @@ impl DuplicatesView {
                 h_flex()
                     .gap(Tokens::space(2.0))
                     .child(icon_chip(
+                        "duplicates-pair-keeper",
                         IconName::Crown,
                         "Keeper",
                         colors.on_accent,
@@ -1775,6 +1776,7 @@ impl DuplicatesView {
                     ))
                     .when(d.is_pair(), |e| {
                         e.child(chip(
+                            "duplicates-pair-note",
                             "RAW + JPEG pair · kept and exported together",
                             colors.accent_text,
                             colors.accent_soft,
@@ -1902,6 +1904,7 @@ impl DuplicatesView {
                             )
                             .when(d.reviewed, |e| {
                                 e.child(icon_chip(
+                                    "duplicates-reviewed-chip",
                                     IconName::CircleCheck,
                                     "Reviewed",
                                     colors.tone_text(colors.success),

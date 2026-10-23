@@ -493,3 +493,71 @@ fn older_prompt_results_offer_a_re_describe_that_only_queues(cx: &mut TestAppCon
     // The old results stay until the queue describes them again.
     assert_eq!(view.read_with(&cx, |v, _| v.items().unwrap().len()), 2);
 }
+
+/// Chips cut a label that does not fit with an ellipsis; hovering one shows the full label in a tooltip (here the
+/// pets chip and the "Exclude as …?" suggestion of a row).
+#[gpui_kit::test]
+fn truncated_chips_show_their_full_label_on_hover(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, view, mut cx) = open_ai(cx, &data);
+    let c = photo_contents(&backend, 1);
+    let mut i = insight(SceneCategory::Screenshot, 0, 0, false);
+    i.pets = [
+        "golden retriever",
+        "tabby cat",
+        "lop-eared rabbit",
+        "syrian hamster",
+        "budgerigar",
+        "leopard tortoise",
+        "border collie",
+        "maine coon",
+        "bearded dragon",
+        "cockatiel",
+        "guinea pig",
+        "goldfish",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    record(&backend, c[0], &i, 1);
+    settle(&view, &mut cx);
+    let window_right = cx.update(|window, _| window.viewport_size().width);
+    for id in ["ai-chip-pets", "ai-chip-suggestion"] {
+        let chip = bounds(id, &mut cx);
+        assert!(
+            chip.size.width > gpui_kit::px(0.0) && chip.right() <= window_right,
+            "{id} stays inside the window: {chip:?}"
+        );
+        assert!(
+            !exists(&format!("{id}-tip"), &mut cx),
+            "no tooltip before hovering {id}"
+        );
+        cx.simulate_mouse_move(chip.center(), None, gpui_kit::Modifiers::none());
+        cx.executor().advance_clock(Duration::from_millis(800));
+        cx.run_until_parked();
+        assert!(
+            exists(&format!("{id}-tip"), &mut cx),
+            "hovering {id} shows its tooltip"
+        );
+        // Move away: the tooltip goes.
+        cx.simulate_mouse_move(
+            gpui_kit::point(gpui_kit::px(1.0), gpui_kit::px(1.0)),
+            None,
+            gpui_kit::Modifiers::none(),
+        );
+        cx.executor().advance_clock(Duration::from_millis(800));
+        cx.run_until_parked();
+    }
+    // The pets label is wider than its row: the chip is cut, its tooltip is not.
+    let pets = bounds("ai-chip-pets", &mut cx).center();
+    cx.simulate_mouse_move(pets, None, gpui_kit::Modifiers::none());
+    cx.executor().advance_clock(Duration::from_millis(800));
+    cx.run_until_parked();
+    let (chip, tip) = (
+        bounds("ai-chip-pets", &mut cx),
+        bounds("ai-chip-pets-tip", &mut cx),
+    );
+    assert!(
+        tip.size.width > chip.size.width,
+        "the tooltip holds the full label: {tip:?} vs {chip:?}"
+    );
+}
