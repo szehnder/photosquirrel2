@@ -45,8 +45,8 @@
 
 ## 7. Verification
 
-- [ ] 7.1 Corpus gate unchanged: `photosquirrel-cli eval-corpus` reports precision >= 0.995, recall >= 0.97, keeper accuracy >= 0.99 and zero must-not-merge violations, with the same numbers as before this change
-- [ ] 7.2 Old-catalog round trip on the medium corpus: scan and export with the previous release's catalog (version 15), upgrade, rescan, re-export; verify 0 files copied, library tree snapshot identical, `redated` > 0 reported
-- [ ] 7.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
+- [x] 7.1 Corpus gate unchanged: `photosquirrel-cli eval-corpus` reports precision >= 0.995, recall >= 0.97, keeper accuracy >= 0.99 and zero must-not-merge violations, with the same numbers as before this change. Medium corpus, seed 42 (9,933 files), before (eaa98ea) and after: precision 1.0000, recall 1.0000, keeper accuracy 1.0000, 0 must-not-merge violations, 19,381 true pairs = result pairs = correct, 1,843 keeper groups; `groups list --json` totals identical (1,843 groups, 8,594 files, 4,048,886,433 reclaimable bytes, 5,570 suggestions)
+- [x] 7.2 Old-catalog round trip on the medium corpus: scan and export with the previous release's catalog (version 15), upgrade, rescan, re-export; verify 0 files copied, library tree snapshot identical, `redated` > 0 reported. Run with the build just before this change (catalog version 16, the latest before 17): 1,972 files exported; upgraded to 17, the rescan read 0 bytes and reported 1,928 capture dates updated; the re-export copied and adopted 0 files, the 3,863-file library tree (paths, sizes, mtimes) was identical, the plan reported 16 copies filed under earlier date rules, and the gate on the upgraded catalog was unchanged
+- [x] 7.3 `cargo xtask spec-coverage` reports every scenario of this change mapped
 - [ ] 7.4 `cargo xtask ci` is green
-- [ ] 7.5 `openspec validate capture-dates --strict` passes
+- [x] 7.5 `openspec validate capture-dates --strict` passes
