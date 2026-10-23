@@ -1175,3 +1175,129 @@ fn gallery_filter_spec_parses() {
         ui_workspace::views::library::default_query()
     );
 }
+
+/// When the Library toolbar's filters wrap, no divider is left at a line's start or end: the filters wrap in
+/// clusters separated by a wider gap, with no separator elements, and every control stays inside the toolbar.
+#[gpui_kit::test]
+fn scenario_gallery_toolbar_has_no_stray_divider(cx: &mut TestAppContext) {
+    // The toolbar has no free-standing separator element (1-px divider lines) any more.
+    let source =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views/library.rs"))
+            .unwrap();
+    let toolbar = source
+        .split("fn toolbar(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n    }\n").next())
+        .expect("LibraryView::toolbar");
+    assert!(
+        !toolbar.contains("Tokens::BORDER"),
+        "the toolbar draws a divider element"
+    );
+
+    let (_tmp, dir) = catalog_copy(false);
+    let (_backend, shell, mut cx) = open_app(cx, &dir);
+    let lib = library(&mut cx);
+    wait_list(&lib, &mut cx);
+    let clusters: [(&str, &[&str]); 3] = [
+        (
+            "library-filters-kind",
+            &["filter-all", "filter-photos", "filter-videos"],
+        ),
+        (
+            "library-filters-meta",
+            &["library-camera", "filter-gps", "filter-stacks"],
+        ),
+        ("library-filters-ai", &["library-ai", "library-status"]),
+    ];
+    let find = |id: &str, cx: &mut VisualTestContext| {
+        let id = SharedString::from(id.to_owned());
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).map(|s| s.bounds())
+        })
+    };
+    let px = gpui_kit::px;
+    let mut wrapped = 0;
+    for inspector_open in [false, true] {
+        let visible = cx.update(|_, cx| shell.read(cx).inspector_visible());
+        if visible != inspector_open {
+            let s = shell.clone();
+            cx.update(|w, cx| {
+                s.update(cx, |s, cx| {
+                    s.toggle_panel(ui_workspace::shell::Side::Inspector, w, cx)
+                })
+            });
+        }
+        for width in (960..=1920).step_by(20) {
+            cx.simulate_resize(gpui_kit::size(px(width as f32), px(900.0)));
+            cx.run_until_parked();
+            let at = format!(
+                "{width} px, inspector {}",
+                if inspector_open { "open" } else { "closed" }
+            );
+            assert_eq!(
+                cx.update(|_, cx| shell.read(cx).inspector_visible()),
+                inspector_open,
+                "{at}"
+            );
+            let bar = bounds("library-toolbar", &mut cx);
+            let chips = bounds("library-filter-chips", &mut cx);
+            let mut boxes = Vec::new();
+            for (cluster, controls) in clusters {
+                let b = bounds(cluster, &mut cx);
+                for id in controls {
+                    let c = find(id, &mut cx).unwrap_or_else(|| panic!("{at}: no {id}"));
+                    // Inside its cluster (so clusters wrap as units), unless the control alone is wider than
+                    // the whole filter area (the narrowest centre, inspector open).
+                    if c.size.width <= chips.size.width {
+                        assert!(
+                            c.left() >= b.left()
+                                && c.right() <= b.right()
+                                && c.top() >= b.top()
+                                && c.bottom() <= b.bottom(),
+                            "{at}: {id} {c:?} outside {cluster} {b:?}"
+                        );
+                    }
+                    // Never under the sort menu.
+                    let sort = find("library-sort", &mut cx).unwrap();
+                    assert!(
+                        c.right() <= sort.left() || c.top() >= sort.bottom(),
+                        "{at}: {id} {c:?} runs into the sort menu {sort:?}"
+                    );
+                    assert!(
+                        c.left() >= bar.left()
+                            && c.right() <= bar.right()
+                            && c.top() >= bar.top()
+                            && c.bottom() <= bar.bottom(),
+                        "{at}: {id} {c:?} outside the toolbar {bar:?}"
+                    );
+                }
+                assert!(
+                    b.left() >= chips.left() && b.right() <= chips.right() + px(0.5),
+                    "{at}: {cluster} {b:?} spills out of the filters {chips:?}"
+                );
+                boxes.push(b);
+            }
+            // Within a cluster the filters sit close together; between clusters on one line the gap is wider.
+            let all = find("filter-all", &mut cx).unwrap();
+            let photos = find("filter-photos", &mut cx).unwrap();
+            let inner = photos.left() - all.right();
+            for pair in boxes.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                // On one line the clusters overlap vertically (they are centred, not equally tall).
+                if b.top() < a.bottom() {
+                    let between = b.left() - a.right();
+                    assert!(
+                        between > inner,
+                        "{at}: clusters {between:?} apart, filters {inner:?}"
+                    );
+                } else {
+                    // A wrap: the next cluster starts the next line.
+                    assert!(b.top() >= a.bottom(), "{at}: {a:?} then {b:?}");
+                    wrapped += 1;
+                }
+            }
+        }
+    }
+    assert!(wrapped > 0, "the sweep never made the filters wrap");
+}

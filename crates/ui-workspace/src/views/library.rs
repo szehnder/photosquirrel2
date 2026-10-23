@@ -686,6 +686,7 @@ impl LibraryView {
         };
         h_flex()
             .id("library-toolbar")
+            .test_support()
             .flex_none()
             .min_h(Tokens::size(44.0))
             .py(Tokens::space(1.0))
@@ -708,73 +709,91 @@ impl LibraryView {
                     .text_color(colors.text_muted)
                     .child(count_label),
             )
-            // The filters take what is left and wrap onto a second line when narrow (inspector open), so the
-            // count and the sort menu always stay visible.
+            // The filters take what is left and wrap onto more lines when narrow (inspector open), so the count
+            // and the sort menu always stay visible. They wrap cluster by cluster (kind; camera, location and
+            // stacks; AI and export status): clusters are separated by a wider gap instead of divider lines,
+            // which a wrap could leave alone at the start or end of a line.
             .child(
                 h_flex()
                     .id("library-filter-chips")
+                    .test_support()
                     .flex_1()
                     .min_w_0()
                     .flex_wrap()
                     .items_center()
-                    .gap(Tokens::space(1.0))
-                    .child(chip(
-                        "filter-all",
-                        "All",
-                        f.kind.is_none(),
-                        with(&|n| n.kind = None),
-                    ))
-                    .child(chip(
-                        "filter-photos",
-                        "Photos",
-                        f.kind == Some(MediaKind::Image),
-                        with(&|n| n.kind = Some(MediaKind::Image)),
-                    ))
-                    .child(chip(
-                        "filter-videos",
-                        "Videos",
-                        f.kind == Some(MediaKind::Video),
-                        with(&|n| n.kind = Some(MediaKind::Video)),
-                    ))
+                    .gap_x(Tokens::space(FILTER_CLUSTER_GAP))
+                    .gap_y(Tokens::space(1.0))
                     .child(
-                        div()
-                            .w(Tokens::BORDER)
-                            .h(Tokens::size(18.0))
-                            .mx(Tokens::space(0.5))
-                            .bg(colors.border),
+                        filter_cluster("library-filters-kind")
+                            .child(chip(
+                                "filter-all",
+                                "All",
+                                f.kind.is_none(),
+                                with(&|n| n.kind = None),
+                            ))
+                            .child(chip(
+                                "filter-photos",
+                                "Photos",
+                                f.kind == Some(MediaKind::Image),
+                                with(&|n| n.kind = Some(MediaKind::Image)),
+                            ))
+                            .child(chip(
+                                "filter-videos",
+                                "Videos",
+                                f.kind == Some(MediaKind::Video),
+                                with(&|n| n.kind = Some(MediaKind::Video)),
+                            )),
                     )
-                    .child(camera_menu)
-                    .child(chip(
-                        "filter-gps",
-                        "Has location",
-                        f.gps == Some(true),
-                        with(&|n| {
-                            n.gps = if n.gps == Some(true) {
-                                None
-                            } else {
-                                Some(true)
-                            }
-                        }),
-                    ))
-                    .child(chip(
-                        "filter-stacks",
-                        "Stacks",
-                        !f.stacks_off,
-                        with(&|n| n.stacks_off = !n.stacks_off),
-                    ))
                     .child(
-                        div()
-                            .w(Tokens::BORDER)
-                            .h(Tokens::size(18.0))
-                            .mx(Tokens::space(0.5))
-                            .bg(colors.border),
+                        filter_cluster("library-filters-meta")
+                            .child(camera_menu)
+                            .child(chip(
+                                "filter-gps",
+                                "Has location",
+                                f.gps == Some(true),
+                                with(&|n| {
+                                    n.gps = if n.gps == Some(true) {
+                                        None
+                                    } else {
+                                        Some(true)
+                                    }
+                                }),
+                            ))
+                            .child(chip(
+                                "filter-stacks",
+                                "Stacks",
+                                !f.stacks_off,
+                                with(&|n| n.stacks_off = !n.stacks_off),
+                            )),
                     )
-                    .child(ai_menu)
-                    .child(status_menu),
+                    .child(
+                        filter_cluster("library-filters-ai")
+                            .child(ai_menu)
+                            .child(status_menu),
+                    ),
             )
             .child(div().flex_shrink_0().child(sort_menu))
             .into_any_element()
     }
+}
+
+/// The gap between the toolbar's filter clusters, in `Tokens::space` units; within a cluster it is
+/// [`FILTER_GAP`].
+pub const FILTER_CLUSTER_GAP: f32 = 3.0;
+/// The gap between the filters of one cluster, in `Tokens::space` units.
+pub const FILTER_GAP: f32 = 1.0;
+
+/// One cluster of Library filters: on one line when it fits, so the toolbar wraps between clusters; never wider
+/// than the filter area (a very narrow centre wraps inside the cluster too).
+fn filter_cluster(id: &'static str) -> impl ParentElement + IntoElement + Styled {
+    h_flex()
+        .id(id)
+        .test_support()
+        .flex_none()
+        .max_w_full()
+        .flex_wrap()
+        .items_center()
+        .gap(Tokens::space(FILTER_GAP))
 }
 
 impl LibraryView {
