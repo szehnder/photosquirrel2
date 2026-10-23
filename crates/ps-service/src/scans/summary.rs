@@ -31,6 +31,11 @@ pub struct RunOverview {
     pub changed: u64,
     pub unchanged: u64,
     pub missing: u64,
+    /// Unchanged files whose capture date the current date rules changed, without reading them (ADR-0071).
+    pub redated: u64,
+    /// Unchanged files analysed before classification facts were stored; an analysis refresh re-classifies
+    /// them (ADR-0071).
+    pub needs_refresh: u64,
     /// Sources that were or went offline during the run.
     pub incomplete_sources: Vec<SourceId>,
 }
@@ -100,6 +105,8 @@ impl ScanService {
                 changed: s.diff.changed,
                 unchanged: s.diff.unchanged,
                 missing: s.diff.missing,
+                redated: s.diff.redated,
+                needs_refresh: s.diff.needs_refresh,
                 incomplete_sources: s.incomplete_sources,
             },
             None => RunOverview {
@@ -121,6 +128,8 @@ impl ScanService {
                 changed: 0,
                 unchanged: 0,
                 missing: 0,
+                redated: 0,
+                needs_refresh: 0,
                 incomplete_sources: Vec::new(),
             },
         })

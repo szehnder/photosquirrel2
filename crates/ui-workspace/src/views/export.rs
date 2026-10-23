@@ -540,7 +540,9 @@ impl ExportView {
             || !plan.examples.is_empty()
             || plan.modified > 0
             || self.settings.recopy_modified
-            || plan.date_note.is_some();
+            || plan.date_note.is_some()
+            || plan.earlier_rules_note.is_some()
+            || !plan.warnings.is_empty();
         any.then(|| {
             kit::card(cx)
                 .id("export-plan-details")
@@ -750,6 +752,30 @@ impl ExportView {
                         .child(note),
                 )
             })
+            .when_some(plan.earlier_rules_note.clone(), |d, note| {
+                d.child(
+                    div()
+                        .id("export-earlier-rules-note")
+                        .test_support()
+                        .aria_label(SharedString::from(note.clone()))
+                        .w_full()
+                        .text_size(Tokens::text_xs())
+                        .text_color(colors.text_muted)
+                        .child(note),
+                )
+            })
+            .children(plan.warnings.iter().enumerate().map(|(i, w)| {
+                h_flex()
+                    .id(("export-plan-warning", i))
+                    .test_support()
+                    .aria_label(SharedString::from(w.clone()))
+                    .w_full()
+                    .gap(Tokens::space(1.5))
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.warning)
+                    .child(Icon::new(IconName::TriangleAlert).size(Tokens::icon_sm()))
+                    .child(w.clone())
+            }))
                 .into_any_element()
         })
     }
@@ -1228,6 +1254,21 @@ pub fn plan_files_note(plan: &PlanPreview) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn earlier_rules_note_counts_copies_left_in_place() {
+        use crate::scan_backend::earlier_rules_note;
+        assert_eq!(earlier_rules_note(0), None);
+        assert_eq!(
+            earlier_rules_note(1).as_deref(),
+            Some("1 exported copy is filed under earlier date rules and stays where it is.")
+        );
+        assert_eq!(
+            earlier_rules_note(20).as_deref(),
+            Some("20 exported copies are filed under earlier date rules and stay where they are.")
+        );
+    }
+
     use super::{LIBRARY_NAME, export_label, plan_files_note, suggested_library};
     use std::path::Path;
 
@@ -1265,6 +1306,8 @@ mod tests {
             blocker: None,
             examples: Vec::new(),
             date_note: None,
+            earlier_rules_note: None,
+            warnings: Vec::new(),
             pending_files: Some(11),
         };
         assert_eq!(

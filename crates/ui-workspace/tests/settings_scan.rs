@@ -178,3 +178,90 @@ fn dashboard_says_a_scan_paused_on_battery(cx: &mut TestAppContext) {
     backend.scan().unwrap().cancel().unwrap();
     backend.scan().unwrap().wait();
 }
+
+/// capture-dates task 6.3 (ADR-0071): the last run's summary says how many dates the current rules changed and
+/// how many files need an analysis refresh; "Refresh analysis" rescans those sources with the refresh on.
+#[gpui_kit::test]
+fn scan_summary_offers_the_analysis_refresh_and_reports_re_dated_files(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let root = dirs.root.path().join("source");
+    let beach = root.join("2019-07-04 Beach");
+    std::fs::create_dir_all(&beach).unwrap();
+    for i in 0..3u64 {
+        std::fs::write(
+            beach.join(format!("p{i}.jpg")),
+            ps_fixtures::media::jpeg(800, 600, 60 + i * 31, 88),
+        )
+        .unwrap();
+    }
+    let data = dirs.data();
+    let utc = || ScanOptions {
+        zone: Some(Arc::new(ps_media::FixedZone(0))),
+        ..ScanOptions::default()
+    };
+    {
+        let svc = ScanService::open(&data, utc()).unwrap();
+        svc.add_source(&root).unwrap();
+        svc.start(&[]).unwrap();
+        svc.wait().unwrap();
+    }
+    // A catalog of an older version: no class facts, dates by the previous rules.
+    {
+        let c = rusqlite::Connection::open(data.join(ps_catalog::CATALOG_FILE)).unwrap();
+        c.execute_batch(
+            "UPDATE file SET class_facts = NULL, classifier_hash = NULL,
+                 capture_provenance = 'file-mtime', capture_ts = (mtime_ns / 1000000000) * 1000,
+                 capture_offset_min = 0, capture_undated = 1, capture_precision = 0, date_version = 1,
+                 metadata = json_set(metadata, '$.capture_date', json_object(
+                     'value', json_object('local_seconds', mtime_ns / 1000000000, 'millis', 0,
+                                          'offset_minutes', 0),
+                     'provenance', 'file_mtime', 'undated', json('true')));",
+        )
+        .unwrap();
+    }
+    let backend = Arc::new(CatalogBackend::with_service(
+        &data,
+        ScanService::open(&data, utc()).unwrap(),
+    ));
+    // The rescan that finds them: dates re-dated at once, the refresh only offered.
+    ScanBackend::start(&*backend, &[]).unwrap();
+    let s = backend.scan().unwrap().wait().unwrap();
+    assert_eq!(
+        (s.diff.redated, s.diff.needs_refresh),
+        (3, 3),
+        "{:?}",
+        s.diff
+    );
+
+    init_app(cx, backend.clone(), Some(&dirs));
+    let (shell, mut cx) = open(cx);
+    wait_loaded(&shell, &mut cx);
+    let sh = shell.clone();
+    cx.update(|w, cx| sh.update(cx, |s, cx| s.show_view(ViewId::Sources, w, cx)));
+    wait(&mut cx, "the refresh offer", |cx| {
+        label("summary-needs-refresh", cx)
+            .is_some_and(|l| l.starts_with("3 files need an analysis refresh"))
+    });
+    assert!(
+        label("summary-redated", &mut cx).is_some_and(|l| l.starts_with("3 capture dates updated")),
+        "{:?}",
+        label("summary-redated", &mut cx)
+    );
+    let facts = || {
+        let c = rusqlite::Connection::open(data.join(ps_catalog::CATALOG_FILE)).unwrap();
+        c.query_row(
+            "SELECT count(*) FROM file WHERE class_facts IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(facts(), 0);
+    click("scan-refresh-analysis", &mut cx);
+    wait(&mut cx, "the refreshing run to end", |_| {
+        ScanBackend::snapshot(&*backend)
+            .is_some_and(|s| s.status == RunStatus::Completed && s.run != ps_model::ScanRunId(2))
+    });
+    backend.scan().unwrap().wait();
+    assert_eq!(facts(), 3, "the run refreshed the analysis");
+}

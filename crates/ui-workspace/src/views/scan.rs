@@ -422,6 +422,19 @@ impl ScanMonitor {
         );
     }
 
+    /// Rescan `sources` refreshing the analysis of their files analysed by an older version (the summary's
+    /// "Refresh analysis", ADR-0071).
+    pub fn refresh_analysis(&mut self, sources: Vec<SourceId>, cx: &mut Context<'_, Self>) {
+        if self.is_active() {
+            return;
+        }
+        self.control(
+            Control::Starting,
+            move |b| b.start_refreshing_analysis(&sources).map(|_| ()),
+            cx,
+        );
+    }
+
     pub fn pause(&mut self, cx: &mut Context<'_, Self>) {
         self.control(Control::Pausing, |b| b.pause(), cx);
     }

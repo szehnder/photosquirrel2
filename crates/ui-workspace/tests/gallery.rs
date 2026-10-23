@@ -1301,3 +1301,56 @@ fn scenario_gallery_toolbar_has_no_stray_divider(cx: &mut TestAppContext) {
     }
     assert!(wrapped > 0, "the sweep never made the filters wrap");
 }
+
+/// capture-dates task 6.2 (ADR-0069): a date known only to the month is shown as a month, with its provenance.
+#[gpui_kit::test]
+fn scenario_photo_inspector_month_precision_date_shown_as_a_month(cx: &mut TestAppContext) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let file = src.join("2019-07 Italy").join("IMG_0001.JPG");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, ps_fixtures::media::jpeg(800, 600, 71, 88)).unwrap();
+    let dir = tmp.path().join("data");
+    {
+        let scan = ps_service::scan::ScanService::open(
+            &dir,
+            ps_service::scan::ScanOptions {
+                zone: Some(Arc::new(ps_media::FixedZone(0))),
+                ..ps_service::scan::ScanOptions::default()
+            },
+        )
+        .unwrap();
+        let s = scan.add_source(&src).unwrap();
+        scan.start(&[s.source.id]).unwrap();
+        scan.wait().unwrap();
+    }
+    let (backend, _shell, mut cx) = open_app(cx, &dir);
+    let lib = library(&mut cx);
+    wait_list(&lib, &mut cx);
+    let cat = backend.catalog().unwrap();
+    let source = cat.read().sources().unwrap()[0].id;
+    let rec = cat
+        .read()
+        .file(&ps_catalog::FileKey::new(
+            source,
+            ps_model::RelPath::from_bytes(b"2019-07 Italy/IMG_0001.JPG".to_vec()).unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+    let insp = select(&lib, ItemId::try_from(rec.id).unwrap(), &mut cx);
+    assert_eq!(
+        label_of("inspector-captured", &mut cx).as_deref(),
+        Some("July 2019")
+    );
+    assert_eq!(
+        label_of("inspector-provenance", &mut cx).as_deref(),
+        Some("folder name")
+    );
+    let d = cx.update(|_, cx| insp.read(cx).detail().cloned().unwrap());
+    assert_eq!(d.capture_precision, Some(ps_model::DatePrecision::Month));
+    let shown = d.captured.unwrap();
+    assert!(
+        !shown.contains("2019-07-01") && !shown.contains(':'),
+        "no day or time: {shown}"
+    );
+}

@@ -573,6 +573,8 @@ impl FakeScanService {
             changed: snap.diff.changed,
             unchanged: snap.diff.unchanged,
             missing: snap.diff.missing,
+            redated: snap.diff.redated,
+            needs_refresh: snap.diff.needs_refresh,
             incomplete_sources: snap
                 .sources
                 .iter()

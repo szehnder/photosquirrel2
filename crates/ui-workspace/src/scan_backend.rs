@@ -72,6 +72,10 @@ pub struct PlanPreview {
     pub examples: Vec<PlanRow>,
     /// Files not dated by their own metadata (ADR-0043): borrowed, file-name, sidecar and undated counts.
     pub date_note: Option<String>,
+    /// "N exported copies are filed under earlier date rules and stay where they are" (ADR-0071).
+    pub earlier_rules_note: Option<String>,
+    /// Plan warnings, as text: a library another catalog wrote (ADR-0071).
+    pub warnings: Vec<String>,
     /// Files on the sources still pending against this library (the Reports view's "pending"), which the
     /// planned keepers account for together with their duplicates. `None` when not known for this library.
     pub pending_files: Option<u64>,
@@ -169,6 +173,19 @@ pub struct DrillQuery {
     pub disposition: Disposition,
 }
 
+/// "3 exported copies are filed under earlier date rules and stay where they are", or `None` for none.
+pub fn earlier_rules_note(n: u64) -> Option<String> {
+    (n > 0).then(|| {
+        if n == 1 {
+            "1 exported copy is filed under earlier date rules and stays where it is.".to_owned()
+        } else {
+            format!(
+                "{n} exported copies are filed under earlier date rules and stay where they are."
+            )
+        }
+    })
+}
+
 /// The engine side of the Sources, dashboard, Export and Reports views.
 pub trait ScanBackend: Send + Sync + 'static {
     fn sources(&self) -> anyhow::Result<Vec<SourceRow>>;
@@ -179,6 +196,12 @@ pub trait ScanBackend: Send + Sync + 'static {
     fn remove_source(&self, id: SourceId) -> anyhow::Result<()>;
 
     fn start(&self, sources: &[SourceId]) -> anyhow::Result<ScanRunId>;
+    /// Start a scan of `sources` that also refreshes the analysis of unchanged files analysed before
+    /// classification facts were stored (reads up to 256 KB of each, read-only; ADR-0071).
+    fn start_refreshing_analysis(&self, sources: &[SourceId]) -> anyhow::Result<ScanRunId> {
+        let _ = sources;
+        anyhow::bail!("this backend cannot refresh the analysis")
+    }
     fn pause(&self) -> anyhow::Result<()>;
     fn resume(&self) -> anyhow::Result<()>;
     fn cancel(&self) -> anyhow::Result<()>;
@@ -589,6 +612,10 @@ impl ScanBackend for CatalogBackend {
         Ok(self.scan()?.start(sources)?)
     }
 
+    fn start_refreshing_analysis(&self, sources: &[SourceId]) -> anyhow::Result<ScanRunId> {
+        Ok(self.scan()?.start_refreshing_analysis(sources)?)
+    }
+
     fn pause(&self) -> anyhow::Result<()> {
         self.scan()?.pause()?;
         Ok(())
@@ -690,6 +717,8 @@ impl ScanBackend for CatalogBackend {
             blocker: plan.blocker().map(|b| b.to_string()),
             examples,
             date_note: plan.totals.dates.note(),
+            earlier_rules_note: earlier_rules_note(plan.totals.filed_under_earlier_rules),
+            warnings: plan.warnings.iter().map(ToString::to_string).collect(),
             pending_files: {
                 // The same dispositions the Reports view and the Library's filter count, when this plan is for
                 // the library they are derived against (or before any export).
@@ -1596,6 +1625,8 @@ impl ScanBackend for DemoBackend {
                 undated: 82,
             }
             .note(),
+            earlier_rules_note: None,
+            warnings: Vec::new(),
         })
     }
 

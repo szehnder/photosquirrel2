@@ -410,7 +410,78 @@ fn summary_card(
                     )),
             )
         })
+        .when(o.redated > 0, |d| {
+            d.child(
+                h_flex()
+                    .id("summary-redated")
+                    .test_support()
+                    .aria_label(SharedString::from(redated_text(o.redated)))
+                    .gap(Tokens::space(1.5))
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text_muted)
+                    .child(Icon::new(IconName::Info).size(Tokens::icon_sm()))
+                    .child(redated_text(o.redated)),
+            )
+        })
+        .when(o.needs_refresh > 0, |d| {
+            let mon = m.entity.clone();
+            let sources = o.sources.clone();
+            let idle = m.monitor.pending.is_none();
+            d.child(
+                h_flex()
+                    .gap(Tokens::space(2.0))
+                    .items_center()
+                    .child(
+                        div()
+                            .id("summary-needs-refresh")
+                            .test_support()
+                            .aria_label(SharedString::from(needs_refresh_text(o.needs_refresh)))
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(Tokens::text_sm())
+                            .text_color(colors.text_muted)
+                            .child(needs_refresh_text(o.needs_refresh)),
+                    )
+                    .child(kit::button(
+                        "scan-refresh-analysis",
+                        "Refresh analysis",
+                        Some(IconName::RefreshCw),
+                        Tone::Secondary,
+                        idle.then(|| {
+                            kit::on(move |_, _, cx| {
+                                let sources = sources.clone();
+                                mon.update(cx, |m, cx| m.refresh_analysis(sources, cx))
+                            })
+                        })
+                        .flatten(),
+                        cx,
+                    )),
+            )
+        })
         .into_any_element()
+}
+
+/// "12 capture dates updated by the current date rules (folder names, local days)".
+pub fn redated_text(n: u64) -> String {
+    format!(
+        "{} capture {} updated by the current date rules (folder names, local days); no file was read",
+        format_count(n),
+        if n == 1 { "date" } else { "dates" }
+    )
+}
+
+/// "50 files need an analysis refresh" and why.
+pub fn needs_refresh_text(n: u64) -> String {
+    let (files, keep) = if n == 1 {
+        ("file needs", "it keeps its")
+    } else {
+        ("files need", "they keep their")
+    };
+    format!(
+        "{} {files} an analysis refresh: analysed by an older version, {keep} class until refreshed (reads up \
+         to 256 KB of each)",
+        format_count(n)
+    )
 }
 
 fn stages_card(s: &ProgressSnapshot, colors: &Colors, cx: &App) -> AnyElement {
