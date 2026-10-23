@@ -356,6 +356,17 @@ impl SelectionTree {
         self.nodes.len() - 1
     }
 
+    /// Folders holding at least one ticked file directly (what the plan's "Folders" counts).
+    pub fn picked_folder_count(&self) -> usize {
+        (1..self.nodes.len())
+            .filter(|&i| {
+                let node = &self.nodes[i];
+                let below: u64 = node.children.iter().map(|&c| self.nodes[c].picked).sum();
+                !node.direct.is_empty() && node.picked > below
+            })
+            .count()
+    }
+
     /// Files and bytes picked now.
     pub fn picked(&self) -> (u64, u64) {
         (self.nodes[0].picked, self.nodes[0].picked_bytes)
@@ -638,6 +649,11 @@ mod tests {
         assert_eq!(t.picked(), (8, 1275));
         assert_eq!(t.folder_count(), 6, "root files, A, A/B, A/B/C, A B, D");
         assert_eq!(folder_rows(&t), vec!["(source root)", "A", "A B", "D"]);
+        assert_eq!(
+            t.picked_folder_count(),
+            6,
+            "every folder with files: root, A, A/B, A/B/C, A B, D"
+        );
         let a = t.folder(node(&t, "A"));
         assert_eq!((a.files, a.bytes, a.tick), (5, 310, Tick::All));
         assert!(!t.changed());
@@ -656,6 +672,7 @@ mod tests {
         t.toggle_folder(b);
         assert_eq!(t.folder(node(&t, "A")).tick, Tick::Some);
         assert_eq!(t.picked(), (5, 1275 - 280));
+        assert_eq!(t.picked_folder_count(), 4);
         assert_eq!(t.selection().except_folders, vec![rel("A/B")]);
         assert_eq!(picks(&t, &files), vec![1, 2, 3, 7, 8]);
         assert!(t.changed());

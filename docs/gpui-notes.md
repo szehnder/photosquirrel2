@@ -353,7 +353,8 @@ window size) when the delay is long; focus can still move.
   can use `cx.listener` and per-view caches.
 - Scripted screenshots of states that are not reachable by a shell `--command` in frame one use dev-only env
   hooks: `PHOTOSQUIRREL_REVIEW_TAB=suggestions` (Duplicates opens on similar shots) and
-  `PHOTOSQUIRREL_SETTINGS_SECTION=ai` (settings opens on a section). `photosquirrel --demo-ai-insights N`
+  `PHOTOSQUIRREL_SETTINGS_SECTION=ai` (settings opens on a section), `PHOTOSQUIRREL_REPORTS_SCROLL=cleanup`
+  (Reports opens scrolled to the Cleanup panel). `photosquirrel --demo-ai-insights N`
   (hidden) stores recorded demo insights, shown with a "Demo data" chip.
 - `Role::CheckBox` (capital B); `InputState::masked(true)` hides a key while `value()` still returns it.
 
@@ -448,3 +449,14 @@ window size) when the delay is long; focus can still move.
 - Background work in headless tests runs on the test thread: a control that blocks its background task (the
   cancel's `wait_stopped`) blocks `run_until_parked` for that long in real time, which is fine for the real
   engine (its threads keep running) and must not wait on the GPUI fake clock (it would never advance).
+
+## Cleanup selection tree (cleanup-selection)
+- `ScrollHandle::scroll_to_item` / `scroll_to_top_of_item` only record a request; it is applied in a later
+  prepaint from the children's bounds of the *previous* layout, so a request made in the first `render` does
+  nothing until a second frame. A dev hook that must scroll in a screenshot keeps re-requesting for a few
+  frames and calls `window.request_animation_frame()` (`ReportsView`, `PHOTOSQUIRREL_REPORTS_SCROLL`).
+- A `uniform_list` inside a page that scrolls as a whole needs a definite height: the tree gives it
+  `rows.min(12) * row height` (`Tokens::size`), so it scrolls inside the card and builds only the rows on
+  screen (a headless test on 20,000 folders counts the built rows). Clickable check boxes and chevrons are
+  siblings in a row, never nested in a clickable row, so one click is one action.
+- Disabled `kit::button`s report their label as `"<label> (unavailable)"` to headless `label()` lookups.

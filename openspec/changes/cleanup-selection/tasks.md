@@ -34,7 +34,7 @@
 - [x] 5.4 Discard: "Discard plan" on the review and "Discard" on history rows of never-moved runs, inline confirmation, refusal shown in the error note, "Discarded" label without Review/Undo; verify `scenario_cleanup_app_discards_a_plan`
 - [x] 5.5 Undo selection: "Undo…" opens the tree over quarantined moves, "Put back N files" undoes the picked ones; verify `scenario_cleanup_app_undoes_one_folder` and that `cleanup_panel_undo_restores_a_run` (whole run) still passes
 - [x] 5.6 Tokens and layout: no raw colours or sizes; a 20k-folder synthetic tree renders its first frame and scrolls without building off-screen rows; verify `cargo xtask tokens` and a headless test asserting at most (visible rows + overscan) row elements exist
-- [ ] 5.7 Screenshot: recapture `docs/screenshots/cleanup-dark.png` with a narrowed plan (one folder unticked); verify `cargo xtask screenshot -- --theme dark` output reviewed and the README image updated
+- [x] 5.7 Screenshot: recapture `docs/screenshots/cleanup-dark.png` with a narrowed plan (one folder unticked); verify `cargo xtask screenshot -- --theme dark` output reviewed and the README image updated
 
 ## 6. Verification
 

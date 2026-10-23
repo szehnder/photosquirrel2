@@ -55,6 +55,11 @@ pub struct ReportsView {
     /// Plans, runs and undoes cleanups (quarantine-cleanup).
     pub cleanup: Entity<CleanupView>,
     _cleanup_changed: Subscription,
+    scroll: ScrollHandle,
+    /// Dev-only screenshot hook `PHOTOSQUIRREL_REPORTS_SCROLL=cleanup`: the page opens scrolled to the Cleanup
+    /// panel (it sits below the overview, out of a default window's frame). Frames left to apply it in: the
+    /// scroll needs the children's bounds of an earlier frame.
+    scroll_to_cleanup: u8,
 }
 
 impl ReportsView {
@@ -74,6 +79,14 @@ impl ReportsView {
             verifying: false,
             task: None,
             drill_task: None,
+            scroll: ScrollHandle::new(),
+            scroll_to_cleanup: if std::env::var("PHOTOSQUIRREL_REPORTS_SCROLL").as_deref()
+                == Ok("cleanup")
+            {
+                8
+            } else {
+                0
+            },
         };
         match this.backend.clone() {
             // The instant simulated engine of scripted screenshots: the report is in frame one.
@@ -255,7 +268,7 @@ fn badge(c: &CompletionCounts, id: String, colors: &Colors) -> AnyElement {
 }
 
 impl Render for ReportsView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         if self.backend.is_none() {
             return kit::unavailable("view-reports", "Reports", cx);
         }
@@ -285,7 +298,15 @@ impl Render for ReportsView {
                 .flatten(),
             cx,
         );
-        let page = kit::page("view-reports", cx).child(kit::header(
+        if self.scroll_to_cleanup > 0 && self.cleanup.read(cx).has_content() {
+            // Children: the header, the overview, then the Cleanup panel (fully in view when it fits).
+            self.scroll.scroll_to_item(2);
+            self.scroll_to_cleanup -= 1;
+            window.request_animation_frame();
+        }
+        let page = kit::page("view-reports", cx)
+            .track_scroll(&self.scroll)
+            .child(kit::header(
             "Reports",
             "Every file on every source, accounted for: exported, covered by an exported copy, excluded, or still pending.",
             vec![verify, refresh],

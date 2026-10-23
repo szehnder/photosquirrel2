@@ -151,7 +151,7 @@ impl CleanupView {
         // Shown at start-up: the history (and the latest plan) are in frame one when quick (start-up grace).
         let early = this.backend.clone().and_then(|b| {
             let deadline = crate::startup::StartupGrace::deadline(cx)?;
-            crate::startup::StartupGrace::within(deadline, move || load(&b))
+            crate::startup::StartupGrace::within(deadline, move || load(&b, true))
         });
         match early {
             Some(r) => this.loaded(r, cx),
@@ -160,13 +160,15 @@ impl CleanupView {
         this
     }
 
-    fn loaded(
-        &mut self,
-        r: anyhow::Result<(Vec<CleanupRunRow>, Option<CleanupReview>)>,
-        cx: &mut Context<'_, Self>,
-    ) {
+    fn loaded(&mut self, r: anyhow::Result<Loaded>, cx: &mut Context<'_, Self>) {
         match r {
-            Ok((runs, review)) => {
+            Ok((runs, review, tree)) => {
+                if let (Some(t), Some(r)) = (tree, review.as_ref())
+                    && t.run == r.run.id
+                    && self.plan_tree.is_none()
+                {
+                    self.plan_tree = Some(SelectionTree::new(&t));
+                }
                 self.runs = Loadable::Ready(runs);
                 // Show the newest planned run for review unless something else is on screen.
                 if matches!(self.phase, CleanupPhase::Idle | CleanupPhase::Review) {
@@ -342,7 +344,7 @@ impl CleanupView {
         let Some(b) = self.backend.clone() else {
             return;
         };
-        let reply = cx.background_spawn(async move { load(&b) });
+        let reply = cx.background_spawn(async move { load(&b, false) });
         self.task = Some(cx.spawn(async move |this, cx| {
             let r = reply.await;
             let _ = this.update(cx, |this, cx| {
@@ -708,17 +710,27 @@ impl CleanupView {
 }
 
 /// The history and the newest planned run's review.
-fn load(b: &SharedScanBackend) -> anyhow::Result<(Vec<CleanupRunRow>, Option<CleanupReview>)> {
+/// The history, the newest planned run's review and, with `with_tree` (at start-up, so the first frame shows
+/// it), that run's selection tree.
+fn load(b: &SharedScanBackend, with_tree: bool) -> anyhow::Result<Loaded> {
     let runs = b.cleanup_runs()?;
-    let review = match runs
+    let newest = runs
         .iter()
         .find(|r| r.state == CleanupRunState::Planned && r.planned > 0)
-    {
-        Some(r) => Some(b.cleanup_review(r.id)?),
-        None => None,
+        .map(|r| r.id);
+    let review = newest.map(|id| b.cleanup_review(id)).transpose()?;
+    let tree = match newest {
+        Some(id) if with_tree => Some(b.cleanup_tree(id, CleanupTreeKind::Plan)?),
+        _ => None,
     };
-    Ok((runs, review))
+    Ok((runs, review, tree))
 }
+
+type Loaded = (
+    Vec<CleanupRunRow>,
+    Option<CleanupReview>,
+    Option<crate::scan_backend::CleanupTree>,
+);
 
 fn state_label(r: &CleanupRunRow) -> &'static str {
     match r.state {
@@ -797,7 +809,7 @@ impl CleanupView {
         let folders_n = self
             .plan_tree
             .as_ref()
-            .map_or(review.folders.len(), SelectionTree::folder_count);
+            .map_or(review.folders.len(), SelectionTree::picked_folder_count);
         let mut card = kit::card(cx)
             .id("cleanup-plan")
             .test_support()
