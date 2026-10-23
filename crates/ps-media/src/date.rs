@@ -139,15 +139,51 @@ pub mod os {
 
     impl super::LocalZone for OsZone {
         fn offset_at(&self, utc_secs: i64) -> i32 {
+            if !zone_known() {
+                fallback("the machine's time zone is not set (no TZ and no /etc/localtime)");
+            }
             // chrono falls back to UTC when the zone cannot be determined: today's behaviour.
-            DateTime::from_timestamp(utc_secs, 0).map_or(0, |t| {
-                chrono::Local
-                    .offset_from_utc_datetime(&t.naive_utc())
-                    .fix()
-                    .local_minus_utc()
-                    / 60
-            })
+            DateTime::from_timestamp(utc_secs, 0).map_or_else(
+                || {
+                    fallback("an instant outside the supported range");
+                    0
+                },
+                |t| {
+                    chrono::Local
+                        .offset_from_utc_datetime(&t.naive_utc())
+                        .fix()
+                        .local_minus_utc()
+                        / 60
+                },
+            )
         }
+    }
+
+    static FALLBACK: std::sync::Once = std::sync::Once::new();
+
+    /// Offset 0 is used instead of the machine's rules: logged once per process (ADR-0070).
+    fn fallback(why: &str) {
+        FALLBACK.call_once(|| {
+            log::warn!(
+                "local time zone unavailable ({why}); file times are read as UTC (offset 0)"
+            );
+        });
+    }
+
+    /// The fallback was logged in this process.
+    pub fn fallback_logged() -> bool {
+        FALLBACK.is_completed()
+    }
+
+    /// Whether the OS can tell chrono the local zone. On Unix chrono reads `TZ`, else `/etc/localtime`, and
+    /// silently uses UTC when neither exists; elsewhere the OS always answers.
+    fn zone_known() -> bool {
+        static KNOWN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *KNOWN.get_or_init(|| {
+            !cfg!(unix)
+                || std::env::var_os("TZ").is_some_and(|v| !v.is_empty())
+                || std::path::Path::new("/etc/localtime").exists()
+        })
     }
 }
 
@@ -168,6 +204,14 @@ mod os_tests {
                 / 60;
             assert_eq!(super::os::OsZone.offset_at(secs), want, "{secs}");
         }
+    }
+
+    /// An instant chrono cannot represent falls back to offset 0, and the fallback is logged (once).
+    #[test]
+    fn os_zone_fallback_is_offset_zero_and_logged() {
+        assert_eq!(super::os::OsZone.offset_at(i64::MAX), 0);
+        assert!(super::os::fallback_logged());
+        assert_eq!(super::os::OsZone.offset_at(i64::MAX), 0);
     }
 }
 
@@ -234,6 +278,18 @@ impl EmbeddedDates {
 /// The QuickTime tag naming where a video's creation date came from: `keyed` (`com.apple.quicktime.creationdate`)
 /// or `mvhd` (ADR-0081). Rows analysed before it read as `mvhd`.
 pub const CREATION_DATE_SOURCE_TAG: &str = "CreationDateSource";
+
+/// The tags [`EmbeddedDates::from_stored`] reads (by name or code): what a catalog must return of a stored tag
+/// list for re-dating (`ps_catalog::Readers::date_facts`).
+pub const STORED_DATE_TAGS: &[&str] = &[
+    "OffsetTime",
+    "0x9010",
+    "OffsetTimeOriginal",
+    "0x9011",
+    "OffsetTimeDigitized",
+    "0x9012",
+    CREATION_DATE_SOURCE_TAG,
+];
 
 /// The offset recorded in the tag list: `OffsetTime`, else `OffsetTimeOriginal`, else `OffsetTimeDigitized`
 /// (by name, or by code for tags the RAW walker lists).
@@ -480,6 +536,12 @@ fn time_at(b: &[u8], at: usize, seps: &[u8]) -> Option<(u32, usize)> {
 /// lie in 1990-2099 (to skip counters like `DSC_19871234`); separated dates in 1900-2099. Digits may not touch
 /// the date on either side, except a compact time (`IMG_20230626_143012345`, milliseconds).
 pub fn date_in_name(name: &[u8]) -> Option<CaptureTime> {
+    date_in_name_precise(name).map(|(t, _)| t)
+}
+
+/// [`date_in_name`] with its precision: [`DatePrecision::Day`] when the name gives no time (`IMG-20230626-WA0001`),
+/// else [`DatePrecision::Second`].
+pub fn date_in_name_precise(name: &[u8]) -> Option<(CaptureTime, DatePrecision)> {
     let stem = match name.iter().rposition(|b| *b == b'.') {
         Some(i) if i > 0 => &name[..i],
         _ => name,
@@ -492,7 +554,7 @@ pub fn date_in_name(name: &[u8]) -> Option<CaptureTime> {
     })
 }
 
-fn date_at(b: &[u8], i: usize) -> Option<CaptureTime> {
+fn date_at(b: &[u8], i: usize) -> Option<(CaptureTime, DatePrecision)> {
     let y = num(b, i, 4)? as i32;
     let sep = b.get(i + 4).copied().filter(|c| b"-_.".contains(c));
     let mut j = i + 4 + usize::from(sep.is_some());
@@ -520,22 +582,30 @@ fn date_at(b: &[u8], i: usize) -> Option<CaptureTime> {
         Some(c) if c.is_ascii_digit() && sep.is_none() => time_at(b, j, b""),
         _ => None,
     };
-    let secs = match time {
+    let (secs, precision) = match time {
         // Milliseconds may follow a compact time; any other digit run makes it a counter, not a time.
-        Some((secs, _)) => secs,
+        Some((secs, _)) => (secs, DatePrecision::Second),
         None if digit_at(b, j) => return None,
-        None => 0,
+        None => (0, DatePrecision::Day),
     };
     let base = CaptureTime::from_parts(y, m, d, 0, 0, 0);
-    Some(CaptureTime {
-        local_seconds: base.local_seconds + i64::from(secs),
-        ..base
-    })
+    Some((
+        CaptureTime {
+            local_seconds: base.local_seconds + i64::from(secs),
+            ..base
+        },
+        precision,
+    ))
 }
 
 /// `YYYY-MM-DD[THH:MM[:SS]]` or `YYYY:MM:DD HH:MM:SS` text (XMP and EXIF date values). Zone suffixes are
 /// ignored: the wall clock is what the library files by.
 pub fn parse_date_text(s: &str) -> Option<CaptureTime> {
+    parse_date_text_precise(s).map(|(t, _)| t)
+}
+
+/// [`parse_date_text`] with its precision: [`DatePrecision::Day`] for a date without a time (`2018-05-06`).
+pub fn parse_date_text_precise(s: &str) -> Option<(CaptureTime, DatePrecision)> {
     let b = s.trim().as_bytes();
     let y = num(b, 0, 4)? as i32;
     let sep = *b.get(4)?;
@@ -551,7 +621,9 @@ pub fn parse_date_text(s: &str) -> Option<CaptureTime> {
         return None;
     }
     let mut secs = 0u32;
+    let mut precision = DatePrecision::Day;
     if matches!(b.get(10), Some(b'T' | b' ')) {
+        precision = DatePrecision::Second;
         let h = num(b, 11, 2)?;
         let mi = if b.get(13) == Some(&b':') {
             num(b, 14, 2)?
@@ -569,10 +641,13 @@ pub fn parse_date_text(s: &str) -> Option<CaptureTime> {
         secs = h * 3600 + mi * 60 + sec;
     }
     let base = CaptureTime::from_parts(y, m, d, 0, 0, 0);
-    Some(CaptureTime {
-        local_seconds: base.local_seconds + i64::from(secs),
-        ..base
-    })
+    Some((
+        CaptureTime {
+            local_seconds: base.local_seconds + i64::from(secs),
+            ..base
+        },
+        precision,
+    ))
 }
 
 #[cfg(test)]

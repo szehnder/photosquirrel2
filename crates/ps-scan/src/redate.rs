@@ -56,7 +56,7 @@ pub fn redate(
             break;
         }
         let ids: Vec<FileId> = chunk.iter().map(|s| s.id).collect();
-        let facts = readers.date_facts(&ids)?;
+        let facts = readers.date_facts(&ids, ps_media::date::STORED_DATE_TAGS)?;
         let by_id: std::collections::HashMap<FileId, &StaleDate> =
             chunk.iter().map(|s| (s.id, s)).collect();
         let mut rows = Vec::with_capacity(facts.len());

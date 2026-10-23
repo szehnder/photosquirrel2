@@ -152,12 +152,15 @@ a date in its file name or XMP sidecar, then its folder).
   `2019.07.04`, `20190704`, a dated tree such as `2019/07/04`, and month folders such as `2019-07 Italy` or
   `2019/07`. A year alone (`2019`), a date later in the name (`Backup 2019-07-04`) and the source folder's own name
   are never used, and a folder date more than a day after the file was last modified is ignored (it names a
-  backup or an import, not the photo). Folder dates never decide duplicates or keepers.
+  backup or an import, not the photo), except when the modification time is before 1990 (an unset camera
+  clock, which says nothing). Folders named for two years, such as `2011-12 School Year` or `2011-2012`, are not
+  month dates. Folder dates never decide duplicates or keepers.
 - **Honest precision.** A month folder dates its photos to the month only: the inspector shows "July 2019", from
   the folder name, and the library files them under `<YYYY>/<YYYY-MM>/` instead of inventing a day.
-- **Local days.** A file's modification time, and a video creation time recorded in UTC, count on the day it was
-  where you are: the offset the file records, else your computer's time zone at that moment (daylight saving
-  included). Camera dates keep their own clock and are never shifted. Files with only a modification time go
+- **Local days.** A file's modification time, and a video creation time recorded only in UTC, count on the day
+  it was where you are: the offset the file records, else your computer's time zone at that moment (daylight
+  saving included). Camera dates, and phone video dates that record their zone, keep their own clock and are
+  never shifted. Files with only a modification time go
   under `Undated/<YYYY>/<YYYY-MM-DD>/`.
 - **Existing catalogs and libraries.** After an update that changes these rules, the next rescan re-dates the
   catalog from what it already knows, without reading any file, and says how many dates changed. Copies already

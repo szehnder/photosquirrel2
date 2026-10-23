@@ -21,7 +21,9 @@ use ps_model::{CaptureDate, CaptureTime, DatePrecision, DateProvenance, FileId};
 use serde::Serialize;
 
 /// The file-name and date-text parsers live with the other date rules in `ps-media` (re-exported here).
-pub use ps_media::date::{date_in_name, parse_date_text};
+pub use ps_media::date::{
+    date_in_name, date_in_name_precise, parse_date_text, parse_date_text_precise,
+};
 
 /// Where a filing date came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -122,14 +124,15 @@ pub struct FilingDate {
 pub fn resolve(
     keeper: &DateFacts<'_>,
     others: &[DateFacts<'_>],
-    mut sidecar: impl FnMut(&DateFacts<'_>) -> Option<CaptureTime>,
+    mut sidecar: impl FnMut(&DateFacts<'_>) -> Option<(CaptureTime, DatePrecision)>,
 ) -> FilingDate {
-    let dated = |capture, source, copy| FilingDate {
+    let dated_at = |capture, source, copy, precision| FilingDate {
         capture: Some(capture),
         undated: false,
         origin: DateOrigin { source, copy },
-        precision: DatePrecision::Second,
+        precision,
     };
+    let dated = |capture, source, copy| dated_at(capture, source, copy, DatePrecision::Second);
     if let Some((provenance, t)) = keeper.real_embedded() {
         return dated(t, DateSource::Embedded { provenance }, None);
     }
@@ -143,14 +146,15 @@ pub fn resolve(
     }
     let copy_of = |f: FileId| (f != keeper.file).then_some(f);
     let order = std::iter::once(keeper).chain(others.iter().filter(|o| o.file != keeper.file));
-    if let Some((t, f)) = order
+    // A name or sidecar date without a time is a day, not midnight.
+    if let Some(((t, p), f)) = order
         .clone()
-        .find_map(|o| date_in_name(o.name).map(|t| (t, o.file)))
+        .find_map(|o| date_in_name_precise(o.name).map(|t| (t, o.file)))
     {
-        return dated(t, DateSource::FileName, copy_of(f));
+        return dated_at(t, DateSource::FileName, copy_of(f), p);
     }
-    if let Some((t, f)) = order.clone().find_map(|o| sidecar(o).map(|t| (t, o.file))) {
-        return dated(t, DateSource::Sidecar, copy_of(f));
+    if let Some(((t, p), f)) = order.clone().find_map(|o| sidecar(o).map(|t| (t, o.file))) {
+        return dated_at(t, DateSource::Sidecar, copy_of(f), p);
     }
     if let Some((d, f)) = order
         .into_iter()
@@ -176,6 +180,11 @@ pub fn resolve(
 /// The capture date recorded in an XMP sidecar: `exif:DateTimeOriginal`, else `photoshop:DateCreated`, else
 /// `xmp:CreateDate`, as an attribute (`exif:DateTimeOriginal="…"`) or an element (`<exif:DateTimeOriginal>…`).
 pub fn xmp_sidecar_date(xml: &[u8]) -> Option<CaptureTime> {
+    xmp_sidecar_date_precise(xml).map(|(t, _)| t)
+}
+
+/// [`xmp_sidecar_date`] with its precision (a date-only value is [`DatePrecision::Day`]).
+pub fn xmp_sidecar_date_precise(xml: &[u8]) -> Option<(CaptureTime, DatePrecision)> {
     let text = String::from_utf8_lossy(xml);
     [
         "exif:DateTimeOriginal",
@@ -183,7 +192,7 @@ pub fn xmp_sidecar_date(xml: &[u8]) -> Option<CaptureTime> {
         "xmp:CreateDate",
     ]
     .iter()
-    .find_map(|key| xmp_value(&text, key).and_then(|v| parse_date_text(&v)))
+    .find_map(|key| xmp_value(&text, key).and_then(|v| parse_date_text_precise(&v)))
 }
 
 fn xmp_value(text: &str, key: &str) -> Option<String> {
@@ -314,7 +323,7 @@ mod tests {
         let mut asked = 0;
         let r = resolve(&plain, &[facts(2, "x.jpg", mtime)], |f| {
             asked += 1;
-            (f.file == FileId(2)).then(|| t(2015, 3, 3, 0, 0, 0))
+            (f.file == FileId(2)).then(|| (t(2015, 3, 3, 0, 0, 0), DatePrecision::Second))
         });
         assert_eq!(asked, 2);
         assert_eq!(
@@ -353,7 +362,7 @@ mod tests {
         let r = resolve(&keeper, &[facts(2, "IMG_20180101_120000.jpg", mtime)], none);
         assert_eq!(r.origin.source, DateSource::FileName);
         let r = resolve(&keeper, &[facts(2, "b.jpg", mtime)], |f| {
-            (f.file == FileId(2)).then(|| t(2017, 1, 1, 0, 0, 0))
+            (f.file == FileId(2)).then(|| (t(2017, 1, 1, 0, 0, 0), DatePrecision::Second))
         });
         assert_eq!(r.origin.source, DateSource::Sidecar);
         // An embedded date of any copy wins over the keeper's folder.
@@ -368,5 +377,30 @@ mod tests {
         );
         assert_eq!(r.capture, Some(t(2019, 7, 3, 21, 0, 0)));
         assert_eq!(r.precision, DatePrecision::Second);
+    }
+
+    /// Gate review (task 8.8): a file-name date without a time and a date-only XMP value are days.
+    #[test]
+    fn file_name_and_date_only_xmp_dates_have_day_precision() {
+        let mtime = Some((DateProvenance::FileMtime, t(2024, 1, 1, 0, 0, 0)));
+        let none = |_: &DateFacts<'_>| None;
+        let r = resolve(&facts(1, "IMG-20230626-WA0001.jpg", mtime), &[], none);
+        assert_eq!(r.origin.source, DateSource::FileName);
+        assert_eq!(r.capture, Some(t(2023, 6, 26, 0, 0, 0)));
+        assert_eq!(r.precision, DatePrecision::Day);
+        assert_eq!(r.precision.iso(&r.capture.unwrap()), "2023-06-26");
+        let r = resolve(&facts(1, "IMG_20230626_143012.jpg", mtime), &[], none);
+        assert_eq!(r.precision, DatePrecision::Second);
+        let elem = b"<rdf:Description><photoshop:DateCreated>2018-05-06</photoshop:DateCreated></rdf:Description>";
+        let r = resolve(&facts(1, "x.jpg", mtime), &[], |_| {
+            xmp_sidecar_date_precise(elem)
+        });
+        assert_eq!(r.origin.source, DateSource::Sidecar);
+        assert_eq!(r.precision, DatePrecision::Day);
+        let attr = br#"<rdf:Description xmp:CreateDate="2020-01-02T03:04:05"/>"#;
+        assert_eq!(
+            xmp_sidecar_date_precise(attr),
+            Some((t(2020, 1, 2, 3, 4, 5), DatePrecision::Second))
+        );
     }
 }

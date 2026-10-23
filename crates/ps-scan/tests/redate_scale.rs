@@ -1,5 +1,6 @@
 //! Task 4.4 (ADR-0071): the cost of re-dating a synthetic 1M-row catalog, 30% of whose rows are dated only by
-//! their file time (the stale rows after migration 17). A measurement, not a budget:
+//! their file time (the stale rows after migration 17), each with a realistic tag list (200 tags; gate review,
+//! task 8.7). A measurement, not a budget:
 //! `cargo test --release -p ps-scan --test redate_scale -- --ignored --nocapture`.
 
 use std::time::Instant;
@@ -13,7 +14,19 @@ use ps_model::{
 use ps_scan::Control;
 use ps_scan::redate::{REDATE_CHUNK, StaleDate, redate};
 
-const ROWS: u64 = 1_000_000;
+fn rows_total() -> u64 {
+    std::env::var("REDATE_ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_000_000)
+}
+
+fn tag_count() -> usize {
+    std::env::var("REDATE_TAGS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200)
+}
 
 fn row(source: ps_model::SourceId, i: u64) -> FileRow {
     let stale = i % 10 < 3;
@@ -37,16 +50,21 @@ fn row(source: ps_model::SourceId, i: u64) -> FileRow {
         0,
         0,
     );
-    let mut tags: Vec<(String, String, String)> = (0..20)
+    // A realistic tag list: real JPEG and RAW files list 150-300 tags (EXIF, maker notes, XMP); the
+    // measurement in tasks.md uses 200 (REDATE_TAGS overrides).
+    let mut tags: Vec<(String, String, String)> = (0..tag_count())
         .map(|k| {
             (
-                "Exif".to_string(),
-                format!("Tag{k}"),
-                format!("value {i} {k}"),
+                ["Exif", "IFD0", "MakerNotes", "XMP"][k % 4].to_string(),
+                format!("SomeTagName{k:04}"),
+                format!("value of tag {k} for file {i:07}, {}", "x".repeat(k % 40)),
             )
         })
         .collect();
     tags.push(("IFD0".into(), "Make".into(), "Canon".into()));
+    if i.is_multiple_of(7) {
+        tags.push(("Exif".into(), "OffsetTimeOriginal".into(), "+02:00".into()));
+    }
     let capture_date = if stale {
         CaptureDate {
             value: CaptureTime {
@@ -123,14 +141,23 @@ fn re_dating_a_million_row_catalog() {
         })
         .expect("source");
     let t = Instant::now();
-    for start in (0..ROWS).step_by(2_000) {
-        let rows = (start..(start + 2_000).min(ROWS))
+    let total = rows_total();
+    for start in (0..total).step_by(2_000) {
+        let rows = (start..(start + 2_000).min(total))
             .map(|i| row(source, i))
             .collect();
         cat.writer().upsert_files(rows).expect("rows");
+        // Keep the writer's queue short: 200-tag rows would otherwise pile up in memory faster than they commit.
+        if (start / 2_000) % 25 == 24 {
+            cat.writer().flush().expect("flush");
+        }
     }
     cat.writer().flush().expect("flush");
-    eprintln!("wrote {ROWS} rows in {:?}", t.elapsed());
+    eprintln!(
+        "wrote {total} rows with {} tags each in {:?}",
+        tag_count(),
+        t.elapsed()
+    );
     // The previous date rules wrote these rows: the file-mtime ones are stale (migration 17 leaves them at 1).
     let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(tmp.path())).expect("db");
     c.execute(
@@ -163,6 +190,33 @@ fn re_dating_a_million_row_catalog() {
         after = page.last().map(|r| r.key.path.clone());
     }
     let listed = t.elapsed();
+    // The reads alone (what `Readers::date_facts` costs, the JSON included), then the whole pass.
+    let t = Instant::now();
+    let mut read = 0;
+    for chunk in stale.chunks(REDATE_CHUNK) {
+        let ids: Vec<_> = chunk.iter().map(|s| s.id).collect();
+        read += cat
+            .read()
+            .date_facts(&ids, ps_media::date::STORED_DATE_TAGS)
+            .expect("facts")
+            .len();
+    }
+    let reads = t.elapsed();
+    assert_eq!(read, stale.len());
+    // For comparison: the same rows with their whole metadata JSON deserialised (what date_facts did before).
+    let t = Instant::now();
+    let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(tmp.path())).expect("db");
+    let mut q = c
+        .prepare("SELECT metadata FROM file WHERE id = ?1")
+        .expect("prepare");
+    for s in &stale {
+        let j: String = q.query_row([s.id.0], |r| r.get(0)).expect("row");
+        let m: Metadata = serde_json::from_str(&j).expect("json");
+        std::hint::black_box(m);
+    }
+    drop(q);
+    drop(c);
+    let full_reads = t.elapsed();
     let t = Instant::now();
     let ctl = Control::new();
     let writer = cat.writer().clone();
@@ -179,9 +233,10 @@ fn re_dating_a_million_row_catalog() {
     writer.flush().expect("flush");
     let pass = t.elapsed();
     eprintln!(
-        "re-dated {} stale rows of {ROWS} ({} dates changed): listing {listed:?}, re-date pass {pass:?}",
+        "re-dated {} stale rows of {total} ({} dates changed): listing {listed:?}, date facts read alone {reads:?} (full metadata JSON: {full_reads:?}), \
+         re-date pass {pass:?}",
         out.written, out.changed
     );
     assert_eq!(out.written, stale.len() as u64);
-    assert!(out.written >= ROWS * 3 / 10 - 1);
+    assert!(out.written >= total * 3 / 10 - 1);
 }

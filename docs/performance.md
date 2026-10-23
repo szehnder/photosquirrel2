@@ -131,9 +131,13 @@ When the capture-date rules change, the first rescan of each source re-dates its
 (path, modification time, metadata JSON) without reading any file. It is not a budget: it runs once per rule
 change, chunked and resumable. Measured on the reference machine (release build,
 `cargo test --release -p ps-scan --test redate_scale -- --ignored --nocapture`): a synthetic catalog of 1,000,000
-rows, 30% of them dated only by their file time, re-dates its 300,000 stale rows in 14.9 s (every date changed,
-Los Angeles zone), on top of 3.2 s for the diff's page reads; the no-change rescan of 100k files stayed at
-0.43 s. All 1M rows stale would take about 50 s. The opt-in analysis refresh of rows from before catalog
+rows, 30% of them dated only by their file time, re-dates its 300,000 stale rows in 14.9 s with 20 tags per row
+(every date changed, Los Angeles zone), on top of 3.2 s for the diff's page reads; the no-change rescan of 100k
+files stayed at 0.43 s. With a realistic 200 tags per row (real JPEG and RAW files list 150-300; a 13 GB
+catalog) the same pass takes 85-110 s, on top of 73-81 s for the diff's page reads: reading the date facts is
+13-17 s of it (`Readers::date_facts` deserialises only the date fields and the date tags; for rows in the page
+cache it reads 60,000 rows in 1.6 s against 2.6 s for the whole metadata JSON), the rest is SQLite rewriting
+each updated row with its large metadata column. All 1M rows stale would take about 5 minutes, once. The opt-in analysis refresh of rows from before catalog
 migration 13 reads up to 256 KB per row: minutes on an SSD, hours for 1M rows on a USB hard drive or a NAS.
 
 `gallery-scroll-p95` needs a visible window: Wayland sends no frames to the render bench while the desktop

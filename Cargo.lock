@@ -6321,6 +6321,7 @@ dependencies = [
  "imagesize 0.14.0",
  "jpeg-decoder",
  "libheif-rs",
+ "log",
  "mozjpeg",
  "mozjpeg-sys",
  "nom-exif",

@@ -655,3 +655,58 @@ fn resumed_refresh_run_still_refreshes() {
             .refresh_analysis
     );
 }
+
+/// Gate review (task 8.7): the date facts SQLite extracts give the resolver the same inputs as the full stored
+/// metadata, for EXIF offsets, keyed and mvhd-only videos and folder dates.
+#[test]
+fn date_facts_rebuild_the_same_inputs_as_the_full_metadata() {
+    let _g = shared();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tmp.path().join("source");
+    write_dated_source(&root);
+    let spec = ps_fixtures::media::ExifSpec {
+        date_time_original: None,
+        offset_time_original: Some("+09:00".into()),
+        ..ps_fixtures::media::ExifSpec::canon_5d()
+    };
+    std::fs::write(
+        root.join("Misc").join("offset.jpg"),
+        ps_fixtures::media::jpeg_with_exif(640, 480, 401, 85, &spec),
+    )
+    .expect("write");
+    for (name, keyed) in [("keyed.mov", Some(0)), ("mvhd.mov", None)] {
+        let spec = ps_fixtures::media::MovieSpec {
+            keyed_offset_min: keyed,
+            ..ps_fixtures::media::MovieSpec::iphone()
+        };
+        std::fs::write(
+            root.join("Misc").join(name),
+            ps_fixtures::media::movie(&spec),
+        )
+        .expect("write");
+    }
+    let env = env_with(utc_opts());
+    let id = env.add(&root);
+    completed(&env.scan(&[id]));
+    let files = rows(&env, id);
+    let ids: Vec<_> = files.values().map(|r| r.id).collect();
+    let facts = env
+        .readers()
+        .date_facts(&ids, ps_media::date::STORED_DATE_TAGS)
+        .expect("facts");
+    assert_eq!(facts.len(), files.len());
+    let mut offsets = 0;
+    let mut keyed = 0;
+    for (fid, rel, _, meta) in &facts {
+        let full = env.readers().metadata(*fid).expect("meta").expect("some");
+        let a = ps_media::EmbeddedDates::from_stored(meta);
+        assert_eq!(a, ps_media::EmbeddedDates::from_stored(&full), "{rel}");
+        offsets += usize::from(a.recorded_offset.is_some());
+        keyed += usize::from(a.container_keyed);
+        assert!(
+            meta.fields.all_tags.len() < full.fields.all_tags.len()
+                || full.fields.all_tags.is_empty()
+        );
+    }
+    assert!(offsets >= 1 && keyed == 1, "{offsets} {keyed}");
+}

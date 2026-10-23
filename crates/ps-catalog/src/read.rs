@@ -200,9 +200,16 @@ impl Readers {
         })
     }
 
-    /// What re-dating needs of `ids` (ADR-0071): path, modification time and stored metadata. Rows without
-    /// metadata (never analysed) are left out.
-    pub fn date_facts(&self, ids: &[FileId]) -> Result<Vec<(FileId, RelPath, i64, Metadata)>> {
+    /// What re-dating needs of `ids` (ADR-0071): path, modification time and the date facts of the stored
+    /// metadata. Rows without metadata (never analysed) are left out. The returned [`Metadata`] holds only
+    /// `fields.capture_time`, `capture_date` and the tags named in `tag_names` (the resolver's inputs,
+    /// `ps_media::date::STORED_DATE_TAGS`): the JSON is scanned once and the rest of a large tag list is
+    /// skipped without being copied (gate review, task 8.7).
+    pub fn date_facts(
+        &self,
+        ids: &[FileId],
+        tag_names: &[&str],
+    ) -> Result<Vec<(FileId, RelPath, i64, Metadata)>> {
         self.with(|c| {
             let values: Rc<Vec<Value>> = Rc::new(ids.iter().map(|i| Value::Integer(i.0)).collect());
             let mut stmt = c.prepare_cached(
@@ -214,7 +221,18 @@ impl Readers {
             while let Some(r) = rows.next()? {
                 let rel = RelPath::from_bytes(r.get(1)?).ok_or_else(|| corrupt("rel_path"))?;
                 let json = r.get_ref(3)?.as_str().map_err(rusqlite::Error::from)?;
-                let meta = serde_json::from_str(json).map_err(|e| corrupt(&e.to_string()))?;
+                let d: date_json::Stored<'_> =
+                    serde_json::from_str(json).map_err(|e| corrupt(&e.to_string()))?;
+                let mut meta = Metadata::default();
+                meta.fields.capture_time = d.fields.capture_time;
+                meta.capture_date = d.capture_date;
+                meta.fields.all_tags = d
+                    .fields
+                    .all_tags
+                    .into_iter()
+                    .filter(|(_, n, _)| tag_names.contains(&n.0.as_ref()))
+                    .map(|(g, n, v)| (g.0.into_owned(), n.0.into_owned(), v.0.into_owned()))
+                    .collect();
                 out.push((FileId(r.get(0)?), rel, r.get(2)?, meta));
             }
             Ok(out)
@@ -635,4 +653,32 @@ pub(crate) fn file_record(r: &Row<'_>) -> Result<FileRecord> {
         date_version: r.get::<_, i64>(27)? as u8,
         classifier_hash: None,
     })
+}
+
+/// The date facts of a stored metadata JSON, borrowed from the text (see [`Readers::date_facts`]).
+mod date_json {
+    use std::borrow::Cow;
+
+    use ps_model::{CaptureDate, CaptureTime};
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    pub(super) struct Stored<'a> {
+        #[serde(default, borrow)]
+        pub fields: Fields<'a>,
+        #[serde(default)]
+        pub capture_date: Option<CaptureDate>,
+    }
+
+    #[derive(Default, Deserialize)]
+    pub(super) struct Fields<'a> {
+        #[serde(default)]
+        pub capture_time: Option<CaptureTime>,
+        #[serde(default, borrow)]
+        pub all_tags: Vec<(Txt<'a>, Txt<'a>, Txt<'a>)>,
+    }
+
+    /// A string borrowed from the JSON text unless it has escapes.
+    #[derive(Deserialize)]
+    pub(super) struct Txt<'a>(#[serde(borrow)] pub Cow<'a, str>);
 }

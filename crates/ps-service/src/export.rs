@@ -148,7 +148,7 @@ const SIDECAR_MAX_BYTES: u64 = 1 << 20;
 
 /// The date in an XMP sidecar next to `path` (`IMG_0042.JPG.xmp`, `IMG_0042.xmp`, either case). Opened
 /// read-only; a missing or unreadable sidecar is no date.
-fn sidecar_date(path: &Path) -> Option<CaptureTime> {
+fn sidecar_date(path: &Path) -> Option<(CaptureTime, ps_model::DatePrecision)> {
     use std::io::Read as _;
     let mut candidates = Vec::with_capacity(4);
     for ext in ["xmp", "XMP"] {
@@ -168,7 +168,7 @@ fn sidecar_date(path: &Path) -> Option<CaptureTime> {
         let f = std::fs::File::open(&p).ok()?;
         let mut buf = Vec::new();
         f.take(SIDECAR_MAX_BYTES).read_to_end(&mut buf).ok()?;
-        ps_export::date::xmp_sidecar_date(&buf)
+        ps_export::date::xmp_sidecar_date_precise(&buf)
     })
 }
 
@@ -258,7 +258,7 @@ impl<'a> Exports<'a> {
                 embedded: embedded_of(rec, meta.as_ref()),
             })
         };
-        let sidecar = |f: &DateFacts<'_>| -> Option<CaptureTime> {
+        let sidecar = |f: &DateFacts<'_>| -> Option<(CaptureTime, ps_model::DatePrecision)> {
             let (rec, _) = recs.get(&f.file)?;
             let root = online_roots.get(&rec.key.source)?;
             sidecar_date(&rec.key.path.under(root))

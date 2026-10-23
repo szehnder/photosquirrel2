@@ -12,7 +12,7 @@ default = []
 heic = ["dep:libheif-rs"]
 # The machine's time-zone rules (`date::os::OsZone`, ADR-0070). Enabled only by the I/O crates, so core builds
 # and core tests never depend on the test machine's zone.
-os-zone = ["dep:chrono"]
+os-zone = ["dep:chrono", "dep:log"]
 
 [dependencies]
 ps-model.workspace = true
@@ -27,6 +27,7 @@ imagesize.workspace = true
 rawler.workspace = true
 libheif-rs = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
