@@ -119,8 +119,10 @@ photosquirrel-cli export dry-run --library ~/Pictures/Library     # what would b
 photosquirrel-cli export run --library ~/Pictures/Library --yes   # copy, verify, rename
 photosquirrel-cli report                              # what happened to every file found
 photosquirrel-cli cleanup plan --source 1             # what a cleanup would move into quarantine; moves nothing
+photosquirrel-cli cleanup select 3 --except-folder "Backup 2012"  # narrow the plan; moves nothing
 photosquirrel-cli cleanup run 3 --yes                 # re-verify each file, then move it; never deletes
-photosquirrel-cli cleanup undo 3 --yes                # put a run's files back
+photosquirrel-cli cleanup undo 3 --folder DCIM --yes  # put one folder of a run back (or the whole run)
+photosquirrel-cli cleanup discard 4                   # drop a plan you will not run; touches no file
 photosquirrel-cli doctor                              # version, data folder, optional decoders, AI provider
 ```
 
@@ -143,9 +145,19 @@ it is in use, and `doctor` shows it).
 
 In Reports, **Free up space** appears on every drive that has files whose best copy is already in your library
 (exported, or a duplicate of an exported photo); the drive does not have to be fully accounted for. It plans a
-cleanup of exactly those files, listed with where each would go, per folder, with the space you can free. Pending,
-excluded, unreadable and missing files are never included. Nothing moves until you confirm the plan. A move stays
-on the same drive, so the space is only freed once you delete the quarantine folder yourself (see below).
+cleanup of exactly those files, shown as a tree of folders with the space you can free. Pending, excluded,
+unreadable and missing files are never included. Nothing moves until you confirm the plan. A move stays on the
+same drive, so the space is only freed once you delete the quarantine folder yourself (see below).
+
+- **Narrow the plan before you confirm it.** Every folder has a check box; expand a folder to tick or untick single
+  files. Unticked files stay where they are: the run never checks, journals or moves them. **Move N files…**
+  saves your selection with the plan and the confirmation shows exactly what will move; until the run moves a
+  file you can tick it again. On the command line, `cleanup select <run>` does the same with repeatable
+  `--folder`, `--file` (ids from `cleanup show`), `--except-folder` and `--except-file`, or `--all` for the whole
+  plan again; `cleanup show` lists left-out files as `unselected`.
+- **Discard a plan** you will not run with **Discard plan** (or **Discard** in the history), or
+  `photosquirrel-cli cleanup discard <run>`. Nothing on the drive changes and the plan stays in the history as
+  discarded. A run that has moved any file cannot be discarded, even after an undo.
 
 - Right before each move, the file is read and hashed again and its library copy re-verified. Anything that
   changed, or whose library copy is gone, stays where it is and is listed with the reason.
@@ -157,9 +169,10 @@ on the same drive, so the space is only freed once you delete the quarantine fol
   refused.
 - Every move is written to a journal first (in the catalog and as `journal.jsonl` in the run's quarantine folder),
   so an interrupted cleanup is sorted out on the next start.
-- **Undo** puts a whole run back (the command line can also undo one folder or some files). A file whose old place
-  is now taken by something else stays in quarantine and is reported; it never overwrites. After a full undo the
-  empty folders the run created are removed; the journal stays.
+- **Undo…** shows the run's quarantined folders in the same tree: put everything back, or only the folders and
+  files you tick (the command line takes `--folder`, `--file`, `--except-folder` and `--except-file`). A file
+  whose old place is now taken by something else stays in quarantine and is reported; it never overwrites. After
+  a full undo the empty folders the run created are removed; the journal stays.
 - While a drive has files in quarantine it cannot be removed from PhotoSquirrel (or folded into a folder that
   contains it): undo its runs first.
 - PhotoSquirrel never empties or deletes a quarantine folder; that is up to you. Before you delete one with your
@@ -169,7 +182,7 @@ on the same drive, so the space is only freed once you delete the quarantine fol
   the quarantine folder"), even ones you have excluded since, and the next export copies them from the quarantine
   folder again (an excluded one once you include it again).
 
-![A cleanup plan in Reports, waiting for confirmation](docs/screenshots/cleanup-dark.png)
+![A cleanup plan in Reports with one folder unticked](docs/screenshots/cleanup-dark.png)
 
 ## AI insights (optional)
 

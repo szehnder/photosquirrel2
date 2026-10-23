@@ -24,7 +24,7 @@
 ## 4. CLI
 
 - [x] 4.1 `cleanup select <run>` (`--folder`, `--file`, `--except-folder`, `--except-file`, repeatable; `--all`), `cleanup discard <run>`, `undo` on `Selection` (gains `--except-*`), `list`/`show` print unselected files and the discarded state, all with `--json`; verify `scenario_cleanup_cli_select_and_discard` in `photosquirrel-cli/tests/cleanup.rs` and that `scenario_cleanup_cli_undo_round_trip` still passes
-- [ ] 4.2 README cleanup section: narrowing, partial undo in the app, `cleanup select` and `cleanup discard` examples; verify each documented command line parses (`photosquirrel-cli cleanup select --help` and `discard --help` match the flags named)
+- [x] 4.2 README cleanup section: narrowing, partial undo in the app, `cleanup select` and `cleanup discard` examples; verify each documented command line parses (`photosquirrel-cli cleanup select --help` and `discard --help` match the flags named)
 
 ## 5. App
 
