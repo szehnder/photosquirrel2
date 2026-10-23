@@ -108,5 +108,6 @@ fn replan_50k_exported_within_budget() {
     println!("re-plan of {FILES} exported files: {times:?}");
     times.sort();
     let median: Duration = times[times.len() / 2];
-    budget("export-replan-50k", median.as_secs_f64() * 1e3, "ms", 500.0);
+    // ADR-0050: 800 ms since sidecars have ledger rows (perf-budgets.toml; xtask checks the two agree).
+    budget("export-replan-50k", median.as_secs_f64() * 1e3, "ms", 800.0);
 }
