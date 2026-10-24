@@ -82,7 +82,7 @@ See proposal.md for the why. Current state, read from the code:
      the caller from the probe (tag 0x0112 in IFD0, ADR-0010's single orientation step).
    - Errors: `Unsupported` (palette, Lab, non-JPEG subsampled YCbCr), `TooLarge` (new `DecodeError` variant:
      chunk above 32 MB or accumulator above 256 MB), `Failed` (corrupt). For a file in memory
-     (`decode_scaled`), anything but `Failed` falls back to `decode_generic`, so nothing that decoded before
+     (`decode_scaled`), any error falls back to `decode_generic`, so nothing that decoded before
      stops decoding.
    - Stats (`TiffDecodeStats`: level, factor, chunks, peak chunk and accumulator bytes) for tests and budgets.
 4. **One pass for TIFFs above 64 MB (ADR-0086).** `ps_hash::IdentityStream` computes the identity from bytes fed in

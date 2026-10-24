@@ -517,12 +517,12 @@ pub fn decode_scaled(
     })
 }
 
-/// A TIFF in memory: strip by strip with on-the-fly downsampling (ADR-0085); when that decoder does not handle the
-/// file (a palette image, a strip above 32 MB), the whole-image decode of the `image` crate, as before.
+/// A TIFF in memory: strip by strip with on-the-fly downsampling (ADR-0085); when that decoder fails (a palette
+/// image, a strip above 32 MB, anything it rejects), the whole-image decode of the `image` crate, as before, so no
+/// TIFF that decoded before stops decoding. Its error is reported when both fail.
 fn decode_tiff_buffer(bytes: &[u8], min_long: u32) -> Result<RgbImage, DecodeError> {
     match crate::tiff_decode::decode(Cursor::new(bytes), min_long) {
         Ok((img, _)) => Ok(img),
-        Err(e @ DecodeError::Failed(_)) => Err(e),
         Err(e) => decode_generic(bytes).map_err(|_| e),
     }
 }
