@@ -90,3 +90,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0084](0084-tiff-directories-beyond-the-probe-window.md) | TIFF directories beyond the probe window: from the analysis buffer, else bounded targeted reads (amends 0010) |
 | [0085](0085-strip-wise-tiff-decoding.md) | TIFF stills decode strip by strip through the `tiff` crate, averaged down while decoding (amends 0017) |
 | [0086](0086-one-pass-analysis-of-large-tiffs.md) | TIFFs above 64 MB are analysed in one sequential pass in their I/O lane (amends 0010, 0011) |
+| [0087](0087-tiff-decode-budgets.md) | TIFF decode budgets: 12 MP analysis time and streamed working memory (extends 0026) |

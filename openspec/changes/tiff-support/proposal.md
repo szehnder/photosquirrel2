@@ -81,7 +81,7 @@ or HEIC twins today:
 - Palette (indexed) TIFFs beyond what the previous decoder did, CIE L*a*b*, and YCbCr with chroma subsampling
   that is not JPEG-compressed: they keep the previous behaviour (whole-image decode when the file is in memory).
 - Colour management (ICC profiles), and tone mapping of floating-point TIFFs whose values exceed 0..1.
-- BigTIFF (files above 4 GB): the probe does not read 64-bit offsets; such files keep their identity only.
+- BigTIFF (the 64-bit variant for files above 4 GB): not recognised by the probe, as before.
 - Re-analysing already catalogued TIFFs without a content change (no analysis-version bump; a rescan of a changed
   or previously failed file picks the new code up).
 - Further pages of a multipage TIFF as separate photos.

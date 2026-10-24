@@ -33,6 +33,10 @@ and copies those best copies into one clean library folder ready for Apple Photo
   merge two.
 - **Keeps photos apart from clutter.** Icons, web and app graphics, tiny images and thumbnail caches are
   recognised and kept out of the way (you can review them under Excluded), so the library is your actual photos.
+- **Reads the formats archives hold.** JPEG, PNG, WebP, GIF, BMP, camera RAW (through its embedded preview),
+  HEIC/AVIF (see below) and TIFF scans of any size: 8/16-bit and floating-point, greyscale, RGB and CMYK, tiled,
+  planar, multipage (the first page is the photo), JPEG-compressed and pyramid TIFFs, whatever program wrote them.
+  A 1 GB scan is read once, in bounded memory, and still matched to its JPEG copies by look.
 - **Shows the details.** A fast, virtualised gallery with filters, a loupe and an inspector with EXIF (camera,
   lens, exposure, date, place).
 - **Copies a clean library.** Folders by date, presets for Apple Photos, Google Photos and Lightroom, optional XMP
@@ -90,6 +94,9 @@ The packages are not code-signed yet, so your system warns you the first time:
   catalogued, de-duplicated by content and exported; they show "preview unavailable" and are not matched to
   resized copies by look. Building from source with libheif 1.17+ and `--features heic` turns decoding on. The
   release notes say which platforms this applies to.
+- **TIFF limits.** Palette (indexed) and CIE L\*a\*b\* TIFFs above 64 MB are catalogued and de-duplicated by
+  content only, and BigTIFF files (the variant for files above 4 GB) are not recognised yet. Colour profiles are not
+  applied, and floating-point values above 1.0 are clipped.
 - **Cleanup is new in 0.2.0** and optional. Without it PhotoSquirrel never touches your sources at all; with it,
   files are only moved within the same drive, after a confirmation, and every move can be undone.
 - **Windows performance** has only been measured on CI machines, where writing very large catalogs (around a

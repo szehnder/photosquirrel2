@@ -2,7 +2,7 @@
 
 ## 1. Decisions
 
-- [ ] 1.1 ADR-0084 (TIFF directories beyond the probe window), ADR-0085 (strip-wise TIFF decoding), ADR-0086 (one-pass analysis of TIFFs above 64 MB) and ADR-0087 (TIFF decode budgets) accepted and listed in `docs/adr/README.md` with their amends notes; roadmap row added; verify `openspec validate tiff-support --strict`
+- [x] 1.1 ADR-0084 (TIFF directories beyond the probe window), ADR-0085 (strip-wise TIFF decoding), ADR-0086 (one-pass analysis of TIFFs above 64 MB) and ADR-0087 (TIFF decode budgets) accepted and listed in `docs/adr/README.md` with their amends notes; roadmap row added; verify `openspec validate tiff-support --strict`
 
 ## 2. Fixtures
 
@@ -35,12 +35,12 @@
 
 ## 8. Budgets and docs
 
-- [ ] 8.1 `perf-budgets.toml` entries `tiff-analysis-decode` and `tiff-stream-memory` with their measure tests; verify `scenario_performance_budgets_tiff_analysis_decode_within_budget`, `scenario_performance_budgets_streamed_tiff_decode_memory_within_budget` and `cargo xtask bench --check` (record the measurements here)
-- [ ] 8.2 README formats section and `docs/performance.md` (TIFF read and memory behaviour); verify the README statements against the format-folder run
+- [x] 8.1 `perf-budgets.toml` entries `tiff-analysis-decode` and `tiff-stream-memory` with their measure tests; verify `scenario_performance_budgets_tiff_analysis_decode_within_budget`, `scenario_performance_budgets_streamed_tiff_decode_memory_within_budget` and `cargo xtask bench --check` (record the measurements here). Measured (reference machine, `cargo xtask bench --check --update-baseline --only tiff-analysis-decode --only tiff-stream-memory`): `tiff-analysis-decode` 319.56 ms (bound 1000 ms), `tiff-stream-memory` 0.94 MB (bound 4 MB); both recorded in `perf-baseline.json`
+- [x] 8.2 README formats section and `docs/performance.md` (TIFF read and memory behaviour); verify the README statements against the format-folder run
 
 ## 9. Verification
 
-- [ ] 9.1 Format folder before and after (fresh data dirs, release CLI with `heic`): per-file stage, dimensions, perceptual hash and group recorded here
-- [ ] 9.2 Corpus gate unchanged: medium corpus seed 42, precision/recall/keeper accuracy 1.0000, 0 must-not-merge violations, 1,843 keeper groups; RAW probe tests unchanged
-- [ ] 9.3 `cargo xtask spec-coverage` maps every scenario of this change; `openspec validate tiff-support --strict`
+- [x] 9.1 Format folder before and after (fresh data dirs, release CLI with `heic`): per-file stage, dimensions, perceptual hash and group recorded here. Before (release 0.2.0 + heic): 22 files in 1.8 s, 2 groups (6 HEIC/AVIF/JPEG files; t05 and t14, byte-identical, as exact copies only), 1 error; t01, t03, t04, t06, t07, t09, t11, t12, t16 thumbed without dimensions (first IFD beyond the probe window); t08, t10, t17 (above 64 MB) without dimensions and perceptual hash; t13 (JPEG YCbCr pyramid) failed "Unhandled TIFF color type YCbCr(8)"; only t02 (IFD0 at offset 8) had dimensions. After: 22 files in 9.4 s (1.6 GB read), 0 errors, every file thumbed with its dimensions and perceptual hashes, one group of 20 (j00, the five HEIC/AVIF files and t01, t03-t14, t16). Not grouped, rightly: t02 (orientation 6: it shows the picture rotated, 2000x3000) and t17 (979 MB 14000x10000 scan of a different picture, aspect 1.4). The 979 MB t17 alone scanned in 8.0 s with a 25 MB peak resident size
+- [x] 9.2 Corpus gate unchanged: medium corpus seed 42, precision/recall/keeper accuracy 1.0000, 0 must-not-merge violations, 1,843 keeper groups; RAW probe tests unchanged. After: 9,933 files scanned in 16.6 s, precision 1.0000, recall 1.0000, keeper accuracy 1.0000, 0 must-not-merge violations, 19,381 true pairs = result pairs = correct, 1,843 keeper groups; `groups list --json` totals 1,843 groups, 8,594 files, 4,048,886,433 reclaimable bytes, 5,570 suggestions (identical to before); the corpus has no TIFF (`scenario_test_corpus_corpus_presets_contain_no_tiff`), and the RAW probe tests and `scenario_media_probe_camera_raw_probes_read_only_the_prefix` pass
+- [x] 9.3 `cargo xtask spec-coverage` maps every scenario of this change; `openspec validate tiff-support --strict`
 - [ ] 9.4 `cargo xtask ci` green in a clean worktree; pushed; GitHub CI green on all four jobs

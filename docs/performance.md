@@ -119,11 +119,27 @@ the test now asserts 800 ms, and an xtask unit test keeps every `budget(...)` bo
 | `gallery-scroll-p95` | p95 <= 8.3 ms | yes | gallery | 7.85 ms |
 | `first-gallery-frame` | median <= 600 ms | yes | gallery | 568 ms |
 | `export-replan-50k` | median <= 800 ms | component | export | 547.045 ms |
+| `tiff-analysis-decode` | median <= 1000 ms | component | tiff-support | 319.56 ms |
+| `tiff-stream-memory` | max <= 4 MB | component | tiff-support | 0.94 MB |
 
 Recorded 2026-10-21 with `cargo xtask bench --check --update-baseline` (balanced power profile, on AC, load
 average below 2). Repeated runs on this machine vary by up to about 60% for the sub-millisecond hashing
 budgets and 10-25% for the I/O-bound ones (catalog, export re-plan), so compare a regression with a second
 run before acting on it; CI re-measures a suspected regression twice and keeps the best run.
+
+The two TIFF budgets were recorded 2026-10-24 on the same machine with `cargo xtask bench --check
+--update-baseline --only tiff-analysis-decode --only tiff-stream-memory` (ADR-0087).
+
+### Large TIFF scans (ADR-0084, ADR-0086)
+
+TIFFs whose directories follow their pixel data cost no extra read up to 64 MB: the scanner reads them in full
+before classifying them, as it would anyway. Above 64 MB the probe adds a few targeted directory reads (at most
+1 MiB, usually one or two reads of a few KB), and the file is hashed and decoded in one sequential pass in its I/O
+lane, holding one strip plus the downsampled image; the lane reserves one 64 MB buffer for it. Measured on the
+reference machine (release build, file in the page cache): a 979 MB 14000x10000 16-bit LZW scan with its directory
+at the end took 8.0 s to scan alone, almost all of it LZW decompression, with a peak resident size of 25 MB for
+the whole CLI process. A format folder of 22 files (16 TIFFs of 0.8-979 MB in every layout, 5 HEIC/AVIF, one
+JPEG; 1.6 GB) scanned in 9.4 s.
 
 ### Re-dating an existing catalog (ADR-0071)
 
