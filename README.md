@@ -90,8 +90,8 @@ The packages are not code-signed yet, so your system warns you the first time:
   catalogued, de-duplicated by content and exported; they show "preview unavailable" and are not matched to
   resized copies by look. Building from source with libheif 1.17+ and `--features heic` turns decoding on. The
   release notes say which platforms this applies to.
-- **Cleanup is new since 0.1.0** (built from source; not in the 0.1.0 packages). Without it PhotoSquirrel never
-  touches your sources at all.
+- **Cleanup is new in 0.2.0** and optional. Without it PhotoSquirrel never touches your sources at all; with it,
+  files are only moved within the same drive, after a confirmation, and every move can be undone.
 - **Windows performance** has only been measured on CI machines, where writing very large catalogs (around a
   million files) was much slower than on Linux and macOS. Reports from real Windows machines are welcome.
 

@@ -13,6 +13,17 @@ Every package contains the desktop app (`photosquirrel`), the headless CLI (`pho
 notices of the open-source components they include (`THIRD-PARTY-LICENSES`). Each file has a
 `.sha256` beside it; check it with `sha256sum -c <file>.sha256` (on macOS, `shasum -a 256 -c`).
 
+### What's new in 0.2.0
+
+- **Optional, reversible cleanup.** Move the files of a drive that are already safe in your library into a
+  quarantine folder on that drive, choose which folders and files go, and undo a whole run or one folder of it.
+- **Better capture dates.** Dates in folder names such as `2019-07-04 Beach` or `2019-07 Italy` (month only, never
+  shown as a day), capture days in your time zone or the camera's recorded offset, and existing catalogs re-dated
+  on the next scan without reading any file again. Libraries you already exported keep their layout, and nothing is
+  copied twice.
+- **The CLI pauses on battery** and resumes on mains (`--ignore-battery` to keep going).
+- Clearer keeper reasons, toolbar and badges in the duplicate review.
+
 ### LGPL components
 
 {{lgpl}} (LGPL-2.1) is linked statically into both programs. Its source is attached to this release as a `.crate`
@@ -45,5 +56,7 @@ These builds are not code-signed yet, so the first launch shows a warning:
 - **Optional:** `ffmpeg` on your PATH for video poster frames; [LM Studio](https://lmstudio.ai) with a vision model
   for local AI insights.
 
-PhotoSquirrel never modifies, moves or deletes your source files: it copies the best copies into a library folder you
-choose. See the [README](https://github.com/szehnder/photosquirrel2#readme).
+PhotoSquirrel never modifies or deletes your source files: it copies the best copies into a library folder you
+choose. The optional cleanup moves files that are already safe in your library into a quarantine folder on the same
+drive, only after you confirm, and every move can be undone. See the
+[README](https://github.com/szehnder/photosquirrel2#readme).
