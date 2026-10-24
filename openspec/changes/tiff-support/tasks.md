@@ -6,21 +6,21 @@
 
 ## 2. Fixtures
 
-- [ ] 2.1 `ps-fixtures`: TIFF writer gains a data-first layout (directories after the pixel data) and several strips/tiles; `tiff_image::TiffSpec` covers layouts, sample formats, colour models, compression (none, LZW, Deflate via the `tiff` encoder, JPEG YCbCr), pages, reduced-resolution levels, orientation and EXIF; verify `scenario_test_corpus_end_directory_tiff_generated` and `scenario_test_corpus_corpus_presets_contain_no_tiff`
+- [x] 2.1 `ps-fixtures`: TIFF writer gains a data-first layout (directories after the pixel data) and several strips/tiles; `tiff_image::TiffSpec` covers layouts, sample formats, colour models, compression (none, LZW, Deflate via the `tiff` encoder, JPEG YCbCr), pages, reduced-resolution levels, orientation and EXIF; verify `scenario_test_corpus_end_directory_tiff_generated` and `scenario_test_corpus_corpus_presets_contain_no_tiff`
 
 ## 3. Probe
 
-- [ ] 3.1 `ps-media::tiff`: `View`/`Segment`, `walk_noting`, `missing_ranges`, `load_directories` (1 MiB, 64 reads, read-ahead, never twice), `metadata_block`; the existing walker unit tests unchanged; verify new unit tests for loops, chains of 100 IFDs and oversized values
-- [ ] 3.2 Probe entry points `probe_buffer`, `needs_directory_reads`, `probe_with_directory_reads`, `probe_seekable` (used by `probe_path`), `tiff_metadata_block`; `CountingReader` seekable; verify `scenario_media_probe_tiff_directory_after_the_pixel_data`, `scenario_media_probe_directory_reads_are_bounded`, `scenario_media_probe_camera_raw_probes_read_only_the_prefix`, `scenario_media_probe_whole_buffer_and_targeted_reads_agree`, `scenario_media_probe_multipage_tiff_reports_its_first_page`, `scenario_media_probe_pyramid_tiff_reports_its_full_resolution`, and `cargo test -p ps-media --test media_probe` unchanged otherwise
+- [x] 3.1 `ps-media::tiff`: `View`/`Segment`, `walk_noting`, `missing_ranges`, `load_directories` (1 MiB, 64 reads, read-ahead, never twice), `metadata_block`; the existing walker unit tests unchanged; verify new unit tests for loops, chains of 100 IFDs and oversized values
+- [x] 3.2 Probe entry points `probe_buffer`, `needs_directory_reads`, `probe_with_directory_reads`, `probe_seekable` (used by `probe_path`), `tiff_metadata_block`; `CountingReader` seekable; verify `scenario_media_probe_tiff_directory_after_the_pixel_data`, `scenario_media_probe_directory_reads_are_bounded`, `scenario_media_probe_camera_raw_probes_read_only_the_prefix`, `scenario_media_probe_whole_buffer_and_targeted_reads_agree`, `scenario_media_probe_multipage_tiff_reports_its_first_page`, `scenario_media_probe_pyramid_tiff_reports_its_full_resolution`, and `cargo test -p ps-media --test media_probe` unchanged otherwise
 
 ## 4. Decoder
 
-- [ ] 4.1 `ps-media::tiff_decode` (level choice, file-order chunks, 32 MB chunk cap, sample conversion, accumulator, colour models, alpha), `DecodeError::TooLarge`, `decode_tiff_reader`; `decode_scaled` uses it for TIFF with the `image` fallback; verify `scenario_thumbnails_tiff_decoded_at_a_reduced_scale`, `scenario_thumbnails_reduced_resolution_level_preferred`, `scenario_thumbnails_tiff_variants_decode_to_the_same_picture`, `scenario_thumbnails_jpeg_compressed_ycbcr_tiff_decodes`, `scenario_thumbnails_orientation_tag_applied_to_tiff`, `scenario_thumbnails_alpha_composited_over_white`, `scenario_thumbnails_decode_memory_bounded`, `scenario_thumbnails_oversized_strip_refused_when_not_in_memory`
-- [ ] 4.2 Metadata from the compact block; verify `scenario_media_metadata_exif_of_an_end_directory_tiff_extracted`
+- [x] 4.1 `ps-media::tiff_decode` (level choice, file-order chunks, 32 MB chunk cap, sample conversion, accumulator, colour models, alpha), `DecodeError::TooLarge`, `decode_tiff_reader`; `decode_scaled` uses it for TIFF with the `image` fallback; verify `scenario_thumbnails_tiff_decoded_at_a_reduced_scale`, `scenario_thumbnails_reduced_resolution_level_preferred`, `scenario_thumbnails_tiff_variants_decode_to_the_same_picture`, `scenario_thumbnails_jpeg_compressed_ycbcr_tiff_decodes`, `scenario_thumbnails_orientation_tag_applied_to_tiff`, `scenario_thumbnails_alpha_composited_over_white`, `scenario_thumbnails_decode_memory_bounded`, `scenario_thumbnails_oversized_strip_refused_when_not_in_memory`
+- [x] 4.2 Metadata from the compact block; verify `scenario_media_metadata_exif_of_an_end_directory_tiff_extracted`
 
 ## 5. Identity
 
-- [ ] 5.1 `ps-hash::IdentityStream` (full and sampled, `next_needed`, `finish`); verify `scenario_content_identity_incremental_identity_equals_one_shot_identity`
+- [x] 5.1 `ps-hash::IdentityStream` (full and sampled, `next_needed`, `finish`); verify `scenario_content_identity_incremental_identity_equals_one_shot_identity`
 
 ## 6. Scanner
 

@@ -13,7 +13,9 @@ pub mod image;
 pub mod index;
 pub mod perceptual;
 
-pub use identity::{AnalysisRead, identity_from_buffer, identity_from_reader, read_for_analysis};
+pub use identity::{
+    AnalysisRead, IdentityStream, identity_from_buffer, identity_from_reader, read_for_analysis,
+};
 pub use image::{ImageError, ImageView, PixelLayout};
 pub use index::{Candidate, NearDupIndex, Thresholds};
 pub use perceptual::{

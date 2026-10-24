@@ -114,6 +114,113 @@ fn ensure_at_end<R: Read>(reader: &mut R) -> io::Result<()> {
     }
 }
 
+/// A content identity computed from bytes fed in file order while the file is read for another purpose (the
+/// one-pass analysis of large TIFFs, ADR-0086). Equal to [`identity_from_reader`] for the same file: a full
+/// identity hashes every byte, a sampled one the size and the three [`SAMPLE_WINDOW_BYTES`] windows. Bytes the
+/// identity does not need are ignored; the needed ones must arrive in order, without gaps.
+#[derive(Debug)]
+pub struct IdentityStream {
+    len: u64,
+    kind: ContentIdKind,
+    hasher: blake3::Hasher,
+    /// The needed ranges `[start, end)`, in file order.
+    ranges: Vec<(u64, u64)>,
+    /// Index of the first range not fully fed.
+    at: usize,
+    /// Bytes of `ranges[at]` fed so far.
+    fed: u64,
+}
+
+impl IdentityStream {
+    /// The identity of a file of `len` bytes.
+    pub fn new(len: u64) -> Self {
+        let kind = identity_kind_for_len(len);
+        let mut hasher = blake3::Hasher::new();
+        let ranges = match kind {
+            ContentIdKind::Full => vec![(0, len)],
+            ContentIdKind::Sampled => {
+                hasher.update(&len.to_le_bytes());
+                sample_offsets(len)
+                    .iter()
+                    .map(|&o| (o, o + SAMPLE_WINDOW_BYTES))
+                    .collect()
+            }
+        };
+        Self {
+            len,
+            kind,
+            hasher,
+            ranges,
+            at: 0,
+            fed: 0,
+        }
+    }
+
+    pub fn kind(&self) -> ContentIdKind {
+        self.kind
+    }
+
+    /// The next file offset the identity needs, `None` once it has everything.
+    pub fn next_needed(&self) -> Option<u64> {
+        self.ranges.get(self.at).map(|r| r.0 + self.fed)
+    }
+
+    /// Whether any byte of `start..end` is still needed.
+    pub fn needs_any(&self, start: u64, end: u64) -> bool {
+        self.ranges[self.at.min(self.ranges.len())..]
+            .iter()
+            .enumerate()
+            .any(|(i, r)| {
+                let from = if i == 0 { r.0 + self.fed } else { r.0 };
+                from < end && start < r.1
+            })
+    }
+
+    /// Feed `bytes` found at file offset `offset`. Parts outside the needed ranges are ignored; a needed byte
+    /// that is skipped (the bytes start after [`Self::next_needed`]) is an error.
+    pub fn update(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        let end = offset + bytes.len() as u64;
+        while let Some(&(rs, re)) = self.ranges.get(self.at) {
+            let want = rs + self.fed;
+            if end <= want {
+                return Ok(());
+            }
+            if offset > want {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("identity bytes skipped: needed offset {want}, got {offset}"),
+                ));
+            }
+            let from = (want - offset) as usize;
+            let to = (end.min(re) - offset) as usize;
+            self.hasher.update(&bytes[from..to]);
+            self.fed += (to - from) as u64;
+            if rs + self.fed == re {
+                self.at += 1;
+                self.fed = 0;
+            } else {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    /// The identity, once every needed byte was fed.
+    pub fn finish(self) -> io::Result<ContentId> {
+        if let Some(n) = self.next_needed() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("identity incomplete: {n} of {} bytes", self.len),
+            ));
+        }
+        let digest = *self.hasher.finalize().as_bytes();
+        Ok(match self.kind {
+            ContentIdKind::Full => ContentId::full(digest),
+            ContentIdKind::Sampled => ContentId::sampled(digest),
+        })
+    }
+}
+
 /// The result of the single analysis read of a file (ADR-0010).
 #[derive(Debug)]
 pub struct AnalysisRead {

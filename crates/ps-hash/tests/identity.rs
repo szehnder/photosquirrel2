@@ -284,3 +284,49 @@ fn scenario_content_identity_hash_is_stable_across_runs() {
     assert_eq!(one, many);
     assert_eq!(one, hash_path(&path).to_hex());
 }
+
+/// tiff-support (ADR-0086): an identity fed during another sequential read equals the one-shot identity.
+#[test]
+fn scenario_content_identity_incremental_identity_equals_one_shot_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let small = dir.path().join("small.bin");
+    fs::write(&small, random_bytes(21, 10 * MB as usize)).unwrap();
+    let large = dir.path().join("large.bin");
+    sparse_file(&large, 300 * MB + 12_345, 22, 7 * MB);
+    let mut rng = ChaCha8Rng::seed_from_u64(23);
+    for (path, kind) in [
+        (&small, ContentIdKind::Full),
+        (&large, ContentIdKind::Sampled),
+    ] {
+        let mut f = File::open(path).unwrap();
+        let len = f.metadata().unwrap().len();
+        let mut s = ps_hash::IdentityStream::new(len);
+        assert_eq!(s.kind(), kind);
+        let (mut pos, mut read) = (0u64, 0u64);
+        let mut buf = vec![0u8; MB as usize];
+        while pos < len {
+            let piece = (1 + rng.next_u64() % MB).min(len - pos);
+            if s.needs_any(pos, pos + piece) {
+                f.seek(SeekFrom::Start(pos)).unwrap();
+                f.read_exact(&mut buf[..piece as usize]).unwrap();
+                s.update(pos, &buf[..piece as usize]).unwrap();
+                read += piece;
+            }
+            pos += piece;
+        }
+        assert_eq!(s.next_needed(), None);
+        assert_eq!(s.finish().unwrap(), hash_path(path), "{}", path.display());
+        match kind {
+            ContentIdKind::Full => assert_eq!(read, len),
+            ContentIdKind::Sampled => {
+                assert!(read <= 3 * SAMPLE_WINDOW_BYTES + 6 * MB, "read {read}")
+            }
+        }
+    }
+    // A needed byte skipped is an error, and an unfinished identity does not finish.
+    let mut s = ps_hash::IdentityStream::new(10);
+    assert!(s.update(3, &[0; 4]).is_err());
+    s.update(0, &[0; 4]).unwrap();
+    assert_eq!(s.next_needed(), Some(4));
+    assert!(s.finish().is_err());
+}
