@@ -17,6 +17,7 @@ os-zone = ["dep:chrono", "dep:log"]
 [dependencies]
 ps-model.workspace = true
 image.workspace = true
+tiff.workspace = true
 zune-jpeg.workspace = true
 jpeg-decoder.workspace = true
 mozjpeg.workspace = true

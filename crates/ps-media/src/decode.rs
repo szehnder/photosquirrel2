@@ -97,6 +97,10 @@ pub enum DecodeError {
     HeicUnavailable,
     #[error("no embedded preview in this RAW file")]
     NoRawPreview,
+    /// Decoding would need more memory than allowed (a TIFF strip or tile above 32 MB when the file is not in
+    /// memory, ADR-0086).
+    #[error("too large to decode in bounded memory: {0}")]
+    TooLarge(String),
     #[error("decode failed: {0}")]
     Failed(String),
 }
@@ -472,7 +476,13 @@ pub fn decode_scaled(
             let (i, d) = decode_jpeg(bytes, min_long)?;
             (i, d, DecodeSource::Main, true)
         }
-        Format::Png | Format::Gif | Format::Webp | Format::Tiff | Format::Bmp => {
+        Format::Tiff => (
+            decode_tiff_buffer(bytes, min_long)?,
+            1,
+            DecodeSource::Main,
+            true,
+        ),
+        Format::Png | Format::Gif | Format::Webp | Format::Bmp => {
             (decode_generic(bytes)?, 1, DecodeSource::Main, true)
         }
         Format::Raw(_) => {
@@ -505,6 +515,35 @@ pub fn decode_scaled(
         source,
         scale_denom: denom,
     })
+}
+
+/// A TIFF in memory: strip by strip with on-the-fly downsampling (ADR-0085); when that decoder does not handle the
+/// file (a palette image, a strip above 32 MB), the whole-image decode of the `image` crate, as before.
+fn decode_tiff_buffer(bytes: &[u8], min_long: u32) -> Result<RgbImage, DecodeError> {
+    match crate::tiff_decode::decode(Cursor::new(bytes), min_long) {
+        Ok((img, _)) => Ok(img),
+        Err(e @ DecodeError::Failed(_)) => Err(e),
+        Err(e) => decode_generic(bytes).map_err(|_| e),
+    }
+}
+
+/// Decode a TIFF from a seekable reader for analysis or previews, holding at most one strip or tile plus the
+/// downsampled image (ADR-0085, ADR-0086): the main image (or a large enough reduced-resolution level of it) at
+/// the smallest box scale whose long edge is at least `min_long`, oriented by the probe.
+pub fn decode_tiff_reader<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    probe: &ProbeRecord,
+    min_long: u32,
+) -> Result<(Decoded, crate::tiff_decode::TiffDecodeStats), DecodeError> {
+    let (image, stats) = crate::tiff_decode::decode(reader, min_long)?;
+    Ok((
+        Decoded {
+            image: image.oriented(probe.orientation),
+            source: DecodeSource::Main,
+            scale_denom: 1,
+        },
+        stats,
+    ))
 }
 
 /// Decode the probe's embedded preview (JPEG previews, or HEIC thumbnails with the `heic` feature),

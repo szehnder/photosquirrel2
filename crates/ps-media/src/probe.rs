@@ -1,7 +1,7 @@
 //! The bounded probe (ADR-0010): format by magic number, header dimensions, orientation, EXIF block and
 //! embedded preview location, from at most the first 256 KB of a file.
 
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use ps_model::{
@@ -12,7 +12,9 @@ use ps_model::{
 use crate::bmff;
 use crate::fs::{open_read_only, read_prefix};
 use crate::jpeg::{self, JpegIssue};
-use crate::tiff::{IfdKind, IfdView, Tiff, be_u16, be_u32, u16_at, u32_at};
+use crate::tiff::{
+    IfdKind, IfdView, LoadedDirectories, Segment, Tiff, View, be_u16, be_u32, u16_at, u32_at,
+};
 use crate::util::{
     MAC_EPOCH_OFFSET, capture_time_from_unix, contain, parse_exif_datetime, parse_offset,
     parse_subsec,
@@ -21,7 +23,8 @@ use crate::util::{
 /// The probe never looks past this many bytes (256 KB).
 pub const PROBE_LIMIT: usize = 262_144;
 
-/// Probe a file on disk: opens it read-only, reads at most [`PROBE_LIMIT`] bytes. I/O failures become an
+/// Probe a file on disk: opens it read-only, reads at most [`PROBE_LIMIT`] bytes, plus the directories of a
+/// plain TIFF that keeps them beyond that prefix with bounded targeted reads (ADR-0084). I/O failures become an
 /// error record, never an `Err`.
 pub fn probe_path(path: &Path) -> ProbeRecord {
     let file = match open_read_only(path) {
@@ -29,7 +32,7 @@ pub fn probe_path(path: &Path) -> ProbeRecord {
         Err(e) => return io_error_record(0, &e),
     };
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-    probe_reader(file, size, Some(path))
+    probe_seekable(file, size, Some(path))
 }
 
 /// Probe from any reader positioned at the start of the file; reads at most [`PROBE_LIMIT`] bytes.
@@ -38,6 +41,114 @@ pub fn probe_reader<R: Read>(reader: R, file_size: u64, path: Option<&Path>) -> 
         Ok(buf) => probe_bytes(&buf, file_size.max(buf.len() as u64), path),
         Err(e) => io_error_record(file_size, &e),
     }
+}
+
+/// Probe from a seekable reader positioned at the start of the file: the [`PROBE_LIMIT`] prefix, plus the
+/// bounded targeted directory reads of [`probe_with_directory_reads`] for a plain TIFF that needs them.
+pub fn probe_seekable<R: Read + Seek>(
+    mut reader: R,
+    file_size: u64,
+    path: Option<&Path>,
+) -> ProbeRecord {
+    let prefix = match read_prefix(&mut reader, PROBE_LIMIT) {
+        Ok(buf) => buf,
+        Err(e) => return io_error_record(file_size, &e),
+    };
+    let size = file_size.max(prefix.len() as u64);
+    let mut fetch = |off: u64, len: usize| -> std::io::Result<Vec<u8>> {
+        reader.seek(SeekFrom::Start(off))?;
+        read_prefix(&mut reader, len)
+    };
+    match probe_with_directory_reads(&prefix, size, path, &mut fetch) {
+        Ok((rec, _)) => rec,
+        Err(e) => io_error_record(file_size, &e),
+    }
+}
+
+/// Probe a file held entirely in memory (the analysis buffer, ADR-0010): [`probe_bytes`] of its first 256 KB,
+/// except that a plain TIFF's directories are read wherever they lie in the buffer (ADR-0084).
+pub fn probe_buffer(bytes: &[u8], path: Option<&Path>) -> ProbeRecord {
+    let size = bytes.len() as u64;
+    if !is_plain_tiff(bytes) {
+        return probe_bytes(bytes, size, path);
+    }
+    probe_tiff_view(size, path, View::new(bytes, &[]), size)
+}
+
+/// Whether a file starting with `prefix` is a plain TIFF (not a TIFF-based RAW) whose directories, or the
+/// values the probe and the decoder need, are not all within the first [`PROBE_LIMIT`] bytes (ADR-0084). RAW
+/// files always answer false: their probe stays within the prefix.
+pub fn needs_directory_reads(prefix: &[u8], file_size: u64) -> bool {
+    let head = &prefix[..prefix.len().min(PROBE_LIMIT)];
+    is_plain_tiff(head) && !crate::tiff::missing_ranges(View::new(head, &[]), file_size).is_empty()
+}
+
+/// [`probe_bytes`], plus, when [`needs_directory_reads`] says so, the TIFF directories fetched through
+/// `fetch(offset, len)` (at most [`crate::tiff::DIRECTORY_READ_MAX_BYTES`] in
+/// [`crate::tiff::DIRECTORY_MAX_READS`] reads). Returns the record and the fetched segments (empty when none
+/// were needed); a fetch error stops the probe and is returned.
+pub fn probe_with_directory_reads<E>(
+    prefix: &[u8],
+    file_size: u64,
+    path: Option<&Path>,
+    fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
+) -> Result<(ProbeRecord, LoadedDirectories), E> {
+    let head = &prefix[..prefix.len().min(PROBE_LIMIT)];
+    if !needs_directory_reads(head, file_size) {
+        return Ok((
+            probe_bytes(head, file_size, path),
+            LoadedDirectories::default(),
+        ));
+    }
+    let loaded = crate::tiff::load_directories(head, file_size, fetch)?;
+    let examined = head.len() as u64 + loaded.bytes_read;
+    let mut rec = probe_tiff_view(file_size, path, View::new(head, &loaded.segments), examined);
+    if !loaded.complete {
+        rec.warnings.push(
+            "TIFF directories beyond the probe window exceed the directory read bounds; some were not read"
+                .into(),
+        );
+    }
+    Ok((rec, loaded))
+}
+
+/// The metadata directories of a TIFF known through its prefix and fetched segments, as a compact TIFF block
+/// the EXIF parser can read on its own (ADR-0084). `None` when the prefix is not a TIFF or IFD0 is unknown.
+pub fn tiff_metadata_block(prefix: &[u8], segments: &[Segment]) -> Option<Vec<u8>> {
+    let head = &prefix[..prefix.len().min(PROBE_LIMIT)];
+    Tiff::parse_view(View::new(head, segments))?.metadata_block()
+}
+
+fn is_plain_tiff(prefix: &[u8]) -> bool {
+    let head = &prefix[..prefix.len().min(PROBE_LIMIT)];
+    sniff(head) == Ok(Format::Tiff) && Tiff::parse(head).is_some()
+}
+
+/// A plain TIFF's probe over `view` (its prefix plus fetched segments, or the whole file). The format and the
+/// extension check come from the prefix, as in [`probe_bytes`].
+fn probe_tiff_view(
+    file_size: u64,
+    path: Option<&Path>,
+    view: View<'_>,
+    examined: u64,
+) -> ProbeRecord {
+    let mut rec = ProbeRecord::empty(file_size);
+    rec.bytes_examined = examined;
+    rec.format = Some(Format::Tiff);
+    if let Some(p) = path {
+        rec.extension_mismatch = extension_mismatch(p, Format::Tiff);
+    }
+    let ok = contain(|| probe_tiff(view, file_size, Format::Tiff, &mut rec));
+    if ok.is_none() {
+        rec.error = Some(ProbeError {
+            kind: ProbeErrorKind::Corrupt,
+            message: "parser failure on malformed data".into(),
+        });
+    }
+    if let Some(d) = rec.stored {
+        rec.display = Some(d.oriented(rec.orientation));
+    }
+    rec
 }
 
 fn io_error_record(size: u64, e: &std::io::Error) -> ProbeRecord {
@@ -89,7 +200,7 @@ fn probe_format(buf: &[u8], file_size: u64, format: Format, rec: &mut ProbeRecor
         Format::Jpeg => probe_jpeg(buf, file_size, 0, rec),
         Format::Png => probe_png(buf, file_size, rec),
         Format::Tiff | Format::Raw(_) if Tiff::parse(buf).is_some() => {
-            probe_tiff(buf, file_size, format, rec)
+            probe_tiff(View::new(buf, &[]), file_size, format, rec)
         }
         Format::Raw(RawFormat::Raf) => probe_raf(buf, file_size, rec),
         Format::Raw(RawFormat::Cr3) => probe_cr3(buf, rec),
@@ -511,7 +622,7 @@ fn tiff_previews(
             continue;
         }
         let local = usize::try_from(off).unwrap_or(usize::MAX);
-        let head = t.data.get(local..).unwrap_or(&[]);
+        let head = t.data.tail(local);
         let mut dims = None;
         if !head.is_empty() {
             if !head.starts_with(&[0xFF, 0xD8]) {
@@ -740,11 +851,13 @@ fn probe_webp(buf: &[u8], rec: &mut ProbeRecord) {
     }
 }
 
-fn probe_tiff(buf: &[u8], file_size: u64, format: Format, rec: &mut ProbeRecord) {
-    let Some(t) = Tiff::parse(buf) else { return };
+fn probe_tiff(view: View<'_>, file_size: u64, format: Format, rec: &mut ProbeRecord) {
+    let Some(t) = Tiff::parse_view(view) else {
+        return;
+    };
     rec.exif_range = Some(ByteRange {
         offset: 0,
-        len: file_size.min(buf.len() as u64),
+        len: file_size.min(view.head_len() as u64),
     });
     let (ifds, bad) = t.walk();
     if bad {
@@ -756,7 +869,7 @@ fn probe_tiff(buf: &[u8], file_size: u64, format: Format, rec: &mut ProbeRecord)
                     t.ifd0
                 ),
             });
-        } else if t.ifd0 as usize >= buf.len() {
+        } else if !view.has(u64::from(t.ifd0), 2) {
             rec.warnings
                 .push("first IFD lies beyond the probe window".into());
         } else {

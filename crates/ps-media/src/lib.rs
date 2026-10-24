@@ -19,6 +19,7 @@ pub mod probe;
 pub mod quality;
 pub mod thumb;
 pub mod tiff;
+pub mod tiff_decode;
 pub mod util;
 pub mod video;
 
@@ -30,7 +31,10 @@ pub use date::{
 pub use decode::{DecodeError, Decoded, RgbImage, decode_for_analysis};
 pub use fs::{CountingReader, open_read_only, read_all};
 pub use metadata::extract_metadata;
-pub use probe::{PROBE_LIMIT, probe_bytes, probe_path, probe_reader, sniff};
+pub use probe::{
+    PROBE_LIMIT, needs_directory_reads, probe_buffer, probe_bytes, probe_path, probe_reader,
+    probe_seekable, probe_with_directory_reads, sniff, tiff_metadata_block,
+};
 pub use thumb::{analyze_still, make_thumbnail};
 
 /// This build can decode HEIC/HEIF/AVIF stills (cargo feature `heic`, ADR-0017).

@@ -1,7 +1,7 @@
 //! Read-only file access (ADR-0004). This is the only way `ps-media` opens files.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,5 +70,11 @@ impl<R: Read> Read for CountingReader<R> {
         let n = self.inner.read(buf)?;
         self.count.fetch_add(n as u64, Ordering::Relaxed);
         Ok(n)
+    }
+}
+
+impl<R: Seek> Seek for CountingReader<R> {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
     }
 }
