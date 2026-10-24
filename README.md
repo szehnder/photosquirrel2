@@ -154,7 +154,7 @@ a date in its file name or XMP sidecar, then its folder).
   are never used, and a folder date more than a day after the file was last modified is ignored (it names a
   backup or an import, not the photo), except when the modification time is before 1990 (an unset camera
   clock, which says nothing). Folders named for two years, such as `2011-12 School Year` or `2011-2012`, are not
-  month dates. Folder dates never decide duplicates or keepers.
+  month dates; a bare `2010-11`, or `2010-11 Trip` inside a `2010` folder, is still November 2010. Folder dates never decide duplicates or keepers.
 - **Honest precision.** A month folder dates its photos to the month only: the inspector shows "July 2019", from
   the folder name, and the library files them under `<YYYY>/<YYYY-MM>/` instead of inventing a day.
 - **Local days.** A file's modification time, and a video creation time recorded only in UTC, count on the day

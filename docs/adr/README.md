@@ -86,3 +86,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0080](0080-two-year-range-folders-are-not-month-dates.md) | Folders named for a range of two years are not month dates (amends 0069) |
 | [0081](0081-keyed-quicktime-creation-dates-are-wall-clocks.md) | A keyed QuickTime creation date is a wall clock, also at +00:00 (amends 0070) |
 | [0082](0082-a-scan-run-remembers-its-analysis-refresh.md) | A scan run remembers its analysis refresh (migration 18; amends 0071) |
+| [0083](0083-a-two-year-range-folder-needs-evidence.md) | A folder is read as a range of two years only with text after it, outside its year (amends 0080) |

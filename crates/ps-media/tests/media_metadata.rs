@@ -476,6 +476,49 @@ fn scenario_media_metadata_school_year_folder_is_not_a_month() {
     assert_eq!(date(&m).value.ymd(), (2011, 12, 25));
 }
 
+fn assert_month(folder: &str, ymd: (i32, u8, u8)) {
+    let (_, m) = analyze(
+        &stripped(),
+        &format!("{folder}/a.jpg"),
+        Some(utc(2024, 3, 1, 12, 0)),
+    );
+    let d = date(&m);
+    assert_eq!(
+        (d.value.ymd(), d.provenance, d.precision, d.undated),
+        (ymd, DateProvenance::FolderName, DatePrecision::Month, false),
+        "{folder}"
+    );
+}
+
+#[test]
+fn scenario_media_metadata_bare_month_folder_next_to_the_school_year_pattern_is_a_month() {
+    // ADR-0083: without text after it, `YYYY-YY` with YY = next year is a month, not a range.
+    assert_month("2010-11", (2010, 11, 1));
+    assert_month("2005_06", (2005, 6, 1));
+    assert_month("2011.12", (2011, 12, 1));
+    assert_month("1900-01", (1900, 1, 1));
+}
+
+#[test]
+fn scenario_media_metadata_month_folder_inside_its_year_folder_is_a_month() {
+    assert_month("2010/2010-11", (2010, 11, 1));
+    assert_month("2010/2010-11 Thanksgiving", (2010, 11, 1));
+    assert_month("2011 Family/2011-12 Christmas", (2011, 12, 1));
+    assert_month("Photos/2010/2010-11 Trip/raw", (2010, 11, 1));
+    let mtime = utc(2024, 3, 1, 12, 0);
+    // Text after it and no folder of its year above it: still a school year (ADR-0080). A folder of another
+    // year does not make it a month either.
+    for folder in ["Kids/2011-12 School Year", "2012/2011-12 School Year"] {
+        let (_, m) = analyze(&stripped(), &format!("{folder}/a.jpg"), Some(mtime));
+        let d = date(&m);
+        assert_eq!(
+            (d.value.ymd(), d.provenance, d.undated),
+            ((2024, 3, 1), DateProvenance::FileMtime, true),
+            "{folder}"
+        );
+    }
+}
+
 #[test]
 fn scenario_media_metadata_nearest_folder_wins() {
     let (_, m) = analyze(

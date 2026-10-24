@@ -397,17 +397,19 @@ pub fn resolve_capture_date(
 pub fn date_in_folders(rel_path: &RelPath) -> Option<(CaptureTime, DatePrecision)> {
     let comps: Vec<&[u8]> = rel_path.as_bytes().split(|b| *b == b'/').collect();
     let folders = &comps[..comps.len().saturating_sub(1)];
-    (0..folders.len())
-        .rev()
-        .find_map(|i| start_date(folders[i]).or_else(|| chain_date(&folders[..=i])))
+    (0..folders.len()).rev().find_map(|i| {
+        let parent = i.checked_sub(1).map(|p| folders[p]);
+        start_date(folders[i], parent).or_else(|| chain_date(&folders[..=i]))
+    })
 }
 
 fn date_value(y: i32, m: u8, d: u8, precision: DatePrecision) -> (CaptureTime, DatePrecision) {
     (CaptureTime::from_parts(y, m, d, 0, 0, 0), precision)
 }
 
-/// A date at the start of a folder name.
-fn start_date(name: &[u8]) -> Option<(CaptureTime, DatePrecision)> {
+/// A date at the start of a folder name. `parent` is the folder holding it inside the source, if any (it tells a
+/// month folder `2010/2010-11` from a range of two years, ADR-0083).
+fn start_date(name: &[u8], parent: Option<&[u8]>) -> Option<(CaptureTime, DatePrecision)> {
     let y = num(name, 0, 4)? as i32;
     let ends = |i: usize| !digit_at(name, i);
     match name.get(4) {
@@ -422,8 +424,11 @@ fn start_date(name: &[u8]) -> Option<(CaptureTime, DatePrecision)> {
                 return (ends(10) && d >= 1 && d <= days_in_month(y, m))
                     .then(|| date_value(y, m, d, DatePrecision::Day));
             }
-            // `2011-12 School Year`, `2008_09 Season`: a range of two years, not December 2011 (ADR-0080).
-            let school_year = i32::from(m) == (y + 1) % 100;
+            // `2011-12 School Year`, `2008_09 Season`: a range of two years, not December 2011 (ADR-0080). Only
+            // with text after it and not inside a folder of that year: a bare `2010-11`, or `2010/2010-11 Trip`,
+            // is November 2010 (ADR-0083).
+            let in_its_year = parent.and_then(|p| chain_part(p, 4)) == Some(y as u32);
+            let school_year = i32::from(m) == (y + 1) % 100 && name.len() > 7 && !in_its_year;
             (ends(7) && !school_year).then(|| date_value(y, m, 1, DatePrecision::Month))
         }
         _ => {
