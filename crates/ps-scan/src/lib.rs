@@ -30,6 +30,7 @@ pub mod redate;
 mod report;
 mod scanner;
 pub mod source;
+mod tiff_pass;
 pub mod upgrade;
 pub mod walk;
 

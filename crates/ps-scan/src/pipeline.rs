@@ -15,7 +15,7 @@
 //! cancel at any instant leaves a consistent checkpoint; resume simply walks again.
 
 use std::collections::HashMap;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -41,6 +41,7 @@ use crate::memory::{BufferPermit, ByteBudget};
 use crate::options::ScanOptions;
 use crate::progress::Progress;
 use crate::report::{RunSummary, SourceSummary};
+use crate::tiff_pass::OnePass;
 use crate::walk::{WalkError, WalkOptions, walk};
 
 /// Read chunk between cancel checks (1 MB).
@@ -368,6 +369,10 @@ enum Content {
     Streamed {
         identity: ContentId,
         prefix: Vec<u8>,
+        /// A plain TIFF's metadata directories as a compact TIFF (ADR-0084), read instead of the prefix.
+        metadata_block: Option<Vec<u8>>,
+        /// A plain TIFF decoded during the same read (ADR-0086).
+        decoded: Option<Result<ps_media::Decoded, DecodeError>>,
     },
 }
 
@@ -674,6 +679,69 @@ fn read_into(r: &mut Controlled<'_>, buf: &mut Vec<u8>, limit: usize) -> io::Res
     Ok(())
 }
 
+/// Read the rest of a file of `size` bytes into `buf` (which holds its head), then check that it ends there.
+fn read_rest(r: &mut Controlled<'_>, buf: &mut Vec<u8>, size: u64) -> io::Result<()> {
+    buf.reserve_exact((size as usize).saturating_sub(buf.len()));
+    read_into(r, buf, size as usize)?;
+    if (buf.len() as u64) < size {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "file shrank while it was being read",
+        ));
+    }
+    let mut one = [0u8; 1];
+    match r.read(&mut one)? {
+        0 => Ok(()),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file grew while it was being read",
+        )),
+    }
+}
+
+/// The probe of a plain TIFF whose directories lie beyond `prefix`, with bounded targeted reads through the
+/// lane's reader (ADR-0084); the reader is back at the end of the prefix afterwards.
+fn probe_with_targeted_reads(
+    r: &mut Controlled<'_>,
+    prefix: &[u8],
+    size: u64,
+    rel: &Path,
+) -> io::Result<(ProbeRecord, Vec<ps_media::tiff::Segment>)> {
+    let mut fetch = |off: u64, len: usize| -> io::Result<Vec<u8>> {
+        r.seek(SeekFrom::Start(off))?;
+        let mut v = Vec::with_capacity(len.min(CHUNK));
+        (&mut *r).take(len as u64).read_to_end(&mut v)?;
+        Ok(v)
+    };
+    let (probe, loaded) =
+        ps_media::probe_with_directory_reads(prefix, size, Some(rel), &mut fetch)?;
+    r.seek(SeekFrom::Start(prefix.len() as u64))?;
+    Ok((probe, loaded.segments))
+}
+
+/// Hash and decode a plain TIFF above 64 MB from one sequential read (ADR-0086). The decode's own failure is
+/// part of the result; an I/O error or a cancel (during the decode or after it) is the `Err`.
+fn one_pass_analysis(
+    r: &mut Controlled<'_>,
+    size: u64,
+    prefix: &[u8],
+    segments: &[ps_media::tiff::Segment],
+    probe: &ProbeRecord,
+) -> io::Result<(ContentId, Result<ps_media::Decoded, DecodeError>)> {
+    let mut pass = OnePass::new(r, size, prefix, segments)?;
+    let decoded = ps_media::decode::decode_tiff_reader(
+        &mut pass,
+        probe,
+        ps_media::decode::ANALYSIS_MIN_LONG_EDGE,
+    )
+    .map(|(d, _)| d);
+    if let Some(e) = pass.take_error() {
+        return Err(e);
+    }
+    let identity = pass.finish()?;
+    Ok((identity, decoded))
+}
+
 fn process_file(
     ctx: &RunCtx,
     idx: usize,
@@ -760,7 +828,45 @@ fn process_file(
         }
         return;
     }
-    let probe = ps_media::probe_bytes(&buf, size, Some(rel.as_path()));
+    let mut probe = ps_media::probe_bytes(&buf, size, Some(rel.as_path()));
+    let buffered = size <= ANALYSIS_BUFFER_MAX_BYTES;
+    // A plain TIFF whose directories lie beyond the prefix (ADR-0084): read in full now when it is buffered
+    // anyway, else fetch the directories with bounded targeted reads. Not for an analysis refresh, which reads
+    // only the prefix (ADR-0071).
+    let mut early_permit = None;
+    let mut segments: Vec<ps_media::tiff::Segment> = Vec::new();
+    if !t.refresh && ps_media::needs_directory_reads(&buf, size) {
+        if buffered {
+            let permit = match ctx
+                .budget
+                .acquire(size, (idx, reader), &|| busy.checkpoint())
+            {
+                Ok(p) => p,
+                Err(Cancelled) => return,
+            };
+            if let Err(e) = read_rest(&mut r, &mut buf, size) {
+                if !is_cancel(&e) {
+                    read_failed(ctx, idx, &t, Stage::Probed, &e);
+                }
+                return;
+            }
+            probe = ps_media::probe_buffer(&buf, Some(rel.as_path()));
+            early_permit = Some(permit);
+        } else {
+            match probe_with_targeted_reads(&mut r, &buf, size, rel.as_path()) {
+                Ok((p, loaded)) => {
+                    probe = p;
+                    segments = loaded;
+                }
+                Err(e) => {
+                    if !is_cancel(&e) {
+                        read_failed(ctx, idx, &t, Stage::Probed, &e);
+                    }
+                    return;
+                }
+            }
+        }
+    }
     let facts = ps_media::class_facts(&probe);
     let (class, reasons) = ps_media::classify_facts(
         &facts,
@@ -811,46 +917,55 @@ fn process_file(
     }
     ctx.progress.transition(idx, t.stage, Stage::Probed);
 
-    // The single full read (ADR-0010): the probe bytes are the head of the buffer.
-    let buffered = size <= ANALYSIS_BUFFER_MAX_BYTES;
-    let want = if buffered { size } else { CHUNK as u64 };
-    let permit = match ctx
-        .budget
-        .acquire(want, (idx, reader), &|| busy.checkpoint())
-    {
-        Ok(p) => p,
-        Err(Cancelled) => return,
+    // The single full read (ADR-0010): the probe bytes are the head of the buffer. A plain TIFF above 64 MB is
+    // hashed and decoded in one sequential pass (ADR-0086), counted as one analysis buffer.
+    let one_pass = !buffered && probe.format == Some(ps_model::Format::Tiff);
+    let want = if buffered || one_pass {
+        size.min(ANALYSIS_BUFFER_MAX_BYTES)
+    } else {
+        CHUNK as u64
+    };
+    let early = early_permit.is_some();
+    let permit = match early_permit {
+        Some(p) => p,
+        None => match ctx
+            .budget
+            .acquire(want, (idx, reader), &|| busy.checkpoint())
+        {
+            Ok(p) => p,
+            Err(Cancelled) => return,
+        },
     };
     let content = if buffered {
-        buf.reserve_exact((size as usize).saturating_sub(buf.len()));
-        let res = read_into(&mut r, &mut buf, size as usize).and_then(|()| {
-            if (buf.len() as u64) < size {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "file shrank while it was being read",
-                ));
-            }
-            let mut one = [0u8; 1];
-            match r.read(&mut one)? {
-                0 => Ok(()),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "file grew while it was being read",
-                )),
-            }
-        });
-        if let Err(e) = res {
+        if !early && let Err(e) = read_rest(&mut r, &mut buf, size) {
             if !is_cancel(&e) {
                 read_failed(ctx, idx, &t, Stage::Analyzed, &e);
             }
             return;
         }
         Content::Buffer(buf)
+    } else if one_pass {
+        match one_pass_analysis(&mut r, size, &buf, &segments, &probe) {
+            Ok((identity, decoded)) => Content::Streamed {
+                identity,
+                metadata_block: ps_media::tiff_metadata_block(&buf, &segments),
+                prefix: buf,
+                decoded: Some(decoded),
+            },
+            Err(e) => {
+                if !is_cancel(&e) {
+                    read_failed(ctx, idx, &t, Stage::Analyzed, &e);
+                }
+                return;
+            }
+        }
     } else {
         match ps_hash::identity_from_reader(&mut r, size) {
             Ok(identity) => Content::Streamed {
                 identity,
                 prefix: buf,
+                metadata_block: None,
+                decoded: None,
             },
             Err(e) => {
                 if !is_cancel(&e) {
@@ -969,12 +1084,17 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
         mtime,
         _permit,
     } = job;
-    let (identity, bytes, full) = match content {
-        Content::Buffer(b) => (ps_hash::identity_from_buffer(&b), b, true),
-        Content::Streamed { identity, prefix } => (identity, prefix, false),
+    let (identity, bytes, full, metadata_block, decoded) = match content {
+        Content::Buffer(b) => (ps_hash::identity_from_buffer(&b), b, true, None, None),
+        Content::Streamed {
+            identity,
+            prefix,
+            metadata_block,
+            decoded,
+        } => (identity, prefix, false, metadata_block, decoded),
     };
     let metadata = ps_media::extract_metadata(
-        &bytes,
+        metadata_block.as_deref().unwrap_or(&bytes),
         &probe,
         mtime,
         &ps_media::DateContext {
@@ -993,6 +1113,23 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
                 ctx.opts.poster_tool.as_deref(),
             ),
         )
+    } else if let Some(decoded) = decoded {
+        // Decoded in one pass by the reader (ADR-0086); a decode error keeps the identity, with a placeholder.
+        match decoded.and_then(|d| {
+            let thumb =
+                ps_media::thumb::thumbnail_from_image(&d.image, ps_model::ThumbKind::Image)?;
+            Ok((d, thumb))
+        }) {
+            Ok((d, thumb)) => (still_hashes(&d.image), thumb),
+            Err(e) => (
+                None,
+                ps_media::thumb::placeholder(
+                    &probe,
+                    capture,
+                    &format!("preview unavailable ({e})"),
+                ),
+            ),
+        }
     } else if !full {
         (
             None,
@@ -1000,18 +1137,7 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
         )
     } else {
         match ps_media::analyze_still(&bytes, &probe) {
-            Ok((decoded, thumb, _)) => {
-                let img = &decoded.image;
-                let hashes = ps_hash::ImageView::new(
-                    img.width,
-                    img.height,
-                    ps_hash::PixelLayout::Rgb8,
-                    &img.data,
-                )
-                .ok()
-                .map(|v| ps_hash::perceptual_hash(&v));
-                (hashes, thumb)
-            }
+            Ok((decoded, thumb, _)) => (still_hashes(&decoded.image), thumb),
             Err(DecodeError::HeicUnavailable) => (
                 None,
                 ps_media::thumb::placeholder(
@@ -1050,6 +1176,13 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
         }),
         thumb,
     }
+}
+
+/// Perceptual hashes of an analysis decode.
+fn still_hashes(img: &ps_media::RgbImage) -> Option<ps_model::PerceptualHash> {
+    ps_hash::ImageView::new(img.width, img.height, ps_hash::PixelLayout::Rgb8, &img.data)
+        .ok()
+        .map(|v| ps_hash::perceptual_hash(&v))
 }
 
 fn persist_loop(

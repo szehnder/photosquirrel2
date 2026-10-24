@@ -439,6 +439,7 @@ impl FakeScanService {
                     redated: 0,
                     needs_refresh: 0,
                     refreshed: 0,
+                    reanalyzed: 0,
                 }
             };
             stages.add(&st);

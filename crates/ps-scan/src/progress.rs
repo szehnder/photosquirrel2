@@ -71,6 +71,7 @@ struct Diff {
     redated: AtomicU64,
     needs_refresh: AtomicU64,
     refreshed: AtomicU64,
+    reanalyzed: AtomicU64,
 }
 
 impl Diff {
@@ -87,6 +88,7 @@ impl Diff {
             redated: self.redated.load(Ordering::Relaxed),
             needs_refresh: self.needs_refresh.load(Ordering::Relaxed),
             refreshed: self.refreshed.load(Ordering::Relaxed),
+            reanalyzed: self.reanalyzed.load(Ordering::Relaxed),
         }
     }
 
@@ -101,6 +103,7 @@ impl Diff {
         self.quarantined.store(d.quarantined, Ordering::Relaxed);
         self.redated.store(d.redated, Ordering::Relaxed);
         self.needs_refresh.store(d.needs_refresh, Ordering::Relaxed);
+        self.reanalyzed.store(d.reanalyzed, Ordering::Relaxed);
         // `refreshed` counts during the run (Progress::refreshed), after the diff.
     }
 }

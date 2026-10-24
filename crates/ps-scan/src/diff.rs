@@ -13,6 +13,9 @@
 //!   skipped file that becomes a candidate goes back to `probed` and is processed; every other stage is kept.
 //! - **re-dated**: an unchanged, analysed file dated by an older version of the capture-date rules is dated
 //!   again from its stored facts ([`crate::redate`], ADR-0071), without reading it.
+//! - **re-analysed**: an unchanged plain TIFF an earlier version catalogued as thumbed without dimensions (its
+//!   directories were beyond the probe window, ADR-0084) is processed again from `discovered`, like a changed
+//!   file. The new probe reads such directories, so the row cannot stay without dimensions and is re-read once.
 //! - **needs refresh**: an unchanged, finished file probed before classification facts were stored (catalog
 //!   migration 13) is counted; only with [`ScanOptions::refresh_analysis`](crate::ScanOptions) is its probe
 //!   data read again (at most [`ps_media::PROBE_LIMIT`] bytes, read-only) to re-classify it (ADR-0071).
@@ -89,6 +92,16 @@ struct Stale {
 /// Merge-join `entries` (sorted by path) with the catalog rows of `source`. `classifier` and its
 /// `classifier_hash` are the run's settings (re-classification); `refresh_analysis` queues unchanged files
 /// without stored class facts for a probe-only refresh.
+/// A plain TIFF thumbed without dimensions: what the probe before ADR-0084 left for a TIFF whose directories
+/// were beyond the first 256 KB. Smaller files were probed whole, so they never qualify.
+fn catalogued_without_dimensions(r: &ps_catalog::FileRecord, stat: &StatFingerprint) -> bool {
+    r.stage == Stage::Thumbed
+        && r.format == Some(ps_model::Format::Tiff)
+        && r.width.is_none()
+        && r.missing_since_ms.is_none()
+        && stat.size > ps_media::PROBE_LIMIT as u64
+}
+
 pub fn diff(
     source: SourceId,
     entries: Vec<WalkEntry>,
@@ -170,6 +183,14 @@ pub fn diff(
                     }
                     Some(r) if !r.stat.unchanged(&w.stat) => {
                         out.counts.changed += 1;
+                        out.upserts.push(FileRow::discovered(key, w.stat));
+                        out.todo.push(todo(Stage::Discovered, false));
+                        out.bytes_to_process += w.stat.size;
+                        *out.stages.get_mut(Stage::Discovered) += 1;
+                    }
+                    Some(r) if catalogued_without_dimensions(r, &w.stat) => {
+                        out.counts.unchanged += 1;
+                        out.counts.reanalyzed += 1;
                         out.upserts.push(FileRow::discovered(key, w.stat));
                         out.todo.push(todo(Stage::Discovered, false));
                         out.bytes_to_process += w.stat.size;

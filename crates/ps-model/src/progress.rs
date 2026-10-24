@@ -150,6 +150,10 @@ pub struct DiffCounts {
     /// files still waiting for a refresh are `needs_refresh - refreshed` ([`DiffCounts::still_needs_refresh`]).
     #[serde(default)]
     pub refreshed: u64,
+    /// Unchanged plain TIFFs an earlier version catalogued as thumbed without dimensions (their directories were
+    /// beyond the probe window): analysed again, once (counted in `unchanged` too; ADR-0084).
+    #[serde(default)]
+    pub reanalyzed: u64,
 }
 
 impl DiffCounts {
@@ -165,6 +169,7 @@ impl DiffCounts {
         self.redated += o.redated;
         self.needs_refresh += o.needs_refresh;
         self.refreshed += o.refreshed;
+        self.reanalyzed += o.reanalyzed;
     }
 
     /// Unchanged files that still keep a class decided before facts were stored, after this run.

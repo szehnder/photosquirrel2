@@ -24,10 +24,10 @@
 
 ## 6. Scanner
 
-- [ ] 6.1 Pipeline: plain TIFFs that need directory reads are read in full before classification (<= 64 MB) and re-probed from the buffer, or probed with targeted reads through the lane reader (> 64 MB); verify `scenario_scanning_end_directory_tiff_read_once` and the existing `scenario_scanning_junk_costs_only_a_probe` and `scenario_scanning_one_full_read_per_candidate`
-- [ ] 6.2 One-pass reader (`tiff_pass`) for TIFFs above 64 MB: identity and decode from one sequential read, 64 MB budget, decoded image and metadata block in the CPU job, placeholder on decode errors, I/O errors and cancels reported as read failures; verify `scenario_scanning_large_tiff_analysed_in_one_pass`, `scenario_scanning_undecodable_large_tiff_keeps_its_identity`, `scenario_media_metadata_exif_of_a_tiff_larger_than_64_mb_extracted`, and the existing control tests
-- [ ] 6.3 Diff: unchanged thumbed TIFF rows without dimensions analysed again (`DiffCounts::reanalyzed`, shown in the CLI summary); verify `scenario_scanning_tiff_catalogued_without_dimensions_analysed_again`
-- [ ] 6.4 Grouping across formats; verify `scenario_duplicate_detection_tiff_copies_group_with_their_jpeg`
+- [x] 6.1 Pipeline: plain TIFFs that need directory reads are read in full before classification (<= 64 MB) and re-probed from the buffer, or probed with targeted reads through the lane reader (> 64 MB); verify `scenario_scanning_end_directory_tiff_read_once` and the existing `scenario_scanning_junk_costs_only_a_probe` and `scenario_scanning_one_full_read_per_candidate`
+- [x] 6.2 One-pass reader (`tiff_pass`) for TIFFs above 64 MB: identity and decode from one sequential read, 64 MB budget, decoded image and metadata block in the CPU job, placeholder on decode errors, I/O errors and cancels reported as read failures; verify `scenario_scanning_large_tiff_analysed_in_one_pass`, `scenario_scanning_undecodable_large_tiff_keeps_its_identity`, `scenario_media_metadata_exif_of_a_tiff_larger_than_64_mb_extracted`, and the existing control tests
+- [x] 6.3 Diff: unchanged thumbed TIFF rows without dimensions analysed again (`DiffCounts::reanalyzed`, shown in the CLI summary); verify `scenario_scanning_tiff_catalogued_without_dimensions_analysed_again`
+- [x] 6.4 Grouping across formats; verify `scenario_duplicate_detection_tiff_copies_group_with_their_jpeg`
 
 ## 7. Previews
 

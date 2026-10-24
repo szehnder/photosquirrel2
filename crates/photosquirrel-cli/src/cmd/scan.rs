@@ -385,6 +385,12 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
             s.diff.redated
         );
     }
+    if s.diff.reanalyzed > 0 {
+        println!(
+            "{} TIFF files catalogued without dimensions by an earlier version analysed again",
+            s.diff.reanalyzed
+        );
+    }
     for l in refresh_lines(&s.diff, s.status, refresh) {
         println!("{l}");
     }
