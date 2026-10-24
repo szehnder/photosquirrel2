@@ -87,3 +87,6 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0081](0081-keyed-quicktime-creation-dates-are-wall-clocks.md) | A keyed QuickTime creation date is a wall clock, also at +00:00 (amends 0070) |
 | [0082](0082-a-scan-run-remembers-its-analysis-refresh.md) | A scan run remembers its analysis refresh (migration 18; amends 0071) |
 | [0083](0083-a-two-year-range-folder-needs-evidence.md) | A folder is read as a range of two years only with text after it, outside its year (amends 0080) |
+| [0084](0084-tiff-directories-beyond-the-probe-window.md) | TIFF directories beyond the probe window: from the analysis buffer, else bounded targeted reads (amends 0010) |
+| [0085](0085-strip-wise-tiff-decoding.md) | TIFF stills decode strip by strip through the `tiff` crate, averaged down while decoding (amends 0017) |
+| [0086](0086-one-pass-analysis-of-large-tiffs.md) | TIFFs above 64 MB are analysed in one sequential pass in their I/O lane (amends 0010, 0011) |
