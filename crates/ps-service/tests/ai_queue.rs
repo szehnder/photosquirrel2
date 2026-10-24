@@ -392,11 +392,17 @@ fn described_with_v1_results(
         ai.start(false).unwrap();
         assert!(ai.wait_idle(Duration::from_secs(60)));
     }
-    // Results stored alone (a RAW+JPEG pair's two contents share one request and one time).
+    // Results of contents described alone (a RAW+JPEG pair's two contents share one request). Equal store
+    // times do not tell them apart: two lone results can land in the same millisecond.
     let all = catalog.read().ai_results(10_000).unwrap();
     let rows: Vec<_> = all
         .iter()
-        .filter(|r| all.iter().filter(|o| o.at_ms == r.at_ms).count() == 1)
+        .filter(|r| {
+            ps_service::ai::capture_set(&catalog, &r.content)
+                .unwrap()
+                .len()
+                == 1
+        })
         .take(n)
         .cloned()
         .collect();
