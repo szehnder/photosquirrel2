@@ -3,13 +3,17 @@
 //! `/tmp` or the repository.
 //!
 //! A per-name mutex keeps threads apart, an exclusive lock on `<name>.lock` keeps processes apart, and
-//! `<name>.complete` marks a finished build: an interrupted build (no marker) is removed and done again.
+//! `<name>.complete` marks a finished build: an interrupted build (no marker) is removed and done again, and so is
+//! one made by another version of this crate (the marker names it), since the generator's output carries it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::{DirWriter, Preset};
+
+/// The completion marker's content: the version of the crate that built the folder.
+const MARKER: &[u8] = concat!("ps-fixtures ", env!("CARGO_PKG_VERSION")).as_bytes();
 
 fn thread_lock(root: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
@@ -30,11 +34,11 @@ pub fn shared_dir(base: &Path, name: &str, build: impl FnOnce(&Path)) -> PathBuf
     let lock = std::fs::File::create(base.join(format!("{name}.lock"))).expect("fixture lock");
     lock.lock().expect("lock the fixture");
     let done = base.join(format!("{name}.complete"));
-    if !done.is_file() {
+    if std::fs::read(&done).ok().as_deref() != Some(MARKER) {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("fixture folder");
         build(&root);
-        std::fs::write(&done, b"ok").expect("completion marker");
+        std::fs::write(&done, MARKER).expect("completion marker");
     }
     root
 }
@@ -86,5 +90,15 @@ mod tests {
             builds.fetch_add(1, Ordering::SeqCst);
         });
         assert_eq!(builds.load(Ordering::SeqCst), 2);
+        // So is one built by another version of this crate.
+        std::fs::write(base.path().join("x.complete"), b"ok").expect("old marker");
+        shared_dir(base.path(), "x", |_| {
+            builds.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(builds.load(Ordering::SeqCst), 3);
+        shared_dir(base.path(), "x", |_| {
+            builds.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(builds.load(Ordering::SeqCst), 3, "reused once current");
     }
 }
