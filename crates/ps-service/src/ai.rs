@@ -312,7 +312,7 @@ impl PreviewLoader for SourcePreviewLoader {
             // Read-only: `fs::read` opens the file for reading only.
             match std::fs::read(&path) {
                 Ok(bytes) => {
-                    let probe = ps_media::probe_bytes(&bytes, bytes.len() as u64, Some(&path));
+                    let probe = ps_media::probe_buffer(&bytes, Some(&path));
                     return ps_llm::preview::derive(PreviewInput::Source {
                         bytes: &bytes,
                         probe: &probe,

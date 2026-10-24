@@ -236,6 +236,18 @@ pub fn make_large_preview(
     Ok((encode_jpeg(&r, 85)?, r.width, r.height))
 }
 
+/// [`make_large_preview`] of a TIFF read from a seekable reader (a file not held in memory), in bounded memory
+/// (ADR-0085, ADR-0086).
+pub fn make_large_tiff_preview<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    probe: &ProbeRecord,
+    long_edge: u32,
+) -> Result<(Vec<u8>, u32, u32), DecodeError> {
+    let (d, _) = decode::decode_tiff_reader(reader, probe, long_edge)?;
+    let r = decode::resize_to_long_edge(&d.image, long_edge);
+    Ok((encode_jpeg(&r, 85)?, r.width, r.height))
+}
+
 /// The thumbnail of a video: a poster frame from the configured tool when available, else a placeholder
 /// carrying duration and capture date.
 pub fn video_thumbnail(

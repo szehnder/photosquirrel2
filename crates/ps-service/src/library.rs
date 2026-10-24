@@ -1032,10 +1032,20 @@ impl Library {
         if !online || !path.exists() {
             return Ok(Preview::Offline);
         }
-        // Sources are read-only (ADR-0004): read_all opens the file read-only.
-        let bytes = ps_media::fs::read_all(&path)?;
-        let probe = ps_media::probe_bytes(&bytes, bytes.len() as u64, Some(&path));
-        match ps_media::thumb::make_large_preview(&bytes, &probe, PREVIEW_LONG_EDGE) {
+        // Sources are read-only (ADR-0004): read_all and probe_path open the file read-only. A TIFF above 64 MB is
+        // decoded from the file in bounded memory instead of being read whole (ADR-0086).
+        let made = if r.format == Some(ps_model::Format::Tiff)
+            && r.stat.size > ps_model::limits::ANALYSIS_BUFFER_MAX_BYTES
+        {
+            let probe = ps_media::probe_path(&path);
+            let file = std::io::BufReader::new(ps_media::fs::open_read_only(&path)?);
+            ps_media::thumb::make_large_tiff_preview(file, &probe, PREVIEW_LONG_EDGE)
+        } else {
+            let bytes = ps_media::fs::read_all(&path)?;
+            let probe = ps_media::probe_buffer(&bytes, Some(&path));
+            ps_media::thumb::make_large_preview(&bytes, &probe, PREVIEW_LONG_EDGE)
+        };
+        match made {
             Ok((jpeg, _, _)) => {
                 if let (Some(c), Some(k)) = (cache.as_mut(), key.as_deref()) {
                     let _ = c.insert(k, &jpeg);

@@ -31,7 +31,7 @@
 
 ## 7. Previews
 
-- [ ] 7.1 `ps-service` previews probe with `probe_buffer`; the large preview of a TIFF above 64 MB decodes from the file in bounded memory; verify a service test that a large end-directory TIFF's preview is upright with the right aspect ratio
+- [x] 7.1 `ps-service` previews probe with `probe_buffer`; the large preview of a TIFF above 64 MB decodes from the file in bounded memory; verify a service test that a large end-directory TIFF's preview is upright with the right aspect ratio
 
 ## 8. Budgets and docs
 
