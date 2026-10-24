@@ -10,6 +10,7 @@ license.workspace = true
 ps-model.workspace = true
 image = { workspace = true, features = ["jpeg", "gif"] }
 png.workspace = true
+tiff.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 rayon.workspace = true

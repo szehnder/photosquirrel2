@@ -17,6 +17,7 @@ pub mod rng;
 pub mod shared;
 pub mod synth;
 pub mod tiff;
+pub mod tiff_image;
 pub mod truth;
 pub mod video;
 pub mod writer;

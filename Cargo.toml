@@ -37,6 +37,8 @@ futures = "0.3"
 
 # Media
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp"] }
+# Strip/tile TIFF decoding (ADR-0085): the version `image` already uses, with its default codecs.
+tiff = "0.11"
 zune-jpeg = "0.5"
 jpeg-decoder = { version = "0.3", default-features = false }
 # libjpeg-turbo-derived DCT-scaled decodes, plain C built by `cc` (no nasm, no cmake; ADR-0054).

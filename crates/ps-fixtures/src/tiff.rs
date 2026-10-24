@@ -1,8 +1,10 @@
 //! A minimal TIFF IFD writer, shared by the EXIF (APP1) block of camera JPEGs and the DNG writer.
 //!
 //! An [`Ifd`] is a list of tagged values plus sub-IFD pointers (Exif, GPS, SubIFDs) and out-of-line blobs
-//! (EXIF thumbnail, DNG strips). [`write_tiff`] lays the tree out with every offset relative to the TIFF header,
-//! entries sorted by tag, values word-aligned, in either byte order.
+//! (EXIF thumbnail, DNG strips, image strips or tiles). [`write_tiff`] lays the tree out with every offset relative
+//! to the TIFF header, entries sorted by tag, values word-aligned, in either byte order: directories first and the
+//! blobs after them, as cameras do, or with [`Placement::DataFirst`] the blobs first and every directory after
+//! them, as libtiff, ImageMagick and scanner software do.
 
 /// TIFF byte order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +89,8 @@ pub struct Ifd {
     children: Vec<(u16, Ifd)>,
     /// (offset tag, length tag, bytes), e.g. 0x0201/0x0202 JPEG thumbnail, 0x0111/0x0117 strips.
     blobs: Vec<(u16, u16, Vec<u8>)>,
+    /// (offset tag, length tag, chunks): image strips or tiles, written as LONG offset and length arrays.
+    chunks: Vec<(u16, u16, Vec<Vec<u8>>)>,
     next: Option<Box<Ifd>>,
 }
 
@@ -128,6 +132,12 @@ impl Ifd {
         self
     }
 
+    /// Image strips (0x0111/0x0117) or tiles (0x0144/0x0145), one blob each.
+    pub fn chunks(&mut self, offset_tag: u16, length_tag: u16, chunks: Vec<Vec<u8>>) -> &mut Self {
+        self.chunks.push((offset_tag, length_tag, chunks));
+        self
+    }
+
     pub fn set_next(&mut self, ifd: Ifd) -> &mut Self {
         self.next = Some(Box::new(ifd));
         self
@@ -142,10 +152,25 @@ enum Slot {
     Inline(u16, u32, Vec<u8>),
     Child(usize),
     Blob(usize),
+    Chunks(usize),
 }
 
-/// Serialise `ifd0` (and everything it points to) as a complete TIFF stream (header included).
+/// Where the blobs go relative to the directories.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// Directories right after the header, blobs after them (cameras).
+    DirectoriesFirst,
+    /// Blobs right after the header, every directory after them (libtiff, ImageMagick, scanners).
+    DataFirst,
+}
+
+/// Serialise `ifd0` (and everything it points to) as a complete TIFF stream (header included), directories first.
 pub fn write_tiff(ifd0: &Ifd, e: Endian) -> Vec<u8> {
+    write_tiff_placed(ifd0, e, Placement::DirectoriesFirst)
+}
+
+/// Serialise `ifd0` with the given [`Placement`].
+pub fn write_tiff_placed(ifd0: &Ifd, e: Endian, placement: Placement) -> Vec<u8> {
     let mut buf = Vec::with_capacity(4096);
     buf.extend_from_slice(match e {
         Endian::Little => b"II",
@@ -153,9 +178,13 @@ pub fn write_tiff(ifd0: &Ifd, e: Endian) -> Vec<u8> {
     });
     buf.extend_from_slice(&e.u16(42));
     buf.extend_from_slice(&e.u32(8));
-    // IFDs first, then every blob (strips, thumbnails) at the end, as cameras lay files out.
+    let mut placed = Placed::default();
+    if placement == Placement::DataFirst {
+        place_blobs(&mut buf, ifd0, &mut placed);
+    }
     let mut blobs: Vec<(usize, &[u8])> = Vec::new();
-    write_ifd(&mut buf, ifd0, e, &mut blobs);
+    let ifd0_at = write_ifd(&mut buf, ifd0, e, &mut blobs, &placed);
+    patch_u32(&mut buf, 4, ifd0_at, e);
     for (at, bytes) in blobs {
         align(&mut buf);
         let off = offset(&buf);
@@ -163,6 +192,39 @@ pub fn write_tiff(ifd0: &Ifd, e: Endian) -> Vec<u8> {
         patch_u32(&mut buf, at, off, e);
     }
     buf
+}
+
+/// Offsets of blobs already written ([`Placement::DataFirst`]), by their address.
+#[derive(Default)]
+struct Placed(std::collections::HashMap<(usize, usize), u32>);
+
+impl Placed {
+    fn get(&self, bytes: &[u8]) -> Option<u32> {
+        self.0.get(&(bytes.as_ptr() as usize, bytes.len())).copied()
+    }
+}
+
+fn place_blobs(buf: &mut Vec<u8>, ifd: &Ifd, placed: &mut Placed) {
+    let mut put = |buf: &mut Vec<u8>, bytes: &Vec<u8>| {
+        align(buf);
+        let off = offset(buf);
+        buf.extend_from_slice(bytes);
+        placed.0.insert((bytes.as_ptr() as usize, bytes.len()), off);
+    };
+    for (_, _, bytes) in &ifd.blobs {
+        put(buf, bytes);
+    }
+    for (_, _, chunks) in &ifd.chunks {
+        for c in chunks {
+            put(buf, c);
+        }
+    }
+    for (_, child) in &ifd.children {
+        place_blobs(buf, child, placed);
+    }
+    if let Some(next) = &ifd.next {
+        place_blobs(buf, next, placed);
+    }
 }
 
 fn patch_u32(buf: &mut [u8], at: usize, v: u32, e: Endian) {
@@ -185,6 +247,7 @@ fn write_ifd<'a>(
     ifd: &'a Ifd,
     e: Endian,
     blobs: &mut Vec<(usize, &'a [u8])>,
+    placed: &Placed,
 ) -> u32 {
     align(buf);
     let start = buf.len();
@@ -201,6 +264,13 @@ fn write_ifd<'a>(
         entries.push((*otag, Slot::Blob(i)));
         let len = offset(bytes);
         entries.push((*ltag, Slot::Inline(4, 1, e.u32(len).to_vec())));
+    }
+    for (i, (otag, ltag, chunks)) in ifd.chunks.iter().enumerate() {
+        entries.push((*otag, Slot::Chunks(i)));
+        let lens: Vec<u32> = chunks.iter().map(|c| offset(c)).collect();
+        let v = Value::Long(lens);
+        let (ty, count) = v.type_and_count();
+        entries.push((*ltag, Slot::Inline(ty, count, v.encode(e))));
     }
     entries.sort_by_key(|(t, _)| *t);
 
@@ -238,18 +308,44 @@ fn write_ifd<'a>(
                 buf[at + 4..at + 8].copy_from_slice(&e.u32(1));
                 blob_patches.push((at + 8, *bi));
             }
+            Slot::Chunks(ci) => {
+                let chunks = &ifd.chunks[*ci].2;
+                buf[at + 2..at + 4].copy_from_slice(&e.u16(4));
+                buf[at + 4..at + 8]
+                    .copy_from_slice(&e.u32(u32::try_from(chunks.len()).unwrap_or(u32::MAX)));
+                let fields: Vec<usize> = if chunks.len() <= 1 {
+                    vec![at + 8]
+                } else {
+                    align(buf);
+                    let arr = buf.len();
+                    buf.resize(arr + 4 * chunks.len(), 0);
+                    let arr_off = offset(&buf[..arr]);
+                    patch_u32(buf, at + 8, arr_off, e);
+                    (0..chunks.len()).map(|k| arr + 4 * k).collect()
+                };
+                for (field, c) in fields.into_iter().zip(chunks) {
+                    match placed.get(c) {
+                        Some(off) => patch_u32(buf, field, off, e),
+                        None => blobs.push((field, c)),
+                    }
+                }
+            }
         }
     }
     for (at, bi) in blob_patches {
-        blobs.push((at, &ifd.blobs[bi].2));
+        let bytes = &ifd.blobs[bi].2;
+        match placed.get(bytes) {
+            Some(off) => patch_u32(buf, at, off, e),
+            None => blobs.push((at, bytes)),
+        }
     }
     for (at, ci) in child_patches {
-        let off = write_ifd(buf, &ifd.children[ci].1, e, blobs);
+        let off = write_ifd(buf, &ifd.children[ci].1, e, blobs, placed);
         patch_u32(buf, at, off, e);
     }
     let next_at = table + 12 * n;
     if let Some(next) = &ifd.next {
-        let off = write_ifd(buf, next, e, blobs);
+        let off = write_ifd(buf, next, e, blobs, placed);
         patch_u32(buf, next_at, off, e);
     }
     offset(&buf[..start])

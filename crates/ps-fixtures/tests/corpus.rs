@@ -900,3 +900,38 @@ fn scenes_by_content_match_the_truth() {
         "another seed's plan"
     );
 }
+
+/// tiff-support: the TIFF fixtures never enter the ground-truth corpus.
+#[test]
+fn scenario_test_corpus_corpus_presets_contain_no_tiff() {
+    fn files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("read dir").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                files(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let c = small();
+    let mut all = Vec::new();
+    files(&c.root, &mut all);
+    assert!(all.len() > 100);
+    for p in all {
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        assert!(ext != "tif" && ext != "tiff", "{}", p.display());
+        let bytes = std::fs::read(&p).expect("read");
+        let head = &bytes[..bytes.len().min(ps_media::PROBE_LIMIT)];
+        assert_ne!(
+            ps_media::sniff(head),
+            Ok(ps_model::Format::Tiff),
+            "{} is a plain TIFF",
+            p.display()
+        );
+    }
+}
