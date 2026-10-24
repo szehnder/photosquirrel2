@@ -233,3 +233,42 @@ fn scan_refresh_analysis_flag_refreshes_rows_without_class_facts() {
         stdout(&o)
     );
 }
+
+/// Task 9.3: a refresh run names the files it could not read, in the singular for one file.
+#[cfg(unix)]
+#[test]
+fn scan_refresh_analysis_names_files_it_could_not_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    for i in 0..3u64 {
+        write(&src.join(format!("IMG_{i:04}.JPG")), &photo(700 + i * 41));
+    }
+    let data = scanned(&src);
+    let c = rusqlite::Connection::open(data.path().join("catalog.db")).unwrap();
+    c.execute(
+        "UPDATE file SET class_facts = NULL, classifier_hash = NULL",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    let locked = src.join("IMG_0001.JPG");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&locked).is_ok() {
+        // Running as root: permissions do not stop reads, so there is nothing to test.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    let o = cli(data.path())
+        .args(["scan", "--refresh-analysis"])
+        .output()
+        .expect("run cli");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let out = stdout(&o);
+    assert!(out.contains("refreshed the analysis of 2 files"), "{out}");
+    assert!(
+        out.contains("1 file analysed by an older version could not be read and keeps its class"),
+        "{out}"
+    );
+    assert!(!out.contains("1 files"), "{out}");
+}

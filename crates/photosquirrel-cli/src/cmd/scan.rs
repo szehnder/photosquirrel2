@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use ps_model::{ProgressSnapshot, RunStatus, ScanPhase, ScanRunId, SourceId};
+use ps_model::{DiffCounts, ProgressSnapshot, RunStatus, ScanPhase, ScanRunId, SourceId};
 use ps_service::groups::GroupTotals;
 use ps_service::power::{PowerEvent, PowerPause, PowerPolicy, PowerSource, probe_from_env};
 use ps_service::scan::{RunSummary, ScanService};
@@ -349,7 +349,14 @@ fn foreground(
     if ctx.json {
         line("scan", "summary", &summary)?;
     } else {
-        print_summary(run, &summary);
+        // A refresh run: this process asked for one, or the resumed run recorded it (ADR-0082).
+        let refresh = svc.engine().options().refresh_analysis
+            || svc
+                .runs()
+                .ok()
+                .and_then(|rs| rs.into_iter().find(|r| r.id == run))
+                .is_some_and(|r| r.refresh_analysis);
+        print_summary(run, &summary, refresh);
     }
     if cancelled_by_interrupt {
         return Err(Interrupted.into());
@@ -357,7 +364,7 @@ fn foreground(
     Ok(())
 }
 
-fn print_summary(run: ScanRunId, s: &RunSummary) {
+fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
     println!(
         "run {run} {}: {} files processed ({} read) in {}; {} new, {} changed, {} unchanged, {} missing, {} \
          quarantined, {} errors",
@@ -378,18 +385,8 @@ fn print_summary(run: ScanRunId, s: &RunSummary) {
             s.diff.redated
         );
     }
-    if s.diff.refreshed > 0 {
-        println!(
-            "refreshed the analysis of {} files analysed by an older version (read up to 256 KB of each)",
-            s.diff.refreshed
-        );
-    }
-    let still = s.diff.still_needs_refresh();
-    if still > 0 {
-        println!(
-            "{still} files were analysed by an older version and keep their class; rescan with \
-             `photosquirrel-cli scan --refresh-analysis` to re-classify them (reads up to 256 KB of each)"
-        );
+    for l in refresh_lines(&s.diff, s.status, refresh) {
+        println!("{l}");
     }
     if let Some(g) = &s.grouping {
         println!(
@@ -410,6 +407,49 @@ fn print_summary(run: ScanRunId, s: &RunSummary) {
     if s.status == RunStatus::Cancelled {
         println!("resume with: photosquirrel-cli scan --resume");
     }
+}
+
+fn files(n: u64) -> String {
+    if n == 1 {
+        "1 file".into()
+    } else {
+        format!("{n} files")
+    }
+}
+
+/// The summary lines about analysis refresh (ADR-0071). `refresh` says the run refreshed analysis: the files
+/// still waiting after a completed refresh run are the ones it could not read (their errors are the run's).
+pub fn refresh_lines(d: &DiffCounts, status: RunStatus, refresh: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if d.refreshed > 0 {
+        out.push(format!(
+            "refreshed the analysis of {} analysed by an older version (read up to 256 KB of each)",
+            files(d.refreshed)
+        ));
+    }
+    let still = d.still_needs_refresh();
+    if still == 0 {
+        return out;
+    }
+    let (were, keep) = if still == 1 {
+        ("was", "keeps its")
+    } else {
+        ("were", "keep their")
+    };
+    if refresh && status == RunStatus::Completed {
+        out.push(format!(
+            "{} analysed by an older version could not be read and {keep} class; see this run's errors, then \
+             rescan with `photosquirrel-cli scan --refresh-analysis` to try again",
+            files(still)
+        ));
+    } else {
+        out.push(format!(
+            "{} {were} analysed by an older version and {keep} class; rescan with \
+             `photosquirrel-cli scan --refresh-analysis` to re-classify them (reads up to 256 KB of each)",
+            files(still)
+        ));
+    }
+    out
 }
 
 #[derive(Serialize)]
@@ -550,4 +590,64 @@ pub fn status(ctx: &Ctx) -> Result<()> {
             );
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diff(needs_refresh: u64, refreshed: u64) -> DiffCounts {
+        DiffCounts {
+            needs_refresh,
+            refreshed,
+            ..DiffCounts::default()
+        }
+    }
+
+    #[test]
+    fn refresh_lines_say_one_file_in_the_singular() {
+        let l = refresh_lines(&diff(1, 0), RunStatus::Completed, false);
+        assert_eq!(l.len(), 1);
+        assert!(
+            l[0].starts_with("1 file was analysed by an older version and keeps its class;"),
+            "{l:?}"
+        );
+        let l = refresh_lines(&diff(3, 0), RunStatus::Completed, false);
+        assert!(
+            l[0].starts_with("3 files were analysed by an older version and keep their class;"),
+            "{l:?}"
+        );
+        let l = refresh_lines(&diff(1, 1), RunStatus::Completed, true);
+        assert_eq!(
+            l,
+            [
+                "refreshed the analysis of 1 file analysed by an older version (read up to 256 KB of each)"
+            ]
+        );
+        assert!(refresh_lines(&diff(0, 0), RunStatus::Completed, false).is_empty());
+    }
+
+    #[test]
+    fn refresh_lines_say_unreadable_files_after_a_refresh_run() {
+        let l = refresh_lines(&diff(5, 3), RunStatus::Completed, true);
+        assert_eq!(l.len(), 2, "{l:?}");
+        assert!(l[0].contains("refreshed the analysis of 3 files"), "{l:?}");
+        assert!(
+            l[1].starts_with(
+                "2 files analysed by an older version could not be read and keep their class"
+            ),
+            "{l:?}"
+        );
+        assert!(l[1].contains("see this run's errors"), "{l:?}");
+        let l = refresh_lines(&diff(1, 0), RunStatus::Completed, true);
+        assert!(l[0].starts_with(
+            "1 file analysed by an older version could not be read and keeps its class"
+        ));
+        // A cancelled refresh run did not try them all: it says they still need one.
+        let l = refresh_lines(&diff(5, 3), RunStatus::Cancelled, true);
+        assert!(
+            l[1].starts_with("2 files were analysed by an older version"),
+            "{l:?}"
+        );
+    }
 }
