@@ -935,7 +935,8 @@ impl ExportView {
                             .min_w_0()
                             .text_color(colors.text)
                             .child(format!(
-                                "Better copies: {headline}. These photos are already in the library through                                  another copy, so nothing is copied for them; the library copies are never                                  removed or replaced."
+                                "{headline}. These photos are already in the library through another copy, so they are not copied \
+                                 by default. Library copies are never removed or replaced."
                             )),
                     )
                     .child(kit::button(
