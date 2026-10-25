@@ -73,7 +73,8 @@ fn type_size(typ: u16) -> Option<usize> {
         1 | 2 | 6 | 7 => 1,
         3 | 8 => 2,
         4 | 9 | 11 | 13 => 4,
-        5 | 10 | 12 => 8,
+        // RATIONAL, SRATIONAL, DOUBLE; LONG8, SLONG8 and IFD8 (BigTIFF types some classic writers use).
+        5 | 10 | 12 | 16 | 17 | 18 => 8,
         _ => return None,
     })
 }
@@ -346,24 +347,59 @@ impl<'a> Tiff<'a> {
         self.u32(e.field_pos)
     }
 
-    /// Unsigned integer values of a BYTE/SHORT/LONG entry (at most 64 values).
+    /// Non-negative integer values of an integer entry (at most 64 values): BYTE, SHORT, LONG and IFD, the
+    /// signed SBYTE, SSHORT and SLONG, and LONG8, SLONG8 and IFD8, as the `tiff` decoder accepts them for
+    /// dimensions. A negative value, or one above `u32::MAX`, is left out.
     pub fn uints(&self, e: &Entry) -> Vec<u32> {
         let Some(b) = self.value_bytes(e) else {
-            // Value outside the window: an inline single LONG/SHORT is still readable.
+            // Value outside the window: an inline single value is still readable.
             return match e.typ {
                 3 if e.count == 1 => self.u16(e.field_pos).map(u32::from).into_iter().collect(),
+                8 if e.count == 1 => self
+                    .u16(e.field_pos)
+                    .and_then(|v| u32::try_from(v as i16).ok())
+                    .into_iter()
+                    .collect(),
                 4 | 13 if e.count == 1 => self.u32(e.field_pos).into_iter().collect(),
+                9 if e.count == 1 => self
+                    .u32(e.field_pos)
+                    .and_then(|v| u32::try_from(v as i32).ok())
+                    .into_iter()
+                    .collect(),
                 _ => Vec::new(),
             };
         };
         let n = usize::try_from(e.count).unwrap_or(0).min(64);
+        let endian = self.endian;
+        let u64_at = |i: usize| -> Option<u64> {
+            let (a, b) = (u32_at(b, i * 8, endian)?, u32_at(b, i * 8 + 4, endian)?);
+            Some(match endian {
+                Endian::Little => u64::from(a) | (u64::from(b) << 32),
+                Endian::Big => (u64::from(a) << 32) | u64::from(b),
+            })
+        };
         match e.typ {
             1 | 7 => b.iter().take(n).map(|v| u32::from(*v)).collect(),
-            3 => (0..n)
-                .filter_map(|i| u16_at(b, i * 2, self.endian).map(u32::from))
+            6 => b
+                .iter()
+                .take(n)
+                .filter_map(|v| u32::try_from(*v as i8).ok())
                 .collect(),
-            4 | 13 => (0..n)
-                .filter_map(|i| u32_at(b, i * 4, self.endian))
+            3 => (0..n)
+                .filter_map(|i| u16_at(b, i * 2, endian).map(u32::from))
+                .collect(),
+            8 => (0..n)
+                .filter_map(|i| u32::try_from(u16_at(b, i * 2, endian)? as i16).ok())
+                .collect(),
+            4 | 13 => (0..n).filter_map(|i| u32_at(b, i * 4, endian)).collect(),
+            9 => (0..n)
+                .filter_map(|i| u32::try_from(u32_at(b, i * 4, endian)? as i32).ok())
+                .collect(),
+            16 | 18 => (0..n)
+                .filter_map(|i| u32::try_from(u64_at(i)?).ok())
+                .collect(),
+            17 => (0..n)
+                .filter_map(|i| u32::try_from(u64_at(i)? as i64).ok())
                 .collect(),
             _ => Vec::new(),
         }
@@ -502,6 +538,10 @@ pub fn load_directories<E>(
     }
 }
 
+/// Largest [`Tiff::metadata_block`] (1 MiB): IFD tables (at most 4 x 1,024 entries) plus values of at most 64 KB
+/// each; values beyond the budget are left out.
+pub const METADATA_BLOCK_MAX_BYTES: usize = 1024 * 1024;
+
 impl Tiff<'_> {
     /// A compact TIFF holding only the metadata directories (IFD0, Exif, GPS, Interop) and the values known
     /// in the view, without strip/tile arrays, sub-images or blobs, offsets rewritten from header to end. It
@@ -529,15 +569,27 @@ impl Tiff<'_> {
                     | 0x0202
             ) && wanted_value(e.tag).is_some()
         };
+        // Values: each at most what the probe would fetch for its tag (64 KB), one per tag (the first), and all
+        // together within the block budget, leaving room for the tables.
+        let budget =
+            std::cell::Cell::new(METADATA_BLOCK_MAX_BYTES - 4 * (2 + 12 * MAX_ENTRIES + 4) - 64);
         let entries = |ifd: Option<&IfdView>| -> Vec<(u16, u16, u32, Vec<u8>)> {
-            ifd.map(|i| {
-                i.entries
-                    .iter()
-                    .filter(|e| keep(e))
-                    .filter_map(|e| Some((e.tag, e.typ, e.count, self.value_bytes(e)?.to_vec())))
-                    .collect()
-            })
-            .unwrap_or_default()
+            let mut out: Vec<(u16, u16, u32, Vec<u8>)> = Vec::new();
+            for e in ifd.map(|i| i.entries.as_slice()).unwrap_or_default() {
+                if !keep(e) || out.iter().any(|o| o.0 == e.tag) {
+                    continue;
+                }
+                let Some(v) = self.value_bytes(e) else {
+                    continue;
+                };
+                let size = v.len().max(4) + 1;
+                if v.len() as u64 > wanted_value(e.tag).unwrap_or(0) || size > budget.get() {
+                    continue;
+                }
+                budget.set(budget.get() - size);
+                out.push((e.tag, e.typ, e.count, v.to_vec()));
+            }
+            out
         };
         let mut w = BlockWriter {
             out: Vec::with_capacity(4096),
@@ -707,5 +759,140 @@ mod tests {
         let e = ifds[0].entries[0];
         assert_eq!(t.ascii(&e), None);
         assert!(t.uints(&e).is_empty());
+    }
+
+    #[test]
+    fn uints_read_every_integer_type() {
+        // One IFD with an entry per type, each value out of line at 200.
+        let cases: [(u16, Vec<u8>, Vec<u32>); 9] = [
+            (1, vec![7, 9], vec![7, 9]),
+            (6, vec![7, 0xF9], vec![7]),
+            (
+                3,
+                [1600u16, 1200]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+                vec![1600, 1200],
+            ),
+            (
+                8,
+                [1600i16, -2].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                vec![1600],
+            ),
+            (
+                4,
+                [70_000u32, 3]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+                vec![70_000, 3],
+            ),
+            (
+                9,
+                [70_000i32, -3]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+                vec![70_000],
+            ),
+            (
+                16,
+                [1600u64, 1 << 40]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+                vec![1600],
+            ),
+            (
+                17,
+                [1200i64, -1].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                vec![1200],
+            ),
+            (
+                18,
+                [512u64, 9].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                vec![512, 9],
+            ),
+        ];
+        for (typ, value, want) in cases {
+            let mut d = b"II\x2A\x00\x08\x00\x00\x00".to_vec();
+            d.extend_from_slice(&1u16.to_le_bytes());
+            d.extend_from_slice(&0x0100u16.to_le_bytes());
+            d.extend_from_slice(&typ.to_le_bytes());
+            d.extend_from_slice(&2u32.to_le_bytes());
+            let inline = value.len() <= 4;
+            if inline {
+                let mut v = value.clone();
+                v.resize(4, 0);
+                d.extend_from_slice(&v);
+            } else {
+                d.extend_from_slice(&200u32.to_le_bytes());
+            }
+            d.extend_from_slice(&0u32.to_le_bytes());
+            d.resize(200, 0);
+            d.extend_from_slice(&value);
+            let t = Tiff::parse(&d).expect("header");
+            let (ifds, bad) = t.walk();
+            assert!(!bad, "type {typ}");
+            let e = ifds[0].get(0x0100).copied().expect("entry");
+            assert_eq!(t.uints(&e), want, "type {typ}");
+        }
+    }
+
+    /// A little-endian IFD0 at 8 whose `n` entries `(tag, type, count, offset)` come from `entry(i)`.
+    fn ifd_with(n: usize, entry: impl Fn(usize) -> (u16, u16, u32, u32)) -> Vec<u8> {
+        let mut d = b"II\x2A\x00\x08\x00\x00\x00".to_vec();
+        d.extend_from_slice(&(n as u16).to_le_bytes());
+        for i in 0..n {
+            let (tag, typ, count, value) = entry(i);
+            d.extend_from_slice(&tag.to_le_bytes());
+            d.extend_from_slice(&typ.to_le_bytes());
+            d.extend_from_slice(&count.to_le_bytes());
+            d.extend_from_slice(&value.to_le_bytes());
+        }
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d
+    }
+
+    #[test]
+    fn scenario_media_metadata_metadata_of_a_large_tiff_gathered_in_bounded_memory() {
+        // 1000 ImageDescription entries sharing one 200 KB value, and a 60 KB Artist: one description at most
+        // (64 KB per value: this one is left out), duplicates dropped, the block small.
+        let at = 16 * 1024u32;
+        let mut d = ifd_with(1000, |i| match i {
+            0 => (0x0100, 4, 1, 640),
+            1 => (0x0101, 4, 1, 480),
+            2 => (0x013B, 2, 60_000, at + 200_000),
+            _ => (0x010E, 2, 200_000, at),
+        });
+        d.resize(at as usize, 0);
+        d.extend(std::iter::repeat_n(b'x', 260_000));
+        let t = Tiff::parse(&d).expect("header");
+        let block = t.metadata_block().expect("block");
+        assert!(block.len() < 70_000, "{} bytes", block.len());
+        let b = Tiff::parse(&block).expect("block parses");
+        let (ifds, bad) = b.walk();
+        assert!(!bad);
+        let tags: Vec<u16> = ifds[0].entries.iter().map(|e| e.tag).collect();
+        assert_eq!(tags, vec![0x0100, 0x0101, 0x013B]);
+        // Many distinct 60 KB values: the block stops at 1 MiB.
+        let mut d = ifd_with(1000, |i| (0x8000 + i as u16, 2, 60_000, at));
+        d.resize(at as usize, 0);
+        d.extend(std::iter::repeat_n(b'x', 60_000));
+        let block = Tiff::parse(&d)
+            .expect("header")
+            .metadata_block()
+            .expect("block");
+        assert!(
+            block.len() <= METADATA_BLOCK_MAX_BYTES,
+            "{} bytes",
+            block.len()
+        );
+        assert!(
+            block.len() > METADATA_BLOCK_MAX_BYTES / 2,
+            "{} bytes",
+            block.len()
+        );
     }
 }
