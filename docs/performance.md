@@ -128,7 +128,10 @@ budgets and 10-25% for the I/O-bound ones (catalog, export re-plan), so compare 
 run before acting on it; CI re-measures a suspected regression twice and keeps the best run.
 
 The two TIFF budgets were recorded 2026-10-24 on the same machine with `cargo xtask bench --check
---update-baseline --only tiff-analysis-decode --only tiff-stream-memory` (ADR-0087).
+--update-baseline --only tiff-analysis-decode --only tiff-stream-memory` (ADR-0087). `tiff-stream-memory` is the
+decoder's own accounting (its largest strip, compressed plus decoded, plus the downsampling accumulator), not the
+resident size of a process: it is deterministic, but allocator overhead and the `tiff` crate's internal buffers
+are not in it. The process-level figure is the peak resident size quoted below.
 
 ### Large TIFF scans (ADR-0084, ADR-0086)
 
@@ -140,6 +143,12 @@ reference machine (release build, file in the page cache): a 979 MB 14000x10000 
 at the end took 8.0 s to scan alone, almost all of it LZW decompression, with a peak resident size of 25 MB for
 the whole CLI process. A format folder of 22 files (16 TIFFs of 0.8-979 MB in every layout, 5 HEIC/AVIF, one
 JPEG; 1.6 GB) scanned in 9.4 s.
+
+A TIFF decode is also bounded in work (ADR-0088): a directory whose strips or tiles decode to more than 4 GiB, or
+claim more than 4 GiB of compressed data (a block shared by several chunks counted for each), is refused from its
+header before any chunk is read, so a small file declaring gigapixels costs microseconds; at the cap a decode takes
+about 18 s of one core. Pause and cancel are checked before every strip or tile, on CPU workers and in the one-pass
+lane decode alike.
 
 ### Re-dating an existing catalog (ADR-0071)
 
