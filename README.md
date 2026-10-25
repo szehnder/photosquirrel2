@@ -106,7 +106,7 @@ install for your system:
 - **Linux:** libheif 1.12+ with its HEVC decoder, for example `sudo apt install libheif1 libheif-plugin-libde265`
   (Ubuntu 24.04+, Debian 13+), `sudo apt install libheif1` (Ubuntu 22.04, Debian 12),
   `sudo pacman -S --needed libheif libde265` (Arch), RPM Fusion's `libheif-freeworld` (Fedora) or Packman's
-  `libheif1` (openSUSE). It is loaded at run time; PhotoSquirrel starts and works without it.
+  `libheif1` and `libheif-ffmpeg` (openSUSE). It is loaded at run time; PhotoSquirrel starts and works without it.
 - **AVIF** decodes everywhere with the bundled AV1 decoder.
 
 Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exact copies and exported; they show

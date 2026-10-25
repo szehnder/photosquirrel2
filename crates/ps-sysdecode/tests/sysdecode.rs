@@ -522,14 +522,14 @@ fn scenario_decoder_support_system_decoders_agree_with_the_reference_look() {
     let Some(d) = system_decoders() else {
         return;
     };
-    let p = ps_media::probe_bytes(
-        ps_sysdecode::SELFTEST_HEIC,
-        ps_sysdecode::SELFTEST_HEIC.len() as u64,
-        None,
-    );
-    let img = ps_media::decode_for_analysis(ps_sysdecode::SELFTEST_HEIC, &p, &d)
-        .expect("decode")
-        .image;
+    // The sample's full size (640x480) from every backend, so the hashes compare decoders, not resize paths
+    // (ImageIO otherwise returns a 512 px thumbnail for an analysis decode).
+    let img = d
+        .heif()
+        .unwrap()
+        .decode(ps_sysdecode::SELFTEST_HEIC, 640)
+        .expect("decode");
+    assert_eq!((img.width, img.height), (640, 480));
     let view =
         ps_hash::ImageView::new(img.width, img.height, ps_hash::PixelLayout::Rgb8, &img.data)
             .unwrap();

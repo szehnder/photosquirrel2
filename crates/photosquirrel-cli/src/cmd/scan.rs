@@ -455,6 +455,9 @@ pub fn undecoded_lines(s: &RunSummary) -> Vec<String> {
         ));
         if let Some(fix) = &u.fix {
             out.push(format!("How to enable {label} previews:"));
+            if !fix.summary.is_empty() {
+                out.push(format!("  {}", fix.summary));
+            }
             for l in fix.lines() {
                 out.push(format!("  {l}"));
             }

@@ -308,8 +308,8 @@ fn unix(os: &OsInfo, f: &Finding) -> Fix {
         });
         steps.push(cmd("Refresh the repositories", "sudo zypper refresh"));
         steps.push(cmd(
-            "Install libheif1 from Packman",
-            "sudo zypper install --from packman --allow-vendor-change libheif1",
+            "Install libheif1 and its HEVC decoder plugin (libheif-ffmpeg) from Packman",
+            "sudo zypper install --from packman --allow-vendor-change libheif1 libheif-ffmpeg",
         ));
     } else if os.is_like(&["debian", "ubuntu"]) {
         // Ubuntu 22.04 and Debian 12 ship libheif with libde265 built in; later releases package the HEVC

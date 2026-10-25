@@ -114,7 +114,8 @@ impl ScanMonitor {
             sampling: None,
             ended: None,
             power_note: None,
-            decoder_fix_open: false,
+            // Dev-only: scripted screenshots of the open "How to enable HEIC previews".
+            decoder_fix_open: std::env::var("PHOTOSQUIRREL_DECODER_FIX").is_ok_and(|v| v == "open"),
         };
         this.refresh_sources(cx);
         this.refresh_last_run(cx);

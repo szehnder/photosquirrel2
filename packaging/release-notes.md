@@ -33,7 +33,7 @@ own. Run `photosquirrel-cli doctor` to see what your machine has, and the exact 
   - Arch, Manjaro, EndeavourOS: `sudo pacman -S --needed libheif libde265`
   - openSUSE (its libheif has no HEVC decoder): add the
     [Packman repository](https://en.opensuse.org/Additional_package_repositories#Packman) and install `libheif1`
-    from it
+    and `libheif-ffmpeg` from it
   - Anything else: libheif 1.12 or newer with an HEVC (libde265) decoder from your distribution
 - **AVIF:** works everywhere, with no install (a bundled AV1 decoder, rav1d).
 

@@ -38,7 +38,7 @@ pub fn install(hub: Arc<DecoderHub>, cx: &mut App) {
         loop {
             if let Some(d) = hub.try_get() {
                 let text = status_text(&d);
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     cx.set_global(DecoderStatus { text: Some(text) });
                     cx.refresh_windows();
                 });

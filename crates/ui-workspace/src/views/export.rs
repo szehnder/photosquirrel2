@@ -157,7 +157,9 @@ impl ExportView {
             plan: None,
             phase: ExportPhase::Review,
             show_all_rows: false,
-            show_better_copies: false,
+            // Dev-only: scripted screenshots of the open "Better copies" list.
+            show_better_copies: std::env::var("PHOTOSQUIRREL_BETTER_COPIES")
+                .is_ok_and(|v| v == "open"),
             plan_task: None,
             run_task: None,
         };

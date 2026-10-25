@@ -110,7 +110,8 @@ does for mozjpeg.
   max(min_long, 512)` and `kCGImageSourceShouldCacheImmediately = true`; the `CGImage` is drawn into an sRGB
   `CGBitmapContext` (RGBX8, premultiplied-none-skip-last) and copied to RGB. ImageIO decodes HEIC on every macOS
   since 10.13, so on the macOS 11+ floor (ADR-0030) it is always present, on arm64 and x86_64, and the universal build
-  just works. CF/CG types come from `objc2-core-foundation`/`objc2-core-graphics` 0.3 (already in `Cargo.lock`
+  just works. (As built: the CoreFoundation and CoreGraphics functions are hand-written C declarations too, no
+  binding crate.) CF/CG types were planned from `objc2-core-foundation`/`objc2-core-graphics` 0.3 (already in `Cargo.lock`
   through gpui); the six ImageIO functions and four option keys are hand-written `extern "C"` declarations
   (`#[link(name = "ImageIO", kind = "framework")]`), avoiding another crate.
 - **Windows: WIC.** Per thread, `CoInitializeEx(COINIT_MULTITHREADED)` once (thread-local guard; `S_FALSE` and
@@ -559,8 +560,8 @@ an HEVC codec on Windows 10 1809+, and the distribution's libheif with an HEVC p
   binary's dependency graph contains an HEVC decoder crate or a Linux program links libheif or libde265.
 - HEIC/HEIF stills are decoded by the **operating system's decoder**, through a decoder registry that `ps-media`'s
   decode functions take as a parameter (`Decoders`, trait `StillDecoder`):
-  - macOS: ImageIO (`CGImageSourceCreateThumbnailAtIndex`, transform applied), via `objc2-core-foundation`,
-    `objc2-core-graphics` and hand-written ImageIO declarations.
+  - macOS: ImageIO (`CGImageSourceCreateThumbnailAtIndex`, transform applied), through hand-written declarations
+    of the few CoreFoundation, CoreGraphics and ImageIO C functions it uses (no binding crate).
   - Windows: WIC (`windows` crate), per-thread MTA COM, scaled and converted to 24-bit RGB.
   - Linux and other non-Apple Unix: the system libheif loaded at run time with `libloading` (`libheif.so.1`), a
     hand-written table of C functions, **minimum version 1.12** (Ubuntu 22.04, the packages' glibc floor), an HEVC

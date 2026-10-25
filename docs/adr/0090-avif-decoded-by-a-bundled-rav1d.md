@@ -18,8 +18,14 @@ with optional assembly that needs nasm on x86_64.
 - The AVIF container is parsed by `ps-media::bmff` (`av1C`, `colr`, `pixi`, `irot`, `imir`, `auxC`, `grid` via
   `dimg`); YUV is converted to RGB in `ps-media` (nclx matrix and range, bilinear chroma); 10/12-bit is reduced to 8.
 - `nasm` is a build tool for x86_64 builds, required in CI, the packaging image and release runners (packaging refuses
-  a build without assembly). The binaries' default-on `avif-asm` feature enables rav1d's `asm`; a contributor without
-  nasm builds with `--no-default-features` at slower AVIF speed, and `doctor` reports when AVIF assembly is off.
+  a build without assembly). The binaries' default-on `avif-asm` feature enables rav1d's `asm` on x86_64; a
+  contributor without nasm builds with `--no-default-features` at slower AVIF speed, and `doctor` reports when AVIF
+  assembly is off. On aarch64 the assembly stays off: the published rav1d 1.1 crate leaves out a header its ARM
+  assembly includes (`src/arm/asm-offsets.h`), so it does not build there.
+- rav1d's C entry points cannot unwind, and with a single frame context a corrupt tile reaches an error path that
+  panics inside them (aborting the process). The wrapper therefore validates the OBU structure before decoding
+  (sizes, types, a parsable sequence header before the first frame, the frame size bound, key frames) and decodes
+  with two frame contexts, whose error path returns the error.
 - `THIRD-PARTY-LICENSES` carries rav1d's BSD-2 notice through the cargo-about flow (ADR-0058); packaging fails if it
   is missing.
 

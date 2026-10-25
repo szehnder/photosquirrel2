@@ -460,3 +460,16 @@ window size) when the delay is long; focus can still move.
   screen (a headless test on 20,000 folders counts the built rows). Clickable check boxes and chevrons are
   siblings in a row, never nested in a clickable row, so one click is one action.
 - Disabled `kit::button`s report their label as `"<label> (unavailable)"` to headless `label()` lookups.
+
+## Decoder detection and its notices (heic-system-decoders)
+- Work that runs on a plain OS thread (decoder detection in `ps_service::decoders::DecoderHub`) must not wake the UI:
+  `ui_workspace::decoder_status` polls `DecoderHub::try_get` on GPUI timers (25 ms backing off to 400 ms) and sets a
+  global, so headless tests stay deterministic and the first frame never waits for detection.
+- `AsyncApp::update` returns `()` in this GPUI version for a closure returning `()`; `let _ = cx.update(..)` trips
+  clippy's `let_unit_value`.
+- Ids built from a tuple (`.id(("plan-better-copy", i))`) are `ElementId::NamedInteger`, which `window.try_find`
+  does not match by the string `plan-better-copy-0`; use `SharedString::from(format!(..))` for ids tests look up.
+- Dev-only hooks for scripted screenshots: `PHOTOSQUIRREL_DECODER_FIX=open` (the run summary's "How to enable
+  HEIC previews" open in frame one) and `PHOTOSQUIRREL_BETTER_COPIES=open` (the Export view's better-copies list
+  open). `PHOTOSQUIRREL_HEIF_DECODER=none` or `PHOTOSQUIRREL_LIBHEIF=/nonexistent/libheif.so.1` make the app
+  behave as if no HEIC decoder were installed.

@@ -21,9 +21,10 @@ an HEVC codec on Windows 10 1809+, and the distribution's libheif with an HEVC p
   binary's dependency graph contains an HEVC decoder crate or a Linux program links libheif or libde265.
 - HEIC/HEIF stills are decoded by the **operating system's decoder**, through a decoder registry that `ps-media`'s
   decode functions take as a parameter (`Decoders`, trait `StillDecoder`):
-  - macOS: ImageIO (`CGImageSourceCreateThumbnailAtIndex`, transform applied), via `objc2-core-foundation`,
-    `objc2-core-graphics` and hand-written ImageIO declarations.
-  - Windows: WIC (`windows` crate), per-thread MTA COM, scaled and converted to 24-bit RGB.
+  - macOS: ImageIO (`CGImageSourceCreateThumbnailAtIndex`, transform applied), through hand-written declarations
+    of the few CoreFoundation, CoreGraphics and ImageIO C functions it uses (no binding crate).
+  - Windows: WIC (`windows` crate), per-thread MTA COM, scaled and converted to 24-bit RGB; Media Foundation's
+    `MFTEnumEx` (the HEVC check) is loaded at run time, so a Windows N edition without it still starts.
   - Linux and other non-Apple Unix: the system libheif loaded at run time with `libloading` (`libheif.so.1`), a
     hand-written table of C functions, **minimum version 1.12** (Ubuntu 22.04, the packages' glibc floor), an HEVC
     decoder required (`heif_have_decoder_for_format`), `heif_init` called when present (1.13+, loads plugins).
