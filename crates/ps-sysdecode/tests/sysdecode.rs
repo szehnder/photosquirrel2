@@ -527,7 +527,7 @@ fn scenario_decoder_support_system_decoders_agree_with_the_reference_look() {
     let img = d
         .heif()
         .unwrap()
-        .decode(ps_sysdecode::SELFTEST_HEIC, 640)
+        .decode(ps_sysdecode::LOOK_HEIC, 640)
         .expect("decode");
     assert_eq!((img.width, img.height), (640, 480));
     let view =
@@ -536,8 +536,23 @@ fn scenario_decoder_support_system_decoders_agree_with_the_reference_look() {
     let h = ps_hash::perceptual_hash(&view);
     let backend = d.heif().unwrap().name().to_owned();
     println!("{backend}: phash {:#018x} dhash {:#018x}", h.phash, h.dhash);
-    let pd = (h.phash ^ ps_sysdecode::SELFTEST_PHASH).count_ones();
-    let dd = (h.dhash ^ ps_sysdecode::SELFTEST_DHASH).count_ones();
+    let pd = (h.phash ^ ps_sysdecode::LOOK_PHASH).count_ones();
+    let dd = (h.dhash ^ ps_sysdecode::LOOK_DHASH).count_ones();
+    // How much a different codec moves the hashes (the JPEG the sample was made from): the margin the 4 bits
+    // leave for backends.
+    let jpeg = ps_fixtures::media::jpeg(640, 480, 2026, 95);
+    let p = ps_media::probe_bytes(&jpeg, jpeg.len() as u64, None);
+    let j = ps_media::decode_for_analysis(&jpeg, &p, &Decoders::none())
+        .unwrap()
+        .image;
+    let jh = ps_hash::perceptual_hash(
+        &ps_hash::ImageView::new(j.width, j.height, ps_hash::PixelLayout::Rgb8, &j.data).unwrap(),
+    );
+    println!(
+        "source JPEG: pHash {} bits, dHash {} bits from this decode",
+        (jh.phash ^ h.phash).count_ones(),
+        (jh.dhash ^ h.dhash).count_ones()
+    );
     assert!(
         pd <= 4 && dd <= 4,
         "{backend}: pHash {pd} bits and dHash {dd} bits from the reference"

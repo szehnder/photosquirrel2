@@ -44,10 +44,14 @@ pub const SELFTEST_MIDDLE: [u8; 3] = [162, 115, 125];
 pub const SELFTEST_BOTTOM: [u8; 3] = [93, 126, 167];
 /// Per channel.
 pub const SELFTEST_TOLERANCE: i32 = 24;
-/// Reference perceptual hashes of the self-test sample (the Linux libheif decode, ps-hash version 1); every
-/// backend must decode within 4 bits of both (spec "System decoders agree on the look").
-pub const SELFTEST_PHASH: u64 = 0x01fe_4101_7f01_f1ff;
-pub const SELFTEST_DHASH: u64 = 0x0921_0880_0302_1002;
+/// The look sample: a 640x480 photo-like picture (`ps_fixtures::media::jpeg(640, 480, 2026, 95)` encoded with
+/// `heif-enc -q 40 --no-thumb`), with detail in both directions. The self-test sample is a smooth vertical
+/// gradient, whose difference hash is noise (every row is flat), so the look check uses this one.
+pub const LOOK_HEIC: &[u8] = include_bytes!("../data/look.heic");
+/// Reference perceptual hashes of [`LOOK_HEIC`] (the Linux libheif decode, ps-hash version 1); every backend
+/// must decode within 4 bits of both (spec "System decoders agree on the look").
+pub const LOOK_PHASH: u64 = 0xb832_ec92_72ad_52ad;
+pub const LOOK_DHASH: u64 = 0x7f7f_7fff_ffff_ffff;
 
 /// The pixel cap of a system decode (the same as other decoders).
 pub const MAX_PIXELS: u64 = 768 * 1024 * 1024 / 3;
