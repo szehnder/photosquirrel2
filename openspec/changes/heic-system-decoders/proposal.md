@@ -82,7 +82,7 @@ or when a better copy turns up on a new drive. The owner wants this fixed before
   0012, 0013, 0016 (thumbnail store), 0017 (formats), 0019 (snapshots), 0025 (corpus gate), 0026, 0027 (facade),
   0028 (tokens), 0029 (no telemetry: detection opens no network connection), 0030, 0051, 0058, 0060, 0082.
 - ADRs relied on for the export part: 0014, 0022, 0023, 0033 (user group edits), 0038, 0044, 0045, 0046, 0050, 0071.
-- New ADRs (drafted in design.md, numbered when the change is built; the next free number is 0088): HEIC through the
+- New ADRs (drafted in design.md, numbered when the change is built; the next free number is 0089, after tiff-support's gate-review ADR-0088): HEIC through the
   operating system's decoder (supersedes 0059, amends 0017 and 0030); AVIF decoded by a bundled rav1d (amends
   0017); rows remember a missing decoder and rescans re-decode them (catalog migration 19, amends 0007); a group
   already in the library is not copied again when its keeper changes, better copies are offered (amends 0023 and

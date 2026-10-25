@@ -26,8 +26,8 @@ Today (ADR-0017, ADR-0059):
   `done` file row for the content of a keeper-set file whose copy is still there. Other group members are only
   provenance (`ExportUnit::copies`, without contents). When a group's keeper changes to a different content after
   its old keeper was exported, the group turns pending and the next export copies the new keeper beside the old one.
-- `tiff-support` (ROADMAP row 24, ADRs 0084-0087) has landed with no catalog migration: the latest is
-  `0018_run_refresh.sql`, so migration 19 is still free, and the next free ADR number is 0088.
+- `tiff-support` (ROADMAP row 24, ADRs 0084-0088) has landed with no catalog migration: the latest is
+  `0018_run_refresh.sql`, so migration 19 is still free, and the next free ADR number is 0089.
 
 The owner's decisions for this change are fixed: no bundled HEVC decoder anywhere; HEIC through the OS decoder; AVIF
 bundled; detection plus explanation; retry after install; packaging text updated; metadata-only HEIC/JPEG matching is
@@ -534,7 +534,7 @@ from current knowledge and are verified in task 5.3.
 
 ## ADR drafts
 
-The drafts are numbered when the change is built (task 1.1); the next free number today is 0088.
+The drafts are numbered when the change is built (task 1.1); the next free number today is 0089.
 
 ### HEIC through the operating system's decoder; no bundled HEVC decoder
 

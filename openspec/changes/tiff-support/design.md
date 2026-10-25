@@ -119,6 +119,14 @@ See proposal.md for the why. Current state, read from the code:
    LZW TIFF with horizontal predictor and end directory, from memory, single-threaded. `tiff-stream-memory`:
    working memory reported by the decoder for a 6000x4000 16-bit strip TIFF decoded through a reader. Both are
    `measure` tests in `ps-media` (`tests/tiff.rs`), run by `cargo xtask bench`.
+10. **Decode work and interruption (ADR-0088, from the gate review).** The decoder computes a directory's work from
+   its header (decoded bytes of every chunk, tile padding included, and the compressed bytes its counts claim, a
+   shared block counted per chunk) and refuses either above 4 GiB before reading a chunk, preferring the largest
+   reduced-resolution level within the cap when no level reaches the requested size. `decode_with` calls a stop
+   check before every chunk (`DecodeError::Cancelled`, no `image` fallback); the scanner passes `Busy::checkpoint`
+   on CPU workers and in the one-pass lane decode. The box factor is at most 4104 and per axis, and grows when the
+   accumulator would exceed 256 MB. `Tiff::metadata_block` keeps one value per tag of at most 64 KB, at most 1 MiB
+   in all. A TIFF whose probe lacks dimensions takes the decoder's; one neither reads fails rather than be thumbed.
 
 ## Risks / Trade-offs
 

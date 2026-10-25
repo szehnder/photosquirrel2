@@ -91,3 +91,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0085](0085-strip-wise-tiff-decoding.md) | TIFF stills decode strip by strip through the `tiff` crate, averaged down while decoding (amends 0017) |
 | [0086](0086-one-pass-analysis-of-large-tiffs.md) | TIFFs above 64 MB are analysed in one sequential pass in their I/O lane (amends 0010, 0011) |
 | [0087](0087-tiff-decode-budgets.md) | TIFF decode budgets: 12 MP analysis time and streamed working memory (extends 0026) |
+| [0088](0088-tiff-decode-work-cap-and-stop-check.md) | A TIFF decode is capped at 4 GiB of work and checks pause and cancel before every strip or tile (amends 0085, 0086) |

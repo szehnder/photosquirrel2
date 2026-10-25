@@ -43,7 +43,7 @@ TIFF stills SHALL decode to the same upright picture for strips and tiles, chunk
 - **THEN** the left half is white and the right half equals the RGB reference
 
 ### Requirement: TIFF decoded in bounded memory
-A TIFF decode SHALL hold at most one strip or tile of at most 32 MB (decoded and compressed) plus the downsampled image; a TIFF with a larger strip or tile SHALL be decoded whole only when the file is already held in memory, and otherwise refused as too large.
+A TIFF decode SHALL hold at most one strip or tile of at most 32 MB (decoded and compressed) plus the downsampled image; a TIFF with a larger strip or tile SHALL be decoded whole only when the file is already held in memory, and otherwise refused as too large. When the accumulator of the requested scale would exceed 256 MB, the decode SHALL use the next larger box factor that fits instead of failing.
 
 #### Scenario: Decode memory bounded
 - **WHEN** a 6000x4000 16-bit TIFF with 16-row strips is decoded through a reader
@@ -52,3 +52,25 @@ A TIFF decode SHALL hold at most one strip or tile of at most 32 MB (decoded and
 #### Scenario: Oversized strip refused when not in memory
 - **WHEN** a TIFF whose single strip decodes to 75 MB is decoded through a reader
 - **THEN** the decode is refused as too large and the same file in memory still decodes
+
+#### Scenario: Large preview of a five-channel TIFF decodes
+- **WHEN** a 4095x4095 CMYK TIFF with an alpha channel is decoded for a 2048 px preview
+- **THEN** the decode succeeds at box factor 2, at 2047x2047
+
+### Requirement: TIFF decode work bounded
+A TIFF decode SHALL refuse as too large, before reading any strip or tile, a directory whose strips or tiles decode to more than 4 GiB or claim more than 4 GiB of compressed data, a block shared by several of them counted once for each; when the first image is refused so and no reduced-resolution level reaches the requested size, the largest level within the bound SHALL be decoded instead.
+
+#### Scenario: TIFF decode work capped
+- **WHEN** a 16.8 MB TIFF declaring 81920x81920 pixels in 400 tiles that share one 16 MB block is decoded
+- **THEN** it is refused as too large, naming its dimensions, with no strip or tile decoded and less than 64 KB read
+
+#### Scenario: Reduced-resolution level stands in for a huge first image
+- **WHEN** a TIFF whose first image is above the bound and whose only reduced-resolution level is 640x640 is decoded for a 2048 px preview
+- **THEN** the 640x640 level is decoded
+
+### Requirement: TIFF decode interruptible
+A TIFF decode SHALL check its caller's stop condition before every strip or tile and end as cancelled as soon as it holds, without falling back to another decoder.
+
+#### Scenario: TIFF decode stops when cancelled
+- **WHEN** the stop condition of a decode of a TIFF of 256 strips holds at the 11th strip
+- **THEN** the decode ends as cancelled after decoding 10 strips, and the same file analysed from memory is not decoded again by the fallback decoder
