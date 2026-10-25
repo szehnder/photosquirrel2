@@ -93,12 +93,29 @@ The packages are not code-signed yet, so your system warns you the first time:
 - **Optional:** `ffmpeg` on your PATH for video poster frames (without it videos show a placeholder with their
   length and date).
 
+#### HEIC and AVIF photos
+
+PhotoSquirrel decodes HEIC/HEIF (iPhone photos) with the operating system's own decoder and ships no HEVC decoder
+of its own. `photosquirrel-cli doctor` says whether this machine can decode HEIC, and if not, exactly what to
+install for your system:
+
+- **macOS:** works out of the box (ImageIO).
+- **Windows 10 (1809+) and 11:** the free [HEIF Image Extensions](https://apps.microsoft.com/detail/9pmmsr1cgpwg)
+  and the [HEVC Video Extensions](https://apps.microsoft.com/detail/9nmzlz57r3t7) (or the free
+  [Device Manufacturer edition](https://apps.microsoft.com/detail/9n4wgh0z6vhq) when your PC maker provides it).
+- **Linux:** libheif 1.12+ with its HEVC decoder, for example `sudo apt install libheif1 libheif-plugin-libde265`
+  (Ubuntu 24.04+, Debian 13+), `sudo apt install libheif1` (Ubuntu 22.04, Debian 12),
+  `sudo pacman -S --needed libheif libde265` (Arch), RPM Fusion's `libheif-freeworld` (Fedora) or Packman's
+  `libheif1` (openSUSE). It is loaded at run time; PhotoSquirrel starts and works without it.
+- **AVIF** decodes everywhere with the bundled AV1 decoder.
+
+Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exact copies and exported; they show
+"No HEIC decoder on this system", and the scan summary and the inspector say how to enable previews. After the
+install, restart and rescan: only those photos are read again, and they get previews and are matched to their
+resized JPEG copies. `PHOTOSQUIRREL_HEIF_DECODER=none` makes PhotoSquirrel behave as if no decoder were found.
+
 ### Known limitations
 
-- **HEIC previews.** The prebuilt packages do not decode HEIC/HEIF yet. iPhone HEIC photos are still found,
-  catalogued, de-duplicated by content and exported; they show "preview unavailable" and are not matched to
-  resized copies by look. Building from source with libheif 1.17+ and `--features heic` turns decoding on. The
-  release notes say which platforms this applies to.
 - **TIFF limits.** Palette (indexed) and CIE L\*a\*b\* TIFFs above 64 MB are catalogued and de-duplicated by
   content only, and BigTIFF files (the variant for files above 4 GB) are not recognised yet. A TIFF whose image
   decodes to more than 4 GB (about 30000x24000 at 16-bit RGB) and has no smaller resolution level stored gets a
@@ -257,25 +274,25 @@ AI answers never decide grouping, keepers, export or exclusion.
 
 ## Building from source
 
-You need Rust (the version in `rust-toolchain.toml` is installed automatically by rustup) and, on Linux, the
-GPUI system libraries:
+You need Rust (the version in `rust-toolchain.toml` is installed automatically by rustup), on x86_64 `nasm` (for
+the AVIF decoder's assembly; without it, build with `--no-default-features` for slower AVIF decoding), and, on
+Linux, the GPUI system libraries:
 
 ```sh
 # Debian/Ubuntu
 sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev \
-  libfreetype-dev libx11-xcb-dev libxcb1-dev libssl-dev libsecret-1-dev libdbus-1-dev pkg-config
+  libfreetype-dev libx11-xcb-dev libxcb1-dev libssl-dev libsecret-1-dev libdbus-1-dev pkg-config nasm
 
 # Arch/Manjaro (use pacman -S instead of yay -S if you prefer; also install a Vulkan driver for your GPU:
 # vulkan-intel, vulkan-radeon or nvidia-utils)
 yay -S --needed base-devel libxkbcommon libxkbcommon-x11 wayland vulkan-icd-loader vulkan-headers \
-  fontconfig freetype2 libx11 libxcb openssl libsecret dbus pkgconf
+  fontconfig freetype2 libx11 libxcb openssl libsecret dbus pkgconf nasm
 ```
 
 ```sh
-cargo xtask doctor                          # checks prerequisites; libheif, ffmpeg and LM Studio are optional
+cargo xtask doctor                          # checks prerequisites (nasm); libheif, ffmpeg and LM Studio are optional
 cargo run --release -p photosquirrel        # the app
 cargo run --release -p photosquirrel-cli -- --help
-cargo run --release -p photosquirrel --features heic   # with HEIC decoding (needs libheif 1.17+)
 cargo xtask package                         # installers for this OS into target/packages (needs cargo-packager, cargo-about)
 ```
 

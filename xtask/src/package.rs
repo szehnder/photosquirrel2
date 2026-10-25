@@ -5,8 +5,10 @@
 //! floor); `--universal` makes one arm64 + x86_64 macOS build.
 //!
 //! Every package carries `THIRD-PARTY-LICENSES`, generated from `Cargo.lock` by cargo-about (ADR-0058) and checked
-//! in each finished package. HEIC decoding is built in only where a recent enough libheif is found; otherwise
-//! the build leaves it out and writes `target/packages/heic-<os>.txt` for the release notes (ADR-0059). Packages
+//! in each finished package. No package contains an HEVC decoder (ADR-0089): packaging fails when the shipped
+//! programs' dependency graph has an HEVC decoder crate or a Linux program links libheif or libde265; HEIC is
+//! decoded by the operating system at run time. AVIF is decoded by the bundled rav1d with its assembly (ADR-0090):
+//! packaging refuses an x86_64 build without nasm, and the notices must name rav1d. Packages
 //! carry nothing their notices do not cover (ADR-0060): the notices offer the source of the statically linked LGPL
 //! crates, the AppImage bundles no system library, and the Windows programs need no Visual C++ runtime. The AppImage
 //! starts with the runtime pinned in `packaging/linux/appimage-runtime.toml`, whose components the Linux notices name
@@ -30,8 +32,17 @@ pub const LICENCES_FILE: &str = "THIRD-PARTY-LICENSES";
 const LICENCES_DIR: &str = "target/licenses";
 /// The binaries shipped in every package; their dependency graphs make up the licence notices.
 const SHIPPED: [&str; 2] = ["photosquirrel", "photosquirrel-cli"];
-/// The oldest libheif the `heic` feature builds against (libheif-rs `v1_17`).
-const LIBHEIF_MIN: (u32, u32) = (1, 17);
+/// Crates that are (or bundle) an HEVC decoder: none may be in a shipped program's dependency graph (ADR-0089).
+pub const HEVC_DENY: &[&str] = &[
+    "libheif-rs",
+    "libheif-sys",
+    "libde265",
+    "ffmpeg",
+    "x265",
+    "hevc",
+];
+/// Shared libraries no shipped Linux program may need (ADR-0089: libheif is loaded at run time, never linked).
+pub const NEEDED_DENY: &[&str] = &["libheif", "libde265"];
 
 pub struct Options {
     pub docker: bool,
@@ -154,65 +165,104 @@ pub fn check_smoke(output: &str, version: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether this build decodes HEIC (ADR-0059).
-#[derive(Debug, PartialEq, Eq)]
-pub enum Heic {
-    On,
-    Off(String),
+/// Crates of a dependency graph (`cargo tree --prefix none` lines: `name vX.Y.Z ...`) that are HEVC decoders.
+pub fn hevc_components(tree: &str) -> Vec<String> {
+    let mut v: Vec<String> = tree
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|name| HEVC_DENY.iter().any(|d| name.starts_with(d)))
+        .map(str::to_owned)
+        .collect();
+    v.sort();
+    v.dedup();
+    v
 }
 
-/// Decide HEIC support from what the probe found: `libheif` is the version pkg-config reports (or `vcpkg` when
-/// the Windows vcpkg library is present), `None` when nothing was found.
-pub fn heic_plan(os: Os, universal: bool, libheif: Option<&str>) -> Heic {
-    if universal {
-        return Heic::Off(
-            "the universal macOS build cannot link a single-architecture libheif".to_owned(),
+/// Fail when the graph has an HEVC decoder crate.
+pub fn check_hevc_free(tree: &str) -> Result<()> {
+    let found = hevc_components(tree);
+    if !found.is_empty() {
+        bail!(
+            "the shipped programs depend on an HEVC decoder ({}); PhotoSquirrel ships none (ADR-0089)",
+            found.join(", ")
         );
     }
-    let Some(found) = libheif else {
-        return Heic::Off(format!(
-            "libheif {}.{} or newer was not found on the {} build machine",
-            LIBHEIF_MIN.0,
-            LIBHEIF_MIN.1,
-            os.label()
-        ));
-    };
-    if found == "vcpkg" {
-        return Heic::On;
-    }
-    let mut parts = found
-        .trim()
-        .split('.')
-        .map(|p| p.parse::<u32>().unwrap_or(0));
-    let version = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-    if version >= LIBHEIF_MIN {
-        Heic::On
-    } else {
-        Heic::Off(format!(
-            "the {} build machine has libheif {}, older than {}.{}",
-            os.label(),
-            found.trim(),
-            LIBHEIF_MIN.0,
-            LIBHEIF_MIN.1
-        ))
-    }
+    Ok(())
 }
 
-/// The release-notes line for a platform built without HEIC.
-pub fn heic_note(os: Os, reason: &str) -> String {
-    format!(
-        "- **{}:** this build has no HEIC/HEIF decoding ({reason}). HEIC photos are still found, catalogued, \
-         exactly de-duplicated and exported; they show \"preview unavailable\" and are not matched by look.\n",
-        os.label()
-    )
+/// The `NEEDED` entries of `readelf -d` output.
+pub fn needed_libs(readelf: &str) -> Vec<String> {
+    readelf
+        .lines()
+        .filter(|l| l.contains("(NEEDED)"))
+        .filter_map(|l| {
+            let start = l.find('[')? + 1;
+            let end = l[start..].find(']')? + start;
+            Some(l[start..end].to_owned())
+        })
+        .collect()
 }
 
-/// The `cargo build` arguments for this HEIC plan.
-pub fn heic_build_args(heic: &Heic) -> Vec<&'static str> {
-    match heic {
-        Heic::On => vec!["--features", "photosquirrel/heic,photosquirrel-cli/heic"],
-        Heic::Off(_) => Vec::new(),
+/// Fail when a Linux program links libheif or an HEVC decoder.
+pub fn check_needed(program: &str, needed: &[String]) -> Result<()> {
+    let bad: Vec<&String> = needed
+        .iter()
+        .filter(|n| NEEDED_DENY.iter().any(|d| n.starts_with(d)))
+        .collect();
+    if !bad.is_empty() {
+        bail!(
+            "{program} links {}: the system HEIF library is loaded at run time only (ADR-0089)",
+            bad.iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
+    Ok(())
+}
+
+/// The shipped programs' normal dependency graph for every package target.
+fn shipped_tree(root: &Path) -> Result<String> {
+    let out = Command::new("cargo")
+        .current_dir(root)
+        .args([
+            "tree",
+            "--locked",
+            "-e",
+            "normal",
+            "--prefix",
+            "none",
+            "--target",
+            "all",
+            "-p",
+            "photosquirrel",
+            "-p",
+            "photosquirrel-cli",
+        ])
+        .output()
+        .context("cargo tree")?;
+    if !out.status.success() {
+        bail!("cargo tree: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// rav1d's x86_64 assembly needs nasm (ADR-0090): packages are never built without it.
+fn check_avif_assembly(universal: bool) -> Result<()> {
+    // The universal macOS build has an x86_64 half; aarch64 assembly needs only the C toolchain.
+    if !universal && std::env::consts::ARCH != "x86_64" {
+        return Ok(());
+    }
+    let ok = Command::new("nasm")
+        .arg("-v")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !ok {
+        bail!(
+            "nasm is missing: packages are built with AVIF assembly (the `avif-asm` feature, ADR-0090); install nasm"
+        );
+    }
+    Ok(())
 }
 
 /// A file listing (one path per line, any separator) names the licence notices file.
@@ -387,8 +437,15 @@ pub fn render_notices(version: &str, notices: &[Notice], runtime: Option<&Runtim
     out
 }
 
-/// The notices must acknowledge mozjpeg-sys (libjpeg-turbo) under each of its three licences.
+/// The notices must acknowledge mozjpeg-sys (libjpeg-turbo) under each of its three licences, and the bundled
+/// AV1 decoder rav1d under BSD-2-Clause (ADR-0090).
 pub fn check_notices(notices: &[Notice]) -> Result<()> {
+    let rav1d = notices
+        .iter()
+        .any(|n| n.id == "BSD-2-Clause" && n.crates.iter().any(|c| c.starts_with("rav1d ")));
+    if !rav1d {
+        bail!("{LICENCES_FILE} has no BSD-2-Clause notice for rav1d (the bundled AV1 decoder)");
+    }
     for id in ["IJG", "Zlib", "BSD-3-Clause"] {
         let covered = notices
             .iter()
@@ -963,18 +1020,10 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         fs::create_dir_all(dir)?;
     }
 
-    let heic = heic_plan(os, opts.universal, probe_libheif(os).as_deref());
-    match &heic {
-        Heic::On => eprintln!("HEIC: on (libheif found)"),
-        Heic::Off(reason) => {
-            eprintln!("HEIC: off ({reason})");
-            fs::write(
-                out.join(format!("heic-{}.txt", os.name())),
-                heic_note(os, reason),
-            )?;
-        }
-    }
-    let features = heic_build_args(&heic);
+    check_hevc_free(&shipped_tree(root)?)?;
+    check_avif_assembly(opts.universal)?;
+    // The programs' default features (`avif-asm`) and nothing else: no build option adds an HEVC decoder.
+    let features: Vec<&str> = Vec::new();
     let (bins, arch) = if opts.universal {
         (
             universal_binaries(&target_dir, &features)?,
@@ -984,6 +1033,26 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         build(&features)?;
         (target_dir.join(PROFILE), std::env::consts::ARCH.to_owned())
     };
+    if os == Os::Linux {
+        for bin in SHIPPED {
+            let path = bins.join(bin);
+            let out = Command::new("readelf")
+                .arg("-d")
+                .arg(&path)
+                .output()
+                .context("readelf (binutils) is needed to check the Linux programs")?;
+            if !out.status.success() {
+                bail!(
+                    "readelf -d {}: {}",
+                    path.display(),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            let needed = needed_libs(&String::from_utf8_lossy(&out.stdout));
+            check_needed(bin, &needed)?;
+            eprintln!("{bin} needs: {}", needed.join(", "));
+        }
+    }
     if os == Os::Windows {
         for bin in SHIPPED {
             let exe = os.exe(bin);
@@ -1106,23 +1175,6 @@ fn universal_binaries(target_dir: &Path, features: &[&str]) -> Result<PathBuf> {
         crate::run("lipo", &mut lipo)?;
     }
     Ok(out)
-}
-
-/// Look for libheif the way libheif-sys will: pkg-config on Linux and macOS, vcpkg on Windows.
-fn probe_libheif(os: Os) -> Option<String> {
-    if os == Os::Windows {
-        let root = PathBuf::from(std::env::var_os("VCPKG_ROOT")?);
-        // `+crt-static` (see .cargo/config.toml) makes libheif-sys look in the static-CRT triplet.
-        let lib = root.join("installed/x64-windows-static/lib/heif.lib");
-        return lib.is_file().then(|| "vcpkg".to_owned());
-    }
-    let out = Command::new("pkg-config")
-        .args(["--modversion", "libheif"])
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
 /// Download the pinned AppImage runtime and AppRun (ADR-0073), check their SHA-256 and pre-place AppRun in
@@ -1657,7 +1709,68 @@ fn in_docker(root: &Path, opts: &Options) -> Result<()> {
     if let Some(tag) = &opts.tag {
         docker.args(["--tag", tag]);
     }
-    crate::run("package inside the Linux image", &mut docker)
+    crate::run("package inside the Linux image", &mut docker)?;
+    heif_smoke(root)
+}
+
+/// `doctor --json` of a packaged CLI: whether HEIC is available, and the first fix command when it is not.
+pub fn doctor_heic(json: &str) -> Result<(bool, Option<String>)> {
+    let v: serde_json::Value = serde_json::from_str(json.trim()).context("doctor --json output")?;
+    let d = &v["data"];
+    let heic = d["decoders"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["name"] == "heic"))
+        .context("no heic entry in doctor --json")?;
+    let available = heic["available"].as_bool().context("heic.available")?;
+    if d["heic"].as_bool() != Some(available) {
+        bail!("doctor --json: `heic` and `decoders[heic].available` disagree");
+    }
+    let fix = heic["fix"]["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|s| s["command"].as_str().map(str::to_owned));
+    Ok((available, fix))
+}
+
+/// The Ubuntu 22.04 smoke test of the packaged CLI (task 9.3, 9.7): in a throwaway container of the packaging
+/// image without libheif, `doctor` exits 0 and reports HEIC unavailable with the apt fix; after `apt install
+/// libheif1` (1.12, the oldest supported), it reports HEIC available, decoding the embedded sample.
+fn heif_smoke(root: &Path) -> Result<()> {
+    let cli = "/work/target/docker/dist/photosquirrel-cli";
+    let run = |script: &str| -> Result<String> {
+        let out = Command::new("docker")
+            .args(["run", "--rm", "-v"])
+            .arg(format!("{}:/work:ro", root.display()))
+            .args([DOCKER_IMAGE, "sh", "-c", script])
+            .output()
+            .context("docker run")?;
+        if !out.status.success() {
+            bail!(
+                "smoke container failed: {}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let without = run(&format!("{cli} --data-dir /tmp/d --json doctor"))?;
+    let (available, fix) = doctor_heic(&without)?;
+    if available || fix.as_deref() != Some("sudo apt install libheif1") {
+        bail!("without libheif, doctor should report HEIC unavailable with the apt fix: {without}");
+    }
+    let with = run(&format!(
+        "apt-get update -qq >/dev/null && apt-get install -y -qq libheif1 >/dev/null && \
+         dpkg-query -W -f='libheif ${{Version}}\\n' libheif1 >&2 && {cli} --data-dir /tmp/d --json doctor"
+    ))?;
+    let (available, _) = doctor_heic(&with)?;
+    if !available {
+        bail!("with Ubuntu 22.04's libheif 1.12, doctor should report HEIC available: {with}");
+    }
+    eprintln!(
+        "HEIC smoke: unavailable without libheif (apt fix), available with Ubuntu 22.04's libheif"
+    );
+    Ok(())
 }
 
 fn workspace_version(root: &Path) -> Result<String> {
@@ -1809,32 +1922,128 @@ mod tests {
 
     #[test]
     fn scenario_release_packaging_heic_fallback_noted() {
-        assert_eq!(heic_plan(Os::Linux, false, Some("1.23.3")), Heic::On);
-        assert_eq!(heic_plan(Os::Windows, false, Some("vcpkg")), Heic::On);
-        assert_eq!(
-            heic_build_args(&Heic::On),
-            ["--features", "photosquirrel/heic,photosquirrel-cli/heic"]
-        );
-        // Ubuntu 22.04's libheif is 1.12; no libheif at all; the universal macOS build.
-        for (os, universal, found) in [
-            (Os::Linux, false, Some("1.12.0")),
-            (Os::Windows, false, None),
-            (Os::Macos, true, Some("1.19.5")),
+        // The template explains HEIC and AVIF per platform.
+        let notes = fs::read_to_string(root().join("packaging/release-notes.md")).expect("notes");
+        let section = notes
+            .split("### HEIC and AVIF photos")
+            .nth(1)
+            .expect("a HEIC and AVIF section");
+        let section = section.split("\n### ").next().unwrap_or(section);
+        for needle in [
+            "macOS",
+            "Windows",
+            "HEIF Image Extensions",
+            "HEVC Video Extensions",
+            "https://apps.microsoft.com/detail/9pmmsr1cgpwg",
+            "Linux",
+            "sudo apt install libheif1 libheif-plugin-libde265",
+            "libheif-freeworld",
+            "pacman",
+            "Packman",
+            "AVIF",
+            "photosquirrel-cli doctor",
         ] {
-            let Heic::Off(reason) = heic_plan(os, universal, found) else {
-                panic!("{os:?} {found:?} should build without HEIC");
-            };
-            assert!(heic_build_args(&Heic::Off(reason.clone())).is_empty());
-            let note = heic_note(os, &reason);
-            assert!(note.contains(os.label()) && note.contains("HEIC") && note.contains(&reason));
+            assert!(
+                section.contains(needle),
+                "{needle} missing from the HEIC section"
+            );
         }
-        // The release job folds the per-platform notes into the release notes, and attaches only packages.
+        // Packaging writes no note about a build without HEIC, and the workflow appends none.
+        let source = fs::read_to_string(root().join("xtask/src/package.rs")).expect("source");
+        assert!(!source.contains(&["heic-", "{}.txt"].concat()));
         let workflow = release_workflow();
-        assert!(
-            workflow.contains("packages/heic-*.txt"),
-            "heic notes not folded in"
-        );
+        assert!(!workflow.contains("heic-"), "no HEIC notes folded in");
         assert!(workflow.contains("packages/PhotoSquirrel-*"));
+    }
+
+    /// The packaging container's check (`cargo xtask package --docker` runs `heif_smoke`: the packaged doctor in
+    /// Ubuntu 22.04 with its libheif 1.12, and without any). Here: the evaluation of doctor's output it uses.
+    #[test]
+    fn scenario_decoder_support_oldest_supported_library_decodes() {
+        let with = r#"{"schema_version":1,"data":{"heic":true,"decoders":[{"name":"heic","available":true,
+            "detail":"libheif 1.12.0","backend":"libheif 1.12.0","version":"1.12.0"}]}}"#;
+        assert_eq!(doctor_heic(with).expect("parse"), (true, None));
+        let without = r#"{"schema_version":1,"data":{"heic":false,"decoders":[{"name":"heic","available":false,
+            "detail":"x","fix":{"summary":"Install libheif1","steps":[{"text":"Install libheif",
+            "command":"sudo apt install libheif1"},{"text":"Then restart"}],"restart":true}}]}}"#;
+        assert_eq!(
+            doctor_heic(without).expect("parse"),
+            (false, Some("sudo apt install libheif1".into()))
+        );
+        let inconsistent =
+            r#"{"data":{"heic":true,"decoders":[{"name":"heic","available":false}]}}"#;
+        assert!(doctor_heic(inconsistent).is_err());
+        // The packaging run calls the smoke test after building.
+        let source = fs::read_to_string(root().join("xtask/src/package.rs")).expect("source");
+        assert!(source.contains("    heif_smoke(root)\n"));
+    }
+
+    #[test]
+    fn scenario_release_packaging_bundled_hevc_decoder_fails_packaging() {
+        let graph = "photosquirrel v0.2.0 (/w/crates/photosquirrel)\nlibheif-rs v3.0.0\nlibheif-sys v3.1.0\nrav1d v1.1.0\n";
+        let err = check_hevc_free(graph)
+            .expect_err("an HEVC decoder")
+            .to_string();
+        assert!(
+            err.contains("libheif-rs") && err.contains("libheif-sys"),
+            "{err}"
+        );
+        assert!(check_hevc_free("ffmpeg-next v7.0.0\n").is_err());
+        let readelf = " 0x0000000000000001 (NEEDED)             Shared library: [libheif.so.1]\n                        0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n";
+        let needed = needed_libs(readelf);
+        assert_eq!(needed, ["libheif.so.1", "libc.so.6"]);
+        let err = check_needed("photosquirrel-cli", &needed)
+            .expect_err("links libheif")
+            .to_string();
+        assert!(
+            err.contains("photosquirrel-cli") && err.contains("libheif.so.1"),
+            "{err}"
+        );
+        // The graph of the current release is free of HEVC decoders.
+        check_hevc_free(&shipped_tree(&root()).expect("cargo tree")).expect("no HEVC decoder");
+        // And a program of this build needs no HEIF library (this test binary links what the programs link
+        // from the workspace's C code: libc and friends only).
+        #[cfg(target_os = "linux")]
+        if let Ok(out) = Command::new("readelf")
+            .arg("-d")
+            .arg(std::env::current_exe().expect("exe"))
+            .output()
+        {
+            let needed = needed_libs(&String::from_utf8_lossy(&out.stdout));
+            assert!(!needed.is_empty(), "readelf output parsed");
+            check_needed("xtask tests", &needed).expect("no libheif");
+        }
+    }
+
+    #[test]
+    fn scenario_release_packaging_notices_name_the_av1_decoder() {
+        let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let mozjpeg: [(&str, &str, &[(&str, Option<&str>)]); 3] = [
+            ("IJG", "ijg text", &[("mozjpeg-sys", registry)]),
+            ("Zlib", "zlib text", &[("mozjpeg-sys", registry)]),
+            ("BSD-3-Clause", "bsd3 text", &[("mozjpeg-sys", registry)]),
+        ];
+        let rav1d_users: [(&str, Option<&str>); 1] = [("rav1d", registry)];
+        let mut with = mozjpeg.to_vec();
+        with.push((
+            "BSD-2-Clause",
+            "Copyright (c) 2018-2024, VideoLAN and dav1d authors; rav1d authors. Redistribution and use...",
+            &rav1d_users,
+        ));
+        let app = about_report(&with);
+        let cli = about_report(&with);
+        let notices = merge_notices(&[app, cli]).expect("merge");
+        check_notices(&notices).expect("rav1d named");
+        let text = render_notices("0.3.0", &notices, None);
+        assert!(text.contains("Used by: rav1d 1.0.0"), "{text}");
+        assert!(text.contains("VideoLAN and dav1d authors"));
+        let err = check_notices(&merge_notices(&[about_report(&mozjpeg)]).expect("merge"))
+            .expect_err("rav1d missing")
+            .to_string();
+        assert!(
+            err.contains("rav1d") && err.contains("BSD-2-Clause"),
+            "{err}"
+        );
     }
 
     fn release_workflow() -> String {
@@ -2624,6 +2833,7 @@ mod tests {
             ),
             ("Zlib", "zlib text", &[("mozjpeg-sys", registry)]),
             ("BSD-3-Clause", "bsd text", &[("mozjpeg-sys", registry)]),
+            ("BSD-2-Clause", "bsd2 text", &[("rav1d", registry)]),
             (
                 "Apache-2.0",
                 "apache text",

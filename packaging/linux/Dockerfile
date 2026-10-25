@@ -7,15 +7,15 @@ FROM ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf7
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential pkg-config curl ca-certificates git file xz-utils \
+        build-essential pkg-config curl ca-certificates git file xz-utils nasm \
         libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig-dev libfreetype-dev \
         libx11-xcb-dev libxcb1-dev libdbus-1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Toolchain and tools live outside the (mounted) home so any user id can run them. Keep RUST_VERSION in step
 # with rust-toolchain.toml, PACKAGER_VERSION and CARGO_ABOUT_VERSION with .github/workflows/release.yml.
-# Ubuntu 22.04's libheif (1.12) is older than the `heic` feature needs, so these packages build without it and
-# say so in the release notes (ADR-0059).
+# nasm builds rav1d's x86_64 assembly (AVIF, ADR-0090). No HEIF library is installed: the programs load the
+# user's libheif at run time (ADR-0089); the packaging run checks that with and without it in throwaway containers.
 ARG RUST_VERSION=1.99.0
 ARG PACKAGER_VERSION=0.11.8
 ARG CARGO_ABOUT_VERSION=0.9.2

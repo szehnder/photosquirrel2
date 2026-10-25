@@ -51,6 +51,17 @@ jobs:
         if: matrix.name != 'linux'
         with:
           key: dist
+      # nasm builds rav1d's x86_64 assembly (AVIF, ADR-0090): the x86_64 half of the universal macOS build and
+      # Windows. The Linux packages build inside the packaging image, which has it.
+      - name: nasm (macOS)
+        if: matrix.name == 'macos'
+        run: brew install nasm
+      - name: nasm (Windows)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\NASM"
       - name: Install cargo-packager and cargo-about
         if: matrix.name != 'linux'
         run: |
@@ -163,11 +174,6 @@ jobs:
           runtime_sources=$(ls packages/runtime-source | awk '{ printf "%s`%s`", (NR > 1 ? ", " : ""), $0 }')
           sed -e "s/{{version}}/$version/g" -e "s/{{lgpl}}/$lgpl/g" -e "s/{{runtime_sources}}/$runtime_sources/g" \
             packaging/release-notes.md > notes.md
-          # Platforms built without libheif (ADR-0059).
-          if ls packages/heic-*.txt >/dev/null 2>&1; then
-            printf '\n### HEIC photos\n\n' >> notes.md
-            cat packages/heic-*.txt >> notes.md
-          fi
           cat notes.md
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

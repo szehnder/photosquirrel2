@@ -82,6 +82,19 @@ pub fn run() -> Result<()> {
         );
     }
 
+    // rav1d's x86_64 assembly (AVIF, ADR-0090): required for CI and packages; a contributor without it builds
+    // with `--no-default-features` (slower AVIF decoding, same output).
+    if std::env::consts::ARCH == "x86_64" {
+        match output("nasm", &["-v"]) {
+            Some(v) => r.ok("nasm", v.lines().next().unwrap_or_default()),
+            None => r.fail(
+                "nasm",
+                "AVIF assembly (ADR-0090): apt install nasm / dnf install nasm / pacman -S nasm / brew install nasm / \
+                 choco install nasm; or build with `--no-default-features` (slower AVIF decoding)",
+            ),
+        }
+    }
+
     println!(
         "
 Optional decoders"
@@ -93,9 +106,29 @@ Optional decoders"
             "video poster frames (ADR-0017): install ffmpeg from your package manager",
         ),
     }
-    match output("pkg-config", &["--modversion", "libheif"]) {
-        Some(v) => r.ok("libheif", &v),
-        None => r.optional("libheif", "HEIC previews with `--features heic` (ADR-0017): apt install libheif-dev / brew install libheif"),
+    // HEIC is decoded by the operating system at run time (ADR-0089): nothing to build against.
+    if cfg!(target_os = "linux") {
+        let cache = Command::new("ldconfig")
+            .arg("-p")
+            .stderr(Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        match cache.contains("libheif.so.1").then_some(()) {
+            Some(_) => r.ok("libheif (run time)", "libheif.so.1 found; `photosquirrel-cli doctor` checks HEVC"),
+            None => r.optional(
+                "libheif (run time)",
+                "HEIC previews (ADR-0089): install libheif 1.12+ with its HEVC plugin; `photosquirrel-cli doctor` \
+                 names the command for your distribution",
+            ),
+        }
+    } else if cfg!(target_os = "macos") {
+        r.ok("HEIC", "decoded by ImageIO (built in)");
+    } else if cfg!(windows) {
+        r.optional(
+            "HEIC",
+            "HEIF Image Extensions and HEVC Video Extensions from the Microsoft Store; `photosquirrel-cli doctor` checks",
+        );
     }
     match output("lms", &["version"]) {
         Some(_) => r.ok("LM Studio CLI", "lms found"),

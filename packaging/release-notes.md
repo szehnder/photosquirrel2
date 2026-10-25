@@ -13,16 +13,47 @@ Every package contains the desktop app (`photosquirrel`), the headless CLI (`pho
 notices of the open-source components they include (`THIRD-PARTY-LICENSES`). Each file has a
 `.sha256` beside it; check it with `sha256sum -c <file>.sha256` (on macOS, `shasum -a 256 -c`).
 
-### What's new in 0.2.0
+### HEIC and AVIF photos
 
-- **Optional, reversible cleanup.** Move the files of a drive that are already safe in your library into a
-  quarantine folder on that drive, choose which folders and files go, and undo a whole run or one folder of it.
-- **Better capture dates.** Dates in folder names such as `2019-07-04 Beach` or `2019-07 Italy` (month only, never
-  shown as a day), capture days in your time zone or the camera's recorded offset, and existing catalogs re-dated
-  on the next scan without reading any file again. Libraries you already exported keep their layout, and nothing is
-  copied twice.
-- **The CLI pauses on battery** and resumes on mains (`--ignore-battery` to keep going).
-- Clearer keeper reasons, toolbar and badges in the duplicate review.
+PhotoSquirrel decodes HEIC/HEIF (iPhone photos) with your system's own decoder and ships no HEVC decoder of its
+own. Run `photosquirrel-cli doctor` to see what your machine has, and the exact command for your system.
+
+- **macOS:** works out of the box (Apple's ImageIO); nothing to install.
+- **Windows 10 (version 1809 or newer) and 11:** install the free
+  [HEIF Image Extensions](https://apps.microsoft.com/detail/9pmmsr1cgpwg) and an HEVC decoder: the
+  [HEVC Video Extensions](https://apps.microsoft.com/detail/9nmzlz57r3t7) ($0.99), or, if your PC maker provides it,
+  the free [HEVC Video Extensions from Device Manufacturer](https://apps.microsoft.com/detail/9n4wgh0z6vhq). On a
+  Windows "N" edition, add the Media Feature Pack first (Settings > Apps > Optional features).
+- **Linux:** install libheif 1.12 or newer with its HEVC decoder:
+  - Ubuntu 24.04+, Debian 13+: `sudo apt install libheif1 libheif-plugin-libde265`
+  - Ubuntu 22.04, Debian 12: `sudo apt install libheif1`
+  - Fedora (its own libheif has no HEVC decoder): enable RPM Fusion free
+    (`sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm`),
+    then `sudo dnf install libheif-freeworld`
+  - Arch, Manjaro, EndeavourOS: `sudo pacman -S --needed libheif libde265`
+  - openSUSE (its libheif has no HEVC decoder): add the
+    [Packman repository](https://en.opensuse.org/Additional_package_repositories#Packman) and install `libheif1`
+    from it
+  - Anything else: libheif 1.12 or newer with an HEVC (libde265) decoder from your distribution
+- **AVIF:** works everywhere, with no install (a bundled AV1 decoder, rav1d).
+
+Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exact copies and exported; they show
+"No HEIC decoder on this system" instead of a preview, and the scan summary says how to enable previews. After the
+install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
+to their resized or re-exported JPEG copies.
+
+### What's new in 0.3.0
+
+- **TIFF photos** are fully supported: scans, previews and look-matching, including large and tiled TIFFs, in
+  bounded memory.
+- **HEIC through your system's decoder**, with guidance for your system when a decoder is missing (see above).
+- **AVIF** is decoded everywhere by a bundled AV1 decoder.
+- **Previews filled in after an install:** once a decoder is available, the next rescan reads only the photos that
+  waited for it and gives them previews, perceptual hashes and duplicate matching.
+- **Better copies are offered, never copied twice:** when a photo already in your library gets a better copy later
+  (a HEIC decoded at last, another keeper you chose, a better copy on a new drive), the export copies nothing for it
+  and lists it as a better copy; `export run --upgrade` (or the option in the Export view) copies it beside the
+  library copy, which is never removed or replaced.
 
 ### LGPL components
 

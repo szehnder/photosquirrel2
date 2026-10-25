@@ -24,7 +24,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
-            libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libssl-dev libsecret-1-dev libdbus-1-dev pkg-config
+            libfontconfig-dev libfreetype-dev libx11-xcb-dev libxcb1-dev libssl-dev libsecret-1-dev libdbus-1-dev pkg-config nasm
+      # nasm builds rav1d's x86_64 assembly (AVIF, ADR-0090); the system libheif and its HEVC plugin are what the
+      # real-decoder tests load at run time (ADR-0089; nothing links it).
+      - name: nasm and the system HEIF library
+        run: sudo apt-get install -y nasm libheif1 libheif-plugin-libde265
       - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
         with:
           components: rustfmt, clippy
@@ -38,6 +42,15 @@ jobs:
         run: cargo metadata --locked --format-version 1 > /dev/null
       - name: cargo xtask ci
         run: cargo xtask ci
+        env:
+          # The real-decoder tests must decode here, not skip (ADR-0089).
+          PHOTOSQUIRREL_REQUIRE_SYSTEM_HEIF: "1"
+      - name: No HEIF library (the loader pointed at a missing file)
+        env:
+          PHOTOSQUIRREL_LIBHEIF: /nonexistent/libheif.so.1
+        run: |
+          cargo run --locked -q -p photosquirrel-cli -- --data-dir "$RUNNER_TEMP/doctor" --json doctor > doctor.json
+          jq -e '.data.heic == false and (.data.decoders[] | select(.name == "heic") | .reason | test("not installed"))' doctor.json
 
   bench-regressions:
     name: Performance budgets (relative to the parent commit)
@@ -108,18 +121,28 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # nasm for rav1d's x86_64 assembly (ADR-0090); the arm64 macOS runner needs none.
+      - name: nasm (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\NASM"
       - run: cargo build --workspace --locked
       # Platform-only code (cfg'd for macOS or Windows) gets the same lint bar as Linux.
-      - run: cargo clippy --locked -p ps-model -p ps-media -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service -p photosquirrel-cli -p xtask -- -D warnings
+      - run: cargo clippy --locked -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service -p photosquirrel-cli -p xtask -- -D warnings
       # Engine crates are platform-sensitive (paths, file ids, fsync, renames); UI tests run on Linux.
       # The 1M-row catalog tests run at a tenth of the scale here: these runners take about an hour per test at
       # full scale, which Linux CI and `cargo xtask bench` cover.
-      - run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service
+      - run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service
         env:
           PHOTOSQUIRREL_TEST_SCALE: reduced
+          # ImageIO is always present on macOS: its tests must pass there; Windows runners may lack the HEIF/HEVC
+          # extensions and skip with the reason (ADR-0089).
+          PHOTOSQUIRREL_REQUIRE_SYSTEM_HEIF: ${{ runner.os == 'macOS' && '1' || '' }}
       # The engine crates' wall-clock budget tests (`ignore = "timing"`, ADR-0075 and ADR-0076), alone and one at a
       # time after the main tests. Same packages as above, so cargo resolves the same features and rebuilds nothing.
       - name: Timing pass (engine crates)
-        run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service --test control -- --ignored --exact --test-threads=1 scenario_scan_control_cancel_within_250_ms scenario_scan_control_pause_within_250_ms cancel_reaches_a_long_tiff_decode_within_250_ms
+        run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service --test control -- --ignored --exact --test-threads=1 scenario_scan_control_cancel_within_250_ms scenario_scan_control_pause_within_250_ms cancel_reaches_a_long_tiff_decode_within_250_ms
         env:
           PHOTOSQUIRREL_TEST_SCALE: reduced
