@@ -5,6 +5,7 @@
 
 mod analysis;
 mod cleanup;
+mod decoder;
 mod disposition;
 mod export;
 mod ids;
@@ -21,6 +22,7 @@ pub mod settings;
 
 pub use analysis::*;
 pub use cleanup::*;
+pub use decoder::*;
 pub use disposition::*;
 pub use export::*;
 pub use ids::*;

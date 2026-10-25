@@ -9,7 +9,7 @@ use ps_media::{CountingReader, PROBE_LIMIT, probe_bytes, probe_path, probe_reade
 use ps_model::{Dimensions, Format, PreviewSource, ProbeErrorKind, RawFormat};
 use rand::{Rng, SeedableRng};
 
-const TINY_HEIC: &[u8] = include_bytes!("data/tiny.heic");
+const TINY_HEIC: &[u8] = include_bytes!("../../ps-sysdecode/data/selftest.heic");
 
 fn probe(bytes: &[u8], name: &str) -> ps_model::ProbeRecord {
     probe_bytes(bytes, bytes.len() as u64, Some(Path::new(name)))
@@ -229,6 +229,8 @@ fn scenario_media_probe_fuzzed_headers_never_panic() {
     eprintln!("slowest fuzzed probe: {slowest:?}");
 }
 
+/// The probe is a property of the file: identical whether or not this machine has a HEIC decoder (it takes
+/// no decoder registry), and the thumbnail item is located and marked decodable as an `hvc1` item.
 #[test]
 fn scenario_media_probe_heic_without_decoder() {
     let r = probe(TINY_HEIC, "IMG.HEIC");
@@ -240,30 +242,20 @@ fn scenario_media_probe_heic_without_decoder() {
     let p = r.preview.expect("HEIC thumbnail located");
     assert_eq!(p.source, PreviewSource::HeicThumbnail);
     assert_eq!(p.dims, Some(Dimensions::new(320, 240)));
-    assert_eq!(p.decodable, cfg!(feature = "heic"));
-}
-
-#[test]
-fn scenario_media_probe_availability_listed() {
-    let c = ps_media::capabilities(None);
-    assert_eq!(c.heic, cfg!(feature = "heic"));
-    assert!(c.poster_frames.is_none());
-    let heic = c
-        .decoders
-        .iter()
-        .find(|d| d.name == "heic")
-        .expect("heic listed");
-    let poster = c
-        .decoders
-        .iter()
-        .find(|d| d.name == "poster_frames")
-        .expect("poster listed");
-    assert!(!poster.available);
-    assert!(poster.detail.contains("ffmpeg"), "{}", poster.detail);
-    if !cfg!(feature = "heic") {
-        assert!(!heic.available);
-        assert!(heic.detail.contains("--features heic"), "{}", heic.detail);
-    }
+    assert!(p.decodable, "an hvc1 thumbnail item");
+    // Without a decoder the decode reports the missing decoder; with one it decodes; the probe is the same.
+    let none = ps_media::Decoders::none();
+    let fake = ps_media::Decoders::with_heif(std::sync::Arc::new(
+        ps_media::decoders::fake::FakeHeif::new(),
+    ));
+    assert_eq!(
+        ps_media::decode_for_analysis(TINY_HEIC, &r, &none).err(),
+        Some(ps_media::DecodeError::DecoderMissing(
+            ps_model::DecoderKey::Heif
+        ))
+    );
+    assert!(ps_media::decode_for_analysis(TINY_HEIC, &r, &fake).is_ok());
+    assert_eq!(probe(TINY_HEIC, "IMG.HEIC"), r);
 }
 
 #[test]

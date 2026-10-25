@@ -38,7 +38,7 @@ pub use control::{Cancelled, Control, ControlState};
 pub use error::{Result, ScanError};
 pub use fs::{Instrumentation, SourceFs};
 pub use options::{DeviceClassFn, ScanOptions, default_cpu_threads};
-pub use pipeline::CHUNK;
+pub use pipeline::{CHUNK, undecoded_from};
 pub use post::{GroupEngine, RegroupReport};
 pub use report::{RunSummary, SourceSummary};
 pub use scanner::{AddedSource, Confirmation, Scanner, SourceInfo};

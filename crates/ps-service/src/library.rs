@@ -1043,7 +1043,10 @@ impl Library {
         } else {
             let bytes = ps_media::fs::read_all(&path)?;
             let probe = ps_media::probe_buffer(&bytes, Some(&path));
-            ps_media::thumb::make_large_preview(&bytes, &probe, PREVIEW_LONG_EDGE)
+            // The decoders detected now: a HEIC catalogued with a placeholder previews as soon as a decoder
+            // is available, before any rescan (ADR-0091).
+            let decoders = self.scan()?.decoders();
+            ps_media::thumb::make_large_preview(&bytes, &probe, PREVIEW_LONG_EDGE, &decoders)
         };
         match made {
             Ok((jpeg, _, _)) => {

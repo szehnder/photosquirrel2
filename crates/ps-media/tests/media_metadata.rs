@@ -247,7 +247,7 @@ fn scenario_media_metadata_corrupt_exif_keeps_file() {
 
 #[test]
 fn heic_metadata_read() {
-    let h = include_bytes!("data/tiny.heic");
+    let h = include_bytes!("../../ps-sysdecode/data/selftest.heic");
     let (_, m) = analyze(h, "x.heic", None);
     assert!(m.warnings.is_empty(), "{:?}", m.warnings);
     assert_eq!(m.fields.camera_make.as_deref(), Some("Apple"));

@@ -197,6 +197,7 @@ pub(crate) fn execute(ctx: Arc<RunCtx>) -> RunSummary {
     } else {
         None
     };
+    // After the flush and the regroup: the waiting counts are the catalog's.
     let mut summary = summarize(&ctx, status, started.elapsed());
     summary.grouping = grouping;
     ctx.submit(Command::SetRunStatus {
@@ -251,7 +252,56 @@ fn summarize(ctx: &RunCtx, status: RunStatus, elapsed: Duration) -> RunSummary {
         changed_during_scan: ctx.changed_during_scan.load(Ordering::Relaxed),
         retries_exhausted: ctx.retries_exhausted.load(Ordering::Relaxed),
         grouping: None,
+        undecoded: undecoded(ctx),
     }
+}
+
+/// The files of the run's sources still waiting for a decoder (ADR-0091), per format and decoder, with the
+/// run's decoder report.
+fn undecoded(ctx: &RunCtx) -> Vec<ps_model::Undecoded> {
+    let ids: Vec<SourceId> = ctx.sources.iter().map(|s| s.id).collect();
+    let rows = match ctx.catalog.read().undecoded_counts(&ids) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("scan run {}: undecoded counts: {e}", ctx.run);
+            return Vec::new();
+        }
+    };
+    undecoded_from(&rows, ctx.opts.decoders.as_ref())
+}
+
+/// Aggregate rows (source, format, decoder, count) into one entry per format and decoder.
+pub fn undecoded_from(
+    rows: &[(SourceId, String, ps_model::DecoderKey, u64)],
+    decoders: &ps_media::Decoders,
+) -> Vec<ps_model::Undecoded> {
+    let mut out: Vec<ps_model::Undecoded> = Vec::new();
+    for (source, format, key, count) in rows {
+        match out
+            .iter_mut()
+            .find(|u| u.format == *format && u.key == *key)
+        {
+            Some(u) => {
+                u.count += count;
+                if !u.sources.contains(source) {
+                    u.sources.push(*source);
+                }
+            }
+            None => {
+                let entry = decoders.report().for_key(*key);
+                out.push(ps_model::Undecoded {
+                    format: format.clone(),
+                    key: *key,
+                    count: *count,
+                    available: decoders.can_decode(*key),
+                    reason: entry.and_then(|e| e.reason.clone()),
+                    fix: entry.and_then(|e| e.fix.clone()),
+                    sources: vec![*source],
+                });
+            }
+        }
+    }
+    out
 }
 
 fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
@@ -304,6 +354,7 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
         &ctx.opts.classifier,
         ctx.classifier_hash,
         ctx.refresh_analysis,
+        &ctx.opts.decoders,
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -388,6 +439,8 @@ struct CpuJob {
     probe: Box<ProbeRecord>,
     content: Content,
     mtime: Option<SystemTime>,
+    /// A re-decode of an unchanged file that waited for a decoder (ADR-0091); its identity was checked.
+    redecode: bool,
     _permit: BufferPermit,
 }
 
@@ -405,6 +458,26 @@ enum Persist {
         path: RelPath,
         message: String,
     },
+    /// A re-decode (ADR-0091); it never fails the file.
+    Redecoded {
+        idx: usize,
+        path: RelPath,
+        identity: ContentId,
+        outcome: Redecode,
+    },
+}
+
+/// How a re-decode ended.
+enum Redecode {
+    /// Preview and hashes filled in.
+    Filled {
+        hashes: Option<ps_model::PerceptualHash>,
+        thumb: ThumbnailRecord,
+    },
+    /// The decoder is missing again: the file keeps waiting.
+    StillMissing,
+    /// The decoder rejected the data: the file keeps its exact-copy analysis and stops waiting.
+    Undecodable(String),
 }
 
 fn run_pipeline(ctx: &Arc<RunCtx>, diffs: Vec<Option<DiffOutput>>) {
@@ -806,6 +879,8 @@ fn process_file(
                 ctx.progress.file_done(idx);
             } else if t.refresh {
                 refresh_unreadable(ctx, idx, &t, &e);
+            } else if t.redecode.is_some() {
+                redecode_unreadable(ctx, idx, &t, &io_message(&e));
             } else {
                 ctx.fail(idx, &t.path, t.stage, Stage::Probed, io_message(&e));
             }
@@ -832,9 +907,65 @@ fn process_file(
         delay: ctx.opts.chunk_delay,
     };
 
+    // A re-decode (ADR-0091): the single full read, then the identity check. The same content goes on as a
+    // re-decode; other content under an unchanged fingerprint is analysed like a changed file.
+    let mut redecode_permit = None;
+    let mut buf = Vec::new();
+    if let Some(stored) = t.redecode {
+        if size > ANALYSIS_BUFFER_MAX_BYTES {
+            redecode_unreadable(ctx, idx, &t, "it is too large to decode");
+            return;
+        }
+        let permit = match ctx
+            .budget
+            .acquire(size, (idx, reader), &|| busy.checkpoint())
+        {
+            Ok(p) => p,
+            Err(Cancelled) => return,
+        };
+        buf.reserve(size as usize);
+        if let Err(e) = read_rest(&mut r, &mut buf, size) {
+            if !is_cancel(&e) {
+                if ctx.root_available(idx) {
+                    redecode_unreadable(ctx, idx, &t, &io_message(&e));
+                } else {
+                    ctx.lose(idx);
+                }
+            }
+            return;
+        }
+        if ps_hash::identity_from_buffer(&buf) == stored {
+            let probe = ps_media::probe_buffer(&buf, Some(rel.as_path()));
+            drop(file);
+            let job = CpuJob {
+                idx,
+                path: t.path,
+                abs,
+                is_new: false,
+                class: PhotoClass::Photo,
+                probe: Box::new(probe),
+                content: Content::Buffer(buf),
+                mtime,
+                redecode: true,
+                _permit: permit,
+            };
+            ctx.progress.set_dir(idx, reader, None);
+            send_job(&busy, cpu_tx, job);
+            return;
+        }
+        log::info!(
+            "{}: content changed under an unchanged fingerprint; analysed again",
+            t.path
+        );
+        redecode_permit = Some(permit);
+    }
+
     // Probe: at most the first 256 KB (ADR-0010).
-    let mut buf = Vec::with_capacity((size as usize).min(ps_media::PROBE_LIMIT));
-    if let Err(e) = read_into(&mut r, &mut buf, ps_media::PROBE_LIMIT) {
+    let reread = redecode_permit.is_none();
+    if reread {
+        buf.reserve((size as usize).min(ps_media::PROBE_LIMIT));
+    }
+    if reread && let Err(e) = read_into(&mut r, &mut buf, ps_media::PROBE_LIMIT) {
         if !is_cancel(&e) {
             if t.refresh && ctx.root_available(idx) {
                 refresh_unreadable(ctx, idx, &t, &e);
@@ -844,14 +975,18 @@ fn process_file(
         }
         return;
     }
-    let mut probe = ps_media::probe_bytes(&buf, size, Some(rel.as_path()));
+    let mut probe = if reread {
+        ps_media::probe_bytes(&buf, size, Some(rel.as_path()))
+    } else {
+        ps_media::probe_buffer(&buf, Some(rel.as_path()))
+    };
     let buffered = size <= ANALYSIS_BUFFER_MAX_BYTES;
     // A plain TIFF whose directories lie beyond the prefix (ADR-0084): read in full now when it is buffered
     // anyway, else fetch the directories with bounded targeted reads. Not for an analysis refresh, which reads
     // only the prefix (ADR-0071).
-    let mut early_permit = None;
+    let mut early_permit = redecode_permit;
     let mut segments: Vec<ps_media::tiff::Segment> = Vec::new();
-    if !t.refresh && ps_media::needs_directory_reads(&buf, size) {
+    if !t.refresh && reread && ps_media::needs_directory_reads(&buf, size) {
         if buffered {
             let permit = match ctx
                 .budget
@@ -994,7 +1129,7 @@ fn process_file(
         }
     };
     drop(file);
-    let mut job = CpuJob {
+    let job = CpuJob {
         idx,
         path: t.path,
         abs,
@@ -1003,9 +1138,15 @@ fn process_file(
         probe: Box::new(probe),
         content,
         mtime,
+        redecode: false,
         _permit: permit,
     };
     ctx.progress.set_dir(idx, reader, None);
+    send_job(&busy, cpu_tx, job);
+}
+
+/// Hand a job to the CPU workers, giving up on cancel.
+fn send_job(busy: &Busy<'_>, cpu_tx: &Sender<CpuJob>, mut job: CpuJob) {
     loop {
         if busy.checkpoint().is_err() {
             return;
@@ -1016,6 +1157,18 @@ fn process_file(
             Err(SendTimeoutError::Disconnected(_)) => return,
         }
     }
+}
+
+/// A file waiting for a decoder could not be read to fill in its preview (ADR-0091). Its catalogued analysis,
+/// stage, group and marker stay as they were; the error is reported and the next rescan tries again.
+fn redecode_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, why: &str) {
+    ctx.progress.error(RecentError {
+        source: ctx.sources[idx].id,
+        path: t.path.clone(),
+        stage: t.stage,
+        message: format!("could not be read to fill in its preview ({why}); it keeps its analysis"),
+    });
+    ctx.progress.file_done(idx);
 }
 
 fn changed_during_scan(ctx: &RunCtx, idx: usize, t: &Todo) {
@@ -1104,8 +1257,12 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
         probe,
         content,
         mtime,
+        redecode,
         _permit,
     } = job;
+    if redecode {
+        return analyze_redecode(ctx, idx, path, &probe, content, busy);
+    }
     let (identity, bytes, full, metadata_block, decoded, tiff_dims) = match content {
         Content::Buffer(b) => (ps_hash::identity_from_buffer(&b), b, true, None, None, None),
         Content::Streamed {
@@ -1140,6 +1297,8 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
     }
     let capture = metadata.capture_date.map(|d| d.value);
     let stop = || busy.checkpoint().is_err();
+    // The decoder this format needs and this machine lacks (ADR-0091).
+    let mut decoder_missing = None;
     let (hashes, thumb) = if probe.kind() == Some(MediaKind::Video) {
         (
             None,
@@ -1182,17 +1341,18 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
             ps_media::thumb::placeholder(&probe, capture, "preview unavailable (file too large)"),
         )
     } else {
-        match ps_media::analyze_still_with(&bytes, &probe, &stop) {
+        match ps_media::analyze_still_with(&bytes, &probe, &ctx.opts.decoders, &stop) {
             Ok((decoded, thumb, _)) => (still_hashes(&decoded.image), thumb),
             Err(DecodeError::Cancelled) => return None,
-            Err(DecodeError::HeicUnavailable) => (
-                None,
-                ps_media::thumb::placeholder(
-                    &probe,
-                    capture,
-                    "preview unavailable (HEIC decoder not built in)",
-                ),
-            ),
+            Err(e @ (DecodeError::DecoderMissing(_) | DecodeError::Sequence)) => {
+                if let DecodeError::DecoderMissing(k) = e {
+                    decoder_missing = Some(k);
+                }
+                match ps_media::thumb::placeholder_for_error(&probe, capture, &e) {
+                    Some(p) => (None, p),
+                    None => unreachable!("a placeholder for every missing decoder"),
+                }
+            }
             Err(DecodeError::NoRawPreview) => (
                 None,
                 ps_media::thumb::placeholder(
@@ -1218,10 +1378,43 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
         class,
         analysis: Box::new(AnalysisResult {
             identity,
+            decoder_missing,
             hashes,
             metadata,
         }),
         thumb,
+    })
+}
+
+/// A re-decode (ADR-0091): decode the whole buffer with this run's decoders, hash it and make its thumbnail.
+/// Never a failure of the file. `None` when a cancel stopped the decode.
+fn analyze_redecode(
+    ctx: &RunCtx,
+    idx: usize,
+    path: RelPath,
+    probe: &ProbeRecord,
+    content: Content,
+    busy: &Busy<'_>,
+) -> Option<Persist> {
+    let Content::Buffer(bytes) = content else {
+        unreachable!("re-decodes read the whole file");
+    };
+    let identity = ps_hash::identity_from_buffer(&bytes);
+    let stop = || busy.checkpoint().is_err();
+    let outcome = match ps_media::analyze_still_with(&bytes, probe, &ctx.opts.decoders, &stop) {
+        Ok((decoded, thumb, _)) => Redecode::Filled {
+            hashes: still_hashes(&decoded.image),
+            thumb,
+        },
+        Err(DecodeError::Cancelled) => return None,
+        Err(DecodeError::DecoderMissing(_)) => Redecode::StillMissing,
+        Err(e) => Redecode::Undecodable(e.to_string()),
+    };
+    Some(Persist::Redecoded {
+        idx,
+        path,
+        identity,
+        outcome,
     })
 }
 
@@ -1282,6 +1475,12 @@ fn persist_batch(
             Persist::Failed { idx, path, message } => {
                 ctx.fail(idx, &path, Stage::Probed, Stage::Analyzed, message);
             }
+            Persist::Redecoded {
+                idx,
+                path,
+                identity,
+                outcome,
+            } => persist_redecode(ctx, idx, path, identity, outcome),
             Persist::Done {
                 idx,
                 path,
@@ -1344,6 +1543,51 @@ fn persist_batch(
     }
     ctx.submit(Command::Analyzed(analyzed));
     ctx.submit(Command::Thumbed(thumbed));
+}
+
+/// Write a re-decode (ADR-0091): the thumbnail replaces the placeholder for every exact copy (upsert), then
+/// the hashes and the cleared marker; a decode error clears the marker only and is reported.
+fn persist_redecode(
+    ctx: &RunCtx,
+    idx: usize,
+    path: RelPath,
+    identity: ContentId,
+    outcome: Redecode,
+) {
+    let src = &ctx.sources[idx];
+    let key = FileKey::new(src.id, path.clone());
+    match outcome {
+        Redecode::Filled { hashes, thumb } => {
+            if let Err(e) = ctx.thumbs.put_many([(&identity, &thumb)]) {
+                ctx.progress.error(RecentError {
+                    source: src.id,
+                    path,
+                    stage: Stage::Thumbed,
+                    message: format!(
+                        "could not store its new preview ({e}); it keeps its analysis and waits"
+                    ),
+                });
+                ctx.progress.file_done(idx);
+                return;
+            }
+            match hashes {
+                Some(h) => ctx.submit(Command::Redecoded(vec![(key, h)])),
+                None => ctx.submit(Command::ClearDecoderMissing(vec![key])),
+            }
+            ctx.progress.redecoded(idx);
+        }
+        Redecode::StillMissing => {}
+        Redecode::Undecodable(why) => {
+            ctx.submit(Command::ClearDecoderMissing(vec![key]));
+            ctx.progress.error(RecentError {
+                source: src.id,
+                path,
+                stage: Stage::Thumbed,
+                message: format!("could not be decoded ({why}); it keeps its exact-copy analysis"),
+            });
+        }
+    }
+    ctx.progress.file_done(idx);
 }
 
 pub(crate) fn now_ms() -> i64 {

@@ -1058,13 +1058,9 @@ fn probe_heif(buf: &[u8], file_size: u64, rec: &mut ProbeRecord) {
         if let Some((w, h)) = p.dims {
             rec.stored = Some(Dimensions::new(w, h));
         }
-        // irot is anti-clockwise; EXIF 8 = 90 CCW, 3 = 180, 6 = 270 CCW (90 CW).
-        rec.orientation = Orientation(match p.irot {
-            1 => 8,
-            2 => 3,
-            3 => 6,
-            _ => 1,
-        });
+        // irot (anti-clockwise) then imir, as an EXIF orientation: 8 = 90 CCW, 3 = 180, 6 = 270 CCW (90 CW).
+        rec.orientation = Orientation(p.orientation());
+        // A grid's own size is its `ispe`; without one, the grid body would say (decoders read it).
     }
     // EXIF item: 4-byte header offset, then the TIFF block.
     if let Some(ex) = info.exif_items.first().and_then(|id| info.item(*id))
@@ -1109,7 +1105,9 @@ fn probe_heif(buf: &[u8], file_size: u64, rec: &mut ProbeRecord) {
             source: PreviewSource::HeicThumbnail,
             range: ByteRange { offset: off, len },
             dims: t.dims.map(|(w, h)| Dimensions::new(w, h)),
-            decodable: crate::HEIC_SUPPORTED,
+            // A property of the file: an HEVC-coded thumbnail item. Whether this machine can
+            // decode it is the decoder registry's business (ADR-0089).
+            decodable: &t.kind == b"hvc1",
         });
     }
 }

@@ -69,7 +69,7 @@ pub fn analyze(root: &Path, rel: &str, id: FileId) -> DedupInput {
     let analyzed = class.is_candidate() && probe.format.is_some();
     let content = analyzed.then(|| identity_from_buffer(&bytes));
     let hash = (analyzed && format.kind() == MediaKind::Image)
-        .then(|| ps_media::decode_for_analysis(&bytes, &probe).ok())
+        .then(|| ps_media::decode_for_analysis(&bytes, &probe, &ps_media::Decoders::none()).ok())
         .flatten()
         .and_then(|d| {
             let img = d.image;

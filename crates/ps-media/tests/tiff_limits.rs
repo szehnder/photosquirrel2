@@ -208,7 +208,7 @@ fn scenario_thumbnails_tiff_decode_work_capped() {
     assert_eq!(stats.image_dims, (81920, 81920));
     // In memory too (the `image` fallback refuses it as well).
     let p = probe_buffer(&t, None);
-    assert!(decode_for_analysis(&t, &p).is_err());
+    assert!(decode_for_analysis(&t, &p, &ps_media::Decoders::none()).is_err());
     // A block shared by many chunks counts once per chunk: 200 tiles of 4096x4096 x 1 byte (3.1 GB decoded)
     // pass both caps (the decode starts, and stops at the first check here); the same 200 tiles each claiming
     // a 32 MB compressed block (6.3 GB to read) are refused before any is read.
@@ -284,7 +284,7 @@ fn scenario_thumbnails_tiff_decode_stops_when_cancelled() {
         n.set(n.get() + 1);
         n.get() > 3
     };
-    let r = ps_media::analyze_still_with(&t, &p, &stop);
+    let r = ps_media::analyze_still_with(&t, &p, &ps_media::Decoders::none(), &stop);
     assert!(matches!(r, Err(DecodeError::Cancelled)), "{:?}", r.err());
     assert_eq!(n.get(), 4);
 }

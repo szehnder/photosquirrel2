@@ -8,8 +8,11 @@ license.workspace = true
 
 [features]
 default = []
-# HEIC/HEIF/AVIF decoding via libheif (ADR-0017). Off by default so the default build needs no system library.
-heic = ["dep:libheif-rs"]
+# rav1d's assembly for AVIF decoding (ADR-0090): needs nasm on x86_64. Enabled by default in the programs
+# (`photosquirrel`, `photosquirrel-cli`); `--no-default-features` builds without it at slower AVIF speed.
+avif-asm = ["rav1d/asm"]
+# `decoders::fake::FakeHeif`, a deterministic HEIC test decoder (ADR-0089), for other crates' tests.
+test-support = []
 # The machine's time-zone rules (`date::os::OsZone`, ADR-0070). Enabled only by the I/O crates, so core builds
 # and core tests never depend on the test machine's zone.
 os-zone = ["dep:chrono", "dep:log"]
@@ -26,12 +29,14 @@ fast_image_resize.workspace = true
 nom-exif.workspace = true
 imagesize.workspace = true
 rawler.workspace = true
-libheif-rs = { workspace = true, optional = true }
+rav1d.workspace = true
+libc.workspace = true
 chrono = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+ps-media = { path = ".", features = ["test-support"] }
 ps-fixtures.workspace = true
 proptest.workspace = true
 rand.workspace = true

@@ -400,16 +400,41 @@ fn scenario_cli_doctor_lists_decoders() {
         data.path(),
         &["sources", "add", corpus().join("drive-a").to_str().unwrap()],
     );
-    let v = json(&ok(data.path(), &["--json", "doctor"]));
-    let d = &v["data"];
-    assert_eq!(d["heic"], ps_media::HEIC_SUPPORTED);
-    let heic = d["decoders"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|x| x["name"] == "heic")
+    let o = cli(data.path())
+        .env("PHOTOSQUIRREL_HEIF_DECODER", "none")
+        .args(["--json", "doctor"])
+        .output()
         .unwrap();
-    assert_eq!(heic["available"], ps_media::HEIC_SUPPORTED);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v = json(&o);
+    let d = &v["data"];
+    assert_eq!(d["heic"], false);
+    let entry = |name: &str| {
+        d["decoders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["name"] == name)
+            .unwrap_or_else(|| panic!("{name} listed: {d}"))
+            .clone()
+    };
+    let heic = entry("heic");
+    assert_eq!(heic["available"], false);
+    assert!(
+        heic["reason"]
+            .as_str()
+            .unwrap()
+            .contains("PHOTOSQUIRREL_HEIF_DECODER=none")
+    );
+    assert!(heic["fix"]["summary"].is_string(), "{heic}");
+    assert!(heic["fix"]["steps"].is_array());
+    assert_eq!(d["decoder_override"][0], "PHOTOSQUIRREL_HEIF_DECODER=none");
+    let avif = entry("avif");
+    assert_eq!(avif["available"], true);
+    assert!(avif["backend"].as_str().unwrap().contains("rav1d"));
+    assert_eq!(avif["assembly"], cfg!(feature = "avif-asm"));
+    assert!(d["os"]["family"].is_string());
+    assert!(entry("poster_frames")["available"].is_boolean());
     assert_eq!(
         d["data_dir"].as_str().unwrap(),
         data.path().to_str().unwrap()

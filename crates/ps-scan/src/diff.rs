@@ -16,6 +16,9 @@
 //! - **re-analysed**: an unchanged plain TIFF an earlier version catalogued as thumbed without dimensions (its
 //!   directories were beyond the probe window, ADR-0084) is processed again from `discovered`, like a changed
 //!   file. The new probe reads such directories, so the row cannot stay without dimensions and is re-read once.
+//! - **re-decoded**: an unchanged, thumbed file analysed without the decoder its format needs (its
+//!   `decoder_missing` marker, ADR-0091) is queued for a re-decode when the run's decoder registry has that
+//!   decoder (one full read); otherwise it is counted as awaiting a decoder and nothing is read.
 //! - **needs refresh**: an unchanged, finished file probed before classification facts were stored (catalog
 //!   migration 13) is counted; only with [`ScanOptions::refresh_analysis`](crate::ScanOptions) is its probe
 //!   data read again (at most [`ps_media::PROBE_LIMIT`] bytes, read-only) to re-classify it (ADR-0071).
@@ -53,6 +56,9 @@ pub struct Todo {
     /// [`ps_media::PROBE_LIMIT`] bytes) and re-classify; the file is processed further only if it wakes from
     /// `skipped` to a candidate (ADR-0071).
     pub refresh: bool,
+    /// A re-decode once the missing decoder is available (ADR-0091): the catalogued identity, checked against
+    /// the bytes read. Only the preview, the perceptual hashes and the marker change.
+    pub redecode: Option<ContentId>,
 }
 
 /// The diff of one source.
@@ -109,6 +115,7 @@ pub fn diff(
     classifier: &ClassifierSettings,
     classifier_hash: u64,
     refresh_analysis: bool,
+    decoders: &ps_media::Decoders,
 ) -> ps_catalog::Result<DiffOutput> {
     let mut stale = Vec::new();
     let mut out = DiffOutput {
@@ -172,6 +179,7 @@ pub fn diff(
                     stage,
                     is_new,
                     refresh: false,
+                    redecode: None,
                 };
                 match rec {
                     None => {
@@ -218,6 +226,23 @@ pub fn diff(
                             out.todo.push(todo(r.stage, false));
                             out.bytes_to_process += w.stat.size;
                         } else if matches!(r.stage, Stage::Thumbed | Stage::Skipped) {
+                            // Waiting for a decoder (ADR-0091): re-decoded when this run has it.
+                            let mut redecoding = false;
+                            if let Some(k) = r.decoder_missing.filter(|_| r.stage == Stage::Thumbed)
+                            {
+                                match r.identity {
+                                    Some(id) if decoders.can_decode(k) => {
+                                        out.counts.redecode += 1;
+                                        out.todo.push(Todo {
+                                            redecode: Some(id),
+                                            ..todo(r.stage, false)
+                                        });
+                                        out.bytes_to_process += w.stat.size;
+                                        redecoding = true;
+                                    }
+                                    _ => out.counts.awaiting_decoder += 1,
+                                }
+                            }
                             match r.classifier_hash {
                                 Some(h) if h != classifier_hash => stale.push(Stale {
                                     id: r.id,
@@ -228,7 +253,7 @@ pub fn diff(
                                 Some(_) => {}
                                 None => {
                                     out.counts.needs_refresh += 1;
-                                    if refresh_analysis {
+                                    if refresh_analysis && !redecoding {
                                         out.todo.push(Todo {
                                             refresh: true,
                                             ..todo(r.stage, false)

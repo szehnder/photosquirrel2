@@ -71,6 +71,8 @@ pub enum PreviewInput<'a> {
     Source {
         bytes: &'a [u8],
         probe: &'a ProbeRecord,
+        /// This machine's decoders (HEIC through the system decoder, ADR-0089).
+        decoders: &'a ps_media::Decoders,
     },
     /// Neither a cached preview nor the source is available (source volume offline).
     Offline,
@@ -101,11 +103,16 @@ pub fn derive(input: PreviewInput<'_>) -> Result<Derived, PreviewError> {
             llm: downscale(jpeg)?,
             generated_large: None,
         }),
-        PreviewInput::Source { bytes, probe } => {
+        PreviewInput::Source {
+            bytes,
+            probe,
+            decoders,
+        } => {
             let (large, _, _) = ps_media::thumb::make_large_preview(
                 bytes,
                 probe,
                 ps_media::thumb::PREVIEW_LONG_EDGE,
+                decoders,
             )
             .map_err(|e| PreviewError::Failed(e.to_string()))?;
             Ok(Derived {

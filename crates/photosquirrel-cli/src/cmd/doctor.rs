@@ -1,4 +1,5 @@
-//! `doctor`: version, data folder, catalog schema, optional decoders (ADR-0017), keychain (ADR-0031) and the
+//! `doctor`: version, data folder, catalog schema, decoders per format with the reason and fix for this system
+//! (ADR-0089, ADR-0090), keychain (ADR-0031) and the
 //! configured AI provider, and the power probe behind pause on battery. Opens no network connection (ADR-0029) and creates nothing.
 
 use std::path::PathBuf;
@@ -12,11 +13,19 @@ use ps_service::secrets::{Keychain, SecretBackend};
 use super::Ctx;
 use crate::out::emit;
 
+/// One format's decoder: `name`, `available` and `detail` as before, plus what detection found (ADR-0089).
 #[derive(Serialize)]
 struct Decoder {
     name: &'static str,
     available: bool,
     detail: String,
+    backend: Option<String>,
+    version: Option<String>,
+    reason: Option<String>,
+    fix: Option<ps_model::Fix>,
+    /// AVIF: built with rav1d's assembly (`avif-asm`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assembly: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -58,6 +67,10 @@ struct DoctorOut {
     catalog: Catalog,
     heic: bool,
     decoders: Vec<Decoder>,
+    /// `PHOTOSQUIRREL_HEIF_DECODER` / `PHOTOSQUIRREL_LIBHEIF` in force.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    decoder_override: Vec<String>,
+    os: Option<ps_model::OsSummary>,
     keychain_available: bool,
     keychain_detail: String,
     llm_provider: Provider,
@@ -74,7 +87,9 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         Ok(v) => (v, None),
         Err(e) => (None, Some(e.to_string())),
     };
-    let caps = ps_media::capabilities(
+    // Detection: one library load and two 1 KB decodes, reading no user file (ADR-0029).
+    let report = ps_media::decoder_report(
+        &ps_service::decoders::DecoderHub::global().get(),
         settings
             .scanning
             .poster_frame_tool
@@ -100,16 +115,25 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             error,
         },
         data_dir: data,
-        heic: caps.heic,
-        decoders: caps
-            .decoders
-            .into_iter()
-            .map(|d| Decoder {
-                name: d.name,
-                available: d.available,
-                detail: d.detail,
+        heic: report
+            .entry(ps_model::DecoderFormat::Heic)
+            .is_some_and(|e| e.available),
+        decoders: report
+            .entries
+            .iter()
+            .map(|e| Decoder {
+                name: e.format.as_str(),
+                available: e.available,
+                detail: e.detail(),
+                backend: e.backend.clone(),
+                version: e.version.clone(),
+                reason: e.reason.clone(),
+                fix: e.fix.clone(),
+                assembly: e.assembly,
             })
             .collect(),
+        decoder_override: report.overrides.clone(),
+        os: report.os.clone(),
         keychain_available,
         keychain_detail,
         llm_provider: Provider {
@@ -165,6 +189,17 @@ pub fn run(ctx: &Ctx) -> Result<()> {
                 },
                 d.detail
             );
+            if let Some(fix) = d.fix.as_ref().filter(|_| !d.available) {
+                if !fix.summary.is_empty() {
+                    println!("    how to enable: {}", fix.summary);
+                }
+                for l in fix.lines() {
+                    println!("      {l}");
+                }
+            }
+        }
+        for v in &o.decoder_override {
+            println!("decoder override: {v}");
         }
         println!(
             "keychain:    {}",

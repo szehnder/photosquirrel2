@@ -631,8 +631,11 @@ pub struct PlaceholderInfo {
     pub format: Option<Format>,
     pub duration_ms: Option<u64>,
     pub capture_date: Option<CaptureTime>,
-    /// e.g. "preview unavailable (HEIC decoder not built in)".
+    /// e.g. "No HEIC decoder on this system".
     pub note: String,
+    /// Why there are no pixels (absent in records stored before this field existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::PlaceholderReason>,
 }
 
 /// A grid thumbnail (384 px long edge JPEG at q82) or placeholder, ready for the thumbnail store.
@@ -784,6 +787,7 @@ mod tests {
                 duration_ms: Some(12_500),
                 capture_date: None,
                 note: "n".into(),
+                reason: None,
             }),
         };
         round_trip(&t);

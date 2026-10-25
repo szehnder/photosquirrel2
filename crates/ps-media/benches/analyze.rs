@@ -22,10 +22,12 @@ fn bench(c: &mut Criterion) {
         })
     });
     g.bench_function("analysis-decode", |b| {
-        b.iter(|| ps_media::decode_for_analysis(black_box(&jpeg), &probe))
+        b.iter(|| {
+            ps_media::decode_for_analysis(black_box(&jpeg), &probe, &ps_media::Decoders::none())
+        })
     });
     g.bench_function("decode-thumb", |b| {
-        b.iter(|| ps_media::analyze_still(black_box(&jpeg), &probe))
+        b.iter(|| ps_media::analyze_still(black_box(&jpeg), &probe, &ps_media::Decoders::none()))
     });
     g.bench_function("metadata", |b| {
         b.iter(|| {

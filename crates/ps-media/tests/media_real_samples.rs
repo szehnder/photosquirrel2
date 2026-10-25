@@ -38,7 +38,7 @@ fn real_camera_samples_probe_metadata_and_thumbnail() {
         );
         let (class, reasons) = ps_media::classify(&probe, &p, &settings);
         let thumb = if probe.kind() == Some(MediaKind::Image) {
-            ps_media::make_thumbnail(&bytes, &probe)
+            ps_media::make_thumbnail(&bytes, &probe, &ps_media::Decoders::none())
                 .map(|(t, o)| format!("{}x{} {:?} rgb{:?}", t.width, t.height, o, t.dominant_rgb))
                 .unwrap_or_else(|e| format!("thumb error: {e}"))
         } else {

@@ -128,7 +128,7 @@ fn truncated_and_corrupt_jpegs_fail_as_jpeg_decoder_does() {
                 );
                 let p = probe_bytes(&bad, bad.len() as u64, None);
                 assert!(
-                    decode_for_analysis(&bad, &p).is_err(),
+                    decode_for_analysis(&bad, &p, &ps_media::Decoders::none()).is_err(),
                     "{label}, {how}: no analysis decode"
                 );
             }
@@ -143,7 +143,10 @@ fn small_truncated_jpegs_fail_too() {
     for (w, h) in [(640u32, 480u32), (800, 600), (1000, 750)] {
         let j = fx::jpeg(w, h, 9, 85);
         let p = probe_bytes(&j, j.len() as u64, None);
-        assert!(decode_for_analysis(&j, &p).is_ok(), "{w}x{h} intact");
+        assert!(
+            decode_for_analysis(&j, &p, &ps_media::Decoders::none()).is_ok(),
+            "{w}x{h} intact"
+        );
         for pct in [10usize, 50, 90, 99] {
             let bad = fx::truncate(&j, j.len() * pct / 100);
             assert!(
@@ -152,7 +155,7 @@ fn small_truncated_jpegs_fail_too() {
             );
             let p = probe_bytes(&bad, bad.len() as u64, None);
             assert!(
-                decode_for_analysis(&bad, &p).is_err(),
+                decode_for_analysis(&bad, &p, &ps_media::Decoders::none()).is_err(),
                 "{w}x{h} truncated at {pct}%: no analysis decode"
             );
         }

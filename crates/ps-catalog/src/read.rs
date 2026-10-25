@@ -44,10 +44,10 @@ impl std::fmt::Debug for Readers {
 pub(crate) const FILE_COLUMNS: &str = "id, source_id, rel_path, size, mtime_ns, file_index, stage, class, reasons, format,
     width, height, content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_undated,
     camera_model, has_gps, attempts, missing_since, first_seen, capture_offset_min, capture_provenance,
-    capture_precision, date_version";
+    capture_precision, date_version, decoder_missing";
 
 /// Number of columns in [`FILE_COLUMNS`]: the index of the first column a query appends after them.
-pub(crate) const FILE_COLUMN_COUNT: usize = 28;
+pub(crate) const FILE_COLUMN_COUNT: usize = 29;
 
 impl Readers {
     pub(crate) fn open(path: &Path, size: usize) -> Result<Readers> {
@@ -176,6 +176,39 @@ impl Readers {
                     .get::<_, Option<i64>>(FILE_COLUMN_COUNT)?
                     .map(|h| h as u64);
                 out.push(rec);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Files still waiting for a decoder (ADR-0091), per source, catalog format key and decoder: one aggregate
+    /// over the partial index `file_decoder_missing`; missing files are left out. `sources` empty: every source.
+    pub fn undecoded_counts(
+        &self,
+        sources: &[SourceId],
+    ) -> Result<Vec<(SourceId, String, ps_model::DecoderKey, u64)>> {
+        self.with(|c| {
+            let values: Rc<Vec<Value>> =
+                Rc::new(sources.iter().map(|s| Value::Integer(s.0)).collect());
+            let mut stmt = c.prepare_cached(
+                "SELECT source_id, coalesce(format, ''), decoder_missing, count(*) FROM file
+                 WHERE decoder_missing IS NOT NULL AND missing_since IS NULL
+                   AND (?1 OR source_id IN rarray(?2))
+                 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3",
+            )?;
+            let mut rows = stmt.query(params![sources.is_empty(), values])?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                let key: String = r.get(2)?;
+                let Some(k) = ps_model::DecoderKey::from_storage(&key) else {
+                    continue;
+                };
+                out.push((
+                    SourceId(r.get(0)?),
+                    r.get(1)?,
+                    k,
+                    r.get::<_, i64>(3)? as u64,
+                ));
             }
             Ok(out)
         })
@@ -652,6 +685,15 @@ pub(crate) fn file_record(r: &Row<'_>) -> Result<FileRecord> {
             .ok_or_else(|| corrupt("capture_precision"))?,
         date_version: r.get::<_, i64>(27)? as u8,
         classifier_hash: None,
+        decoder_missing: match r.get_ref(28)? {
+            ValueRef::Text(t) => Some(
+                std::str::from_utf8(t)
+                    .ok()
+                    .and_then(ps_model::DecoderKey::from_storage)
+                    .ok_or_else(|| corrupt("decoder_missing"))?,
+            ),
+            _ => None,
+        },
     })
 }
 

@@ -113,6 +113,7 @@ fn placeholders_kinds_and_validation() {
             duration_ms: Some(12_500),
             capture_date: None,
             note: "no poster-frame tool configured".into(),
+            reason: None,
         }),
     };
     store.put(&id, &placeholder).expect("put");

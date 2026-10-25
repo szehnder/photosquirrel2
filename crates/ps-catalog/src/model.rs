@@ -111,6 +111,8 @@ pub struct AnalysisResult {
     /// Absent for files that cannot be decoded to pixels (e.g. videos without a poster frame).
     pub hashes: Option<PerceptualHash>,
     pub metadata: Metadata,
+    /// The decode lacked this decoder (`file.decoder_missing`, ADR-0091); `None` clears the marker.
+    pub decoder_missing: Option<ps_model::DecoderKey>,
 }
 
 impl AnalysisResult {
@@ -206,6 +208,8 @@ pub struct FileRecord {
     /// [`crate::Readers::source_files`] only (the rescan diff); `None` elsewhere and for rows probed before
     /// schema version 13.
     pub classifier_hash: Option<u64>,
+    /// The decoder this file's format needs and the analysis lacked (catalog migration 19, ADR-0091).
+    pub decoder_missing: Option<ps_model::DecoderKey>,
 }
 
 /// One recorded failure of a file (`file_error` row).

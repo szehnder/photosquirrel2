@@ -51,6 +51,9 @@ pub struct ScanOptions {
     /// before classification facts were stored, and re-classify them (ADR-0071). Off by default: it reads up to
     /// 256 KB per such file.
     pub refresh_analysis: bool,
+    /// The decoders of this machine (ADR-0089): HEIC through the operating system's decoder when detection
+    /// found one. Default: none (core tests; `ps-service` passes the detected registry).
+    pub decoders: Arc<ps_media::Decoders>,
 }
 
 impl Default for ScanOptions {
@@ -70,6 +73,7 @@ impl Default for ScanOptions {
             recover_interrupted: true,
             zone: None,
             refresh_analysis: false,
+            decoders: Arc::new(ps_media::Decoders::none()),
         }
     }
 }
@@ -89,6 +93,7 @@ impl std::fmt::Debug for ScanOptions {
             .field("fs", &self.fs)
             .field("zone", &self.zone.is_some())
             .field("refresh_analysis", &self.refresh_analysis)
+            .field("decoders", &self.decoders)
             .finish_non_exhaustive()
     }
 }

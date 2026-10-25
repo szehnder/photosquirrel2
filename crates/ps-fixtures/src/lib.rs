@@ -9,6 +9,7 @@ pub mod dng;
 pub mod eval;
 pub mod expected;
 pub mod generate;
+pub mod heif;
 pub mod jpeg;
 pub mod junk;
 pub mod plan;

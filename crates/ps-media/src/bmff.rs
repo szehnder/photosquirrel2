@@ -140,6 +140,79 @@ pub struct HeifItem {
     pub dims: Option<(u32, u32)>,
     /// `irot` angle in units of 90 degrees anti-clockwise.
     pub irot: u8,
+    /// `imir` axis: 0 mirrors about the vertical axis (left-right), 1 about the horizontal axis (top-bottom).
+    pub imir: Option<u8>,
+    /// `iloc` construction method (0 file offsets, 1 offsets into `idat`).
+    pub construction: u16,
+    /// The `av1C` configuration OBUs (after the 4-byte header), prepended to the item data when decoding.
+    pub av1c: Option<Vec<u8>>,
+    /// `colr nclx`: colour primaries, transfer, matrix coefficients, full range.
+    pub nclx: Option<Nclx>,
+    /// `pixi`: bits per channel of the first channel.
+    pub pixi: Option<u8>,
+    /// `auxC`: an auxiliary image (alpha, depth), never shown.
+    pub aux: bool,
+}
+
+/// A `colr` box of colour type `nclx`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Nclx {
+    pub primaries: u16,
+    pub transfer: u16,
+    pub matrix: u16,
+    pub full_range: bool,
+}
+
+/// The body of a `grid` derived image item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Grid {
+    pub rows: u32,
+    pub columns: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Parse a `grid` item body (ISO/IEC 23008-12 6.6.2.3.2).
+pub fn parse_grid(b: &[u8]) -> Option<Grid> {
+    if *b.first()? != 0 {
+        return None;
+    }
+    let flags = *b.get(1)?;
+    let rows = u32::from(*b.get(2)?) + 1;
+    let columns = u32::from(*b.get(3)?) + 1;
+    let (width, height) = if flags & 1 == 1 {
+        (be_u32(b, 4)?, be_u32(b, 8)?)
+    } else {
+        (u32::from(be_u16(b, 4)?), u32::from(be_u16(b, 6)?))
+    };
+    (width > 0 && height > 0).then_some(Grid {
+        rows,
+        columns,
+        width,
+        height,
+    })
+}
+
+impl HeifItem {
+    /// The EXIF orientation equivalent of this item's `irot` then `imir` (ISO/IEC 23008-12: transformative
+    /// properties apply in the listed order; encoders list `irot` first).
+    pub fn orientation(&self) -> u8 {
+        match (self.irot & 3, self.imir) {
+            (0, None) => 1,
+            (1, None) => 8,
+            (2, None) => 3,
+            (3, None) => 6,
+            (0, Some(0)) => 2,
+            (0, Some(_)) => 4,
+            (1, Some(0)) => 7,
+            (1, Some(_)) => 5,
+            (2, Some(0)) => 4,
+            (2, Some(_)) => 2,
+            (3, Some(0)) => 5,
+            (3, Some(_)) => 7,
+            _ => 1,
+        }
+    }
 }
 
 /// What the HEIF `meta` box says.
@@ -151,11 +224,52 @@ pub struct HeifInfo {
     pub thumbnails: Vec<(u32, u32)>,
     /// (exif item, described item) from `iref cdsc` where the item is `Exif`.
     pub exif_items: Vec<u32>,
+    /// `iref dimg`: a derived image (a grid) and its input items, in order.
+    pub derived: Vec<(u32, Vec<u32>)>,
+    /// Absolute range of the `idat` body (construction method 1), when there is one.
+    pub idat: Option<(u64, u64)>,
 }
 
 impl HeifInfo {
     pub fn item(&self, id: u32) -> Option<&HeifItem> {
         self.items.iter().find(|i| i.id == id)
+    }
+
+    /// The input items of a derived (grid) item.
+    pub fn inputs(&self, id: u32) -> Option<&[u32]> {
+        self.derived
+            .iter()
+            .find(|(d, _)| *d == id)
+            .map(|(_, v)| v.as_slice())
+    }
+
+    /// An item's data, its extents concatenated, from a buffer holding the whole file; `None` when an extent
+    /// lies outside it or the total exceeds `max` bytes.
+    pub fn item_data(&self, buf: &[u8], item: &HeifItem, max: u64) -> Option<Vec<u8>> {
+        let base = match item.construction {
+            0 => 0,
+            1 => self.idat?.0,
+            _ => return None,
+        };
+        let total: u64 = item
+            .extents
+            .iter()
+            .try_fold(0u64, |a, (_, len)| a.checked_add(*len))?;
+        if total > max {
+            return None;
+        }
+        let mut out = Vec::with_capacity(usize::try_from(total).ok()?);
+        for &(off, len) in &item.extents {
+            let start = base.checked_add(off)?;
+            let end = start.checked_add(len)?;
+            if item.construction == 1 && self.idat.is_some_and(|(s, l)| end > s.saturating_add(l)) {
+                return None;
+            }
+            let s = usize::try_from(start).ok()?;
+            let e = usize::try_from(end).ok()?;
+            out.extend_from_slice(buf.get(s..e)?);
+        }
+        Some(out)
     }
 }
 
@@ -217,6 +331,10 @@ pub fn parse_heif(buf: &[u8]) -> Option<HeifInfo> {
         }
     }
 
+    if let Some(idat) = find(&kids, b"idat") {
+        info.idat = Some((idat.body as u64, idat.declared_len));
+    }
+
     // iloc: extents.
     if let Some(iloc) = find(&kids, b"iloc") {
         let b = iloc.body(buf);
@@ -246,6 +364,7 @@ pub fn parse_heif(buf: &[u8]) -> Option<HeifInfo> {
                 .collect();
             match &r.kind {
                 b"thmb" => info.thumbnails.extend(targets.iter().map(|t| (from, *t))),
+                b"dimg" if info.derived.len() < 64 => info.derived.push((from, targets.clone())),
                 b"cdsc" if info.item(from).is_some_and(|i| &i.kind == b"Exif") => {
                     info.exif_items.push(from);
                 }
@@ -319,10 +438,11 @@ fn parse_iloc(b: &[u8], info: &mut HeifInfo) -> Option<()> {
             p += usize::from(length_size);
             extents.push((base.saturating_add(off), len));
         }
-        if method == 0
+        if method <= 1
             && let Some(item) = info.items.iter_mut().find(|i| i.id == id)
         {
             item.extents = extents;
+            item.construction = method;
         }
     }
     Some(())
@@ -371,6 +491,25 @@ fn parse_ipma(buf: &[u8], ipma: &BoxRef, props: &[BoxRef], info: &mut HeifInfo) 
                     }
                 }
                 b"irot" => item.irot = pb.first().copied().unwrap_or(0) & 3,
+                b"imir" => item.imir = Some(pb.first().copied().unwrap_or(0) & 1),
+                b"av1C" if pb.len() >= 4 && pb.len() <= 64 * 1024 => {
+                    item.av1c = Some(pb[4..].to_vec());
+                }
+                b"colr" if pb.get(0..4) == Some(b"nclx") => {
+                    if let (Some(p), Some(t), Some(m), Some(f)) =
+                        (be_u16(pb, 4), be_u16(pb, 6), be_u16(pb, 8), pb.get(10))
+                    {
+                        item.nclx = Some(Nclx {
+                            primaries: p,
+                            transfer: t,
+                            matrix: m,
+                            full_range: f & 0x80 != 0,
+                        });
+                    }
+                }
+                // Full box: version and flags, channel count, then bits per channel.
+                b"pixi" if pb.get(4).is_some_and(|n| *n > 0) => item.pixi = pb.get(5).copied(),
+                b"auxC" => item.aux = true,
                 _ => {}
             }
         }
@@ -498,6 +637,79 @@ pub fn parse_movie(buf: &[u8], moov: &BoxRef) -> MovieBoxes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_body_parses_and_rejects_garbage() {
+        assert_eq!(
+            parse_grid(&[0, 0, 1, 1, 0, 128, 0, 96]),
+            Some(Grid {
+                rows: 2,
+                columns: 2,
+                width: 128,
+                height: 96
+            })
+        );
+        assert_eq!(
+            parse_grid(&[0, 1, 0, 2, 0, 0, 1, 0, 0, 0, 0, 9]),
+            Some(Grid {
+                rows: 1,
+                columns: 3,
+                width: 256,
+                height: 9
+            })
+        );
+        assert_eq!(parse_grid(&[1, 0, 0, 0, 0, 1, 0, 1]), None, "version 1");
+        assert_eq!(parse_grid(&[0, 0, 0, 0, 0, 0, 0, 1]), None, "zero width");
+        assert_eq!(parse_grid(&[0, 0, 0]), None, "short");
+    }
+
+    #[test]
+    fn orientation_composes_rotation_then_mirror() {
+        let it = |irot, imir| HeifItem {
+            irot,
+            imir,
+            ..Default::default()
+        };
+        assert_eq!(it(0, None).orientation(), 1);
+        assert_eq!(it(1, None).orientation(), 8);
+        assert_eq!(it(3, None).orientation(), 6);
+        assert_eq!(it(0, Some(0)).orientation(), 2);
+        assert_eq!(it(0, Some(1)).orientation(), 4);
+        assert_eq!(it(1, Some(0)).orientation(), 7);
+        assert_eq!(it(3, Some(0)).orientation(), 5);
+    }
+
+    #[test]
+    fn item_data_bounds() {
+        let info = HeifInfo {
+            idat: Some((2, 4)),
+            ..Default::default()
+        };
+        let buf = [9u8, 9, 1, 2, 3, 4, 9, 9];
+        let file = HeifItem {
+            extents: vec![(0, 2), (6, 2)],
+            ..Default::default()
+        };
+        assert_eq!(info.item_data(&buf, &file, 100), Some(vec![9, 9, 9, 9]));
+        assert_eq!(info.item_data(&buf, &file, 3), None, "over the cap");
+        let idat = HeifItem {
+            extents: vec![(1, 2)],
+            construction: 1,
+            ..Default::default()
+        };
+        assert_eq!(info.item_data(&buf, &idat, 100), Some(vec![2, 3]));
+        let past = HeifItem {
+            extents: vec![(3, 2)],
+            construction: 1,
+            ..Default::default()
+        };
+        assert_eq!(info.item_data(&buf, &past, 100), None, "past idat");
+        let wild = HeifItem {
+            extents: vec![(u64::MAX, 2)],
+            ..Default::default()
+        };
+        assert_eq!(info.item_data(&buf, &wild, 100), None);
+    }
 
     #[test]
     fn boxes_stop_on_garbage() {

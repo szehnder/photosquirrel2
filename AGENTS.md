@@ -21,7 +21,7 @@ Scale: 100k-1M+ files on mixed SSD/HDD/NAS.
 - `openspec/`: spec-driven development. `specs/` is the current truth (filled as changes are archived).
   `changes/<name>/` holds in-flight work (proposal, design, tasks, delta specs). `ROADMAP.md` gives the order.
 - `crates/` (layering in ADR-0003, enforced by `cargo xtask layering`):
-  - core (no tokio, no gpui-kit): `ps-model`, `ps-media`, `ps-hash`, `ps-dedup`, `ps-fixtures`
+  - core (no tokio, no gpui-kit): `ps-model`, `ps-media`, `ps-hash`, `ps-dedup`, `ps-fixtures`, `ps-sysdecode`
   - I/O (no gpui-kit): `ps-catalog`, `ps-scan`, `ps-llm`, `ps-export`, `ps-service` (the facade), `photosquirrel-cli`
   - UI: `ui-theme` (tokens), `ui-gallery` (virtualized grid), `ui-workspace` (shell, panels), `photosquirrel` (binary)
 - `xtask/`: `cargo xtask <ci|doctor|bench|timing|screenshot|package|spec-coverage|layering|tokens>`.

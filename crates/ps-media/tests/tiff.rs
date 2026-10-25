@@ -72,7 +72,9 @@ fn probe_counted(bytes: &[u8]) -> (ProbeRecord, u64, u64) {
 
 fn decode(bytes: &[u8]) -> RgbImage {
     let p = probe_buffer(bytes, Some(Path::new("t.tif")));
-    decode_for_analysis(bytes, &p).expect("decode").image
+    decode_for_analysis(bytes, &p, &ps_media::Decoders::none())
+        .expect("decode")
+        .image
 }
 
 /// Mean absolute difference per channel value between `img` and the reference box-resized to its size.
@@ -362,7 +364,7 @@ fn scenario_thumbnails_tiff_decoded_at_a_reduced_scale() {
     let t = big_gray16();
     let p = probe_buffer(&t, None);
     assert_eq!(p.stored, Some(Dimensions::new(6000, 4000)));
-    let d = decode_for_analysis(&t, &p).expect("decode");
+    let d = decode_for_analysis(&t, &p, &ps_media::Decoders::none()).expect("decode");
     assert_eq!(d.image.dims(), Dimensions::new(545, 363));
     let (r, stats) = decode_tiff_reader(Cursor::new(&t), &p, 512).expect("decode");
     assert_eq!(r.image, d.image);
@@ -641,7 +643,8 @@ fn scenario_thumbnails_oversized_strip_refused_when_not_in_memory() {
     let p = probe_buffer(&t, None);
     let err = decode_tiff_reader(Cursor::new(&t), &p, 512).expect_err("too large");
     assert!(matches!(err, DecodeError::TooLarge(_)), "{err:?}");
-    let d = decode_for_analysis(&t, &p).expect("in memory, the whole-image decode");
+    let d = decode_for_analysis(&t, &p, &ps_media::Decoders::none())
+        .expect("in memory, the whole-image decode");
     assert_eq!(d.image.dims(), Dimensions::new(5000, 5000));
 }
 
@@ -706,7 +709,8 @@ fn scenario_performance_budgets_tiff_analysis_decode_within_budget() {
     for round in 0..4 {
         for (f, p) in files.iter().zip(&probes) {
             let t = Instant::now();
-            let (_, thumb, _) = ps_media::analyze_still(f, p).expect("analyze");
+            let (_, thumb, _) =
+                ps_media::analyze_still(f, p, &ps_media::Decoders::none()).expect("analyze");
             let el = t.elapsed();
             assert_eq!(thumb.width, 384);
             if round > 0 {

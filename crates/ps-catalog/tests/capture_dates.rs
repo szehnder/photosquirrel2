@@ -31,7 +31,10 @@ fn migration_18_records_the_refresh_of_a_run() {
         .unwrap();
     }
     let cat = Catalog::open_file(&path, Default::default()).unwrap();
-    assert_eq!(db::stored_version(&path).unwrap(), Some(18));
+    assert_eq!(
+        db::stored_version(&path).unwrap(),
+        Some(db::CATALOG_MIGRATIONS.len() as _)
+    );
     let old = cat.read().run(ps_model::ScanRunId(1)).unwrap().unwrap();
     assert!(!old.refresh_analysis);
     let run = cat.writer().start_run_with(vec![], true).unwrap();

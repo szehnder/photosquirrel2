@@ -1,20 +1,22 @@
 //! Downscaled decodes (ADR-0010, ADR-0017, ADR-0054, ADR-0055, ADR-0056): JPEG DCT scaling via mozjpeg
 //! (libjpeg-turbo; jpeg-decoder for CMYK, corrupt or truncated files and as the fallback), full JPEG decodes via
 //! zune-jpeg, PNG/TIFF/WebP/GIF/BMP via `image`, RAW only through embedded previews (never demosaiced),
-//! HEIC via libheif behind the `heic` feature. Orientation is applied once, on the decoded buffer.
+//! HEIC through the decoder registry ([`crate::decoders`], the operating system's decoder, ADR-0089), AVIF through
+//! the bundled AV1 decoder ([`crate::av1`], ADR-0090). Orientation is applied once, on the decoded buffer.
 
 use std::io::Cursor;
 
 use ps_model::{Dimensions, Format, Orientation, PreviewSource, ProbeRecord};
 use thiserror::Error;
 
+use crate::decoders::Decoders;
 use crate::util::contain;
 
 /// Long edge the analysis decode must reach (ADR-0010: smallest scale whose long edge is >= 512 px).
 pub const ANALYSIS_MIN_LONG_EDGE: u32 = 512;
 
 /// Memory cap for one decode (hostile headers can claim gigapixel images).
-const MAX_DECODE_BYTES: usize = 768 * 1024 * 1024;
+pub(crate) const MAX_DECODE_BYTES: usize = 768 * 1024 * 1024;
 
 /// An 8-bit RGB image.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,8 +95,12 @@ pub struct Decoded {
 pub enum DecodeError {
     #[error("format not decodable: {0}")]
     Unsupported(String),
-    #[error("HEIC/HEIF/AVIF decoder not built in (enable the `heic` feature)")]
-    HeicUnavailable,
+    /// The format's decoder is not available on this machine (ADR-0089).
+    #[error("no {} decoder on this system", .0.label())]
+    DecoderMissing(ps_model::DecoderKey),
+    /// An AVIF image sequence without a still image to show.
+    #[error("AVIF image sequence without a still image")]
+    Sequence,
     #[error("no embedded preview in this RAW file")]
     NoRawPreview,
     /// Decoding would need more memory than allowed (a TIFF strip or tile above 32 MB when the file is not in
@@ -461,8 +467,12 @@ pub fn decode_raw_preview(
 
 /// Decode the main image of `bytes` for analysis: the smallest available scale whose long edge is >= 512 px,
 /// orientation applied. RAW files decode their embedded preview.
-pub fn decode_for_analysis(bytes: &[u8], probe: &ProbeRecord) -> Result<Decoded, DecodeError> {
-    decode_scaled(bytes, probe, ANALYSIS_MIN_LONG_EDGE)
+pub fn decode_for_analysis(
+    bytes: &[u8],
+    probe: &ProbeRecord,
+    decoders: &Decoders,
+) -> Result<Decoded, DecodeError> {
+    decode_scaled(bytes, probe, ANALYSIS_MIN_LONG_EDGE, decoders)
 }
 
 /// Decode the main image (or a RAW's preview) to the smallest scale with long edge >= `min_long`, oriented.
@@ -470,8 +480,9 @@ pub fn decode_scaled(
     bytes: &[u8],
     probe: &ProbeRecord,
     min_long: u32,
+    decoders: &Decoders,
 ) -> Result<Decoded, DecodeError> {
-    decode_scaled_with(bytes, probe, min_long, &|| false)
+    decode_scaled_with(bytes, probe, min_long, decoders, &|| false)
 }
 
 /// [`decode_scaled`] with a stop check: a TIFF decode calls `stop` before each strip or tile and ends with
@@ -480,6 +491,7 @@ pub fn decode_scaled_with(
     bytes: &[u8],
     probe: &ProbeRecord,
     min_long: u32,
+    decoders: &Decoders,
     stop: &dyn Fn() -> bool,
 ) -> Result<Decoded, DecodeError> {
     let format = probe
@@ -503,15 +515,18 @@ pub fn decode_scaled_with(
             let (i, d) = decode_raw_preview(bytes, probe, min_long)?;
             (i, d, DecodeSource::Preview(PreviewSource::RawPreview), true)
         }
-        Format::Heic | Format::Avif => {
-            // libheif applies irot/imir itself.
+        Format::Heic => {
+            // The size is checked before the system decoder sees the file (ADR-0089).
+            check_pixels(probe)?;
+            // Orientation from the probe (irot/imir) only when the backend did not apply it.
             (
-                crate::heic::decode(bytes, None)?,
+                decoders.decode_heif(bytes, min_long)?,
                 1,
                 DecodeSource::Main,
-                false,
+                !decoders.heif_applies_transforms(),
             )
         }
+        Format::Avif => (crate::av1::decode(bytes)?, 1, DecodeSource::Main, true),
         other => {
             return Err(DecodeError::Unsupported(format!(
                 "{} stills are not decoded",
@@ -581,16 +596,36 @@ pub fn decode_tiff_reader_with<R: std::io::Read + std::io::Seek>(
     )
 }
 
-/// Decode the probe's embedded preview (JPEG previews, or HEIC thumbnails with the `heic` feature),
+/// Refuse a HEIC whose declared size exceeds the decode cap, before any system decoder is called.
+fn check_pixels(probe: &ProbeRecord) -> Result<(), DecodeError> {
+    match probe.stored {
+        Some(d) if u64::from(d.width) * u64::from(d.height) > (MAX_DECODE_BYTES / 3) as u64 => Err(
+            DecodeError::TooLarge(format!("{}x{} HEIF image", d.width, d.height)),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Decode the probe's embedded preview (JPEG previews, or HEIC thumbnails through the decoder registry),
 /// oriented. `None` when there is no decodable preview.
-pub fn decode_preview(bytes: &[u8], probe: &ProbeRecord, min_long: u32) -> Option<Decoded> {
+pub fn decode_preview(
+    bytes: &[u8],
+    probe: &ProbeRecord,
+    min_long: u32,
+    decoders: &Decoders,
+) -> Option<Decoded> {
     let p = probe.preview?;
     if !p.decodable {
         return None;
     }
     let (image, denom, orient) = match p.source {
         PreviewSource::HeicThumbnail => {
-            (crate::heic::decode(bytes, Some(min_long)).ok()?, 1, false)
+            check_pixels(probe).ok()?;
+            (
+                decoders.decode_heif(bytes, min_long).ok()?,
+                1,
+                !decoders.heif_applies_transforms(),
+            )
         }
         _ => {
             let j = p.range.slice(bytes)?;

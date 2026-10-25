@@ -38,7 +38,7 @@ fn scenario_thumbnails_dct_scaled_decode_chosen() {
     let p = ps_media::probe_bytes(&j, j.len() as u64, None);
     let base = LIVE.load(Ordering::Relaxed);
     PEAK.store(base, Ordering::Relaxed);
-    let d = ps_media::decode_for_analysis(&j, &p).expect("decode");
+    let d = ps_media::decode_for_analysis(&j, &p, &ps_media::Decoders::none()).expect("decode");
     let peak = PEAK.load(Ordering::Relaxed) - base;
     assert_eq!(d.image.dims(), Dimensions::new(750, 500));
     assert_eq!(d.scale_denom, 8);

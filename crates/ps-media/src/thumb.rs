@@ -3,10 +3,38 @@
 
 use image::ImageEncoder;
 use ps_model::{
-    CaptureTime, Format, MediaKind, PlaceholderInfo, ProbeRecord, ThumbKind, ThumbnailRecord,
+    CaptureTime, Format, MediaKind, PlaceholderInfo, PlaceholderReason, ProbeRecord, ThumbKind,
+    ThumbnailRecord,
 };
 
 use crate::decode::{self, DecodeError, DecodeSource, Decoded, RgbImage};
+use crate::decoders::Decoders;
+
+/// The placeholder for a decode that cannot produce pixels on this machine (a missing decoder, an AVIF
+/// sequence), or `None` for a real failure.
+pub fn placeholder_for_error(
+    probe: &ProbeRecord,
+    capture: Option<CaptureTime>,
+    e: &DecodeError,
+) -> Option<ThumbnailRecord> {
+    // The photo's own capture date when the caller has none (the grid shows it on the placeholder).
+    let capture = capture.or(probe.camera.date_time_original);
+    match e {
+        DecodeError::DecoderMissing(key) => Some(placeholder_for(
+            probe,
+            capture,
+            &crate::decoders::missing_note(*key),
+            Some(PlaceholderReason::DecoderMissing { key: *key }),
+        )),
+        DecodeError::Sequence => Some(placeholder_for(
+            probe,
+            capture,
+            "preview unavailable (AVIF sequence)",
+            Some(PlaceholderReason::Sequence),
+        )),
+        _ => None,
+    }
+}
 
 /// Grid thumbnail long edge.
 pub const THUMB_LONG_EDGE: u32 = 384;
@@ -146,6 +174,16 @@ pub fn placeholder(
     capture: Option<CaptureTime>,
     note: &str,
 ) -> ThumbnailRecord {
+    placeholder_for(probe, capture, note, None)
+}
+
+/// [`placeholder`] with the reason it stands in for pixels (stored with it).
+pub fn placeholder_for(
+    probe: &ProbeRecord,
+    capture: Option<CaptureTime>,
+    note: &str,
+    reason: Option<PlaceholderReason>,
+) -> ThumbnailRecord {
     let kind = probe.kind().unwrap_or(MediaKind::Image);
     let (w, h) = probe
         .display
@@ -163,39 +201,36 @@ pub fn placeholder(
             duration_ms: probe.video.as_ref().and_then(|v| v.duration_ms),
             capture_date: capture.or_else(|| probe.video.as_ref().and_then(|v| v.creation)),
             note: note.to_owned(),
+            reason,
         }),
     }
 }
 
 /// Make the grid thumbnail of a still. Prefers an embedded preview >= 320 px; otherwise decodes the main
-/// image at the smallest DCT scale reaching 384 px. HEIC without the decoder yields a "preview unavailable"
-/// placeholder.
+/// image at the smallest DCT scale reaching 384 px. HEIC without a decoder yields a placeholder naming the
+/// missing decoder ("No HEIC decoder on this system").
 pub fn make_thumbnail(
     bytes: &[u8],
     probe: &ProbeRecord,
+    decoders: &Decoders,
 ) -> Result<(ThumbnailRecord, ThumbOrigin), DecodeError> {
     if usable_preview(probe)
-        && let Some(d) = decode::decode_preview(bytes, probe, THUMB_LONG_EDGE)
+        && let Some(d) = decode::decode_preview(bytes, probe, THUMB_LONG_EDGE, decoders)
     {
         return Ok((
             thumbnail_from_image(&d.image, ThumbKind::Image)?,
             ThumbOrigin::EmbeddedPreview,
         ));
     }
-    match decode::decode_scaled(bytes, probe, THUMB_LONG_EDGE) {
+    match decode::decode_scaled(bytes, probe, THUMB_LONG_EDGE, decoders) {
         Ok(d) => Ok((
             thumbnail_from_image(&d.image, ThumbKind::Image)?,
             origin_of(&d),
         )),
-        Err(DecodeError::HeicUnavailable) => Ok((
-            placeholder(
-                probe,
-                None,
-                "preview unavailable (HEIC decoder not built in)",
-            ),
-            ThumbOrigin::Placeholder,
-        )),
-        Err(e) => Err(e),
+        Err(e) => match placeholder_for_error(probe, None, &e) {
+            Some(p) => Ok((p, ThumbOrigin::Placeholder)),
+            None => Err(e),
+        },
     }
 }
 
@@ -212,8 +247,9 @@ fn origin_of(d: &Decoded) -> ThumbOrigin {
 pub fn analyze_still(
     bytes: &[u8],
     probe: &ProbeRecord,
+    decoders: &Decoders,
 ) -> Result<(Decoded, ThumbnailRecord, ThumbOrigin), DecodeError> {
-    analyze_still_with(bytes, probe, &|| false)
+    analyze_still_with(bytes, probe, decoders, &|| false)
 }
 
 /// [`analyze_still`] with a stop check, called before each strip or tile of a TIFF decode (the scanner's
@@ -221,12 +257,14 @@ pub fn analyze_still(
 pub fn analyze_still_with(
     bytes: &[u8],
     probe: &ProbeRecord,
+    decoders: &Decoders,
     stop: &dyn Fn() -> bool,
 ) -> Result<(Decoded, ThumbnailRecord, ThumbOrigin), DecodeError> {
-    let analysis = decode::decode_scaled_with(bytes, probe, decode::ANALYSIS_MIN_LONG_EDGE, stop)?;
+    let analysis =
+        decode::decode_scaled_with(bytes, probe, decode::ANALYSIS_MIN_LONG_EDGE, decoders, stop)?;
     if usable_preview(probe)
         && probe.format != Some(Format::Heic)
-        && let Some(p) = decode::decode_preview(bytes, probe, THUMB_LONG_EDGE)
+        && let Some(p) = decode::decode_preview(bytes, probe, THUMB_LONG_EDGE, decoders)
     {
         let t = thumbnail_from_image(&p.image, ThumbKind::Image)?;
         return Ok((analysis, t, ThumbOrigin::EmbeddedPreview));
@@ -240,8 +278,9 @@ pub fn make_large_preview(
     bytes: &[u8],
     probe: &ProbeRecord,
     long_edge: u32,
+    decoders: &Decoders,
 ) -> Result<(Vec<u8>, u32, u32), DecodeError> {
-    let d = decode::decode_scaled(bytes, probe, long_edge)?;
+    let d = decode::decode_scaled(bytes, probe, long_edge, decoders)?;
     let r = decode::resize_to_long_edge(&d.image, long_edge);
     Ok((encode_jpeg(&r, 85)?, r.width, r.height))
 }
@@ -274,5 +313,10 @@ pub fn video_thumbnail(
     {
         return t;
     }
-    placeholder(probe, capture, "video (no poster-frame tool)")
+    placeholder_for(
+        probe,
+        capture,
+        "video (no poster-frame tool)",
+        Some(PlaceholderReason::NoPosterTool),
+    )
 }

@@ -46,6 +46,11 @@ pub struct RunSummary {
     /// The post-scan regroup (absent for cancelled runs and runs stored before it existed).
     #[serde(default)]
     pub grouping: Option<crate::post::RegroupReport>,
+    /// Files of the run's sources still waiting for a decoder at the end, per format, with whether the
+    /// decoder is available now and, when it is not, the reason and the fix (ADR-0091). From one aggregate
+    /// query, never per-file events (ADR-0019).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undecoded: Vec<ps_model::Undecoded>,
 }
 
 impl RunSummary {

@@ -440,6 +440,7 @@ impl FakeScanService {
                     needs_refresh: 0,
                     refreshed: 0,
                     reanalyzed: 0,
+                    ..DiffCounts::default()
                 }
             };
             stages.add(&st);

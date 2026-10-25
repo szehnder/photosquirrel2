@@ -13,9 +13,11 @@
 //! - [`power`]: pause scans on battery power (ADR-0053).
 //! - [`cleanup`]: reversible quarantine cleanup: plan, run, undo, reconcile (`quarantine-cleanup`).
 //! - [`ops`]: scans, exports and cleanup operations exclude each other (ADR-0065).
+//! - [`decoders`]: the machine's HEIC decoder, detected once off the caller's thread (ADR-0089).
 
 pub mod ai;
 pub mod cleanup;
+pub mod decoders;
 pub mod export;
 pub mod export_progress;
 pub mod groups;

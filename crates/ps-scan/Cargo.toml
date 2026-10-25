@@ -24,6 +24,8 @@ blake3.workspace = true
 
 [dev-dependencies]
 ps-fixtures.workspace = true
+# `FakeHeif`, the deterministic HEIC test decoder (ADR-0089).
+ps-media = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 rusqlite.workspace = true
 

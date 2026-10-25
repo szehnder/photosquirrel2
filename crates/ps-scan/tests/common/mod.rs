@@ -190,6 +190,12 @@ impl Env {
         self.scanner.as_ref().expect("scanner")
     }
 
+    /// Close the scanner (and its catalog), so a test can change the catalog file directly; [`Env::reopen`]
+    /// opens it again.
+    pub fn close(&mut self) {
+        drop(self.scanner.take());
+    }
+
     /// Re-open the scanner on the same data directory (the old one is closed first).
     pub fn reopen(&mut self, mut opts: ScanOptions) {
         drop(self.scanner.take());

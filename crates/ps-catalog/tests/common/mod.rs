@@ -107,6 +107,7 @@ pub fn analysis_of(i: u64) -> AnalysisResult {
     let capture = capture_of(i);
     AnalysisResult {
         identity: ContentId::full(digest_of(i)),
+        decoder_missing: None,
         hashes: Some(PerceptualHash {
             phash: mix(i ^ 1),
             dhash: mix(i ^ 2),

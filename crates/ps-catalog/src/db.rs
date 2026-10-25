@@ -47,6 +47,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     CLEANUP_SELECTION_MIGRATION,
     CAPTURE_DATES_MIGRATION,
     RUN_REFRESH_MIGRATION,
+    DECODER_MISSING_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -156,6 +157,13 @@ pub const RUN_REFRESH_MIGRATION: Migration = Migration {
     version: 18,
     name: "run_refresh",
     sql: include_str!("../migrations/0018_run_refresh.sql"),
+};
+/// Migration 19 (ADR-0091: `file.decoder_missing` and its partial index; undecoded HEIC and AVIF rows of older
+/// catalogs marked).
+pub const DECODER_MISSING_MIGRATION: Migration = Migration {
+    version: 19,
+    name: "decoder_missing",
+    sql: include_str!("../migrations/0019_decoder_missing.sql"),
 };
 /// `thumbs.db` migrations.
 pub const THUMB_MIGRATIONS: &[Migration] = &[Migration {

@@ -21,7 +21,7 @@ fn close(a: [u8; 3], b: [u8; 3]) -> bool {
 #[test]
 fn scenario_thumbnails_small_image_decoded_at_full_size() {
     let j = fx::jpeg(640, 480, 1, 85);
-    let d = decode_for_analysis(&j, &probe(&j)).expect("decode");
+    let d = decode_for_analysis(&j, &probe(&j), &ps_media::Decoders::none()).expect("decode");
     assert_eq!(d.image.dims(), Dimensions::new(640, 480));
     assert_eq!(d.scale_denom, 1);
 }
@@ -29,7 +29,7 @@ fn scenario_thumbnails_small_image_decoded_at_full_size() {
 #[test]
 fn analysis_decode_picks_smallest_scale_reaching_512() {
     let j = fx::jpeg(4000, 3000, 1, 80);
-    let d = decode_for_analysis(&j, &probe(&j)).expect("decode");
+    let d = decode_for_analysis(&j, &probe(&j), &ps_media::Decoders::none()).expect("decode");
     assert_eq!(d.scale_denom, 4);
     assert_eq!(d.image.dims(), Dimensions::new(1000, 750));
     assert_eq!(decode::choose_denominator(1024, 768, 512), 2);
@@ -81,7 +81,7 @@ fn scaled_decodes_match_the_full_decode_for_colour_and_grey() {
 #[test]
 fn scenario_thumbnails_thumbnail_long_edge_is_384() {
     let j = fx::jpeg(4000, 3000, 2, 85);
-    let (t, origin) = make_thumbnail(&j, &probe(&j)).expect("thumb");
+    let (t, origin) = make_thumbnail(&j, &probe(&j), &ps_media::Decoders::none()).expect("thumb");
     assert_eq!(origin, ThumbOrigin::MainImage);
     assert_eq!(t.kind, ThumbKind::Image);
     assert_eq!((t.width, t.height), (384, 288));
@@ -94,7 +94,7 @@ fn scenario_thumbnails_thumbnail_long_edge_is_384() {
     assert_ne!(t.dominant_rgb, [0, 0, 0]);
     // Never upscaled.
     let s = fx::jpeg(200, 100, 1, 85);
-    let (t, _) = make_thumbnail(&s, &probe(&s)).expect("thumb");
+    let (t, _) = make_thumbnail(&s, &probe(&s), &ps_media::Decoders::none()).expect("thumb");
     assert_eq!((t.width, t.height), (200, 100));
 }
 
@@ -103,7 +103,7 @@ fn scenario_thumbnails_orientation_applied_to_thumbnail() {
     let j = fx::orientation_jpeg(3000, 4000, 6);
     let p = probe(&j);
     assert_eq!(p.stored, Some(Dimensions::new(4000, 3000)));
-    let (t, _) = make_thumbnail(&j, &p).expect("thumb");
+    let (t, _) = make_thumbnail(&j, &p, &ps_media::Decoders::none()).expect("thumb");
     assert_eq!((t.width, t.height), (288, 384));
     let (img, _) = decode_jpeg(&t.jpeg, u32::MAX).expect("decode");
     let c = fx::CARD_COLOURS;
@@ -133,7 +133,7 @@ fn scenario_thumbnails_orientation_applied_to_thumbnail() {
 fn all_eight_orientations_come_out_upright() {
     for (o, j) in fx::orientation_set() {
         let p = probe(&j);
-        let d = decode_for_analysis(&j, &p).expect("decode");
+        let d = decode_for_analysis(&j, &p, &ps_media::Decoders::none()).expect("decode");
         assert_eq!(d.image.dims(), Dimensions::new(320, 240), "o{o}");
         let c = fx::CARD_COLOURS;
         for (x, y, want) in [
@@ -159,7 +159,7 @@ fn scenario_thumbnails_embedded_preview_preferred() {
         p.preview.and_then(|x| x.dims),
         Some(Dimensions::new(1616, 1080))
     );
-    let (t, origin) = make_thumbnail(&d, &p).expect("thumb");
+    let (t, origin) = make_thumbnail(&d, &p, &ps_media::Decoders::none()).expect("thumb");
     assert_eq!(origin, ThumbOrigin::EmbeddedPreview);
     assert_eq!((t.width, t.height), (384, 257));
     // The CFA data of the fixture is all zeros: a thumbnail from it would be black.
@@ -168,7 +168,7 @@ fn scenario_thumbnails_embedded_preview_preferred() {
         "{:?}",
         t.dominant_rgb
     );
-    let (a, _, o) = ps_media::analyze_still(&d, &p).expect("analysis");
+    let (a, _, o) = ps_media::analyze_still(&d, &p, &ps_media::Decoders::none()).expect("analysis");
     assert_eq!(o, ThumbOrigin::EmbeddedPreview);
     assert!(matches!(a.source, decode::DecodeSource::Preview(_)));
 }
@@ -181,7 +181,7 @@ fn scenario_thumbnails_small_preview_not_used() {
         p.preview.and_then(|x| x.dims),
         Some(Dimensions::new(160, 120))
     );
-    let (t, origin) = make_thumbnail(&j, &p).expect("thumb");
+    let (t, origin) = make_thumbnail(&j, &p, &ps_media::Decoders::none()).expect("thumb");
     assert_eq!(origin, ThumbOrigin::MainImage);
     assert_eq!((t.width, t.height), (384, 288));
 }
@@ -196,9 +196,14 @@ fn scenario_thumbnails_preview_cache_stays_under_cap() {
         .map(|s| {
             let rgb: Vec<u8> = fx::random_bytes(2400 * 1600 * 3, s);
             let src = fx::encode_jpeg(&rgb, 2400, 1600, 90);
-            thumb::make_large_preview(&src, &probe(&src), thumb::PREVIEW_LONG_EDGE)
-                .expect("preview")
-                .0
+            thumb::make_large_preview(
+                &src,
+                &probe(&src),
+                thumb::PREVIEW_LONG_EDGE,
+                &ps_media::Decoders::none(),
+            )
+            .expect("preview")
+            .0
         })
         .collect();
     assert!(
@@ -271,7 +276,11 @@ fn scenario_thumbnails_poster_frame_from_configured_tool() {
     let (m, p) = iphone_probe();
     let src = dir.path().join("IMG.MOV");
     std::fs::write(&src, m).expect("write mov");
-    assert!(ps_media::capabilities(Some(&tool)).poster_frames.is_some());
+    let r = ps_media::decoder_report(&ps_media::Decoders::none(), Some(&tool));
+    assert!(
+        r.entry(ps_model::DecoderFormat::PosterFrames)
+            .is_some_and(|e| e.available)
+    );
     let t = thumb::video_thumbnail(&src, &p, None, Some(&tool));
     assert_eq!(t.kind, ThumbKind::PosterFrame);
     assert_eq!((t.width, t.height), (384, 216));
@@ -297,23 +306,29 @@ fn hanging_poster_tool_is_killed() {
 }
 
 #[test]
-fn heic_without_decoder_is_preview_unavailable() {
-    let h = include_bytes!("data/tiny.heic");
+fn scenario_thumbnails_heic_placeholder_names_the_missing_decoder() {
+    let h = include_bytes!("../../ps-sysdecode/data/selftest.heic");
     let p = probe(h);
-    let (t, origin) = make_thumbnail(h, &p).expect("thumb");
-    if cfg!(feature = "heic") {
-        assert_eq!(t.kind, ThumbKind::Image);
-        assert_eq!((t.width, t.height), (384, 288));
-    } else {
-        assert_eq!(origin, ThumbOrigin::Placeholder);
-        assert_eq!(t.kind, ThumbKind::Placeholder);
-        assert!(
-            t.placeholder
-                .expect("info")
-                .note
-                .contains("preview unavailable")
-        );
-    }
+    let (t, origin) = make_thumbnail(h, &p, &ps_media::Decoders::none()).expect("thumb");
+    assert_eq!(origin, ThumbOrigin::Placeholder);
+    assert_eq!(t.kind, ThumbKind::Placeholder);
+    let info = t.placeholder.expect("info");
+    assert_eq!(info.note, "No HEIC decoder on this system");
+    assert_eq!(
+        info.reason,
+        Some(ps_model::PlaceholderReason::DecoderMissing {
+            key: ps_model::DecoderKey::Heif
+        })
+    );
+    assert_eq!(info.format, Some(ps_model::Format::Heic));
+    assert!(info.capture_date.is_some(), "the photo's capture date");
+    assert_eq!(info.capture_date, p.camera.date_time_original);
+    // With a decoder, an image thumbnail.
+    let fake = ps_media::Decoders::with_heif(std::sync::Arc::new(
+        ps_media::decoders::fake::FakeHeif::new(),
+    ));
+    let (t, _) = make_thumbnail(h, &p, &fake).expect("thumb");
+    assert_eq!(t.kind, ThumbKind::Image);
 }
 
 #[test]
@@ -322,14 +337,14 @@ fn corrupt_inputs_fail_without_panicking() {
     for cut in [10, 200, 1000, 5000, j.len() / 2] {
         let t = fx::truncate(&j, cut);
         let p = probe(&t);
-        let _ = make_thumbnail(&t, &p);
-        let _ = decode_for_analysis(&t, &p);
+        let _ = make_thumbnail(&t, &p, &ps_media::Decoders::none());
+        let _ = decode_for_analysis(&t, &p, &ps_media::Decoders::none());
     }
     let r = fx::random_bytes(10_000, 3);
     let mut fake = vec![0xFF, 0xD8, 0xFF];
     fake.extend_from_slice(&r);
     let p = probe(&fake);
-    assert!(make_thumbnail(&fake, &p).is_err());
+    assert!(make_thumbnail(&fake, &p, &ps_media::Decoders::none()).is_err());
 }
 
 /// 12 MP JPEG analysis decode + grid thumbnail, single-threaded: median <= 100 ms (ADR-0026 derived).
@@ -341,7 +356,8 @@ fn scenario_thumbnails_decode_within_per_file_budget() {
     for round in 0..4 {
         for (f, p) in files.iter().zip(&probes) {
             let t = Instant::now();
-            let (_, thumb, _) = ps_media::analyze_still(f, p).expect("analyze");
+            let (_, thumb, _) =
+                ps_media::analyze_still(f, p, &ps_media::Decoders::none()).expect("analyze");
             let el = t.elapsed();
             assert_eq!(thumb.width, 384);
             if round > 0 {

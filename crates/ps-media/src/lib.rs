@@ -5,12 +5,13 @@
 //! warnings.
 
 pub mod apple;
+pub mod av1;
 pub mod bmff;
 pub mod classify;
 pub mod date;
 pub mod decode;
+pub mod decoders;
 pub mod fs;
-pub mod heic;
 pub mod jpeg;
 pub mod metadata;
 pub mod poster;
@@ -29,6 +30,7 @@ pub use date::{
     resolve_capture_date,
 };
 pub use decode::{DecodeError, Decoded, RgbImage, decode_for_analysis};
+pub use decoders::{Decoders, StillDecoder};
 pub use fs::{CountingReader, open_read_only, read_all};
 pub use metadata::extract_metadata;
 pub use probe::{
@@ -37,59 +39,35 @@ pub use probe::{
 };
 pub use thumb::{analyze_still, analyze_still_with, make_thumbnail};
 
-/// This build can decode HEIC/HEIF/AVIF stills (cargo feature `heic`, ADR-0017).
-pub const HEIC_SUPPORTED: bool = cfg!(feature = "heic");
-
-/// One optional decoder and how to enable it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DecoderStatus {
-    pub name: &'static str,
-    pub available: bool,
-    /// What it is, and how to enable it when unavailable.
-    pub detail: String,
-}
-
-/// Which optional decoders this build and configuration offer (ADR-0017), for `doctor`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Capabilities {
-    pub heic: bool,
-    /// The configured poster-frame tool, when it exists.
-    pub poster_frames: Option<std::path::PathBuf>,
-    pub decoders: Vec<DecoderStatus>,
-}
-
-/// Report decoder availability. `poster_tool` is the configured ffmpeg path (callers wanting the PATH
-/// default resolve it with [`poster::ffmpeg_on_path`] first).
-pub fn capabilities(poster_tool: Option<&std::path::Path>) -> Capabilities {
-    let poster = poster_tool
-        .filter(|p| p.is_file())
-        .map(std::path::Path::to_path_buf);
-    let decoders = vec![
-        DecoderStatus {
-            name: "heic",
-            available: HEIC_SUPPORTED,
-            detail: if HEIC_SUPPORTED {
-                "HEIC/HEIF/AVIF stills via libheif".into()
-            } else {
-                "HEIC/HEIF/AVIF previews unavailable: this build has no HEIC decoding (the prebuilt packages do \
-                 not include it yet). Build from source with libheif 1.17+ and `--features heic` to enable it"
-                    .into()
-            },
-        },
-        DecoderStatus {
-            name: "poster_frames",
-            available: poster.is_some(),
-            detail: match &poster {
-                Some(p) => format!("video poster frames via {}", p.display()),
-                None => "video poster frames unavailable: install ffmpeg and set its path in settings (or put it on \
-                         PATH)"
-                    .into(),
-            },
-        },
-    ];
-    Capabilities {
-        heic: HEIC_SUPPORTED,
-        poster_frames: poster,
-        decoders,
+/// The decoder report of this machine with the poster-frame entry for `poster_tool` (the configured ffmpeg
+/// path; callers wanting the PATH default resolve it with [`poster::ffmpeg_on_path`] first), for `doctor`, the
+/// scan summary and the inspector (ADR-0089).
+pub fn decoder_report(
+    decoders: &Decoders,
+    poster_tool: Option<&std::path::Path>,
+) -> ps_model::DecoderReport {
+    let mut r = decoders.report().clone();
+    if r.entry(ps_model::DecoderFormat::Avif).is_none() {
+        r.set(av1::report_entry());
     }
+    let poster = poster_tool.filter(|p| p.is_file());
+    r.set(ps_model::DecoderEntry {
+        format: ps_model::DecoderFormat::PosterFrames,
+        available: poster.is_some(),
+        backend: poster.map(|p| p.display().to_string()),
+        version: None,
+        reason: poster
+            .is_none()
+            .then(|| "video poster frames unavailable".to_owned()),
+        fix: poster.is_none().then(|| ps_model::Fix {
+            summary: "Install ffmpeg".into(),
+            steps: vec![ps_model::FixStep {
+                text: "Install ffmpeg and set its path in Settings (or put it on PATH)".into(),
+                ..Default::default()
+            }],
+            restart: false,
+        }),
+        assembly: None,
+    });
+    r
 }

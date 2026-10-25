@@ -11,8 +11,11 @@ name = "photosquirrel-cli"
 path = "src/main.rs"
 
 [features]
-# HEIC/HEIF decoding via the system libheif (ADR-0017, ADR-0059).
-heic = ["ps-media/heic"]
+# rav1d's assembly for AVIF (ADR-0090): needs nasm on x86_64. Without nasm: `--no-default-features` (slower
+# AVIF decoding, identical output). Packaging refuses a build without it. HEIC is decoded by the operating
+# system's decoder, detected at run time (ADR-0089): no build option.
+default = ["avif-asm"]
+avif-asm = ["ps-media/avif-asm"]
 
 [dependencies]
 ps-fixtures.workspace = true

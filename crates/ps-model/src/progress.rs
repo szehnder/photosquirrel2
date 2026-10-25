@@ -154,6 +154,16 @@ pub struct DiffCounts {
     /// beyond the probe window): analysed again, once (counted in `unchanged` too; ADR-0084).
     #[serde(default)]
     pub reanalyzed: u64,
+    /// Unchanged files analysed without the decoder their format needs, still waiting for it: not read
+    /// (counted in `unchanged` too; ADR-0091).
+    #[serde(default)]
+    pub awaiting_decoder: u64,
+    /// Unchanged files that waited for a decoder this run has: queued for a re-decode, and (as a progress
+    /// counter) the ones whose preview and hashes it filled in (counted in `unchanged` too; ADR-0091).
+    #[serde(default)]
+    pub redecode: u64,
+    #[serde(default)]
+    pub redecoded: u64,
 }
 
 impl DiffCounts {
@@ -170,6 +180,9 @@ impl DiffCounts {
         self.needs_refresh += o.needs_refresh;
         self.refreshed += o.refreshed;
         self.reanalyzed += o.reanalyzed;
+        self.awaiting_decoder += o.awaiting_decoder;
+        self.redecode += o.redecode;
+        self.redecoded += o.redecoded;
     }
 
     /// Unchanged files that still keep a class decided before facts were stored, after this run.

@@ -16,7 +16,14 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-const CORE: &[&str] = &["ps-model", "ps-media", "ps-hash", "ps-dedup", "ps-fixtures"];
+const CORE: &[&str] = &[
+    "ps-model",
+    "ps-media",
+    "ps-hash",
+    "ps-dedup",
+    "ps-fixtures",
+    "ps-sysdecode",
+];
 const IO: &[&str] = &[
     "ps-catalog",
     "ps-scan",

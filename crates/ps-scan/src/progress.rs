@@ -72,6 +72,9 @@ struct Diff {
     needs_refresh: AtomicU64,
     refreshed: AtomicU64,
     reanalyzed: AtomicU64,
+    awaiting_decoder: AtomicU64,
+    redecode: AtomicU64,
+    redecoded: AtomicU64,
 }
 
 impl Diff {
@@ -89,6 +92,9 @@ impl Diff {
             needs_refresh: self.needs_refresh.load(Ordering::Relaxed),
             refreshed: self.refreshed.load(Ordering::Relaxed),
             reanalyzed: self.reanalyzed.load(Ordering::Relaxed),
+            awaiting_decoder: self.awaiting_decoder.load(Ordering::Relaxed),
+            redecode: self.redecode.load(Ordering::Relaxed),
+            redecoded: self.redecoded.load(Ordering::Relaxed),
         }
     }
 
@@ -104,7 +110,11 @@ impl Diff {
         self.redated.store(d.redated, Ordering::Relaxed);
         self.needs_refresh.store(d.needs_refresh, Ordering::Relaxed);
         self.reanalyzed.store(d.reanalyzed, Ordering::Relaxed);
-        // `refreshed` counts during the run (Progress::refreshed), after the diff.
+        self.awaiting_decoder
+            .store(d.awaiting_decoder, Ordering::Relaxed);
+        self.redecode.store(d.redecode, Ordering::Relaxed);
+        // `refreshed` and `redecoded` count during the run (Progress::refreshed, Progress::redecoded), after the
+        // diff.
     }
 }
 
@@ -309,6 +319,14 @@ impl Progress {
         self.sources[idx]
             .diff
             .refreshed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A re-decode filled in a waiting file's preview and hashes (ADR-0091).
+    pub fn redecoded(&self, idx: usize) {
+        self.sources[idx]
+            .diff
+            .redecoded
             .fetch_add(1, Ordering::Relaxed);
     }
 

@@ -277,11 +277,20 @@ impl QueueStore for CatalogQueueStore {
 #[derive(Debug, Clone)]
 pub struct SourcePreviewLoader {
     catalog: Arc<Catalog>,
+    /// This machine's decoders (HEIC through the system decoder, ADR-0089).
+    decoders: Arc<crate::decoders::DecoderHub>,
 }
 
 impl SourcePreviewLoader {
     pub fn new(catalog: Arc<Catalog>) -> Self {
-        Self { catalog }
+        Self::with_decoders(catalog, crate::decoders::DecoderHub::global())
+    }
+
+    pub fn with_decoders(
+        catalog: Arc<Catalog>,
+        decoders: Arc<crate::decoders::DecoderHub>,
+    ) -> Self {
+        Self { catalog, decoders }
     }
 }
 
@@ -313,9 +322,11 @@ impl PreviewLoader for SourcePreviewLoader {
             match std::fs::read(&path) {
                 Ok(bytes) => {
                     let probe = ps_media::probe_buffer(&bytes, Some(&path));
+                    let decoders = self.decoders.get();
                     return ps_llm::preview::derive(PreviewInput::Source {
                         bytes: &bytes,
                         probe: &probe,
+                        decoders: &decoders,
                     })
                     .map(|d| d.llm);
                 }
@@ -645,7 +656,12 @@ impl AiService {
     ) -> Result<AiService, ps_llm::LlmError> {
         let (cfg, _) = provider_config(settings, secrets);
         let qc = QueueConfig::from_settings(&settings.ai, &cfg);
-        AiService::with_provider(scan.engine().catalog().clone(), cfg, qc)
+        let catalog = scan.engine().catalog().clone();
+        let loader: Arc<dyn PreviewLoader> = Arc::new(SourcePreviewLoader::with_decoders(
+            catalog.clone(),
+            scan.decoder_hub().clone(),
+        ));
+        AiService::with_loader(catalog, cfg, qc, loader)
     }
 
     /// The queue for an explicit provider configuration (tests, CLI overrides).

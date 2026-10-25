@@ -13,6 +13,7 @@ repository = "https://github.com/szehnder/photosquirrel2"
 # Internal crates (layering in docs/adr/0004)
 ps-model = { path = "crates/ps-model" }
 ps-media = { path = "crates/ps-media" }
+ps-sysdecode = { path = "crates/ps-sysdecode" }
 ps-hash = { path = "crates/ps-hash" }
 ps-dedup = { path = "crates/ps-dedup" }
 ps-fixtures = { path = "crates/ps-fixtures" }
@@ -49,7 +50,12 @@ nom-exif = "3.8"
 imagesize = "0.14"
 png = "0.18"
 rawler = "0.8"
-libheif-rs = { version = "3", default-features = false, features = ["v1_17"] }
+# AVIF stills: the Rust port of dav1d, BSD-2-Clause (ADR-0090). Assembly (`asm`, needs nasm on x86_64) comes
+# through ps-media's `avif-asm` feature.
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+libc = "0.2"
+# The system libheif, loaded at run time on Linux (ADR-0089); already in the lock through gpui.
+libloading = "0.8"
 
 # Hashing
 blake3 = "1"

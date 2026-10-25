@@ -180,6 +180,7 @@ fn scenario_llm_providers_original_never_uploaded() {
     let derived = ps_llm::preview::derive(ps_llm::PreviewInput::Source {
         bytes: &bytes,
         probe: &probe,
+        decoders: &ps_media::Decoders::none(),
     })
     .unwrap();
     assert!(

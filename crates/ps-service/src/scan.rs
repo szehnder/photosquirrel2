@@ -7,6 +7,7 @@
 //! [`ProgressSnapshot`]s (at most every 100 ms, ADR-0019), never pushed per file.
 
 use std::path::Path;
+use std::sync::Arc;
 
 pub use ps_catalog::{CATALOG_FILE, RunRecord};
 pub use ps_model::{ProgressSnapshot, RunStatus, ScanRunId, SourceId, SourceStatus, Stage};
@@ -30,6 +31,8 @@ pub struct ScanService {
     engine: ps_scan::Scanner,
     /// Exports and cleanup operations hold this; scans and source changes wait for it ([`crate::ops`]).
     ops: crate::ops::Ops,
+    /// This machine's decoders (ADR-0089), detected off the caller's thread.
+    decoders: Arc<crate::decoders::DecoderHub>,
 }
 
 impl ScanService {
@@ -39,7 +42,53 @@ impl ScanService {
         Ok(ScanService {
             engine: ps_scan::Scanner::open(data_dir, options)?,
             ops: crate::ops::Ops::default(),
+            decoders: crate::decoders::DecoderHub::global(),
         })
+    }
+
+    /// Use `decoders` instead of the detected ones (tests: the fake HEIC decoder, or none).
+    pub fn with_decoders(mut self, decoders: ps_media::Decoders) -> ScanService {
+        self.decoders = crate::decoders::DecoderHub::ready(decoders);
+        self
+    }
+
+    /// Use the decoders of `hub` (detection shared with other services of the process).
+    pub fn with_decoder_hub(mut self, hub: Arc<crate::decoders::DecoderHub>) -> ScanService {
+        self.decoders = hub;
+        self
+    }
+
+    /// This machine's decoders, waiting for detection at most 5 s (call off the UI thread).
+    pub fn decoders(&self) -> Arc<ps_media::Decoders> {
+        self.decoders.get()
+    }
+
+    /// The decoder detection, for callers that must not wait ([`crate::decoders::DecoderHub::try_get`]).
+    pub fn decoder_hub(&self) -> &Arc<crate::decoders::DecoderHub> {
+        &self.decoders
+    }
+
+    /// The decoder report with the poster-frame tool's entry (`doctor`, the scan summary, the inspector).
+    pub fn decoder_report(&self, poster_tool: Option<&Path>) -> ps_model::DecoderReport {
+        ps_media::decoder_report(&self.decoders(), poster_tool)
+    }
+
+    /// Files of `sources` (all when empty) still waiting for a decoder, per format (ADR-0091): one aggregate
+    /// query, with whether the decoder is available now and the reason and fix when it is not.
+    pub fn undecoded(&self, sources: &[SourceId]) -> Result<Vec<ps_model::Undecoded>> {
+        let rows = self
+            .engine
+            .catalog()
+            .read()
+            .undecoded_counts(sources)
+            .map_err(ScanError::from)?;
+        Ok(ps_scan::undecoded_from(&rows, &self.decoders()))
+    }
+
+    /// Hand the detected decoders to the engine before a run starts (it waits for detection).
+    fn prime_decoders(&self) {
+        let d = self.decoders();
+        self.engine.update_options(|o| o.decoders = d);
     }
 
     /// Open the catalog in `data_dir` read-only, as an observer that never takes the owner lock (so it never
@@ -50,6 +99,7 @@ impl ScanService {
         Ok(ScanService {
             engine: ps_scan::Scanner::open_or_observe(data_dir, options)?,
             ops: crate::ops::Ops::default(),
+            decoders: crate::decoders::DecoderHub::global(),
         })
     }
 
@@ -116,6 +166,7 @@ impl ScanService {
 
     /// Start scanning `sources` (all when empty).
     pub fn start(&self, sources: &[SourceId]) -> Result<ScanRunId> {
+        self.prime_decoders();
         self.unless_busy(|e| e.start_scan(sources))
     }
 
@@ -123,6 +174,7 @@ impl ScanService {
     /// before classification facts were stored: their first 256 KB are re-read, read-only, and they are
     /// re-classified (ADR-0071). The scan summary's `needs_refresh` counts such files.
     pub fn start_refreshing_analysis(&self, sources: &[SourceId]) -> Result<ScanRunId> {
+        self.prime_decoders();
         self.unless_busy(|e| e.start_scan_with(sources, true))
     }
 
@@ -137,6 +189,7 @@ impl ScanService {
 
     /// Resume a paused, cancelled or interrupted run (re-walks, processes unfinished files only).
     pub fn resume_run(&self, run: ScanRunId) -> Result<ScanRunId> {
+        self.prime_decoders();
         self.unless_busy(|e| e.resume_run(run))
     }
 
