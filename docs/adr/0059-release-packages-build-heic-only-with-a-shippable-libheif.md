@@ -1,6 +1,6 @@
 # 0059. Release packages build HEIC decoding only where libheif is found and new enough
 
-- Status: accepted
+- Status: superseded by [0089](0089-heic-through-the-operating-systems-decoder.md)
 - Date: 2026-10-21
 - Deciders: maintainers
 - Amends: [0017](0017-format-support.md) ("default in release builds"), [0030](0030-release-packaging.md)
