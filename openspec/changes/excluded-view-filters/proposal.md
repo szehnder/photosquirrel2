@@ -47,3 +47,4 @@ excluded, that is slow and uses a lot of memory.
   with `--category`), `perf-budgets.toml`, and a new ADR.
 - This change does not touch files on disk. Putting a file back only records a decision, and that decision is
   undoable.
+- **Release:** ships in 0.3.0 together with `tiff-support` and `heic-system-decoders` (owner decision, 2026-10-25). "What's new in 0.3.0" in `packaging/release-notes.md` gains this change's user-facing line; the version bump and tag happen after all four are archived, with the owner's go-ahead.
