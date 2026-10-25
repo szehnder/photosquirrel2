@@ -235,7 +235,8 @@ impl Ctx<'_> {
     }
 
     /// Manifest line then ledger `done`.
-    fn finish(&self, f: &PlannedFile, full: [u8; 32], adopted: bool, sidecar: Option<&RelPath>) {
+    fn finish(&self, b: &PlannedBundle, f: &PlannedFile, full: [u8; 32], adopted: bool) {
+        let sidecar = b.sidecar.as_ref();
         let rec = ManifestRecord {
             library_path: f.target.display().into_owned(),
             full_hash: ContentId::full(full).to_hex(),
@@ -257,6 +258,11 @@ impl Ctx<'_> {
             date_from: f.date_origin.copy.and_then(|c| self.copy_path(f.unit, c)),
             date_precision: (f.date_precision != ps_model::DatePrecision::Second)
                 .then(|| f.date_precision.as_str().to_owned()),
+            better_copy_of: b
+                .better_copy_of
+                .iter()
+                .map(|p| p.display().into_owned())
+                .collect(),
         };
         let mtime = self.library_mtime(&f.target);
         let mut s = self.shared.lock();
@@ -328,7 +334,7 @@ impl Ctx<'_> {
                             });
                         }
                         Ok(Some(full)) => {
-                            self.finish(f, full, true, b.sidecar.as_ref());
+                            self.finish(b, f, full, true);
                             self.shared.lock().report.adopted += 1;
                             done.push((f, full));
                         }
@@ -375,7 +381,7 @@ impl Ctx<'_> {
                             });
                         }
                         Ok(o) => {
-                            self.finish(f, o.full_hash, false, b.sidecar.as_ref());
+                            self.finish(b, f, o.full_hash, false);
                             let mut s = self.shared.lock();
                             s.report.copied += 1;
                             s.report.bytes_copied += o.bytes;
@@ -397,15 +403,21 @@ impl Ctx<'_> {
                 full: *h,
             })
             .collect();
-        listed.extend(b.already.iter().map(|a| SideFile {
-            target: a.library_rel_path.clone(),
-            content: a.content,
-            file: a.file,
-            full: a.full_hash.unwrap_or(match a.content.kind {
-                ContentIdKind::Full => a.content.digest,
-                ContentIdKind::Sampled => [0; 32],
-            }),
-        }));
+        // The earlier copies an upgrade is a better copy of keep their own sidecar (ADR-0092).
+        listed.extend(
+            b.already
+                .iter()
+                .filter(|a| !a.covers_group)
+                .map(|a| SideFile {
+                    target: a.library_rel_path.clone(),
+                    content: a.content,
+                    file: a.file,
+                    full: a.full_hash.unwrap_or(match a.content.kind {
+                        ContentIdKind::Full => a.content.digest,
+                        ContentIdKind::Sampled => [0; 32],
+                    }),
+                }),
+        );
         if let (Some(rel), false) = (&b.sidecar, listed.is_empty())
             && !self.stopped()
         {

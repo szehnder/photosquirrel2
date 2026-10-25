@@ -95,6 +95,8 @@ pub struct ExportView {
     pub phase: ExportPhase,
     /// "Where files go" lists every planned file (up to the limit), not just the first few.
     pub show_all_rows: bool,
+    /// The "Better copies" disclosure is open.
+    pub show_better_copies: bool,
     plan_task: Option<Task<()>>,
     run_task: Option<Task<()>>,
 }
@@ -155,6 +157,7 @@ impl ExportView {
             plan: None,
             phase: ExportPhase::Review,
             show_all_rows: false,
+            show_better_copies: false,
             plan_task: None,
             run_task: None,
         };
@@ -221,6 +224,18 @@ impl ExportView {
     pub fn set_recopy_modified(&mut self, on: bool, cx: &mut Context<'_, Self>) {
         if self.settings.recopy_modified != on {
             self.settings.recopy_modified = on;
+            self.replan(cx);
+        }
+    }
+
+    /// Also copy the better copies beside their library copies, for this export only (ADR-0092); off each
+    /// time the view opens, never stored in settings.
+    pub fn set_upgrade(&mut self, on: bool, cx: &mut Context<'_, Self>) {
+        if matches!(self.phase, ExportPhase::Running { .. }) {
+            return;
+        }
+        if self.settings.upgrade != on {
+            self.settings.upgrade = on;
             self.replan(cx);
         }
     }
@@ -542,11 +557,15 @@ impl ExportView {
             || self.settings.recopy_modified
             || plan.date_note.is_some()
             || plan.earlier_rules_note.is_some()
+            || !plan.better_copies.is_empty()
             || !plan.warnings.is_empty();
         any.then(|| {
             kit::card(cx)
                 .id("export-plan-details")
                 .test_support()
+            .when(!plan.better_copies.is_empty(), |d| {
+                d.child(self.better_copies(plan, colors, cx))
+            })
             .when(plan.collisions > 0, |d| {
                 d.child(
                     h_flex()
@@ -778,6 +797,190 @@ impl ExportView {
             }))
                 .into_any_element()
         })
+    }
+}
+
+impl ExportView {
+    /// "Better copies" (ADR-0092): groups already in the library through an earlier copy whose keeper changed
+    /// since. Nothing is copied for them unless the user turns the option on for this export.
+    fn better_copies(
+        &self,
+        plan: &PlanPreview,
+        colors: &Colors,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let n = plan.better_copies.len() as u64;
+        let headline = if n == 1 {
+            "1 better copy available".to_owned()
+        } else {
+            format!("{} better copies available", format_count(n))
+        };
+        let open = self.show_better_copies;
+        let upgrade = self.settings.upgrade;
+        let rows = plan.better_copies.iter().enumerate().map(|(i, b)| {
+            let group = b
+                .group
+                .map_or_else(|| "A group".to_owned(), |g| format!("Group {g}"));
+            let text = format!(
+                "{group}: {} in the library; better copy {}",
+                b.library, b.better
+            );
+            h_flex()
+                .id(SharedString::from(format!("plan-better-copy-{i}")))
+                .test_support()
+                .aria_label(SharedString::from(text))
+                .w_full()
+                .gap(Tokens::space(2.0))
+                .items_center()
+                .text_size(Tokens::text_mono())
+                .child(
+                    div()
+                        .flex_none()
+                        .px(Tokens::space(1.5))
+                        .rounded(Tokens::RADIUS_SM)
+                        .bg(colors.raised)
+                        .text_size(Tokens::text_2xs())
+                        .text_color(colors.text_muted)
+                        .whitespace_nowrap()
+                        .child(group),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                        .text_color(colors.text_muted)
+                        .child(b.library.clone()),
+                )
+                .child(
+                    Icon::new(IconName::ArrowRight)
+                        .size(Tokens::icon_sm())
+                        .text_color(colors.text_faint),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                        .text_color(colors.text)
+                        .child(b.better.clone()),
+                )
+        });
+        let check = div()
+            .id("plan-upgrade")
+            .test_support()
+            .role(Role::CheckBox)
+            .aria_label(SharedString::from(if upgrade {
+                "Also copy the better copies beside the library copies: on"
+            } else {
+                "Also copy the better copies beside the library copies: off"
+            }))
+            .flex_none()
+            .size(Tokens::size(18.0))
+            .rounded(Tokens::RADIUS_SM)
+            .border_1()
+            .border_color(if upgrade {
+                colors.accent
+            } else {
+                colors.border_strong
+            })
+            .bg(if upgrade {
+                colors.accent
+            } else {
+                colors.background
+            })
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .when(upgrade, |d| {
+                d.child(
+                    Icon::new(IconName::Check)
+                        .size(Tokens::icon_sm())
+                        .text_color(colors.on_accent),
+                )
+            })
+            .on_click(cx.listener(move |this, _, _, cx| this.set_upgrade(!upgrade, cx)));
+        v_flex()
+            .id("plan-better-copies")
+            .test_support()
+            .aria_label(SharedString::from(headline.clone()))
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .p(Tokens::space(2.5))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(Colors::tint(colors.info, 0.08))
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap(Tokens::space(2.0))
+                    .items_center()
+                    .text_size(Tokens::text_sm())
+                    .child(
+                        Icon::new(IconName::Info)
+                            .size(Tokens::icon_sm())
+                            .text_color(colors.info),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(colors.text)
+                            .child(format!(
+                                "Better copies: {headline}. These photos are already in the library through                                  another copy, so nothing is copied for them; the library copies are never                                  removed or replaced."
+                            )),
+                    )
+                    .child(kit::button(
+                        "plan-better-copies-toggle",
+                        if open { "Hide" } else { "Show" },
+                        Some(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        }),
+                        Tone::Ghost,
+                        kit::on(cx.listener(move |this, _, _, cx| {
+                            this.show_better_copies = !open;
+                            cx.notify();
+                        })),
+                        cx,
+                    )),
+            )
+            .when(open, |d| {
+                d.child(
+                    v_flex()
+                        .id("plan-better-copies-list")
+                        .w_full()
+                        .gap(Tokens::space(1.0))
+                        .max_h(Tokens::size(260.0))
+                        .overflow_y_scroll()
+                        .children(rows),
+                )
+            })
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap(Tokens::space(2.0))
+                    .items_center()
+                    .child(check)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(Tokens::text_sm())
+                            .text_color(colors.text)
+                            .child(
+                                "Also copy the better copies beside the library copies (this export only)",
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
@@ -1309,6 +1512,8 @@ mod tests {
             earlier_rules_note: None,
             warnings: Vec::new(),
             pending_files: Some(11),
+            better_copies: Vec::new(),
+            upgrade: false,
         };
         assert_eq!(
             plan_files_note(&plan),

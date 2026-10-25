@@ -14,6 +14,11 @@ and copies those best copies into one clean library folder ready for Apple Photo
 - **Export only copies.** Each best copy is copied into the library folder you choose, checked against its
   original by hash, and only then given its final name. Nothing in the library is ever overwritten; running the
   export again copies only what is new.
+- **A photo is never copied twice.** When a group already in your library gets another best copy later (you pick
+  another keeper, a better copy turns up on a new drive, or a HEIC original can be decoded at last), the export
+  copies nothing for it and lists it as a "better copy available". Only if you ask (`export run --upgrade`, or
+  "Also copy the better copies" in the Export view, for that export only) is the better copy copied beside the
+  library copy, in the same folder under its own name; the library copy is never removed, replaced or renamed.
 - **Nothing of yours is deleted.** PhotoSquirrel never deletes or moves your source files or the finished copies
   in your library. The only files it ever removes are ones it made itself: unfinished `.partial` export copies,
   preview-cache entries and its own temporary and control files.
@@ -126,6 +131,8 @@ photosquirrel-cli groups list                         # duplicate groups and the
 photosquirrel-cli groups show 42                      # members of a group and why the keeper won
 photosquirrel-cli export dry-run --library ~/Pictures/Library     # what would be copied where; writes nothing
 photosquirrel-cli export run --library ~/Pictures/Library --yes   # copy, verify, rename
+photosquirrel-cli export run --library ~/Pictures/Library --upgrade --yes  # also copy better copies beside
+                                                      # the library copies (listed by every plan)
 photosquirrel-cli report                              # what happened to every file found
 photosquirrel-cli cleanup plan --source 1             # what a cleanup would move into quarantine; moves nothing
 photosquirrel-cli cleanup select 3 --except-folder "Backup 2012"  # narrow the plan; moves nothing

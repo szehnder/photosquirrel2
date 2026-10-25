@@ -50,6 +50,9 @@ pub struct KeeperFile {
     /// it into the quarantine folder (ADR-0034) and its library copy has since gone, so it is exported again
     /// from there (ADR-0066). Read-only like every source read; the file is never moved back by export.
     pub read_from: Option<RelPath>,
+    /// Pixel size, when the catalog knows it (shown for better copies, ADR-0092).
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 impl KeeperFile {
@@ -70,12 +73,15 @@ impl KeeperFile {
     }
 }
 
-/// Another copy of a unit's content (a duplicate or lesser copy), for provenance.
+/// Another member of a unit's group (a duplicate or lesser copy): provenance, and the earlier library copy
+/// that covers the group when its keeper changed after an export (ADR-0092).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CopyRef {
     pub file: FileId,
     pub source: SourceId,
     pub rel_path: RelPath,
+    /// The member's catalog identity (no file is read to know it); `None` for a file without one.
+    pub content: Option<ContentId>,
 }
 
 /// One duplicate group's keeper set (or a singleton): the unit that is exported or not.

@@ -294,6 +294,8 @@ impl<'a> Exports<'a> {
                     .and_then(|m| m.fields.content_identifier.clone()),
                 library_name: None,
                 read_from: quarantine.of(&rec.key, &rec.stat),
+                width: rec.width,
+                height: rec.height,
             })
         };
         let copy_ref = |id: FileId| -> Option<CopyRef> {
@@ -302,6 +304,8 @@ impl<'a> Exports<'a> {
                 file: rec.id,
                 source: rec.key.source,
                 rel_path: rec.key.path.clone(),
+                // The catalog identity: whether an earlier member's library copy covers the group (ADR-0092).
+                content: rec.identity,
             })
         };
         // Sidecar content (ADR-0021, advisory): the effective insight, the AI result with the user's

@@ -484,6 +484,8 @@ fn kill_input(dir: &Path) -> ExportInput {
                 content_identifier: None,
                 library_name: None,
                 read_from: None,
+                width: None,
+                height: None,
             }])
         })
         .collect();

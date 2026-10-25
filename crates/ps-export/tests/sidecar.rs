@@ -93,6 +93,7 @@ fn scenario_export_manifest_record_per_file() {
             file: dup.file,
             source: dup.source,
             rel_path: dup.rel_path.clone(),
+            content: Some(dup.content),
         });
         units.push(u);
     }
@@ -253,6 +254,8 @@ fn sidecar_kill_input(dir: &std::path::Path) -> ps_export::ExportInput {
                 content_identifier: None,
                 library_name: None,
                 read_from: None,
+                width: None,
+                height: None,
             }])
         })
         .collect();

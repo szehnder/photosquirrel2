@@ -366,3 +366,164 @@ fn scenario_export_sidecars_adjusted_per_export(cx: &mut TestAppContext) {
     assert!(saved.sidecars, "the default itself is unchanged");
     assert_eq!(saved.profile, ps_model::settings::ExportProfile::Google);
 }
+
+/// Every file under a library folder (bytes), PhotoSquirrel's own folder left out.
+fn library_files(lib: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![lib.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                if !p.ends_with(".photosquirrel") {
+                    stack.push(p);
+                }
+            } else {
+                out.insert(
+                    p.strip_prefix(lib).unwrap().to_path_buf(),
+                    std::fs::read(&p).unwrap(),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Two exported groups whose keeper then changed (ADR-0092), plus one new photo to export.
+#[gpui_kit::test]
+fn scenario_export_export_panel_offers_better_copies(cx: &mut TestAppContext) {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("phone");
+    std::fs::create_dir_all(src.join("web")).unwrap();
+    for (i, seed) in [101u64, 202].into_iter().enumerate() {
+        let (low, high) = ps_fixtures::media::quality_pair(seed);
+        std::fs::write(src.join(format!("IMG_{i}.JPG")), &high).unwrap();
+        std::fs::write(src.join(format!("web/IMG_{i} small.jpg")), &low).unwrap();
+    }
+    let data = tmp.path().join("data");
+    let library = tmp.path().join("library");
+    let backend = Arc::new(CatalogBackend::open(&data).unwrap());
+    backend.add_source(&src).unwrap();
+    let scan = backend.scan().unwrap();
+    scan.start(&[]).unwrap();
+    scan.wait().unwrap();
+    let google =
+        ps_service::export_progress::ProfileSettings::defaults(ExportProfile::GooglePhotos);
+    let out = backend
+        .export_run(
+            &library,
+            google,
+            &AtomicBool::new(false),
+            &ExportProgress::new(),
+        )
+        .unwrap();
+    assert_eq!(out.copied, 2, "{out:?}");
+    // The user keeps the other copy of each exported group.
+    let groups = scan
+        .groups()
+        .list(ps_service::groups::GroupOrder::Id, 0, 10)
+        .unwrap();
+    assert_eq!(groups.len(), 2, "{groups:?}");
+    for g in &groups {
+        let d = scan.groups().show(g.id).unwrap();
+        let other = d.members.iter().find(|m| !m.keeper).unwrap().file;
+        scan.groups().set_keeper(g.id, other).unwrap();
+    }
+    // A new photo, so the export has something to copy.
+    std::fs::write(
+        src.join("IMG_9.JPG"),
+        ps_fixtures::media::quality_pair(909).1,
+    )
+    .unwrap();
+    scan.start(&[]).unwrap();
+    scan.wait().unwrap();
+    let earlier = library_files(&library);
+    assert_eq!(earlier.len(), 2);
+
+    init_app(cx, backend.clone(), None);
+    let (shell, mut cx) = open(cx);
+    wait_loaded(&shell, &mut cx);
+    cx.update(|_, cx| {
+        ui_workspace::settings::AppSettings::update(cx, |s| {
+            s.export.profile = ps_model::settings::ExportProfile::Google;
+        })
+        .unwrap()
+    });
+    let defaults = cx.update(|_, cx| ui_workspace::settings::AppSettings::get(cx).export.clone());
+    // Tall enough that the whole plan is painted (headless tests see only painted rows).
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1440.0), gpui_kit::px(2400.0)));
+    show(&shell, ViewId::Export, &mut cx);
+    wait(&mut cx, "the better copies", |cx| {
+        exists("plan-better-copies", cx)
+    });
+    assert_eq!(
+        label("plan-better-copies", &mut cx).as_deref(),
+        Some("2 better copies available")
+    );
+    assert_eq!(
+        label("plan-upgrade", &mut cx).as_deref(),
+        Some("Also copy the better copies beside the library copies: off"),
+        "off each time the panel opens"
+    );
+    click("plan-better-copies-toggle", &mut cx);
+    wait(&mut cx, "the list", |cx| exists("plan-better-copy-1", cx));
+    for i in 0..2 {
+        let row = label(&format!("plan-better-copy-{i}"), &mut cx).unwrap();
+        assert!(row.starts_with("Group "), "{row}");
+        let (lib_copy, better) = row.split_once(" in the library; better copy ").unwrap();
+        assert!(lib_copy.ends_with(".JPG"), "{row}");
+        assert!(
+            better.contains("small.jpg") && better.contains("JPEG"),
+            "{row}"
+        );
+    }
+    // First export: only the new photo.
+    assert_eq!(
+        label("export-confirm", &mut cx).as_deref(),
+        Some("Copy 1 file")
+    );
+    click("export-confirm", &mut cx);
+    click("export-start", &mut cx);
+    wait(&mut cx, "the first export", |cx| {
+        exists("export-result", cx)
+    });
+    let after_first = library_files(&library);
+    assert_eq!(after_first.len(), 3, "{:?}", after_first.keys());
+    for (k, v) in &earlier {
+        assert_eq!(after_first.get(k), Some(v));
+    }
+    // Then with the better copies.
+    click("export-replan", &mut cx);
+    wait(&mut cx, "the replan", |cx| exists("plan-upgrade", cx));
+    click("plan-upgrade", &mut cx);
+    wait(&mut cx, "the upgrading plan", |cx| {
+        label("export-confirm", cx).as_deref() == Some("Copy 2 files")
+    });
+    click("export-confirm", &mut cx);
+    click("export-start", &mut cx);
+    wait(&mut cx, "the second export", |cx| {
+        exists("export-result", cx)
+    });
+    let after = library_files(&library);
+    assert_eq!(after.len(), 5, "{:?}", after.keys());
+    for (k, v) in &earlier {
+        assert_eq!(after.get(k), Some(v), "{} unchanged", k.display());
+    }
+    // Each better copy sits in its earlier copy's folder.
+    for k in earlier.keys() {
+        let folder = k.parent().unwrap();
+        assert!(
+            after
+                .keys()
+                .any(|p| p.parent() == Some(folder) && p.to_string_lossy().contains("small")),
+            "a better copy beside {}",
+            k.display()
+        );
+    }
+    let saved = cx.update(|_, cx| ui_workspace::settings::AppSettings::get(cx).export.clone());
+    assert_eq!(saved.profile, defaults.profile);
+    assert_eq!(
+        saved.sidecars, defaults.sidecars,
+        "the defaults are unchanged"
+    );
+}

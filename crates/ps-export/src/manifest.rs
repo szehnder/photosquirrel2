@@ -49,6 +49,10 @@ pub struct ManifestRecord {
     /// dates to the second and in records written before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_precision: Option<String>,
+    /// An upgrade copy (ADR-0092): the earlier library copies of its group this file is a better copy of.
+    /// Absent for every other copy and in records written before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub better_copy_of: Vec<String>,
 }
 
 /// An open manifest for appending.

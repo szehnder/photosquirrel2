@@ -236,6 +236,11 @@ struct ExportTarget {
     /// export. By default such copies are reported and left alone.
     #[arg(long)]
     recopy_modified: bool,
+    /// Also copy better copies (a group already in the library through an earlier copy whose keeper changed
+    /// since) beside their library copies. By default they are listed and nothing is copied for them; the
+    /// library copies are never removed or replaced.
+    #[arg(long)]
+    upgrade: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -588,6 +593,7 @@ fn settings(t: &ExportTarget) -> ps_export::ProfileSettings {
     }
     s.with_verify(t.verify)
         .with_recopy_modified(t.recopy_modified)
+        .with_upgrade(t.upgrade)
 }
 
 fn main() -> ExitCode {

@@ -662,3 +662,155 @@ fn scenario_export_cli_run_needs_yes() {
     );
     assert!(!lib.exists(), "nothing was written");
 }
+
+/// Export the small corpus, then make a derivative member the keeper of one exported group.
+fn exported_then_keeper_changed() -> (tempfile::TempDir, PathBuf, i64) {
+    let data = scanned();
+    let lib = data.path().join("Library");
+    ok(
+        data.path(),
+        &[
+            "export",
+            "run",
+            "--library",
+            lib.to_str().unwrap(),
+            "--profile",
+            "lightroom",
+            "--yes",
+        ],
+    );
+    let (id, member) = first_group_with_choice(data.path());
+    let f = member["file"].as_i64().unwrap();
+    ok(
+        data.path(),
+        &["groups", "set-keeper", &id.to_string(), &f.to_string()],
+    );
+    (data, lib, id)
+}
+
+fn library_tree(lib: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![lib.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if !p.to_string_lossy().contains(".photosquirrel") {
+                out.push((p.clone(), std::fs::read(&p).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn scenario_export_cli_dry_run_lists_better_copies() {
+    let (data, lib, id) = exported_then_keeper_changed();
+    let before = library_tree(&lib);
+    let l = lib.to_str().unwrap();
+    let text = String::from_utf8_lossy(
+        &ok(
+            data.path(),
+            &[
+                "export",
+                "dry-run",
+                "--library",
+                l,
+                "--profile",
+                "lightroom",
+            ],
+        )
+        .stdout,
+    )
+    .into_owned();
+    assert!(
+        text.contains("1 better copy available (add --upgrade"),
+        "{text}"
+    );
+    let line = text
+        .lines()
+        .find(|l| l.starts_with(&format!("  group {id}: ")))
+        .unwrap_or_else(|| panic!("no line for group {id}: {text}"));
+    assert!(line.contains("in the library; better copy "), "{line}");
+    let v = json(&ok(
+        data.path(),
+        &[
+            "--json",
+            "export",
+            "dry-run",
+            "--library",
+            l,
+            "--profile",
+            "lightroom",
+        ],
+    ));
+    assert_eq!(v["data"]["totals"]["better_copies"], 1);
+    assert!(v["data"]["totals"]["better_copy_bytes"].as_u64().unwrap() > 0);
+    let b = &v["data"]["better_copies"][0];
+    assert_eq!(b["group"], id);
+    let library_copy = b["library"][0]["library_path"].as_str().unwrap();
+    assert!(line.contains(library_copy), "{line} vs {library_copy}");
+    let keeper = b["keeper"][0]["source_path"].as_str().unwrap();
+    assert!(line.contains(keeper), "{line} vs {keeper}");
+    assert_eq!(v["data"]["totals"]["files"], 0);
+    assert_eq!(library_tree(&lib), before, "the dry run writes nothing");
+}
+
+#[test]
+fn scenario_export_manual_keeper_change_after_export_copies_nothing() {
+    let (data, lib, id) = exported_then_keeper_changed();
+    let before = library_tree(&lib);
+    let l = lib.to_str().unwrap();
+    let v = json(&ok(
+        data.path(),
+        &[
+            "--json",
+            "export",
+            "run",
+            "--library",
+            l,
+            "--profile",
+            "lightroom",
+            "--yes",
+        ],
+    ));
+    assert_eq!(v["data"]["copied"], 0, "{v}");
+    assert_eq!(v["data"]["better_copies"][0]["group"], id);
+    assert_eq!(library_tree(&lib), before);
+    // With --upgrade the better copy lands beside the earlier copy, which stays as it was.
+    let v = json(&ok(
+        data.path(),
+        &[
+            "--json",
+            "export",
+            "run",
+            "--library",
+            l,
+            "--profile",
+            "lightroom",
+            "--upgrade",
+            "--yes",
+        ],
+    ));
+    assert!(v["data"]["copied"].as_u64().unwrap() >= 1, "{v}");
+    let after = library_tree(&lib);
+    for f in &before {
+        assert!(after.contains(f), "{} changed or removed", f.0.display());
+    }
+    let v = json(&ok(
+        data.path(),
+        &[
+            "--json",
+            "export",
+            "dry-run",
+            "--library",
+            l,
+            "--profile",
+            "lightroom",
+        ],
+    ));
+    assert_eq!(v["data"]["totals"]["better_copies"], 0);
+    assert_eq!(v["data"]["totals"]["files"], 0);
+}

@@ -51,8 +51,9 @@ pub use input::{CopyRef, ExportInput, ExportUnit, KeeperFile, SourceInfo};
 pub use ledger::{Ledger, MemoryLedger};
 pub use library::{Existing, FsLibrary, LibraryProbe, LibraryRoot, PARTIAL_SUFFIX};
 pub use plan::{
-    AlreadyExported, BundleKind, DateTotals, ModifiedInLibrary, Plan, PlanBlocker, PlanError,
-    PlanTotals, PlanWarning, PlannedAction, PlannedBundle, PlannedFile, Unavailable, plan,
+    AlreadyExported, BetterCopy, BetterCopyKeeper, BetterCopyLibrary, BundleKind, DateTotals,
+    ModifiedInLibrary, Plan, PlanBlocker, PlanError, PlanTotals, PlanWarning, PlannedAction,
+    PlannedBundle, PlannedFile, Unavailable, plan,
 };
 pub use profile::ProfileSettings;
 pub use rename::RenameMethod;

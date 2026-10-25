@@ -79,6 +79,21 @@ pub struct PlanPreview {
     /// Files on the sources still pending against this library (the Reports view's "pending"), which the
     /// planned keepers account for together with their duplicates. `None` when not known for this library.
     pub pending_files: Option<u64>,
+    /// Groups already in the library through an earlier copy whose keeper changed since (ADR-0092): nothing
+    /// is copied for them unless this export upgrades.
+    pub better_copies: Vec<BetterCopyRow>,
+    /// This plan copies the better copies beside their library copies.
+    pub upgrade: bool,
+}
+
+/// A better copy as the Export view lists it (ADR-0092).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BetterCopyRow {
+    pub group: Option<i64>,
+    /// The earlier copy, library-relative.
+    pub library: String,
+    /// The current keeper (set): file names with format and size.
+    pub better: String,
 }
 
 /// One planned file as the Export view lists it.
@@ -729,6 +744,39 @@ impl ScanBackend for CatalogBackend {
                     .and_then(|r| r.ok())
                     .map(|s| s.len() as u64)
             },
+            better_copies: plan
+                .better_copies
+                .iter()
+                .map(|b| BetterCopyRow {
+                    group: b.group.map(|g| g.0),
+                    library: b
+                        .library
+                        .iter()
+                        .map(|l| l.library_rel_path.display().into_owned())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    better: b
+                        .keeper
+                        .iter()
+                        .map(|k| {
+                            let name = k
+                                .source_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            match (k.format, k.width, k.height) {
+                                (Some(f), Some(w), Some(h)) => {
+                                    format!("{name} ({}, {w}×{h})", f.label())
+                                }
+                                (Some(f), _, _) => format!("{name} ({})", f.label()),
+                                _ => name,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" + "),
+                })
+                .collect(),
+            upgrade: settings.upgrade,
         })
     }
 
@@ -1627,6 +1675,8 @@ impl ScanBackend for DemoBackend {
             .note(),
             earlier_rules_note: None,
             warnings: Vec::new(),
+            better_copies: Vec::new(),
+            upgrade: settings.upgrade,
         })
     }
 

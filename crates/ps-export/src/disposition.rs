@@ -9,6 +9,10 @@
 //! Rules, first match wins:
 //! - in a group whose whole keeper set has a valid library copy: keeper-set files are `exported`, the other
 //!   members `covered` (with the keeper's library path);
+//! - in a group none of whose keeper-set files has a valid library copy but another member does (the keeper
+//!   changed after that member was exported, ADR-0092): the members with a valid copy are `exported`, every
+//!   other member, the keeper included, `covered` with that copy's path (a keeper set with only some files in
+//!   the library is not covered: pending, the plan completes it);
 //! - not in a group and its content has a valid library copy: `exported`;
 //! - moved by a cleanup run (ADR-0034): `quarantined`, with the disposition the rules below give it as if it
 //!   were still at its path (`prior`) - checked first, since the scanner sees it as gone. Only while that
@@ -152,6 +156,8 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
     // Group index and whether its keeper set is safely exported (with the keeper's path).
     let mut group_of: HashMap<FileId, usize> = HashMap::new();
     let mut keeper_path: Vec<Option<RelPath>> = Vec::with_capacity(facts.groups.len());
+    // Whether a group's path is its keeper set's (`false`: an earlier member's copy covers it).
+    let mut by_keeper: Vec<bool> = Vec::with_capacity(facts.groups.len());
     let excluded_keeper: Vec<bool> = facts
         .groups
         .iter()
@@ -167,7 +173,14 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
             group_of.insert(*m, gi);
         }
         let paths: Option<Vec<RelPath>> = g.keeper_set.iter().map(|k| exported_path(*k)).collect();
-        keeper_path.push(paths.filter(|p| !p.is_empty()).map(|mut p| p.remove(0)));
+        let kp = paths.filter(|p| !p.is_empty()).map(|mut p| p.remove(0));
+        by_keeper.push(kp.is_some());
+        let covering = if kp.is_none() && g.keeper_set.iter().all(|k| exported_path(*k).is_none()) {
+            g.members.iter().find_map(|m| exported_path(*m))
+        } else {
+            None
+        };
+        keeper_path.push(kp.or(covering));
     }
 
     let d = |f: &FileFacts, disposition, reason, library_path| FileDisposition {
@@ -181,6 +194,13 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
     let derive = |f: &FileFacts| -> FileDisposition {
         if let Some(&gi) = group_of.get(&f.file) {
             if let Some(kp) = &keeper_path[gi] {
+                if !by_keeper[gi] {
+                    // Covered by an earlier member's copy (ADR-0092).
+                    return match exported_path(f.file) {
+                        Some(own) => d(f, Disposition::Exported, None, Some(own)),
+                        None => d(f, Disposition::Covered, None, Some(kp.clone())),
+                    };
+                }
                 return if facts.groups[gi].keeper_set.contains(&f.file) {
                     let own = exported_path(f.file).unwrap_or_else(|| kp.clone());
                     d(f, Disposition::Exported, None, Some(own))

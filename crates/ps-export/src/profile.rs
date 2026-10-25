@@ -19,6 +19,10 @@ pub struct ProfileSettings {
     /// changed since the export. Off: they are reported and left alone (ADR-0046).
     #[serde(default)]
     pub recopy_modified: bool,
+    /// Copy the better copies of groups already in the library through an earlier member's copy beside that
+    /// copy (`--upgrade`, ADR-0092). Per export only, never a stored default.
+    #[serde(default)]
+    pub upgrade: bool,
 }
 
 impl ProfileSettings {
@@ -32,6 +36,7 @@ impl ProfileSettings {
                 live_pairs_together: true,
                 verify_library: false,
                 recopy_modified: false,
+                upgrade: false,
             },
             ExportProfile::GooglePhotos => Self {
                 profile,
@@ -39,6 +44,7 @@ impl ProfileSettings {
                 live_pairs_together: false,
                 verify_library: false,
                 recopy_modified: false,
+                upgrade: false,
             },
             ExportProfile::Lightroom => Self {
                 profile,
@@ -46,6 +52,7 @@ impl ProfileSettings {
                 live_pairs_together: false,
                 verify_library: false,
                 recopy_modified: false,
+                upgrade: false,
             },
         }
     }
@@ -57,6 +64,12 @@ impl ProfileSettings {
 
     pub fn with_recopy_modified(mut self, on: bool) -> Self {
         self.recopy_modified = on;
+        self
+    }
+
+    /// Copy better copies beside their earlier library copies in this export (ADR-0092).
+    pub fn with_upgrade(mut self, on: bool) -> Self {
+        self.upgrade = on;
         self
     }
 

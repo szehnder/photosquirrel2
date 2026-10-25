@@ -469,3 +469,47 @@ fn verify_records_when_the_library_was_last_rehashed() {
     let later = ex.completion(Some(&library), false).expect("report");
     assert_eq!(later.verified_at_ms, v.verified_at_ms);
 }
+
+/// The export input names every group member's content from the catalog (ADR-0092), reading no file: the
+/// sources are overwritten after the scan and the input still carries the catalogued identities.
+#[test]
+fn export_input_lists_every_members_content_without_reading_files() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let src = tmp.path().join("phone");
+    std::fs::create_dir_all(src.join("small")).expect("mkdir");
+    let (small, big) = ps_fixtures::media::quality_pair(78);
+    std::fs::write(src.join("IMG_0050.JPG"), &big).expect("write");
+    std::fs::write(src.join("small/IMG_0050.JPG"), &small).expect("write");
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).expect("open");
+    svc.add_source(&src).expect("add");
+    svc.start(&[]).expect("start");
+    svc.wait().expect("scan");
+    let mut identities = std::collections::HashMap::new();
+    svc.engine()
+        .catalog()
+        .read()
+        .analyzed_files(None, |rec, _| {
+            identities.insert(rec.id, rec.identity);
+        })
+        .expect("files");
+    // Overwrite the sources (same sizes): a read now would see other bytes.
+    for p in [src.join("IMG_0050.JPG"), src.join("small/IMG_0050.JPG")] {
+        let n = std::fs::metadata(&p).expect("stat").len() as usize;
+        std::fs::write(&p, vec![0u8; n]).expect("overwrite");
+    }
+    let input = svc.exports().input().expect("input");
+    let grouped: Vec<_> = input.units.iter().filter(|u| u.group.is_some()).collect();
+    assert_eq!(grouped.len(), 1, "{:?}", input.units);
+    let u = grouped[0];
+    assert_eq!(u.copies.len(), 2);
+    for c in &u.copies {
+        let catalogued = identities[&c.file].expect("identity");
+        assert_eq!(c.content, Some(catalogued));
+        let now = blake3::hash(&std::fs::read(c.rel_path.under(&src)).expect("read"));
+        assert_ne!(
+            now.as_bytes(),
+            &catalogued.digest,
+            "the content comes from the catalog, not the file"
+        );
+    }
+}

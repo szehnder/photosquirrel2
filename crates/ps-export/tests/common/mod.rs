@@ -141,6 +141,8 @@ impl Sources {
             content_identifier: None,
             library_name: None,
             read_from: None,
+            width: None,
+            height: None,
         }
     }
 
@@ -159,6 +161,7 @@ pub fn unit(files: Vec<KeeperFile>) -> ExportUnit {
             file: f.file,
             source: f.source,
             rel_path: f.rel_path.clone(),
+            content: Some(f.content),
         })
         .collect();
     ExportUnit {
@@ -273,6 +276,8 @@ pub fn corpus_model(c: &SmallCorpus, drives: &[&str], offline: &[&str]) -> Corpu
             content_identifier: None,
             library_name: None,
             read_from: None,
+            width: None,
+            height: None,
         }
     };
     let mut units = Vec::new();
@@ -306,6 +311,7 @@ pub fn corpus_model(c: &SmallCorpus, drives: &[&str], offline: &[&str]) -> Corpu
                     file: ids[&m.path],
                     source: sid(&m.drive),
                     rel_path: rel(m.path.strip_prefix(&format!("{}/", m.drive)).expect("p")),
+                    content: ContentId::from_hex(&m.content, ContentIdKind::Full),
                 })
                 .collect(),
             keeper_reasons: vec![format!("truth keeper of {g}")],

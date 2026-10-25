@@ -8,7 +8,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use ps_model::{
-    ContentId, DatePrecision, FileId, LedgerEntry, LedgerKind, LedgerState, RelPath, SourceId,
+    ContentId, DatePrecision, FileId, Format, GroupId, LedgerEntry, LedgerKind, LedgerState,
+    RelPath, SourceId,
 };
 use serde::Serialize;
 
@@ -77,7 +78,13 @@ pub struct PlannedBundle {
     pub suffix: u32,
     /// Files of the bundle already in the library. A bundle with no `files` and a `sidecar` only writes the
     /// sidecar of exported files that have none (a crashed sidecar write, or sidecars turned on, ADR-0045).
+    /// An upgrade bundle (ADR-0092) lists the earlier copies it is a better copy of first, with
+    /// `covers_group`.
     pub already: Vec<AlreadyExported>,
+    /// Upgrade bundles: the earlier library copies these files are better copies of (manifest
+    /// `better_copy_of`). Empty for every other bundle.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub better_copy_of: Vec<RelPath>,
 }
 
 /// A keeper on an offline source: listed, skipped, left pending.
@@ -100,6 +107,46 @@ pub struct AlreadyExported {
     /// The copy's full BLAKE3 from the ledger (for a sidecar that lists it).
     #[serde(skip)]
     pub full_hash: Option<[u8; 32]>,
+    /// The copy is of another member of the group (`file`), not of a keeper-set file: the group's keeper
+    /// changed after this copy was exported, and the copy covers the group (ADR-0092).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub covers_group: bool,
+}
+
+/// An earlier library copy of a group whose keeper changed since (ADR-0092).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BetterCopyLibrary {
+    /// The member the copy was made from.
+    pub file: FileId,
+    pub library_rel_path: RelPath,
+    /// `ok`, or how another application changed it (ADR-0046).
+    pub check: CopyCheck,
+}
+
+/// A file of the current keeper set, the better copy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BetterCopyKeeper {
+    pub file: FileId,
+    pub source_path: PathBuf,
+    pub format: Option<Format>,
+    pub size: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+/// A group already in the library through an earlier member's copy whose current keeper set is not
+/// (ADR-0092): nothing is copied for it unless the export upgrades (`ProfileSettings::upgrade`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BetterCopy {
+    pub group: Option<GroupId>,
+    /// Indices into [`ExportInput::units`].
+    pub units: Vec<usize>,
+    /// The earlier copies (usually one).
+    pub library: Vec<BetterCopyLibrary>,
+    /// The current keeper set, keeper first.
+    pub keeper: Vec<BetterCopyKeeper>,
+    /// The first keeper reason ("Why this copy").
+    pub reason: Option<String>,
 }
 
 /// A keeper whose library copy is still at its recorded path but was changed since it was exported (another
@@ -133,6 +180,10 @@ pub struct PlanTotals {
     /// Already exported copies whose library folder differs from the one today's date rules choose: filed
     /// under earlier date rules, left where they are (ADR-0071). Informational.
     pub filed_under_earlier_rules: u64,
+    /// Groups covered by an earlier member's library copy whose current keeper set is not in the library
+    /// (ADR-0092), and the bytes of those keeper sets.
+    pub better_copies: u64,
+    pub better_copy_bytes: u64,
 }
 
 /// Something the user should know before confirming the plan; the export can still run.
@@ -241,6 +292,8 @@ pub struct Plan {
     pub already_exported: Vec<AlreadyExported>,
     /// Library copies changed by another application since they were exported (ADR-0046).
     pub modified: Vec<ModifiedInLibrary>,
+    /// Groups already in the library through an earlier member's copy, with their better copy (ADR-0092).
+    pub better_copies: Vec<BetterCopy>,
     pub totals: PlanTotals,
     pub free_bytes: Option<u64>,
     pub required_bytes: u64,
@@ -371,6 +424,69 @@ impl Planner<'_> {
     }
 }
 
+/// The earlier library copies covering unit `u`'s group (ADR-0092): when no keeper-set file has a `done` copy
+/// that is still at its path (valid or changed), the copies of other members that are (first valid one per
+/// member, else its first changed one). `None`: the unit is planned as before (its own copies decide). Only
+/// the stat-only copy check runs (a re-hash with `verify`, ADR-0044); no library file is read otherwise.
+fn covered_by_member<'l>(
+    input: &ExportInput,
+    u: usize,
+    done: &HashMap<ContentId, Vec<&'l LedgerEntry>>,
+    probe: &dyn LibraryProbe,
+    verify: bool,
+) -> io::Result<Option<Vec<(FileId, &'l LedgerEntry, CopyCheck)>>> {
+    let unit = &input.units[u];
+    if unit.group.is_none() {
+        return Ok(None);
+    }
+    let keeper: Vec<ContentId> = unit.files.iter().map(|f| f.content).collect();
+    let members: Vec<(FileId, &Vec<&LedgerEntry>)> = unit
+        .copies
+        .iter()
+        .filter_map(|c| {
+            let content = c.content?;
+            (!keeper.contains(&content))
+                .then(|| done.get(&content).map(|rows| (c.file, rows)))
+                .flatten()
+        })
+        .collect();
+    if members.is_empty() {
+        return Ok(None);
+    }
+    for c in &keeper {
+        for e in done.get(c).into_iter().flatten() {
+            if check_copy(probe, e, verify)? != CopyCheck::Missing {
+                return Ok(None);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for (file, rows) in members {
+        let mut changed = None;
+        let mut found = None;
+        for e in rows {
+            if !seen.insert(e.library_rel_path.clone()) {
+                continue;
+            }
+            match check_copy(probe, e, verify)? {
+                CopyCheck::Ok => {
+                    found = Some((file, *e, CopyCheck::Ok));
+                    break;
+                }
+                CopyCheck::Missing => {}
+                c => {
+                    changed.get_or_insert((file, *e, c));
+                }
+            }
+        }
+        if let Some(x) = found.or(changed) {
+            out.push(x);
+        }
+    }
+    Ok((!out.is_empty()).then_some(out))
+}
+
 /// Build the plan. `ledger` holds this library's rows; `probe` reads the library.
 pub fn plan(
     input: &ExportInput,
@@ -426,6 +542,7 @@ pub fn plan(
         unavailable: Vec::new(),
         already_exported: Vec::new(),
         modified: Vec::new(),
+        better_copies: Vec::new(),
         totals: PlanTotals::default(),
         free_bytes: None,
         required_bytes: 0,
@@ -441,7 +558,106 @@ pub fn plan(
         out.warnings.push(PlanWarning::OtherCatalogLibrary);
     }
 
-    for units in groups {
+    for mut units in groups {
+        // Groups whose keeper changed after an earlier member was exported are covered by that copy
+        // (ADR-0092). Checked before the offline check: nothing needs reading for a covered group.
+        let mut upgrading: Vec<(usize, Vec<AlreadyExported>)> = Vec::new();
+        let mut covered_units = Vec::new();
+        for &u in &units {
+            let Some(cover) = covered_by_member(input, u, &done, probe, settings.verify_library)?
+            else {
+                continue;
+            };
+            covered_units.push(u);
+            let unit = &input.units[u];
+            let mut earlier = Vec::new();
+            for (file, e, check) in &cover {
+                p.reserved.insert(collision_key(&e.library_rel_path));
+                if *check == CopyCheck::Ok {
+                    let a = AlreadyExported {
+                        unit: u,
+                        file: *file,
+                        library_rel_path: e.library_rel_path.clone(),
+                        content: e.content,
+                        full_hash: e.full_hash,
+                        covers_group: true,
+                    };
+                    out.already_exported.push(a.clone());
+                    earlier.push(a);
+                } else {
+                    out.modified.push(ModifiedInLibrary {
+                        unit: u,
+                        file: *file,
+                        library_rel_path: e.library_rel_path.clone(),
+                        check: *check,
+                    });
+                    earlier.push(AlreadyExported {
+                        unit: u,
+                        file: *file,
+                        library_rel_path: e.library_rel_path.clone(),
+                        content: e.content,
+                        full_hash: None,
+                        covers_group: true,
+                    });
+                }
+            }
+            out.totals.better_copies += 1;
+            out.totals.better_copy_bytes += unit.files.iter().map(|f| f.size).sum::<u64>();
+            out.better_copies.push(BetterCopy {
+                group: unit.group,
+                units: vec![u],
+                library: cover
+                    .iter()
+                    .map(|(file, e, check)| BetterCopyLibrary {
+                        file: *file,
+                        library_rel_path: e.library_rel_path.clone(),
+                        check: *check,
+                    })
+                    .collect(),
+                keeper: unit
+                    .files
+                    .iter()
+                    .map(|f| BetterCopyKeeper {
+                        file: f.file,
+                        source_path: input
+                            .source_path(f.source, f.read_path())
+                            .unwrap_or_default(),
+                        format: f.format,
+                        size: f.size,
+                        width: f.width,
+                        height: f.height,
+                    })
+                    .collect(),
+                reason: unit.keeper_reasons.first().cloned(),
+            });
+            if settings.upgrade {
+                let offline = unit
+                    .files
+                    .iter()
+                    .find(|f| !input.source(f.source).is_some_and(|s| s.online));
+                if offline.is_some() {
+                    // Left for later: listed as unavailable, the group stays covered.
+                    for f in &unit.files {
+                        out.unavailable.push(Unavailable {
+                            unit: u,
+                            file: f.file,
+                            source: f.source,
+                            source_name: input
+                                .source(f.source)
+                                .map_or_else(|| format!("source {}", f.source), |s| s.name.clone()),
+                        });
+                    }
+                } else {
+                    upgrading.push((u, earlier));
+                }
+            }
+        }
+        // Covered units are not copied, unless they are upgraded (copied beside their earlier copies).
+        units.retain(|u| !covered_units.contains(u) || upgrading.iter().any(|(x, _)| x == u));
+        if units.is_empty() {
+            continue;
+        }
+        let is_upgrading = |u: usize| upgrading.iter().any(|(x, _)| *x == u);
         let all: Vec<(usize, &KeeperFile)> = units
             .iter()
             .flat_map(|&u| input.units[u].files.iter().map(move |f| (u, f)))
@@ -471,8 +687,16 @@ pub fn plan(
         // whose bytes changed (another app wrote into it) is "changed in the library": reported, never copied
         // again unless the user asks (`recopy_modified`, ADR-0046).
         let mut todo = Vec::new();
-        let mut already = Vec::new();
+        let mut already: Vec<AlreadyExported> = upgrading
+            .iter()
+            .flat_map(|(_, earlier)| earlier.iter().cloned())
+            .collect();
         for (u, f) in &all {
+            if is_upgrading(*u) {
+                // No keeper-set file of an upgraded unit has a copy (else it would not be covered).
+                todo.push((*u, *f));
+                continue;
+            }
             let mut found = None;
             let mut changed = None;
             for e in done.get(&f.content).into_iter().flatten() {
@@ -509,6 +733,7 @@ pub fn plan(
                         library_rel_path: e.library_rel_path.clone(),
                         content: f.content,
                         full_hash: e.full_hash,
+                        covers_group: false,
                     };
                     out.already_exported.push(a.clone());
                     already.push(a);
@@ -520,13 +745,16 @@ pub fn plan(
         let today = folder_of(all[0].1);
         out.totals.filed_under_earlier_rules += already
             .iter()
+            .filter(|a| !a.covers_group)
             .filter(|a| {
                 a.library_rel_path
                     .parent()
                     .is_none_or(|p| p.as_bytes() != today.as_bytes())
             })
             .count() as u64;
-        let contents: Vec<ContentId> = all.iter().map(|(_, f)| f.content).collect();
+        let mut contents: Vec<ContentId> = all.iter().map(|(_, f)| f.content).collect();
+        // An upgrade shares the sidecar this export wrote for the group's earlier copy (ADR-0092).
+        contents.extend(already.iter().filter(|a| a.covers_group).map(|a| a.content));
         let kind = if units.len() > 1 {
             BundleKind::LivePhoto
         } else if all.len() > 1 {
@@ -573,6 +801,7 @@ pub fn plan(
                         sidecar: Some(rel),
                         suffix: 1,
                         already,
+                        better_copy_of: Vec::new(),
                     });
                 }
             }
@@ -580,18 +809,45 @@ pub fn plan(
         }
 
         // A bundle that gains a file completes next to its already exported primary (ADR-0071), whatever
-        // folder today's date rules would choose.
-        let folder = already
-            .first()
+        // folder today's date rules would choose. An upgrade goes beside the earlier copy (ADR-0092); a Live
+        // Photo upgrade beside the library video.
+        let live_video = (kind == BundleKind::LivePhoto && !upgrading.is_empty())
+            .then(|| already.iter().find(|a| !a.covers_group))
+            .flatten()
+            .cloned();
+        let folder = live_video
+            .as_ref()
+            .or(already.first())
             .and_then(|a| a.library_rel_path.parent())
             .map_or(today, |p| p.display().into_owned());
+        // A Live Photo upgrade whose still's name is taken copies the still and the video together under the
+        // next free suffix, so the pair stays together.
+        let pair_files: Vec<(usize, &KeeperFile)> = if live_video.is_some() {
+            all.iter()
+                .filter(|(u, f)| !is_upgrading(*u) && !todo.iter().any(|(_, t)| t.file == f.file))
+                .copied()
+                .collect()
+        } else {
+            Vec::new()
+        };
         let sidecar_stem = split_name(todo[0].1.name()).0.to_vec();
         let mut chosen = None;
         'suffix: for n in 1..=MAX_SUFFIX {
             let mut keys = HashSet::new();
             let mut slots = Vec::with_capacity(todo.len());
-            for (_, f) in &todo {
-                let (stem, ext) = split_name(f.name());
+            // First choice of a Live Photo upgrade: the still beside the library video with its stem.
+            let video_stem = live_video
+                .as_ref()
+                .filter(|_| n == 1)
+                .map(|v| split_name(v.library_rel_path.file_name()).0.to_vec());
+            let files_n: Vec<(usize, &KeeperFile)> = if n > 1 {
+                todo.iter().chain(pair_files.iter()).copied().collect()
+            } else {
+                todo.clone()
+            };
+            for (_, f) in &files_n {
+                let (own_stem, ext) = split_name(f.name());
+                let stem = video_stem.as_deref().unwrap_or(own_stem);
                 let Some(rel) = join(&folder, &candidate(stem, ext, n)) else {
                     continue 'suffix;
                 };
@@ -606,7 +862,8 @@ pub fn plan(
             }
             let mut sidecar = None;
             if settings.sidecars {
-                let Some(rel) = join(&folder, &candidate(&sidecar_stem, b".xmp", n)) else {
+                let stem = video_stem.as_deref().unwrap_or(&sidecar_stem);
+                let Some(rel) = join(&folder, &candidate(stem, b".xmp", n)) else {
                     continue 'suffix;
                 };
                 if keys.contains(&collision_key(&rel)) {
@@ -627,10 +884,10 @@ pub fn plan(
                     }
                 }
             }
-            chosen = Some((n, slots, sidecar));
+            chosen = Some((n, slots, sidecar, files_n));
             break;
         }
-        let Some((n, slots, sidecar)) = chosen else {
+        let Some((n, slots, sidecar, todo)) = chosen else {
             return Err(PlanError::NoFreeName {
                 name: String::from_utf8_lossy(todo[0].1.name()).into_owned(),
                 folder,
@@ -673,6 +930,11 @@ pub fn plan(
             p.reserved.insert(collision_key(s));
             out.totals.sidecars += 1;
         }
+        let better_copy_of = already
+            .iter()
+            .filter(|a| a.covers_group)
+            .map(|a| a.library_rel_path.clone())
+            .collect();
         out.bundles.push(PlannedBundle {
             units,
             kind,
@@ -680,6 +942,7 @@ pub fn plan(
             sidecar,
             suffix: n,
             already,
+            better_copy_of,
         });
     }
 

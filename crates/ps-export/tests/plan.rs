@@ -525,6 +525,7 @@ fn scenario_export_copy_named_keeper_gets_the_clean_name() {
         file: small.file,
         source: small.source,
         rel_path: small.rel_path.clone(),
+        content: Some(small.content),
     });
     let input = s.input(vec![u]);
     let lib = s.library();

@@ -45,6 +45,44 @@ struct DryRunOut<'a> {
     unavailable: &'a [ps_export::Unavailable],
     /// Library copies changed by another application since the export (not copied again, ADR-0046).
     modified: &'a [ps_export::ModifiedInLibrary],
+    /// Groups already in the library through an earlier copy whose keeper changed since (ADR-0092).
+    better_copies: Vec<BetterCopyOut>,
+}
+
+#[derive(Serialize)]
+struct LibraryCopyOut {
+    file: ps_model::FileId,
+    library_path: String,
+    check: ps_export::CopyCheck,
+}
+
+/// A better copy (ADR-0092) with paths as text.
+#[derive(Serialize)]
+struct BetterCopyOut {
+    group: Option<i64>,
+    library: Vec<LibraryCopyOut>,
+    keeper: Vec<ps_export::BetterCopyKeeper>,
+    reason: Option<String>,
+}
+
+fn better_out(better: &[ps_export::BetterCopy]) -> Vec<BetterCopyOut> {
+    better
+        .iter()
+        .map(|b| BetterCopyOut {
+            group: b.group.map(|g| g.0),
+            library: b
+                .library
+                .iter()
+                .map(|l| LibraryCopyOut {
+                    file: l.file,
+                    library_path: l.library_rel_path.display().into_owned(),
+                    check: l.check,
+                })
+                .collect(),
+            keeper: b.keeper.clone(),
+            reason: b.reason.clone(),
+        })
+        .collect()
 }
 
 fn plan_out(plan: &Plan) -> DryRunOut<'_> {
@@ -73,6 +111,73 @@ fn plan_out(plan: &Plan) -> DryRunOut<'_> {
             .collect(),
         unavailable: &plan.unavailable,
         modified: &plan.modified,
+        better_copies: better_out(&plan.better_copies),
+    }
+}
+
+/// Better copies shown in text output.
+const BETTER_COPY_LINES: usize = 20;
+
+/// "  group 412: 2019/2019-07-04/IMG_1234.JPG in the library; better copy /Volumes/iPhone/IMG_1234.HEIC (HEIC,
+/// 4032x3024, original format)".
+fn better_copy_line(b: &BetterCopyOut) -> String {
+    let library = b
+        .library
+        .iter()
+        .map(|l| match l.check {
+            ps_export::CopyCheck::Ok => l.library_path.clone(),
+            c => format!("{} ({})", l.library_path, ps_export::copy_check_text(c)),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let keeper = b
+        .keeper
+        .iter()
+        .map(|k| {
+            let mut facts = Vec::new();
+            if let Some(f) = k.format {
+                facts.push(f.label().to_owned());
+            }
+            if let (Some(w), Some(h)) = (k.width, k.height) {
+                facts.push(format!("{w}x{h}"));
+            }
+            if facts.is_empty() {
+                k.source_path.display().to_string()
+            } else {
+                format!("{} ({})", k.source_path.display(), facts.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let group = b
+        .group
+        .map_or_else(|| "a group".to_owned(), |g| format!("group {g}"));
+    let why = b
+        .reason
+        .as_deref()
+        .map(|r| format!("; {r}"))
+        .unwrap_or_default();
+    format!("  {group}: {library} in the library; better copy {keeper}{why}")
+}
+
+fn print_better_copies(better: &[BetterCopyOut], upgrade: bool) {
+    if better.is_empty() {
+        return;
+    }
+    let n = better.len();
+    let copies = if n == 1 { "copy" } else { "copies" };
+    if upgrade {
+        println!("{n} better {copies} available, copied beside the library copies (--upgrade):");
+    } else {
+        println!(
+            "{n} better {copies} available (add --upgrade to copy them beside the library copies):"
+        );
+    }
+    for b in better.iter().take(BETTER_COPY_LINES) {
+        println!("{}", better_copy_line(b));
+    }
+    if n > BETTER_COPY_LINES {
+        println!("  and {} more", n - BETTER_COPY_LINES);
     }
 }
 
@@ -124,6 +229,7 @@ fn print_totals(o: &DryRunOut<'_>) {
             );
         }
     }
+    print_better_copies(&o.better_copies, o.settings.upgrade);
     if let Some(b) = &o.blocked {
         println!("blocked: {b}");
     }
@@ -168,6 +274,8 @@ struct RunOut<'a> {
     stopped: Option<String>,
     elapsed_ms: u64,
     cancelled: bool,
+    /// Groups already in the library through an earlier copy (ADR-0092); copied beside it with `--upgrade`.
+    better_copies: Vec<BetterCopyOut>,
 }
 
 /// `export run` without `--yes`: show the plan, copy nothing, and say how to confirm.
@@ -224,6 +332,7 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
         stopped: report.stopped.as_ref().map(ToString::to_string),
         elapsed_ms: report.elapsed.as_millis() as u64,
         cancelled: interrupted,
+        better_copies: better_out(&plan.better_copies),
     };
     emit(ctx.json, "export run", &out, |o| {
         println!(
@@ -245,6 +354,7 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
                 f.target, f.error
             );
         }
+        print_better_copies(&o.better_copies, settings.upgrade);
         if let Some(s) = &o.stopped {
             println!("stopped: {s}; re-run to resume");
         }
