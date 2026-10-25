@@ -137,6 +137,8 @@ impl IdentityStream {
         let kind = identity_kind_for_len(len);
         let mut hasher = blake3::Hasher::new();
         let ranges = match kind {
+            // An empty file needs no bytes (its identity is the hash of nothing).
+            ContentIdKind::Full if len == 0 => Vec::new(),
             ContentIdKind::Full => vec![(0, len)],
             ContentIdKind::Sampled => {
                 hasher.update(&len.to_le_bytes());

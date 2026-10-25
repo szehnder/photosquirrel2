@@ -330,3 +330,15 @@ fn scenario_content_identity_incremental_identity_equals_one_shot_identity() {
     assert_eq!(s.next_needed(), Some(4));
     assert!(s.finish().is_err());
 }
+
+#[test]
+fn scenario_content_identity_incremental_identity_of_an_empty_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("empty.bin");
+    fs::write(&empty, b"").unwrap();
+    let s = ps_hash::IdentityStream::new(0);
+    assert_eq!(s.next_needed(), None);
+    assert!(!s.needs_any(0, 1));
+    assert_eq!(s.finish().unwrap(), identity_from_buffer(&[]));
+    assert_eq!(identity_from_buffer(&[]), hash_path(&empty));
+}
