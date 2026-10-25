@@ -423,6 +423,7 @@ fn summary_card(
                     .child(redated_text(o.redated)),
             )
         })
+        .children(undecoded_notices(m, o, cx))
         .when(o.needs_refresh > 0, |d| {
             let mon = m.entity.clone();
             let sources = o.sources.clone();
@@ -459,6 +460,105 @@ fn summary_card(
             )
         })
         .into_any_element()
+}
+
+/// "3 HEIC photos have no preview" (one line per format still waiting for a decoder, ADR-0091).
+pub fn undecoded_text(u: &ps_model::Undecoded) -> String {
+    let label = u.key.label();
+    if u.available {
+        format!(
+            "{label} decoder found. Rescan to fill in {} {}",
+            format_count(u.count),
+            if u.count == 1 { "preview" } else { "previews" }
+        )
+    } else if u.count == 1 {
+        format!("1 {label} photo has no preview")
+    } else {
+        format!("{} {label} photos have no preview", format_count(u.count))
+    }
+}
+
+/// The run summary's notices about photos waiting for a decoder: the count and "How to enable HEIC previews"
+/// (reason and fix), or, once the decoder is available, a rescan of the sources holding them.
+fn undecoded_notices(m: &DashboardModel<'_>, o: &RunOverview, cx: &App) -> Vec<AnyElement> {
+    let colors = *ui_theme::colors(cx);
+    let mut out = Vec::new();
+    for u in &o.undecoded {
+        let key = u.key.as_str();
+        let line = h_flex()
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .items_center()
+            .child(
+                Icon::new(IconName::Info)
+                    .size(Tokens::icon_sm())
+                    .text_color(colors.info),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("summary-undecoded-{key}")))
+                    .test_support()
+                    .aria_label(SharedString::from(undecoded_text(u)))
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text)
+                    .child(undecoded_text(u)),
+            );
+        let mon = m.entity.clone();
+        let idle = m.monitor.pending.is_none();
+        let line = if u.available {
+            let sources = u.sources.clone();
+            line.child(kit::button(
+                SharedString::from(format!("summary-undecoded-rescan-{key}")),
+                "Rescan",
+                Some(IconName::RefreshCw),
+                Tone::Secondary,
+                idle.then(|| {
+                    kit::on(move |_, _, cx| {
+                        let sources = sources.clone();
+                        mon.update(cx, |m, cx| m.start(sources, cx))
+                    })
+                })
+                .flatten(),
+                cx,
+            ))
+        } else {
+            let open = m.monitor.decoder_fix_open;
+            line.child(kit::button(
+                SharedString::from(format!("summary-undecoded-how-{key}")),
+                crate::views::decoder_fix::how_to(u.key.label()),
+                Some(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                }),
+                Tone::Ghost,
+                kit::on(move |_, _, cx| mon.update(cx, |m, cx| m.toggle_decoder_fix(cx))),
+                cx,
+            ))
+        };
+        let mut block = v_flex()
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .p(Tokens::space(2.5))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(Colors::tint(colors.info, 0.08))
+            .child(line);
+        if !u.available
+            && m.monitor.decoder_fix_open
+            && let Some(fix) = &u.fix
+        {
+            block = block.child(crate::views::decoder_fix::fix_panel(
+                &format!("summary-fix-{key}"),
+                u.reason.as_deref(),
+                fix,
+                cx,
+            ));
+        }
+        out.push(block.into_any_element());
+    }
+    out
 }
 
 /// "12 capture dates updated by the current date rules (folder names, local days)".

@@ -89,6 +89,11 @@ pub trait LibraryBackend: Send + Sync + 'static {
     /// The user's settings, at start-up and after every Scanning or General change (called off the UI
     /// thread). Scanning settings apply to the next scan started, never a running one.
     fn apply_settings(&self, _settings: &ps_model::settings::Settings) {}
+
+    /// This machine's decoder detection (ADR-0089), started at start-up; `None` for backends without one.
+    fn decoders(&self) -> Option<Arc<ps_service::decoders::DecoderHub>> {
+        None
+    }
 }
 
 /// An empty library with no engine behind it (until the catalog facade lands).

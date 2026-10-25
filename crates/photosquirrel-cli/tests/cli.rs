@@ -432,7 +432,14 @@ fn scenario_cli_doctor_lists_decoders() {
     let avif = entry("avif");
     assert_eq!(avif["available"], true);
     assert!(avif["backend"].as_str().unwrap().contains("rav1d"));
-    assert_eq!(avif["assembly"], cfg!(feature = "avif-asm"));
+    if cfg!(target_arch = "x86_64") {
+        assert_eq!(avif["assembly"], cfg!(feature = "avif-asm"));
+    } else {
+        assert!(
+            avif["assembly"].is_null(),
+            "no rav1d assembly for this architecture"
+        );
+    }
     assert!(d["os"]["family"].is_string());
     assert!(entry("poster_frames")["available"].is_boolean());
     assert_eq!(
@@ -838,4 +845,75 @@ fn scenario_export_manual_keeper_change_after_export_copies_nothing() {
     ));
     assert_eq!(v["data"]["totals"]["better_copies"], 0);
     assert_eq!(v["data"]["totals"]["files"], 0);
+}
+
+/// A folder of three different HEIC photos (the sample re-boxed with different rotations).
+fn heic_folder() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let sample = include_bytes!("../../ps-sysdecode/data/selftest.heic");
+    std::fs::create_dir_all(dir.path().join("DCIM")).unwrap();
+    for i in 0..3u8 {
+        let b = ps_fixtures::heif::heif_with_transforms(sample, i, None).unwrap();
+        std::fs::write(dir.path().join(format!("DCIM/IMG_{i}.HEIC")), b).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn scenario_cli_summary_explains_heic_without_a_decoder() {
+    let photos = heic_folder();
+    let data = tempfile::tempdir().unwrap();
+    ok(
+        data.path(),
+        &["sources", "add", photos.path().to_str().unwrap()],
+    );
+    let scan = |json: bool| {
+        let mut c = cli(data.path());
+        c.env("PHOTOSQUIRREL_HEIF_DECODER", "none");
+        if json {
+            c.arg("--json");
+        }
+        let o = c.arg("scan").output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let text = scan(false);
+    let at = text
+        .find("3 HEIC photos have no preview: no HEIC decoder on this system")
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(text[at..].contains("(they are still catalogued, de-duplicated and exported)"));
+    assert!(text.contains("How to enable HEIC previews:"), "{text}");
+    assert!(text.contains("restart PhotoSquirrel"), "{text}");
+    // JSON: the summary line carries the same count, reason and steps (a rescan keeps them waiting).
+    let out = scan(true);
+    let summary: Value = out
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["kind"] == "summary" || v["data"]["undecoded"].is_array())
+        .unwrap_or_else(|| panic!("{out}"));
+    let u = &summary["data"]["undecoded"][0];
+    assert_eq!(u["count"], 3, "{summary}");
+    assert_eq!(u["format"], "heic");
+    assert!(u["reason"].as_str().unwrap().contains("no HEIC decoder"));
+    assert!(!u["fix"]["steps"].as_array().unwrap().is_empty());
+    assert_eq!(summary["data"]["diff"]["awaiting_decoder"], 3);
+}
+
+#[test]
+fn scenario_cli_no_notice_when_every_photo_is_decoded() {
+    let data = tempfile::tempdir().unwrap();
+    for d in ["drive-a", "drive-b", "drive-c"] {
+        ok(
+            data.path(),
+            &["sources", "add", corpus().join(d).to_str().unwrap()],
+        );
+    }
+    let text = String::from_utf8_lossy(&ok(data.path(), &["scan"]).stdout).into_owned();
+    assert!(
+        !text.contains("have no preview") && !text.contains("has no preview"),
+        "{text}"
+    );
+    assert!(!text.contains("How to enable"), "{text}");
+    let out = String::from_utf8_lossy(&ok(data.path(), &["--json", "scan"]).stdout).into_owned();
+    assert!(!out.contains("\"undecoded\""), "{out}");
 }

@@ -8,9 +8,11 @@ license.workspace = true
 
 [features]
 default = []
-# rav1d's assembly for AVIF decoding (ADR-0090): needs nasm on x86_64. Enabled by default in the programs
-# (`photosquirrel`, `photosquirrel-cli`); `--no-default-features` builds without it at slower AVIF speed.
-avif-asm = ["rav1d/asm"]
+# Marks a build with rav1d's x86_64 assembly (ADR-0090) for the decoder report. The programs (`photosquirrel`,
+# `photosquirrel-cli`) turn the assembly itself on with their default `avif-asm` feature (x86_64 only: the
+# published rav1d 1.1 crate leaves out `src/arm/asm-offsets.h`, so its aarch64 assembly does not build);
+# `--no-default-features` builds without nasm at slower AVIF speed.
+avif-asm = []
 # `decoders::fake::FakeHeif`, a deterministic HEIC test decoder (ADR-0089), for other crates' tests.
 test-support = []
 # The machine's time-zone rules (`date::os::OsZone`, ADR-0070). Enabled only by the I/O crates, so core builds
@@ -31,6 +33,7 @@ imagesize.workspace = true
 rawler.workspace = true
 rav1d.workspace = true
 libc.workspace = true
+
 chrono = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 thiserror.workspace = true

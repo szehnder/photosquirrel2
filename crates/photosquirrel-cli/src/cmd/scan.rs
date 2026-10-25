@@ -394,6 +394,9 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
     for l in refresh_lines(&s.diff, s.status, refresh) {
         println!("{l}");
     }
+    for l in undecoded_lines(s) {
+        println!("{l}");
+    }
     if let Some(g) = &s.grouping {
         println!(
             "duplicate groups: {} groups with {} files, {} similar-shot suggestions ({} regrouped in {} ms)",
@@ -413,6 +416,51 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
     if s.status == RunStatus::Cancelled {
         println!("resume with: photosquirrel-cli scan --resume");
     }
+}
+
+/// The summary lines about photos without a preview because their decoder is missing (ADR-0091): per format,
+/// the count and reason and how to enable previews, or, when the decoder is available now, which sources to
+/// rescan.
+pub fn undecoded_lines(s: &RunSummary) -> Vec<String> {
+    let mut out = Vec::new();
+    if s.diff.redecoded > 0 {
+        out.push(format!(
+            "{} previews filled in (photos that waited for a decoder)",
+            s.diff.redecoded
+        ));
+    }
+    for u in &s.undecoded {
+        let label = u.key.label();
+        let photos = if u.count == 1 {
+            format!("1 {label} photo has")
+        } else {
+            format!("{} {label} photos have", u.count)
+        };
+        if u.available {
+            let sources = u
+                .sources
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(format!(
+                "{label} decoder found: rescan source {sources} to fill in {} previews.",
+                u.count
+            ));
+            continue;
+        }
+        out.push(format!(
+            "{photos} no preview: {} (they are still catalogued, de-duplicated and exported).",
+            u.reason.as_deref().unwrap_or("no decoder on this system")
+        ));
+        if let Some(fix) = &u.fix {
+            out.push(format!("How to enable {label} previews:"));
+            for l in fix.lines() {
+                out.push(format!("  {l}"));
+            }
+        }
+    }
+    out
 }
 
 fn files(n: u64) -> String {

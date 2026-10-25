@@ -11,7 +11,7 @@ license.workspace = true
 # AVIF decoding, identical output). Packaging refuses a build without it. HEIC is decoded by the operating
 # system's decoder, detected at run time (ADR-0089): no build option.
 default = ["avif-asm"]
-avif-asm = ["ps-media/avif-asm"]
+avif-asm = ["ps-media/avif-asm", "dep:rav1d"]
 
 [dependencies]
 gpui-kit.workspace = true
@@ -83,3 +83,7 @@ minimumSystemVersion = "11.0"
 
 [package.metadata.packager.nsis]
 installMode = "currentUser"
+
+# rav1d's x86_64 assembly (needs nasm), unified into the rav1d ps-media decodes with (ADR-0090).
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+rav1d = { workspace = true, features = ["asm"], optional = true }

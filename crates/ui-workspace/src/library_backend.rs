@@ -74,6 +74,17 @@ impl CatalogBackend {
 }
 
 impl LibraryBackend for CatalogBackend {
+    fn decoders(&self) -> Option<Arc<ps_service::decoders::DecoderHub>> {
+        // The engine's own detection when it is open (tests inject one), else the process-wide one it will use.
+        Some(
+            self.lib
+                .opened()
+                .map_or_else(ps_service::decoders::DecoderHub::global, |s| {
+                    s.decoder_hub().clone()
+                }),
+        )
+    }
+
     fn summary(&self) -> anyhow::Result<CatalogSummary> {
         // First launch: no catalog yet, so the library is empty. Answer at once instead of creating and
         // migrating a catalog first, so the first frame already shows the welcome view.

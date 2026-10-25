@@ -86,6 +86,8 @@ pub struct ScanMonitor {
     ended: Option<ScanRunId>,
     /// Why the run is paused for power, or that mains power is back (`general.pause_on_battery`).
     pub power_note: Option<String>,
+    /// The run summary's "How to enable HEIC previews" disclosure is open.
+    pub decoder_fix_open: bool,
 }
 
 impl ScanMonitor {
@@ -112,11 +114,18 @@ impl ScanMonitor {
             sampling: None,
             ended: None,
             power_note: None,
+            decoder_fix_open: false,
         };
         this.refresh_sources(cx);
         this.refresh_last_run(cx);
         this.ensure_sampling(cx);
         this
+    }
+
+    /// Open or close the run summary's "How to enable HEIC previews".
+    pub fn toggle_decoder_fix(&mut self, cx: &mut Context<'_, Self>) {
+        self.decoder_fix_open = !self.decoder_fix_open;
+        cx.notify();
     }
 
     pub fn backend(&self) -> &SharedScanBackend {

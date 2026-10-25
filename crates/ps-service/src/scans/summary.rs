@@ -40,6 +40,11 @@ pub struct RunOverview {
     pub refreshed: u64,
     /// Sources that were or went offline during the run.
     pub incomplete_sources: Vec<SourceId>,
+    /// Previews this run filled in for files that waited for a decoder (ADR-0091).
+    pub redecoded: u64,
+    /// Files of the run's sources still waiting for a decoder, per format, with the decoder's availability now
+    /// and the reason and fix when it is missing (one aggregate query when the summary is read).
+    pub undecoded: Vec<ps_model::Undecoded>,
 }
 
 /// One stored per-file error of a run.
@@ -111,6 +116,8 @@ impl ScanService {
                 needs_refresh: s.diff.still_needs_refresh(),
                 refreshed: s.diff.refreshed,
                 incomplete_sources: s.incomplete_sources,
+                redecoded: s.diff.redecoded,
+                undecoded: self.undecoded(&rec.sources).unwrap_or_default(),
             },
             None => RunOverview {
                 run,
@@ -135,6 +142,8 @@ impl ScanService {
                 needs_refresh: 0,
                 refreshed: 0,
                 incomplete_sources: Vec::new(),
+                redecoded: 0,
+                undecoded: self.undecoded(&rec.sources).unwrap_or_default(),
             },
         })
     }

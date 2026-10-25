@@ -120,6 +120,8 @@ struct State {
     started_at_ms: i64,
     /// A cancel is under way: the run time at which the run stops.
     stop_at_ms: Option<u64>,
+    /// Files waiting for a decoder, reported by the summary.
+    undecoded: Vec<ps_model::Undecoded>,
 }
 
 /// A deterministic, I/O-free scan engine.
@@ -163,6 +165,7 @@ impl FakeScanService {
                 next_run: 1,
                 started_at_ms: 0,
                 stop_at_ms: None,
+                undecoded: Vec::new(),
             }),
             snapshots: AtomicU64::new(0),
         }
@@ -585,7 +588,14 @@ impl FakeScanService {
                 .filter(|x| x.incomplete)
                 .map(|x| x.source)
                 .collect(),
+            redecoded: 0,
+            undecoded: s.undecoded.clone(),
         })
+    }
+
+    /// Files waiting for a decoder that the simulated run's summary reports (scripted screenshots).
+    pub fn set_undecoded(&self, u: Vec<ps_model::Undecoded>) {
+        self.lock().undecoded = u;
     }
 }
 

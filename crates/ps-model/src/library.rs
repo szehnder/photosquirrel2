@@ -128,6 +128,16 @@ pub struct CopyInfo {
     pub why_keeper: Option<String>,
 }
 
+/// Why a file has no preview: its decoder was missing when it was analysed (ADR-0091).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewNote {
+    pub key: crate::DecoderKey,
+    /// The decoder is available now: a rescan of the source fills the preview in.
+    pub available_now: bool,
+    pub reason: Option<String>,
+    pub fix: Option<crate::Fix>,
+}
+
 /// Everything the inspector shows about one item.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ItemDetail {
@@ -171,6 +181,9 @@ pub struct ItemDetail {
     pub disposition: Option<DispositionDetail>,
     /// The AI's view of this photo (advisory, ADR-0021); `None` when it has not been analysed.
     pub insight: Option<InsightDetail>,
+    /// Why there is no preview when the decoder of its format is missing (ADR-0091), from the decoder report of
+    /// now (so it is current after an install and restart); `None` for every other file.
+    pub preview_note: Option<PreviewNote>,
 }
 
 /// An item's completion-report disposition, as the inspector shows it.

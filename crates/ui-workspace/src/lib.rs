@@ -18,6 +18,7 @@
 
 pub mod actions;
 pub mod assets;
+pub mod decoder_status;
 pub mod gallery_inspector;
 pub mod inspector;
 pub mod keymap;
@@ -105,6 +106,10 @@ pub fn init(config: ShellConfig, cx: &mut App) {
     let gallery = config.backend.clone().gallery();
     if let Some(scans) = config.backend.clone().scans() {
         crate::views::scan::install(scans, gallery.clone(), cx);
+    }
+    // Decoder detection off the UI thread from start-up (ADR-0089); the window does not wait for it.
+    if let Some(hub) = config.backend.decoders() {
+        crate::decoder_status::install(hub, cx);
     }
     cx.set_global(ShellGlobals {
         gallery,

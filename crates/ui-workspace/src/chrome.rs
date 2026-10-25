@@ -668,6 +668,13 @@ pub(crate) fn status_bar(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyEleme
         }))
         .child(div().flex_1())
         .children(zoom)
+        .children(crate::decoder_status::text(cx).map(|t| {
+            item()
+                .id("status-decoders")
+                .test_support()
+                .aria_label(SharedString::from(t.clone()))
+                .child(t)
+        }))
         .child(
             item()
                 .id("status-local")

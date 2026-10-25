@@ -172,6 +172,8 @@ pub struct GalleryInspector {
     tag_search: Entity<InputState>,
     reason: Entity<InputState>,
     tags_open: bool,
+    /// The File section's "How to enable HEIC previews" is open.
+    preview_fix_open: bool,
     pub last_error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -217,6 +219,7 @@ impl GalleryInspector {
             tag_search,
             reason,
             tags_open: false,
+            preview_fix_open: false,
             last_error: None,
             _subscriptions: subs,
         };
@@ -701,6 +704,76 @@ impl GalleryInspector {
 }
 
 /// One copyable `label  value` row.
+impl GalleryInspector {
+    /// Why there is no preview (ADR-0091): no decoder on this system, with how to enable it, or a decoder is
+    /// available now and a rescan of the source fills the preview in. Text from the decoder report of now.
+    fn preview_note(&self, d: &ItemDetail, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
+        let n = d.preview_note.as_ref()?;
+        let colors = *ui_theme::colors(cx);
+        let label = n.key.label();
+        if n.available_now {
+            let text = format!(
+                "A {label} decoder is available now. Rescan this source to fill in the preview."
+            );
+            return Some(
+                div()
+                    .id("inspector-preview-rescan")
+                    .test_support()
+                    .aria_label(SharedString::from(text.clone()))
+                    .w_full()
+                    .p(Tokens::space(2.0))
+                    .rounded(Tokens::RADIUS_MD)
+                    .bg(ui_theme::Colors::tint(colors.info, 0.08))
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text)
+                    .child(text)
+                    .into_any_element(),
+            );
+        }
+        let text = format!("Preview unavailable: no {label} decoder on this system");
+        let open = self.preview_fix_open;
+        let mut col = v_flex()
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .p(Tokens::space(2.0))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(ui_theme::Colors::tint(colors.info, 0.08))
+            .child(
+                div()
+                    .id("inspector-preview-unavailable")
+                    .test_support()
+                    .aria_label(SharedString::from(text.clone()))
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text)
+                    .child(text),
+            )
+            .child(crate::views::kit::button(
+                "inspector-preview-how",
+                crate::views::decoder_fix::how_to(label),
+                Some(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                }),
+                crate::views::kit::Tone::Ghost,
+                crate::views::kit::on(cx.listener(|this, _, _, cx| {
+                    this.preview_fix_open = !this.preview_fix_open;
+                    cx.notify();
+                })),
+                cx,
+            ));
+        if open && let Some(fix) = &n.fix {
+            col = col.child(crate::views::decoder_fix::fix_panel(
+                "inspector-fix",
+                n.reason.as_deref(),
+                fix,
+                cx,
+            ));
+        }
+        Some(col.into_any_element())
+    }
+}
+
 fn row(
     id: impl Into<SharedString>,
     label: &'static str,
@@ -1042,6 +1115,7 @@ impl Render for GalleryInspector {
                         text,
                         cx,
                     ))
+                    .children(self.preview_note(&d, cx))
                     .child(section("Capture", cx))
                     .child(row(
                         "inspector-captured",

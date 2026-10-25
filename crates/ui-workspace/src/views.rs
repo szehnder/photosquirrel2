@@ -13,6 +13,7 @@
 pub mod ai_review;
 pub mod cleanup;
 pub mod cleanup_tree;
+pub mod decoder_fix;
 pub mod duplicates;
 pub mod export;
 pub mod kit;

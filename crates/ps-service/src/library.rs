@@ -317,6 +317,14 @@ impl Library {
         &self.data_dir
     }
 
+    /// The engine if it is open already (never opens it).
+    pub fn opened(&self) -> Option<&ScanService> {
+        self.engine
+            .get()
+            .and_then(|e| e.as_ref().ok())
+            .map(|a| &**a)
+    }
+
     /// The engine (opened on first use, with the applied settings' scanner options).
     pub fn scan(&self) -> Result<&ScanService> {
         let engine = self
@@ -1176,6 +1184,19 @@ impl Library {
                 None
             }),
             insight,
+            preview_note: match r.decoder_missing {
+                Some(key) => {
+                    let decoders = self.scan()?.decoders();
+                    let e = decoders.report().for_key(key);
+                    Some(ps_model::library::PreviewNote {
+                        key,
+                        available_now: decoders.can_decode(key),
+                        reason: e.and_then(|e| e.reason.clone()),
+                        fix: e.and_then(|e| e.fix.clone()),
+                    })
+                }
+                None => None,
+            },
         }))
     }
 

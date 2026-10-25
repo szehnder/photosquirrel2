@@ -16,12 +16,22 @@ const MAX_ITEM_BYTES: u64 = 512 * 1024 * 1024;
 /// Most tiles of a grid.
 const MAX_TILES: usize = 1024;
 
-/// Built with rav1d's assembly (`avif-asm`).
-pub const ASSEMBLY: bool = cfg!(feature = "avif-asm");
+/// Built with rav1d's assembly (`avif-asm`, x86_64 only: rav1d 1.1's published aarch64 assembly does not build).
+pub const ASSEMBLY: bool = cfg!(all(feature = "avif-asm", target_arch = "x86_64"));
+/// rav1d's assembly exists for this architecture in this build (x86_64).
+pub const ASSEMBLY_ARCH: bool = cfg!(target_arch = "x86_64");
 
 /// The AVIF entry of a decoder report: always available.
 pub fn report_entry() -> DecoderEntry {
-    report_entry_for(ASSEMBLY)
+    if ASSEMBLY_ARCH {
+        report_entry_for(ASSEMBLY)
+    } else {
+        DecoderEntry {
+            assembly: None,
+            reason: None,
+            ..report_entry_for(false)
+        }
+    }
 }
 
 /// [`report_entry`] of a build with or without rav1d's assembly.
