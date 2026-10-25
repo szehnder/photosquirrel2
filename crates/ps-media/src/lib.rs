@@ -35,7 +35,7 @@ pub use probe::{
     PROBE_LIMIT, needs_directory_reads, probe_buffer, probe_bytes, probe_path, probe_reader,
     probe_seekable, probe_with_directory_reads, sniff, tiff_metadata_block,
 };
-pub use thumb::{analyze_still, make_thumbnail};
+pub use thumb::{analyze_still, analyze_still_with, make_thumbnail};
 
 /// This build can decode HEIC/HEIF/AVIF stills (cargo feature `heic`, ADR-0017).
 pub const HEIC_SUPPORTED: bool = cfg!(feature = "heic");

@@ -103,6 +103,9 @@ pub enum DecodeError {
     TooLarge(String),
     #[error("decode failed: {0}")]
     Failed(String),
+    /// The caller's stop check asked the decode to end (a scan paused into a cancel, ADR-0008).
+    #[error("decode cancelled")]
+    Cancelled,
 }
 
 /// Choose the DCT denominator (8, 4, 2, 1) giving the smallest decode whose long edge is >= `min_long`.
@@ -468,6 +471,17 @@ pub fn decode_scaled(
     probe: &ProbeRecord,
     min_long: u32,
 ) -> Result<Decoded, DecodeError> {
+    decode_scaled_with(bytes, probe, min_long, &|| false)
+}
+
+/// [`decode_scaled`] with a stop check: a TIFF decode calls `stop` before each strip or tile and ends with
+/// [`DecodeError::Cancelled`] once it returns true (other formats decode in one bounded call and ignore it).
+pub fn decode_scaled_with(
+    bytes: &[u8],
+    probe: &ProbeRecord,
+    min_long: u32,
+    stop: &dyn Fn() -> bool,
+) -> Result<Decoded, DecodeError> {
     let format = probe
         .format
         .ok_or_else(|| DecodeError::Unsupported("unknown format".into()))?;
@@ -477,7 +491,7 @@ pub fn decode_scaled(
             (i, d, DecodeSource::Main, true)
         }
         Format::Tiff => (
-            decode_tiff_buffer(bytes, min_long)?,
+            decode_tiff_buffer(bytes, min_long, stop)?,
             1,
             DecodeSource::Main,
             true,
@@ -519,10 +533,16 @@ pub fn decode_scaled(
 
 /// A TIFF in memory: strip by strip with on-the-fly downsampling (ADR-0085); when that decoder fails (a palette
 /// image, a strip above 32 MB, anything it rejects), the whole-image decode of the `image` crate, as before, so no
-/// TIFF that decoded before stops decoding. Its error is reported when both fail.
-fn decode_tiff_buffer(bytes: &[u8], min_long: u32) -> Result<RgbImage, DecodeError> {
-    match crate::tiff_decode::decode(Cursor::new(bytes), min_long) {
-        Ok((img, _)) => Ok(img),
+/// TIFF that decoded before stops decoding (its own 768 MB allocation cap still refuses what the work cap of
+/// ADR-0088 refused). Its error is reported when both fail; a cancel is returned at once.
+fn decode_tiff_buffer(
+    bytes: &[u8],
+    min_long: u32,
+    stop: &dyn Fn() -> bool,
+) -> Result<RgbImage, DecodeError> {
+    match crate::tiff_decode::decode_with(Cursor::new(bytes), min_long, stop).0 {
+        Ok(img) => Ok(img),
+        Err(DecodeError::Cancelled) => Err(DecodeError::Cancelled),
         Err(e) => decode_generic(bytes).map_err(|_| e),
     }
 }
@@ -535,15 +555,30 @@ pub fn decode_tiff_reader<R: std::io::Read + std::io::Seek>(
     probe: &ProbeRecord,
     min_long: u32,
 ) -> Result<(Decoded, crate::tiff_decode::TiffDecodeStats), DecodeError> {
-    let (image, stats) = crate::tiff_decode::decode(reader, min_long)?;
-    Ok((
-        Decoded {
+    let (r, stats) = decode_tiff_reader_with(reader, probe, min_long, &|| false);
+    r.map(|d| (d, stats))
+}
+
+/// [`decode_tiff_reader`] with a stop check before each strip or tile ([`crate::tiff_decode::decode_with`]); the
+/// stats come back whatever the outcome.
+pub fn decode_tiff_reader_with<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    probe: &ProbeRecord,
+    min_long: u32,
+    stop: &dyn Fn() -> bool,
+) -> (
+    Result<Decoded, DecodeError>,
+    crate::tiff_decode::TiffDecodeStats,
+) {
+    let (r, stats) = crate::tiff_decode::decode_with(reader, min_long, stop);
+    (
+        r.map(|image| Decoded {
             image: image.oriented(probe.orientation),
             source: DecodeSource::Main,
             scale_denom: 1,
-        },
+        }),
         stats,
-    ))
+    )
 }
 
 /// Decode the probe's embedded preview (JPEG previews, or HEIC thumbnails with the `heic` feature),

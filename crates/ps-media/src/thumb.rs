@@ -213,7 +213,17 @@ pub fn analyze_still(
     bytes: &[u8],
     probe: &ProbeRecord,
 ) -> Result<(Decoded, ThumbnailRecord, ThumbOrigin), DecodeError> {
-    let analysis = decode::decode_for_analysis(bytes, probe)?;
+    analyze_still_with(bytes, probe, &|| false)
+}
+
+/// [`analyze_still`] with a stop check, called before each strip or tile of a TIFF decode (the scanner's
+/// pause and cancel checkpoint): `Err(DecodeError::Cancelled)` once it returns true.
+pub fn analyze_still_with(
+    bytes: &[u8],
+    probe: &ProbeRecord,
+    stop: &dyn Fn() -> bool,
+) -> Result<(Decoded, ThumbnailRecord, ThumbOrigin), DecodeError> {
+    let analysis = decode::decode_scaled_with(bytes, probe, decode::ANALYSIS_MIN_LONG_EDGE, stop)?;
     if usable_preview(probe)
         && probe.format != Some(Format::Heic)
         && let Some(p) = decode::decode_preview(bytes, probe, THUMB_LONG_EDGE)
