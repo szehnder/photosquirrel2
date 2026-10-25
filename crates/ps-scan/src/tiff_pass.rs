@@ -234,4 +234,178 @@ mod tests {
         let id = pass.finish().unwrap();
         assert_eq!(id, ps_hash::identity_from_buffer(&bytes));
     }
+
+    use std::cell::Cell;
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+    use std::rc::Rc;
+
+    use ps_model::ContentIdKind;
+    use ps_model::limits::FULL_IDENTITY_MAX_BYTES;
+
+    const MB: u64 = 1024 * 1024;
+
+    /// A sparse file of `len` bytes (TMPDIR) with a few marked bytes every 7 MB and around each end, so the
+    /// identity depends on the regions it reads.
+    fn sparse(dir: &tempfile::TempDir, len: u64) -> std::path::PathBuf {
+        let path = dir.path().join(format!("sparse-{len}.bin"));
+        let mut f = File::create(&path).unwrap();
+        f.set_len(len).unwrap();
+        let mut at = 0u64;
+        while at < len {
+            f.seek(SeekFrom::Start(at)).unwrap();
+            let n = (len - at).min(5);
+            f.write_all(&(at as u32).to_le_bytes()[..n.min(4) as usize])
+                .unwrap();
+            at += 7 * MB + 13;
+        }
+        f.seek(SeekFrom::Start(len - 3)).unwrap();
+        f.write_all(b"end").unwrap();
+        path
+    }
+
+    /// Bytes read from the file underneath.
+    struct Counted {
+        file: File,
+        bytes: Rc<Cell<u64>>,
+    }
+
+    impl Read for Counted {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let n = self.file.read(buf)?;
+            self.bytes.set(self.bytes.get() + n as u64);
+            Ok(n)
+        }
+    }
+
+    impl Seek for Counted {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            self.file.seek(pos)
+        }
+    }
+
+    /// The probe's view of `path`: the first 256 KB, and the last 4 KB as a fetched segment.
+    fn probe_view(path: &std::path::Path, len: u64) -> (Vec<u8>, Vec<Segment>) {
+        let bytes = |off: u64, n: u64| {
+            let mut f = File::open(path).unwrap();
+            f.seek(SeekFrom::Start(off)).unwrap();
+            let mut v = vec![0u8; n as usize];
+            f.read_exact(&mut v).unwrap();
+            v
+        };
+        let prefix = bytes(0, 256 * 1024);
+        let tail = len - 4096;
+        (
+            prefix,
+            vec![Segment {
+                offset: tail,
+                bytes: bytes(tail, 4096),
+            }],
+        )
+    }
+
+    /// Run a one pass over `path` the way the decoder does: the segment, the prefix, then forward reads of
+    /// 4 KB at `stops`, skipping between them; returns the identity and the bytes read from the file.
+    fn one_pass(path: &std::path::Path, stops: &[u64]) -> (io::Result<ContentId>, u64) {
+        let len = std::fs::metadata(path).unwrap().len();
+        let (prefix, segments) = probe_view(path, len);
+        let count = Rc::new(Cell::new(0u64));
+        let mut file = Counted {
+            file: File::open(path).unwrap(),
+            bytes: Rc::clone(&count),
+        };
+        file.seek(SeekFrom::Start(prefix.len() as u64)).unwrap();
+        let mut pass = OnePass::new(&mut file, len, &prefix, &segments).unwrap();
+        let mut buf = vec![0u8; 4096];
+        pass.seek(SeekFrom::Start(len - 100)).unwrap();
+        pass.read_exact(&mut buf[..100]).unwrap();
+        pass.seek(SeekFrom::Start(8)).unwrap();
+        pass.read_exact(&mut buf[..64]).unwrap();
+        for &at in stops {
+            pass.seek(SeekFrom::Start(at)).unwrap();
+            pass.read_exact(&mut buf).unwrap();
+        }
+        assert!(pass.take_error().is_none());
+        let id = pass.finish();
+        (id, count.get())
+    }
+
+    fn streamed(path: &std::path::Path) -> ContentId {
+        let len = std::fs::metadata(path).unwrap().len();
+        ps_hash::identity_from_reader(File::open(path).unwrap(), len).unwrap()
+    }
+
+    #[test]
+    fn sampled_identity_of_a_sparse_300_mb_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let len = 300 * MB + 12_345;
+        let path = sparse(&dir, len);
+        // Forward reads in the first window, far between the windows (skipped), and near the end.
+        let stops = [
+            MB,
+            3 * MB + 7,
+            90 * MB,
+            150 * MB + 3,
+            151 * MB,
+            290 * MB,
+            len - 8192,
+        ];
+        let (id, read) = one_pass(&path, &stops);
+        let id = id.unwrap();
+        assert_eq!(id.kind, ContentIdKind::Sampled);
+        assert_eq!(id, streamed(&path));
+        // The three 4 MB windows plus one 1 MB chunk per decoder read, not the whole file.
+        assert!(read <= 12 * MB + stops.len() as u64 * MB, "read {read}");
+        // Reads only inside what is held: the identity alone.
+        let (id, _) = one_pass(&path, &[]);
+        assert_eq!(id.unwrap(), streamed(&path));
+    }
+
+    #[test]
+    fn full_and_sampled_identity_at_the_256_mb_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        for (len, kind) in [
+            (FULL_IDENTITY_MAX_BYTES, ContentIdKind::Full),
+            (FULL_IDENTITY_MAX_BYTES + 1, ContentIdKind::Sampled),
+        ] {
+            let path = sparse(&dir, len);
+            let stops = [2 * MB, 100 * MB + 1, len - 5000];
+            let (id, read) = one_pass(&path, &stops);
+            let id = id.unwrap();
+            assert_eq!(id.kind, kind, "{len}");
+            assert_eq!(id, streamed(&path), "{len}");
+            match kind {
+                ContentIdKind::Full => assert!(read >= len - 256 * 1024, "{len}: read {read}"),
+                ContentIdKind::Sampled => assert!(read <= 16 * MB, "{len}: read {read}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_that_grows_or_shrinks_during_the_pass_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        for (len, change) in [
+            (80 * MB, 1i64),
+            (80 * MB, -(MB as i64)),
+            (300 * MB, -(10 * MB as i64)),
+        ] {
+            let path = sparse(&dir, len);
+            let (prefix, segments) = probe_view(&path, len);
+            let mut file = File::open(&path).unwrap();
+            file.seek(SeekFrom::Start(prefix.len() as u64)).unwrap();
+            let mut pass = OnePass::new(&mut file, len, &prefix, &segments).unwrap();
+            let mut buf = [0u8; 16];
+            pass.seek(SeekFrom::Start(2 * MB)).unwrap();
+            pass.read_exact(&mut buf).unwrap();
+            OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(len.checked_add_signed(change).unwrap())
+                .unwrap();
+            let err = pass.finish().expect_err("changed during the pass");
+            let want = if change > 0 { "grew" } else { "shrank" };
+            assert!(err.to_string().contains(want), "{len} {change}: {err}");
+        }
+    }
 }

@@ -189,6 +189,76 @@ fn scenario_scan_control_pause_within_250_ms() {
     completed(&e.s().wait().expect("summary"));
 }
 
+/// A 16 MB TIFF of 65536x65536 8-bit grey in 256 uncompressed 4096x4096 tiles that all share one block: exactly
+/// the 4 GiB decode-work cap (ADR-0088), so it decodes for seconds on a CPU worker without a read.
+fn slow_tiff() -> Vec<u8> {
+    let (side, tile, n) = (65_536u32, 4096u32, 256u32);
+    let mut t = b"II\x2A\x00\0\0\0\0".to_vec();
+    t.extend((0..tile * tile).map(|i| (i % 251) as u8));
+    let offsets = t.len() as u32;
+    t.extend((0..n).flat_map(|_| 8u32.to_le_bytes()));
+    let counts = t.len() as u32;
+    t.extend((0..n).flat_map(|_| (tile * tile).to_le_bytes()));
+    let ifd = t.len() as u32;
+    t[4..8].copy_from_slice(&ifd.to_le_bytes());
+    let entries: [(u16, u16, u32, u32); 10] = [
+        (0x0100, 4, 1, side),
+        (0x0101, 4, 1, side),
+        (0x0102, 3, 1, 8),
+        (0x0103, 3, 1, 1),
+        (0x0106, 3, 1, 1),
+        (0x0115, 3, 1, 1),
+        (0x0142, 4, 1, tile),
+        (0x0143, 4, 1, tile),
+        (0x0144, 4, n, offsets),
+        (0x0145, 4, n, counts),
+    ];
+    t.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    for (tag, typ, count, value) in entries {
+        t.extend_from_slice(&tag.to_le_bytes());
+        t.extend_from_slice(&typ.to_le_bytes());
+        t.extend_from_slice(&count.to_le_bytes());
+        t.extend_from_slice(&value.to_le_bytes());
+    }
+    t.extend_from_slice(&0u32.to_le_bytes());
+    t
+}
+
+#[test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`; ADR-0076).
+#[ignore = "timing"]
+fn cancel_reaches_a_long_tiff_decode_within_250_ms() {
+    let _cores = exclusive();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tmp.path().join("scans");
+    std::fs::create_dir(&root).expect("mkdir");
+    std::fs::write(root.join("slow.tif"), slow_tiff()).expect("write");
+    let e = env();
+    let id = e.add(&root);
+    e.s().start_scan(&[id]).expect("start");
+    // Read and handed to a CPU worker (the job holds its buffer budget), then well into the decode.
+    wait_snapshot(e.s(), Duration::from_secs(60), "decode under way", |s| {
+        s.buffered_bytes > 0 && s.active_workers > 0
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let t = Instant::now();
+    e.s().cancel().expect("cancel");
+    let summary = e.s().wait().expect("summary");
+    let latency = t.elapsed();
+    println!("cancel latency during a TIFF decode: {latency:?}");
+    assert!(
+        latency <= ps_fixtures::ci_slack(Duration::from_millis(250)),
+        "stopped after {latency:?}"
+    );
+    assert_eq!(summary.status, RunStatus::Cancelled);
+    let f = &e.files(id)["slow.tif"];
+    assert_eq!(
+        f.stage,
+        Stage::Probed,
+        "the cancelled decode left no result"
+    );
+}
+
 /// Candidate-sized files that take long to read: a camera JPEG padded (sparsely) to `size` bytes.
 fn big_files(dir: &Path, n: usize, size: u64) {
     std::fs::create_dir_all(dir).expect("mkdir");

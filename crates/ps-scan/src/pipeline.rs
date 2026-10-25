@@ -373,6 +373,9 @@ enum Content {
         metadata_block: Option<Vec<u8>>,
         /// A plain TIFF decoded during the same read (ADR-0086).
         decoded: Option<Result<ps_media::Decoded, DecodeError>>,
+        /// The first image's dimensions as that decode read them (even when it failed later), for a TIFF
+        /// whose probe found none.
+        tiff_dims: Option<(u32, u32)>,
     },
 }
 
@@ -720,26 +723,39 @@ fn probe_with_targeted_reads(
 }
 
 /// Hash and decode a plain TIFF above 64 MB from one sequential read (ADR-0086). The decode's own failure is
-/// part of the result; an I/O error or a cancel (during the decode or after it) is the `Err`.
+/// part of the result, with the first image's dimensions when the decoder read them; an I/O error or a cancel
+/// (during the decode or after it) is the `Err`. Pause and cancel are checked before every strip or tile, also
+/// those served from memory without a read (ADR-0088).
+#[allow(clippy::type_complexity)]
 fn one_pass_analysis(
     r: &mut Controlled<'_>,
     size: u64,
     prefix: &[u8],
     segments: &[ps_media::tiff::Segment],
     probe: &ProbeRecord,
-) -> io::Result<(ContentId, Result<ps_media::Decoded, DecodeError>)> {
+) -> io::Result<(
+    ContentId,
+    Result<ps_media::Decoded, DecodeError>,
+    Option<(u32, u32)>,
+)> {
+    let busy = r.busy;
+    let stop = || busy.checkpoint().is_err();
     let mut pass = OnePass::new(r, size, prefix, segments)?;
-    let decoded = ps_media::decode::decode_tiff_reader(
+    let (decoded, stats) = ps_media::decode::decode_tiff_reader_with(
         &mut pass,
         probe,
         ps_media::decode::ANALYSIS_MIN_LONG_EDGE,
-    )
-    .map(|(d, _)| d);
+        &stop,
+    );
     if let Some(e) = pass.take_error() {
         return Err(e);
     }
+    if matches!(decoded, Err(DecodeError::Cancelled)) {
+        return Err(io::Error::other(Cancelled));
+    }
     let identity = pass.finish()?;
-    Ok((identity, decoded))
+    let dims = Some(stats.image_dims).filter(|&(w, h)| w > 0 && h > 0);
+    Ok((identity, decoded, dims))
 }
 
 fn process_file(
@@ -946,11 +962,12 @@ fn process_file(
         Content::Buffer(buf)
     } else if one_pass {
         match one_pass_analysis(&mut r, size, &buf, &segments, &probe) {
-            Ok((identity, decoded)) => Content::Streamed {
+            Ok((identity, decoded, tiff_dims)) => Content::Streamed {
                 identity,
                 metadata_block: ps_media::tiff_metadata_block(&buf, &segments),
                 prefix: buf,
                 decoded: Some(decoded),
+                tiff_dims,
             },
             Err(e) => {
                 if !is_cancel(&e) {
@@ -966,6 +983,7 @@ fn process_file(
                 prefix: buf,
                 metadata_block: None,
                 decoded: None,
+                tiff_dims: None,
             },
             Err(e) => {
                 if !is_cancel(&e) {
@@ -1063,7 +1081,10 @@ fn worker_loop(ctx: &RunCtx, rx: &Receiver<CpuJob>, tx: &Sender<Persist>) {
         if busy.checkpoint().is_err() {
             return;
         }
-        let out = analyze(ctx, job);
+        // `None`: cancelled during the decode; the file stays `probed`, like a queued job.
+        let Some(out) = analyze(ctx, job, &busy) else {
+            return;
+        };
         drop(busy);
         if tx.send(out).is_err() {
             return;
@@ -1071,8 +1092,9 @@ fn worker_loop(ctx: &RunCtx, rx: &Receiver<CpuJob>, tx: &Sender<Persist>) {
     }
 }
 
-/// Everything from the one buffer (ADR-0010): identity, metadata, analysis decode, hashes, thumbnail.
-fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
+/// Everything from the one buffer (ADR-0010): identity, metadata, analysis decode, hashes, thumbnail. `None`
+/// when a cancel stopped the decode (pause parks it inside the decode, through `busy`).
+fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
     let CpuJob {
         idx,
         path,
@@ -1084,16 +1106,17 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
         mtime,
         _permit,
     } = job;
-    let (identity, bytes, full, metadata_block, decoded) = match content {
-        Content::Buffer(b) => (ps_hash::identity_from_buffer(&b), b, true, None, None),
+    let (identity, bytes, full, metadata_block, decoded, tiff_dims) = match content {
+        Content::Buffer(b) => (ps_hash::identity_from_buffer(&b), b, true, None, None, None),
         Content::Streamed {
             identity,
             prefix,
             metadata_block,
             decoded,
-        } => (identity, prefix, false, metadata_block, decoded),
+            tiff_dims,
+        } => (identity, prefix, false, metadata_block, decoded, tiff_dims),
     };
-    let metadata = ps_media::extract_metadata(
+    let mut metadata = ps_media::extract_metadata(
         metadata_block.as_deref().unwrap_or(&bytes),
         &probe,
         mtime,
@@ -1102,7 +1125,21 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
             zone: &*ctx.zone,
         },
     );
+    // A plain TIFF whose probe found no dimensions (an ImageWidth the probe cannot read): the decoder's, so the
+    // row gets them and a rescan does not analyse it again (ADR-0088).
+    let is_tiff = probe.format == Some(ps_model::Format::Tiff);
+    if is_tiff && metadata.fields.width.is_none() {
+        let dims = tiff_dims.or_else(|| {
+            full.then(|| ps_media::tiff_decode::dimensions(std::io::Cursor::new(&bytes)))
+                .flatten()
+        });
+        if let Some((w, h)) = dims {
+            metadata.fields.width = Some(w);
+            metadata.fields.height = Some(h);
+        }
+    }
     let capture = metadata.capture_date.map(|d| d.value);
+    let stop = || busy.checkpoint().is_err();
     let (hashes, thumb) = if probe.kind() == Some(MediaKind::Video) {
         (
             None,
@@ -1121,6 +1158,15 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
             Ok((d, thumb))
         }) {
             Ok((d, thumb)) => (still_hashes(&d.image), thumb),
+            // Neither the probe nor the decoder could read its dimensions: not a picture, and a thumbed row
+            // without dimensions would be re-read by every rescan.
+            Err(e) if is_tiff && metadata.fields.width.is_none() => {
+                return Some(Persist::Failed {
+                    idx,
+                    path,
+                    message: format!("analysis failed: {e}"),
+                });
+            }
             Err(e) => (
                 None,
                 ps_media::thumb::placeholder(
@@ -1136,8 +1182,9 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
             ps_media::thumb::placeholder(&probe, capture, "preview unavailable (file too large)"),
         )
     } else {
-        match ps_media::analyze_still(&bytes, &probe) {
+        match ps_media::analyze_still_with(&bytes, &probe, &stop) {
             Ok((decoded, thumb, _)) => (still_hashes(&decoded.image), thumb),
+            Err(DecodeError::Cancelled) => return None,
             Err(DecodeError::HeicUnavailable) => (
                 None,
                 ps_media::thumb::placeholder(
@@ -1155,16 +1202,16 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
                 ),
             ),
             Err(e) => {
-                return Persist::Failed {
+                return Some(Persist::Failed {
                     idx,
                     path,
                     message: format!("analysis failed: {e}"),
-                };
+                });
             }
         }
     };
     drop(bytes);
-    Persist::Done {
+    Some(Persist::Done {
         idx,
         path,
         is_new,
@@ -1175,7 +1222,7 @@ fn analyze(ctx: &RunCtx, job: CpuJob) -> Persist {
             metadata,
         }),
         thumb,
-    }
+    })
 }
 
 /// Perceptual hashes of an analysis decode.

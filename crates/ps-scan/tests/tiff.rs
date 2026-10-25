@@ -333,3 +333,66 @@ fn scenario_scanning_tiff_catalogued_without_dimensions_analysed_again() {
         "a second rescan reads nothing"
     );
 }
+
+/// `t` (a little-endian TIFF) with IFD0's ImageWidth and ImageLength rewritten as LONG8 values (type 16, a
+/// BigTIFF type some writers use in classic files), stored at the end of the file.
+fn with_long8_dimensions(mut t: Vec<u8>) -> Vec<u8> {
+    let u16_at = |t: &[u8], p: usize| u16::from_le_bytes([t[p], t[p + 1]]);
+    let u32_at = |t: &[u8], p: usize| u32::from_le_bytes([t[p], t[p + 1], t[p + 2], t[p + 3]]);
+    assert_eq!(&t[..4], b"II\x2A\x00");
+    let ifd = u32_at(&t, 4) as usize;
+    let n = u16_at(&t, ifd) as usize;
+    for i in 0..n {
+        let e = ifd + 2 + 12 * i;
+        let tag = u16_at(&t, e);
+        if tag != 0x0100 && tag != 0x0101 {
+            continue;
+        }
+        let value = match u16_at(&t, e + 2) {
+            3 => u32::from(u16_at(&t, e + 8)),
+            _ => u32_at(&t, e + 8),
+        };
+        let at = t.len() as u32;
+        t.extend_from_slice(&u64::from(value).to_le_bytes());
+        t[e + 2..e + 4].copy_from_slice(&16u16.to_le_bytes());
+        t[e + 8..e + 12].copy_from_slice(&at.to_le_bytes());
+    }
+    t
+}
+
+#[test]
+fn scenario_scanning_tiff_with_unusual_dimension_types_analysed_once() {
+    let _g = shared();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().join("src");
+    std::fs::create_dir(&dir).expect("dir");
+    let t = with_long8_dimensions(tiff_image(&TiffSpec::new(1600, 1200, 5)));
+    assert!(t.len() as u64 > PROBE_LIMIT);
+    std::fs::write(dir.join("long8.tif"), &t).expect("write");
+    let data = tmp.path().join("data");
+    std::fs::create_dir(&data).expect("data");
+    let id;
+    {
+        let e = env_at(&data);
+        id = e.add(&dir);
+        completed(&e.scan(&[id]));
+        let f = &e.files(id)["long8.tif"];
+        assert_eq!(f.stage, Stage::Thumbed);
+        assert_eq!((f.width, f.height), (Some(1600), Some(1200)));
+    }
+    let e = env_at(&data);
+    e.instr.reset();
+    let s = e.scan(&[id]);
+    completed(&s);
+    assert_eq!(s.diff.reanalyzed, 0, "{:?}", s.diff);
+    let root = e.root(id);
+    assert_eq!(
+        e.instr
+            .bytes_per_file()
+            .get(&root.join("long8.tif"))
+            .copied()
+            .unwrap_or(0),
+        0,
+        "a rescan reads nothing"
+    );
+}
