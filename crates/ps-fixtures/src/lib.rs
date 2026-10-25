@@ -15,6 +15,7 @@ pub mod plan;
 pub mod preset;
 pub mod rng;
 pub mod shared;
+pub mod sparse;
 pub mod synth;
 pub mod tiff;
 pub mod tiff_image;

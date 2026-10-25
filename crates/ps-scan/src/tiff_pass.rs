@@ -236,8 +236,7 @@ mod tests {
     }
 
     use std::cell::Cell;
-    use std::fs::{File, OpenOptions};
-    use std::io::Write;
+    use std::fs::File;
     use std::rc::Rc;
 
     use ps_model::ContentIdKind;
@@ -249,18 +248,7 @@ mod tests {
     /// identity depends on the regions it reads.
     fn sparse(dir: &tempfile::TempDir, len: u64) -> std::path::PathBuf {
         let path = dir.path().join(format!("sparse-{len}.bin"));
-        let mut f = File::create(&path).unwrap();
-        f.set_len(len).unwrap();
-        let mut at = 0u64;
-        while at < len {
-            f.seek(SeekFrom::Start(at)).unwrap();
-            let n = (len - at).min(5);
-            f.write_all(&(at as u32).to_le_bytes()[..n.min(4) as usize])
-                .unwrap();
-            at += 7 * MB + 13;
-        }
-        f.seek(SeekFrom::Start(len - 3)).unwrap();
-        f.write_all(b"end").unwrap();
+        ps_fixtures::sparse::marked(&path, len, 7 * MB + 13).unwrap();
         path
     }
 
@@ -397,12 +385,7 @@ mod tests {
             let mut buf = [0u8; 16];
             pass.seek(SeekFrom::Start(2 * MB)).unwrap();
             pass.read_exact(&mut buf).unwrap();
-            OpenOptions::new()
-                .write(true)
-                .open(&path)
-                .unwrap()
-                .set_len(len.checked_add_signed(change).unwrap())
-                .unwrap();
+            ps_fixtures::sparse::resize(&path, len.checked_add_signed(change).unwrap()).unwrap();
             let err = pass.finish().expect_err("changed during the pass");
             let want = if change > 0 { "grew" } else { "shrank" };
             assert!(err.to_string().contains(want), "{len} {change}: {err}");
