@@ -88,3 +88,14 @@ The headless CLI SHALL generate a corpus with a seed, a preset (`small` about 50
 #### Scenario: Small preset is quick
 - **WHEN** the small preset is generated on the reference machine
 - **THEN** generation completes in less than 30 s
+
+### Requirement: TIFF fixtures
+The fixture generator SHALL write TIFF test images with the directories before or after the pixel data, strips or tiles, chunky or planar samples, 8- or 16-bit integer or 32-bit float samples, greyscale, RGB, RGBA, CMYK or JPEG-compressed YCbCr, uncompressed or LZW or Deflate with predictors, several pages or reduced-resolution levels, an orientation tag and camera EXIF; the ground-truth corpus presets SHALL NOT contain them.
+
+#### Scenario: End-directory TIFF generated
+- **WHEN** a TIFF with its directories after the pixel data is generated for each layout and sample format
+- **THEN** its first directory offset lies after all of its strip or tile data and an independent TIFF decoder reads the expected dimensions and samples
+
+#### Scenario: Corpus presets contain no TIFF
+- **WHEN** the small corpus is generated
+- **THEN** no generated file is a TIFF

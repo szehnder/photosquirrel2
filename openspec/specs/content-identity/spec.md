@@ -53,3 +53,14 @@ Identity computation SHALL be deterministic across runs, platforms and thread co
 #### Scenario: Hash is stable across runs
 - **WHEN** the same fixture is hashed in two processes with different thread counts
 - **THEN** both identities are identical
+
+### Requirement: Identity from bytes fed during another read
+An identity computed from the bytes of a file fed in file order while it is read for another purpose SHALL equal the identity computed by reading the file for hashing alone, for full and sampled identities, and SHALL report which bytes it still needs.
+
+#### Scenario: Incremental identity equals one-shot identity
+- **WHEN** a 10 MB file and a 300 MB file are fed to the incremental identity in uneven pieces, skipping what it does not need
+- **THEN** both identities equal the identities of reading the files for hashing alone, and the 300 MB file needed only its size and three 4 MB windows
+
+#### Scenario: Incremental identity of an empty file
+- **WHEN** the incremental identity of an empty file is finished without any bytes fed
+- **THEN** it needs no bytes and equals the identity of reading the empty file

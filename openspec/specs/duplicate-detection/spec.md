@@ -88,3 +88,10 @@ Grouping the ground-truth corpus SHALL reach pairwise precision >= 0.995 and rec
 #### Scenario: Corpus grouping gate
 - **WHEN** the medium corpus with seed 42 is scanned, grouped and evaluated against its truth file
 - **THEN** precision is at least 0.995, recall at least 0.97 and must-not-merge violations are 0
+
+### Requirement: TIFF copies grouped by look
+TIFF copies of a photo SHALL group with its JPEG copies by look like any other resized or recompressed copy, whatever their directory placement, layout, sample format or size.
+
+#### Scenario: TIFF copies group with their JPEG
+- **WHEN** one picture is scanned as an 800 px JPEG, an 8-bit TIFF with its directories after its pixel data, a 16-bit LZW TIFF, a tiled JPEG-compressed pyramid TIFF and a TIFF larger than 64 MB
+- **THEN** all five files are in one duplicate group
