@@ -103,3 +103,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0097](0097-avif-decodes-hold-their-budget-and-stop-on-cancel.md) | AVIF decodes stop waiting on cancel and hold their memory until their thread ends; the decode budget is FIFO (amends 0094, 0095) |
 | [0098](0098-decode-failures-are-retried-when-transient-or-after-a-decoder-change.md) | HEIC and AVIF decode failures are retried when transient or after a decoder change (migration 20; amends 0091, 0095) |
 | [0099](0099-cleanup-runs-recheck-when-the-catalog-changes-and-edits-wait.md) | A cleanup run re-checks its files when the catalog changes under it; keeper, group and exclusion edits wait while it runs (amends 0096, 0065) |
+| [0100](0100-refused-avif-decodes-use-no-attempt-and-one-decode-budget-per-scanner.md) | A refused AVIF decode uses up no attempt; one decode budget serves every run of a scanner (amends 0098, 0097) |

@@ -151,7 +151,7 @@ impl Drop for BufferPermit {
 /// checkpoint returned an error) removes its ticket.
 #[derive(Debug)]
 pub struct DecodeBudget {
-    cap: u64,
+    cap: AtomicU64,
     state: Mutex<DecodeState>,
     cv: Condvar,
     peak_bytes: AtomicU64,
@@ -169,7 +169,7 @@ struct DecodeState {
 impl DecodeBudget {
     pub fn new(cap: u64) -> Arc<DecodeBudget> {
         Arc::new(DecodeBudget {
-            cap: cap.max(1),
+            cap: AtomicU64::new(cap.max(1)),
             state: Mutex::new(DecodeState::default()),
             cv: Condvar::new(),
             peak_bytes: AtomicU64::new(0),
@@ -177,7 +177,13 @@ impl DecodeBudget {
     }
 
     pub fn cap(&self) -> u64 {
-        self.cap
+        self.cap.load(Ordering::Relaxed)
+    }
+
+    /// Change the cap (a run started with other options); waiters see it on their next attempt.
+    pub fn set_cap(&self, cap: u64) {
+        self.cap.store(cap.max(1), Ordering::Relaxed);
+        self.cv.notify_all();
     }
 
     /// Wait for the turn of this request and for `bytes` to fit, then take them. `check` runs between attempts
@@ -215,7 +221,7 @@ impl DecodeBudget {
             check()?;
             let mut st = self.state.lock();
             let first = st.waiting.first() == Some(&ticket);
-            let fits = st.used + bytes <= self.cap || st.used == st.orphaned;
+            let fits = st.used + bytes <= self.cap() || st.used == st.orphaned;
             if first && fits {
                 st.used += bytes;
                 st.waiting.remove(&ticket);

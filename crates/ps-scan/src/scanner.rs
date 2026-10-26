@@ -115,6 +115,9 @@ pub struct Scanner {
     active: Mutex<Option<Arc<ActiveRun>>>,
     recovered: Vec<ScanRunId>,
     groups: Arc<GroupEngine>,
+    /// One decode budget for every run of this scanner (ADR-0100): an abandoned AVIF decode of a cancelled run
+    /// keeps its bytes counted in the next run until its thread ends.
+    decode_budget: Arc<crate::memory::DecodeBudget>,
 }
 
 impl std::fmt::Debug for Scanner {
@@ -171,6 +174,7 @@ impl Scanner {
             catalog.writer().submit(Command::InterruptRunning)?;
             catalog.writer().flush()?;
         }
+        let decode_budget = crate::memory::DecodeBudget::new(opts.decode_memory_cap);
         Ok(Scanner {
             catalog,
             thumbs,
@@ -178,6 +182,7 @@ impl Scanner {
             active: Mutex::new(None),
             recovered: before,
             groups: Arc::new(GroupEngine::new()),
+            decode_budget,
         })
     }
 
@@ -214,6 +219,11 @@ impl Scanner {
     /// hash upgrades). Runs after each completed scan automatically.
     pub fn regroup(&self) -> Result<RegroupReport> {
         self.groups.refresh(&self.catalog)
+    }
+
+    /// The decode budget every run of this scanner shares (ADR-0100).
+    pub fn decode_budget(&self) -> &Arc<crate::memory::DecodeBudget> {
+        &self.decode_budget
     }
 
     /// Runs found `running` at open and marked `interrupted` (offered for resume).
@@ -673,7 +683,11 @@ impl Scanner {
             ctl: Arc::new(Control::new()),
             progress: Arc::new(Progress::new(run, &ids)),
             budget: ByteBudget::new(opts.memory_cap),
-            decode_budget: crate::memory::DecodeBudget::new(opts.decode_memory_cap),
+            decode_budget: {
+                // Shared by every run (ADR-0100); a changed cap applies from this run on.
+                self.decode_budget.set_cap(opts.decode_memory_cap);
+                self.decode_budget.clone()
+            },
             sources,
             changed_during_scan: AtomicU64::new(0),
             retries_exhausted: AtomicU64::new(0),

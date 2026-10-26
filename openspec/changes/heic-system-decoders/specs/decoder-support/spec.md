@@ -147,7 +147,7 @@ AVIF stills SHALL be decoded by a decoder bundled with PhotoSquirrel on every pl
 
 #### Scenario: Abandoned AVIF decodes are capped
 - **WHEN** two AVIF decodes have been abandoned and are still running, and more AVIF decodes are requested, also many at once
-- **THEN** each is refused as a transient failure without starting a thread, and once an abandoned decode ends, decoding resumes
+- **THEN** each is refused without starting a thread (a refusal, not a failure of the file), and once an abandoned decode ends, decoding resumes
 
 #### Scenario: Cancel stops waiting for a hung AVIF decode
 - **WHEN** the scan is stopped while an AVIF decode hangs

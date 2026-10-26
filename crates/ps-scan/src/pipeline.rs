@@ -1468,6 +1468,10 @@ fn failure_record(
         _ => return None,
     };
     let backend = ctx.opts.decoders.backend(key)?;
+    if matches!(e, DecodeError::Refused(_)) {
+        // Not started: no attempt used (ADR-0100).
+        return Some(ps_model::DecodeFailure::refused(prior, key, &backend));
+    }
     Some(ps_model::DecodeFailure::next(
         prior,
         key,

@@ -82,21 +82,19 @@ pub fn live_decodes() -> (u64, u64) {
 }
 
 /// Count a new decode thread in, or refuse it: while [`MAX_ABANDONED`] abandoned decodes are alive, or
-/// [`MAX_LIVE`] threads are. A refusal is transient ([`DecodeError::Interrupted`]): the file is retried on a later
-/// scan.
+/// [`MAX_LIVE`] threads are. A refusal is not the file's doing ([`DecodeError::Refused`]): it is retried on a later
+/// scan without using up one of its attempts (ADR-0100).
 fn admit() -> Result<(), DecodeError> {
     let mut cur = DECODES.load(Ordering::Acquire);
     loop {
         let (in_flight, abandoned) = (cur & 0xffff_ffff, cur >> 32);
         if abandoned >= MAX_ABANDONED {
-            return Err(DecodeError::Interrupted(
+            return Err(DecodeError::Refused(
                 "AV1 decoding is paused: earlier AVIF decodes did not finish".into(),
             ));
         }
         if in_flight + abandoned >= MAX_LIVE {
-            return Err(DecodeError::Interrupted(
-                "too many AV1 decodes at once".into(),
-            ));
+            return Err(DecodeError::Refused("too many AV1 decodes at once".into()));
         }
         match DECODES.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => return Ok(()),
@@ -184,7 +182,7 @@ pub fn with_watchdog(
         });
     if let Err(e) = spawned {
         DECODES.fetch_sub(1, Ordering::AcqRel);
-        return Err(DecodeError::Interrupted(format!(
+        return Err(DecodeError::Refused(format!(
             "AV1 decoder thread could not start ({e})"
         )));
     }
@@ -915,7 +913,7 @@ mod tests {
             Ok(img(1))
         });
         match r {
-            Err(DecodeError::Interrupted(m)) => assert!(m.contains("paused"), "{m}"),
+            Err(DecodeError::Refused(m)) => assert!(m.contains("paused"), "{m}"),
             other => panic!("{other:?}"),
         }
         assert!(
@@ -932,10 +930,7 @@ mod tests {
             })
             .collect();
         for t in refused {
-            assert!(matches!(
-                t.join().unwrap(),
-                Err(DecodeError::Interrupted(_))
-            ));
+            assert!(matches!(t.join().unwrap(), Err(DecodeError::Refused(_))));
         }
         assert_eq!(live_decodes(), (0, MAX_ABANDONED));
         releases.pop().unwrap().send(()).unwrap();

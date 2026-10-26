@@ -671,3 +671,88 @@ fn scenario_incremental_rescan_corrupt_heic_is_not_re_read_on_an_unchanged_resca
     assert!(r.hashes.is_some());
     assert_eq!(r.decode_failure, None);
 }
+
+/// A decode refused before it starts (AV1 decoding paused while abandoned decodes run) says nothing about the
+/// file and uses up none of its attempts (ADR-0100): after five refused runs the file is still retried, and the
+/// first run after the abandoned decodes end decodes it.
+#[test]
+fn scenario_incremental_rescan_refused_avif_decodes_use_up_no_attempt() {
+    let _g = exclusive();
+    let src = source(&[("DCIM/IMG_0001.avif".into(), AVIF.to_vec())]);
+    let env = env();
+    let id = env.add(&src.root);
+    // Two decodes abandoned by the watchdog and still running: AV1 decoding is paused.
+    ps_media::av1::hooks::set_timeout(Some(std::time::Duration::from_millis(50)));
+    ps_media::av1::hooks::hang();
+    for _ in 0..ps_media::av1::MAX_ABANDONED {
+        assert!(matches!(
+            ps_media::av1::decode(AVIF),
+            Err(ps_media::DecodeError::Interrupted(_))
+        ));
+    }
+    assert_eq!(
+        ps_media::av1::live_decodes(),
+        (0, ps_media::av1::MAX_ABANDONED)
+    );
+    let row = |env: &Env| env.files(id)["DCIM/IMG_0001.avif"].clone();
+    for run in 0..5 {
+        let s = env.scan(&[id]);
+        completed(&s);
+        if run > 0 {
+            assert_eq!(s.diff.decode_retries, 1, "run {run}: read again");
+        }
+        let r = row(&env);
+        assert!(r.hashes.is_none());
+        let f = r.decode_failure.expect("a failure record");
+        assert_eq!(
+            (f.transient, f.attempts, f.backend.as_str()),
+            (true, 0, ps_media::av1::BACKEND),
+            "run {run}: no attempt used"
+        );
+    }
+    ps_media::av1::hooks::release();
+    ps_media::av1::hooks::set_timeout(None);
+    settle_avif();
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!((s.diff.decode_retries, s.diff.redecoded), (1, 1));
+    let r = row(&env);
+    assert!(r.hashes.is_some(), "decoded");
+    assert_eq!(r.decode_failure, None);
+}
+
+/// One decode budget per scanner (ADR-0100): the memory reserved by an AVIF decode that a cancelled run abandoned
+/// stays counted, as orphaned, through the next run, until the decode thread really ends.
+#[test]
+fn abandoned_decode_memory_of_a_cancelled_run_is_counted_in_the_next_run() {
+    let _g = exclusive();
+    let avif = source(&[("DCIM/IMG_0001.avif".into(), AVIF.to_vec())]);
+    let jpegs = source(&[(
+        "DCIM/IMG_0002.JPG".into(),
+        ps_fixtures::media::jpeg(640, 480, 5, 85),
+    )]);
+    let env = env();
+    let a = env.add(&avif.root);
+    let b = env.add(&jpegs.root);
+    let budget = env.s().decode_budget().clone();
+    ps_media::av1::hooks::hang();
+    env.s().start_scan(&[a]).expect("start");
+    wait_until(
+        std::time::Duration::from_secs(60),
+        "the AVIF decode",
+        || ps_media::av1::live_decodes().0 == 1,
+    );
+    let held = budget.in_flight().0;
+    assert!(held > 0, "the decode reserved its memory");
+    env.s().cancel().expect("cancel");
+    env.s().wait().expect("summary");
+    assert_eq!(ps_media::av1::live_decodes(), (0, 1), "abandoned");
+    assert_eq!(budget.in_flight(), (held, held), "counted as orphaned");
+    // The next run shares the budget: the abandoned decode's bytes are still held while it runs.
+    completed(&env.scan(&[b]));
+    assert!(std::sync::Arc::ptr_eq(env.s().decode_budget(), &budget));
+    assert_eq!(budget.in_flight(), (held, held));
+    ps_media::av1::hooks::release();
+    settle_avif();
+    assert_eq!(budget.in_flight(), (0, 0), "released when the thread ended");
+}

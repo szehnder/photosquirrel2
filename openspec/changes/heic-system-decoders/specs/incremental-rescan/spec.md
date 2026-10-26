@@ -37,11 +37,15 @@ A file that cannot be read to fill in its preview SHALL keep its catalogued anal
 - **THEN** the re-decode's full read finds another identity, and the file is analysed again as a changed file: the identity of the new bytes, hashes, no waiting mark, and a thumbnail under the new identity
 
 ### Requirement: Failed decodes are retried when transient or after a decoder change
-A HEIC or AVIF whose decode failed with its decoder present SHALL record the failure, the decoder backend and an attempt count (ADR-0098). An unchanged rescan SHALL decode it again while the failure is transient (a timeout, AV1 decoding paused, no thread) with fewer than 3 attempts, or when the backend changed, and SHALL NOT read it otherwise.
+A HEIC or AVIF whose decode failed with its decoder present SHALL record the failure, the decoder backend and an attempt count (ADR-0098). An unchanged rescan SHALL decode it again while the failure is transient (a timeout) with fewer than 3 attempts, or when the backend changed, and SHALL NOT read it otherwise. A decode refused before it started (AV1 decoding paused, too many decodes, no thread) SHALL use up no attempt (ADR-0100).
 
 #### Scenario: Timed-out AVIF is retried on rescan
 - **WHEN** an AVIF's decode is abandoned by the watchdog during a scan, and the folder is rescanned unchanged, first while decoding still hangs and then after it completes
 - **THEN** the AVIF keeps a placeholder with a transient failure, the first rescan reads it again (attempt 2), and the second fills in its preview and hashes and clears the failure
+
+#### Scenario: Refused AVIF decodes use up no attempt
+- **WHEN** an AVIF is scanned and rescanned unchanged five times while AV1 decoding is paused by abandoned decodes, and once more after they end
+- **THEN** every refused run keeps a transient failure with no attempt used and reads the file again, and the last run fills in its preview and hashes and clears the failure
 
 #### Scenario: Corrupt HEIC is not re-read on an unchanged rescan
 - **WHEN** a HEIC the decoder rejects is scanned and the folder is rescanned unchanged twice, then once with a newer decoder backend

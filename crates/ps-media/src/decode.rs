@@ -113,6 +113,11 @@ pub enum DecodeError {
     /// paused while abandoned decodes run, a thread that could not start): retried on a later scan (ADR-0097).
     #[error("decode did not complete: {0}")]
     Interrupted(String),
+    /// The decode was not started, for a reason that says nothing about the file (AV1 decoding paused while
+    /// abandoned decodes run, too many decode threads, a thread that could not start): retried on a later scan
+    /// without counting as an attempt (ADR-0100).
+    #[error("decode not started: {0}")]
+    Refused(String),
     /// The caller's stop check asked the decode to end (a scan paused into a cancel, ADR-0008).
     #[error("decode cancelled")]
     Cancelled,

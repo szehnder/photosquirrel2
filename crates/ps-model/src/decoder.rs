@@ -75,6 +75,22 @@ impl DecodeFailure {
         }
     }
 
+    /// The record after a decode that was refused before it started (ADR-0100: AV1 decoding paused, too many
+    /// decode threads): a refusal says nothing about the file, so it uses up no attempt. The prior record with
+    /// the same decoder and backend is kept; otherwise a transient record with no attempts, so the next rescan
+    /// decodes the file again.
+    pub fn refused(prior: Option<&DecodeFailure>, key: DecoderKey, backend: &str) -> DecodeFailure {
+        match prior.filter(|p| p.key == key && p.backend == backend) {
+            Some(p) => p.clone(),
+            None => DecodeFailure {
+                key,
+                backend: backend.to_owned(),
+                transient: true,
+                attempts: 0,
+            },
+        }
+    }
+
     /// Whether a rescan whose decoder for this key is `backend_now` (`None`: none available) decodes the
     /// unchanged file again.
     pub fn retry(&self, backend_now: Option<&str>) -> bool {
@@ -291,6 +307,39 @@ mod tests {
     /// Retry rule of decode failures (ADR-0098): transient failures up to [`MAX_DECODE_ATTEMPTS`] with the same
     /// backend, permanent ones never with it, either once more after a backend change; attempts count on only
     /// for the same backend and transient failures.
+    /// A refused decode uses up no attempt (ADR-0100): the prior record is kept as it was, or a transient one
+    /// with no attempts is made, which a rescan retries.
+    #[test]
+    fn refused_decodes_use_up_no_attempt() {
+        let r = DecodeFailure::refused(None, DecoderKey::Avif, "rav1d 1.1");
+        assert_eq!((r.transient, r.attempts), (true, 0));
+        assert!(r.retry(Some("rav1d 1.1")));
+        let t2 = DecodeFailure::next(
+            Some(&DecodeFailure::next(
+                None,
+                DecoderKey::Avif,
+                "rav1d 1.1",
+                true,
+            )),
+            DecoderKey::Avif,
+            "rav1d 1.1",
+            true,
+        );
+        let mut f = t2.clone();
+        for _ in 0..5 {
+            f = DecodeFailure::refused(Some(&f), DecoderKey::Avif, "rav1d 1.1");
+        }
+        assert_eq!(f, t2, "five refusals later: still attempt 2");
+        assert!(f.retry(Some("rav1d 1.1")));
+        assert_eq!(DecodeFailure::from_storage(&r.to_storage()), Some(r));
+        // A record of an older backend is replaced by a fresh one.
+        let old = DecodeFailure::next(None, DecoderKey::Avif, "rav1d 1.0", false);
+        assert_eq!(
+            DecodeFailure::refused(Some(&old), DecoderKey::Avif, "rav1d 1.1").attempts,
+            0
+        );
+    }
+
     #[test]
     fn decode_failures_retry_while_transient_or_after_a_backend_change() {
         let t1 = DecodeFailure::next(None, DecoderKey::Avif, "rav1d 1.1", true);
