@@ -15,8 +15,8 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{Entity, SharedString, TestAppContext, VisualTestContext};
 use ps_catalog::{DecisionWrite, UserDecision};
 use ps_model::{
-    AiKind, ExclusionCategory, ExclusionCounts, ExclusionSelection, FileId, IdList, ItemId, Sort,
-    SortField, SortKey,
+    AiKind, ExcludedListing, ExclusionCategory, ExclusionCounts, ExclusionSelection, FileId,
+    IdList, ItemId, Sort, SortField, SortKey,
 };
 use support::*;
 use ui_gallery::source::{Decision, ExcludedRow, GalleryQuery, GallerySource};
@@ -420,7 +420,10 @@ fn scenario_gallery_list_mode_shows_a_thumbnail_per_row(cx: &mut TestAppContext)
     // A row of photos too: AI documents have thumbnails.
     let x2 = x.clone();
     wait_until(&mut cx, "the rows", move |cx| {
-        cx.update(|_, cx| x2.read(cx).loaded_rows(cx).len() == listed.len())
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            x2.read(cx).loaded_rows(cx).len() == listed.len()
+        })
     });
     for (ix, r) in rows.iter().enumerate() {
         assert_eq!(
@@ -569,14 +572,16 @@ impl GallerySource for Huge {
             keys,
         })
     }
-    fn excluded_open(&self, q: &GalleryQuery) -> anyhow::Result<(ExclusionCounts, IdList)> {
+    fn excluded_open(&self, q: &GalleryQuery) -> anyhow::Result<ExcludedListing> {
         self.opens.fetch_add(1, Ordering::SeqCst);
-        Ok((
-            ExclusionCounts {
+        let list = self.id_list(q)?;
+        Ok(ExcludedListing {
+            counts: ExclusionCounts {
                 rows: vec![(ExclusionCategory::Small, None, u64::from(HUGE))],
             },
-            self.id_list(q)?,
-        ))
+            categories: vec![(ExclusionCategory::Small, None); list.len()],
+            list,
+        })
     }
     fn excluded_page(&self, ids: &[ItemId]) -> anyhow::Result<Vec<ExcludedRow>> {
         self.pages.fetch_add(1, Ordering::SeqCst);
@@ -777,4 +782,354 @@ fn excluded_state_defaults() {
         old.excluded, s,
         "a layout file from before keeps the defaults"
     );
+}
+
+// ---- gate review fixes (ADR-0104) ----------------------------------------------------------------------------
+
+/// The header counts what the sidebar counts: "Showing N of M set aside" while chips hide files, "M files set
+/// aside" when nothing is hidden; one file is "1 file".
+#[gpui_kit::test]
+fn excluded_header_says_shown_of_total(cx: &mut TestAppContext) {
+    use ui_workspace::views::library::{files, header_count, put_back_label};
+    assert_eq!(files(1), "1 file");
+    assert_eq!(files(1204), "1,204 files");
+    assert_eq!(put_back_label(0), "Put back in Library");
+    assert_eq!(put_back_label(1), "Put back in Library");
+    assert_eq!(put_back_label(3), "Put back 3 in Library");
+    assert_eq!(header_count(true, 1, 1, 0, ""), "1 file set aside");
+    assert_eq!(
+        header_count(true, 1, 1, 0, "scan"),
+        "1 file matches \u{201c}scan\u{201d}"
+    );
+    assert_eq!(header_count(false, 0, 0, 0, ""), "Loading…");
+    let (dirs, _) = data_copy();
+    let (_backend, shell, mut cx) = open_app(cx, &dirs, false);
+    let x = show_excluded(&shell, &mut cx);
+    let c = counts(&x, &mut cx);
+    let shown = ids(&x, &mut cx).len() as u64;
+    let hidden = c.of(ExclusionCategory::Unsupported);
+    assert!(hidden > 0);
+    let fmt = ui_workspace::inspector::format_count;
+    assert_eq!(
+        label("excluded-count", &mut cx).as_deref(),
+        Some(format!("Showing {} of {} set aside", fmt(shown), fmt(c.total())).as_str())
+    );
+    assert_eq!(shown + hidden, c.total());
+    x.update_in(&mut cx, |x, w, cx| x.show_all(w, cx));
+    settle(&mut cx);
+    assert_eq!(
+        label("excluded-count", &mut cx).as_deref(),
+        Some(format!("{} files set aside", fmt(c.total())).as_str())
+    );
+    // One file shown: singular everywhere.
+    set_chips(
+        &x,
+        ExclusionSelection::only(ExclusionCategory::Unreadable),
+        &mut cx,
+    );
+    assert_eq!(ids(&x, &mut cx).len(), 1, "the cut-off TIFF");
+    click("excluded-put-back-all", &mut cx);
+    assert_eq!(
+        label("excluded-confirm-put-back", &mut cx).as_deref(),
+        Some("Put back 1 file")
+    );
+}
+
+/// "Put back all shown" keeps its confirmation through a scan's 2 s refreshes while the list is the same, shows
+/// the new count when the list changes under it, and never puts back a set other than the one shown.
+#[gpui_kit::test]
+fn put_back_confirmation_survives_live_refreshes(cx: &mut TestAppContext) {
+    let (dirs, _) = data_copy();
+    let (backend, shell, mut cx) = open_app(cx, &dirs, false);
+    let x = show_excluded(&shell, &mut cx);
+    set_chips(&x, ExclusionSelection::only_ai(AiKind::Document), &mut cx);
+    click("excluded-put-back-all", &mut cx);
+    let asked = cx.update(|_, cx| x.read(cx).confirming_set()).unwrap();
+    assert_eq!(asked.len(), DOCUMENTS);
+    // A live refresh (what the view does every 2 s while a scan runs) with the list unchanged.
+    for _ in 0..3 {
+        x.update(&mut cx, |x, cx| x.reload(cx));
+        settle(&mut cx);
+        let now = cx.update(|_, cx| x.read(cx).confirming_set()).unwrap();
+        assert!(std::rc::Rc::ptr_eq(&now, &asked), "the same confirmation");
+        assert!(exists("excluded-confirm", &mut cx));
+    }
+    // The list changes under it: two more documents (a scan, the AI queue). The confirmation shows 14.
+    let mut q = default_query();
+    q.stacks = false;
+    let photos = backend.id_list(&q).unwrap().ids;
+    let more: Vec<ItemId> = photos
+        .iter()
+        .filter(|id| !template().documents.contains(id) && !template().screenshots.contains(id))
+        .take(2)
+        .copied()
+        .collect();
+    backend
+        .catalog()
+        .unwrap()
+        .writer()
+        .set_user_decisions(
+            more.iter()
+                .map(|id| DecisionWrite {
+                    file: FileId::from(*id),
+                    decision: Some(UserDecision::Exclude),
+                    reason: Some("document (AI suggestion)".into()),
+                    ai_kind: Some(AiKind::Document),
+                })
+                .collect(),
+        )
+        .unwrap();
+    x.update(&mut cx, |x, cx| x.reload(cx));
+    settle(&mut cx);
+    let now = cx.update(|_, cx| x.read(cx).confirming_set()).unwrap();
+    assert_eq!(now.len(), DOCUMENTS + 2);
+    assert_eq!(
+        label("excluded-confirm-put-back", &mut cx).as_deref(),
+        Some("Put back 14 files")
+    );
+    // A click on the confirmation as it was drawn before (12 files) puts back nothing.
+    let before = backend.catalog().unwrap().read().user_decisions().unwrap();
+    x.update_in(&mut cx, |x, w, cx| x.confirm_put_back(&asked, w, cx));
+    settle(&mut cx);
+    assert_eq!(
+        backend.catalog().unwrap().read().user_decisions().unwrap(),
+        before,
+        "a stale confirmation changes nothing"
+    );
+    assert_eq!(
+        cx.update(|_, cx| x.read(cx).confirming()),
+        Some(DOCUMENTS + 2)
+    );
+    // The confirmation shown now puts back exactly its 14.
+    click("excluded-confirm-put-back", &mut cx);
+    let x2 = x.clone();
+    wait_until(&mut cx, "the documents to leave", move |cx| {
+        cx.update(|_, cx| x2.read(cx).is_loaded() && x2.read(cx).ids(cx).is_empty())
+    });
+    let lib: HashSet<ItemId> = backend.id_list(&q).unwrap().ids.into_iter().collect();
+    assert!(now.iter().all(|id| lib.contains(id)));
+}
+
+/// Grid mode labels every tile with its category, and a file without a thumbnail (a skipped "too small" file is
+/// never analysed) shows the no-preview icon instead of a blank tile.
+#[gpui_kit::test]
+fn grid_tiles_show_their_category_and_a_no_preview_icon(cx: &mut TestAppContext) {
+    let (dirs, _) = data_copy();
+    let (_backend, shell, mut cx) = open_app(cx, &dirs, false);
+    let x = show_excluded(&shell, &mut cx);
+    x.update_in(&mut cx, |x, w, cx| x.set_mode(ExcludedMode::Grid, w, cx));
+    set_chips(
+        &x,
+        ExclusionSelection::only(ExclusionCategory::Small),
+        &mut cx,
+    );
+    let n = ids(&x, &mut cx).len();
+    assert!(n > 0, "the corpus has files too small to keep");
+    let grid = cx.update(|_, cx| x.read(cx).grid().clone());
+    let x2 = x.clone();
+    wait_until(&mut cx, "the grid's cells", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            !x2.read(cx).grid().read(cx).painted_labels().is_empty()
+        })
+    });
+    let (labels, icons, cells) = cx.update(|_, cx| {
+        let g = grid.read(cx);
+        (
+            g.painted_labels().to_vec(),
+            g.painted_icons().to_vec(),
+            g.painted_cells().to_vec(),
+        )
+    });
+    assert!(
+        labels.iter().all(|(_, l)| l.as_ref() == "Too small"),
+        "{labels:?}"
+    );
+    let drawn: Vec<usize> = cells
+        .iter()
+        .filter(|(_, p)| !matches!(p, ui_gallery::grid::CellPaint::Tile))
+        .map(|(i, _)| *i)
+        .collect();
+    assert!(!drawn.is_empty());
+    assert!(
+        drawn.iter().all(|i| icons.contains(i)),
+        "no thumbnail: the icon, not a blank tile ({icons:?} of {drawn:?})"
+    );
+    // Thumbnailed files are labelled too and draw no icon once their thumbnails are in.
+    set_chips(&x, ExclusionSelection::only_ai(AiKind::Screenshot), &mut cx);
+    let x2 = x.clone();
+    wait_until(&mut cx, "the screenshots' labels", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            let g = x2.read(cx).grid().read(cx);
+            g.painted_labels().len() == SCREENSHOTS
+                && g.painted_labels()
+                    .iter()
+                    .all(|(_, l)| l.as_ref() == "AI: Screenshot")
+        })
+    });
+}
+
+/// List mode with the keyboard: Down and Up move the selection, Shift extends it, Ctrl/Cmd+A selects every file
+/// shown, P puts the selection back, Shift+P asks for "Put back all shown", Escape cancels it.
+#[gpui_kit::test]
+fn list_mode_keyboard(cx: &mut TestAppContext) {
+    let (dirs, _) = data_copy();
+    let (backend, shell, mut cx) = open_app(cx, &dirs, false);
+    let x = show_excluded(&shell, &mut cx);
+    set_chips(&x, ExclusionSelection::only_ai(AiKind::Document), &mut cx);
+    let listed = ids(&x, &mut cx);
+    assert_eq!(listed.len(), DOCUMENTS);
+    x.update_in(&mut cx, |x, w, cx| {
+        let f = x.list_focus().clone();
+        w.focus(&f, cx);
+    });
+    cx.run_until_parked();
+    let selected = |cx: &mut VisualTestContext| cx.update(|_, cx| x.read(cx).selected_ids(cx));
+    // The first file is selected when the view opens; Down moves on.
+    x.update(&mut cx, |x, cx| x.select(0, cx));
+    cx.simulate_keystrokes("down");
+    assert_eq!(selected(&mut cx), vec![listed[1]]);
+    cx.simulate_keystrokes("down down up");
+    assert_eq!(selected(&mut cx), vec![listed[2]]);
+    cx.simulate_keystrokes("shift-down shift-down");
+    assert_eq!(selected(&mut cx), listed[2..5].to_vec());
+    assert_eq!(
+        label("excluded-selected", &mut cx).as_deref(),
+        Some("3 files selected")
+    );
+    cx.simulate_keystrokes("home");
+    assert_eq!(selected(&mut cx), vec![listed[0]]);
+    cx.simulate_keystrokes("end");
+    assert_eq!(selected(&mut cx), vec![listed[DOCUMENTS - 1]]);
+    cx.simulate_keystrokes("secondary-a");
+    assert_eq!(selected(&mut cx), listed);
+    cx.simulate_keystrokes("escape");
+    assert!(selected(&mut cx).is_empty());
+    cx.simulate_keystrokes("shift-p");
+    assert_eq!(cx.update(|_, cx| x.read(cx).confirming()), Some(DOCUMENTS));
+    cx.simulate_keystrokes("escape");
+    assert_eq!(cx.update(|_, cx| x.read(cx).confirming()), None);
+    // P puts the selection back.
+    x.update(&mut cx, |x, cx| x.select(0, cx));
+    cx.simulate_keystrokes("p");
+    let x2 = x.clone();
+    wait_until(&mut cx, "the file to leave", move |cx| {
+        cx.update(|_, cx| x2.read(cx).ids(cx).len() == DOCUMENTS - 1)
+    });
+    assert_eq!(
+        backend.detail(listed[0]).unwrap().unwrap().reasons[0],
+        "included by you"
+    );
+}
+
+/// A key pressed and released (GPUI turns Space or Enter on a focused clickable element into a click on release).
+fn press(key: &str, cx: &mut VisualTestContext) {
+    let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+    cx.update(|w, cx| w.render_frame(cx));
+    cx.simulate_event(gpui_kit::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    cx.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+    cx.run_until_parked();
+}
+
+/// The category chips are tab stops: Tab moves between them, Space and Enter toggle the focused one.
+#[gpui_kit::test]
+fn chips_toggle_from_the_keyboard(cx: &mut TestAppContext) {
+    let (dirs, _) = data_copy();
+    let (_backend, shell, mut cx) = open_app(cx, &dirs, false);
+    let x = show_excluded(&shell, &mut cx);
+    let focus_of = |c: ExclusionCategory, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| x.read(cx).chip_focus(c).unwrap().clone())
+    };
+    let cache = focus_of(ExclusionCategory::Cache, &mut cx);
+    let graphic = focus_of(ExclusionCategory::Graphic, &mut cx);
+    cx.update(|w, cx| {
+        w.render_frame(cx);
+        w.focus(&cache, cx)
+    });
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| x.read(cx).state().chips.is_on(ExclusionCategory::Cache)));
+    press("space", &mut cx);
+    settle(&mut cx);
+    assert!(!cx.update(|_, cx| x.read(cx).state().chips.is_on(ExclusionCategory::Cache)));
+    press("enter", &mut cx);
+    settle(&mut cx);
+    assert!(cx.update(|_, cx| x.read(cx).state().chips.is_on(ExclusionCategory::Cache)));
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    assert!(
+        cx.update(|w, _| graphic.is_focused(w)),
+        "Tab moves to the next chip"
+    );
+    press("space", &mut cx);
+    settle(&mut cx);
+    assert!(!cx.update(|_, cx| x.read(cx).state().chips.is_on(ExclusionCategory::Graphic)));
+}
+
+/// When the AI review's decision store cannot be saved after the include decisions commit, the view says the
+/// files were put back and that the AI may suggest them again, not that putting back failed.
+#[gpui_kit::test]
+fn put_back_warns_when_the_ai_rejection_is_not_saved(cx: &mut TestAppContext) {
+    let (dirs, data) = data_copy();
+    let (backend, shell, mut cx) = open_app(cx, &dirs, false);
+    let x = show_excluded(&shell, &mut cx);
+    set_chips(&x, ExclusionSelection::only_ai(AiKind::Screenshot), &mut cx);
+    let blocker = data.join(format!("{}.tmp", ps_service::insights::INSIGHTS_FILE));
+    std::fs::create_dir_all(blocker.join("in-the-way")).unwrap();
+    x.update_in(&mut cx, |x, w, cx| {
+        x.select_all(cx);
+        x.put_back_selected(w, cx)
+    });
+    let x2 = x.clone();
+    wait_until(&mut cx, "the warning", move |cx| {
+        cx.update(|_, cx| x2.read(cx).warning.is_some())
+    });
+    assert!(exists("excluded-warning", &mut cx));
+    assert!(
+        !exists("excluded-error", &mut cx),
+        "not reported as a failure"
+    );
+    let w = cx.update(|_, cx| x.read(cx).warning.clone().unwrap());
+    assert!(w.starts_with("Put back 3 files in the Library."), "{w}");
+    for id in &template().screenshots {
+        assert_eq!(
+            backend.detail(*id).unwrap().unwrap().reasons[0],
+            "included by you"
+        );
+    }
+    std::fs::remove_dir_all(&blocker).unwrap();
+}
+
+/// Selecting a file shows it in the inspector: the first file is selected when the view opens, and the inspector
+/// shows its details (not "Loading…").
+#[gpui_kit::test]
+fn inspector_shows_the_selected_excluded_file(cx: &mut TestAppContext) {
+    let (dirs, _) = data_copy();
+    let (_backend, shell, mut cx) = open_app(cx, &dirs, false);
+    // As a scripted launch straight into the view does: inside the start-up grace.
+    cx.update(|_, cx| {
+        ui_workspace::startup::StartupGrace::begin(cx, std::time::Duration::from_secs(2), None)
+    });
+    let x = show_excluded(&shell, &mut cx);
+    cx.update(|_, cx| ui_workspace::startup::StartupGrace::end(cx));
+    let first = ids(&x, &mut cx)[0];
+    wait_until(&mut cx, "the inspector's details", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            LibraryHub::inspector(cx).and_then(|i| i.read(cx).detail().map(|d| d.id)) == Some(first)
+        })
+    });
+    x.update(&mut cx, |x, cx| x.select(1, cx));
+    let second = ids(&x, &mut cx)[1];
+    wait_until(&mut cx, "the next file's details", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            LibraryHub::inspector(cx).and_then(|i| i.read(cx).detail().map(|d| d.id))
+                == Some(second)
+        })
+    });
 }

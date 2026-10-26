@@ -121,8 +121,16 @@ pub struct GalleryGrid {
     pub last_paint: Option<Instant>,
     /// Column and viewport offset of the live-update anchor while a refreshed list is on its way.
     anchor_slot: Option<(usize, f64)>,
+    /// A short label for a cell's bottom-left corner (the Excluded view's category, ADR-0104), by list index.
+    cell_label: Option<CellLabel>,
+    /// The last frame's cell labels and the cells drawn with the no-preview icon (tests).
+    painted_labels: Vec<(usize, SharedString)>,
+    painted_icons: Vec<usize>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// A cell's corner label by list index and id ([`GalleryGrid::set_cell_label`]).
+pub type CellLabel = Box<dyn Fn(usize, ItemId) -> Option<SharedString>>;
 
 impl GalleryGrid {
     pub fn new(model: Entity<GalleryModel>, cx: &mut Context<'_, Self>) -> Self {
@@ -150,6 +158,9 @@ impl GalleryGrid {
             bench: None,
             last_paint: None,
             anchor_slot: None,
+            cell_label: None,
+            painted_labels: Vec::new(),
+            painted_icons: Vec::new(),
             _subscriptions: subs,
         }
     }
@@ -239,6 +250,24 @@ impl GalleryGrid {
 
     pub fn painted_cells(&self) -> &[(usize, CellPaint)] {
         &self.painted
+    }
+
+    /// Label cells in their bottom-left corner (`None` clears it). The Excluded view labels each file with its
+    /// category, so the grid says why each file was set aside.
+    pub fn set_cell_label(&mut self, label: Option<CellLabel>, cx: &mut Context<'_, Self>) {
+        self.cell_label = label;
+        cx.notify();
+    }
+
+    /// The last frame's cell labels (index, text).
+    pub fn painted_labels(&self) -> &[(usize, SharedString)] {
+        &self.painted_labels
+    }
+
+    /// The last frame's cells that have no thumbnail at all and were drawn with the no-preview icon (the same
+    /// icon the Excluded list's thumbnail column shows).
+    pub fn painted_icons(&self) -> &[usize] {
+        &self.painted_icons
     }
 
     // ---- scrolling -----------------------------------------------------------------------------------
@@ -713,7 +742,11 @@ impl GalleryGrid {
             Vec::with_capacity(visible.len());
         let mut covers: Vec<PaintQuad> = Vec::new();
         let mut badges: Vec<(Bounds<Pixels>, SharedString, Hsla, Hsla)> = Vec::new();
+        let mut icons: Vec<Bounds<Pixels>> = Vec::new();
         self.painted.clear();
+        self.painted_labels.clear();
+        self.painted_icons.clear();
+        let cell_label = self.cell_label.take();
         let mut any_content = false;
 
         let grid_right = bounds.left() + lpx(self.grid_width(cx));
@@ -787,7 +820,44 @@ impl GalleryGrid {
                         tiles.push(fill(photo, place).corner_radii(PHOTO_RADIUS));
                         self.painted
                             .push((i, CellPaint::Placeholder(dominant.unwrap_or([0, 0, 0]))));
+                        // No thumbnail at all (a file never analysed: too small, unreadable): the no-preview icon,
+                        // not a blank tile.
+                        if summary.thumb.is_none() {
+                            let side = (cell * NO_PREVIEW_ICON).round();
+                            icons.push(Bounds::new(
+                                point(
+                                    left + lpx((cell - side) / 2.0),
+                                    top + lpx((cell - side) / 2.0),
+                                ),
+                                size(lpx(side), lpx(side)),
+                            ));
+                            self.painted_icons.push(i);
+                        }
                     }
+                }
+                if let Some(text) = cell_label.as_ref().and_then(|f| f(i, id))
+                    && cell >= MIN_CELL
+                {
+                    // Bottom-left, cut to the tile's width.
+                    let room = cell - 2.0 * BADGE_MARGIN - 2.0 * BADGE_PAD;
+                    let fits = (room / (BADGE_PX * 0.62)).floor().max(1.0) as usize;
+                    let shown: SharedString = if text.chars().count() > fits {
+                        let cut: String = text.chars().take(fits.saturating_sub(1)).collect();
+                        format!("{cut}…").into()
+                    } else {
+                        text.clone()
+                    };
+                    let w = BADGE_PAD * 2.0 + BADGE_PX * 0.62 * shown.chars().count() as f32;
+                    let b = Bounds::new(
+                        point(
+                            left + lpx(BADGE_MARGIN),
+                            top + lpx(cell - BADGE_MARGIN - BADGE_HEIGHT),
+                        ),
+                        size(lpx(w), lpx(BADGE_HEIGHT)),
+                    );
+                    covers.push(fill(b, colors.badge_bg).corner_radii(lpx(BADGE_HEIGHT / 2.0)));
+                    badges.push((b, shown, colors.badge_text, colors.badge_bg));
+                    self.painted_labels.push((i, text));
                 }
                 if summary.offline || summary.missing {
                     let dot = Bounds::new(
@@ -851,6 +921,7 @@ impl GalleryGrid {
                 }
             }
         });
+        self.cell_label = cell_label;
         if any_content {
             self.model.update(cx, |m, _| {
                 m.first_cells_frame.get_or_insert(now);
@@ -866,6 +937,17 @@ impl GalleryGrid {
             window.paint_layer(clip, |window| {
                 for (b, image) in images {
                     let _ = window.paint_image(b, b, PHOTO_RADIUS.into(), image, 0, false);
+                }
+                let path = gpui_kit::assets::IconName::Images.path();
+                for b in icons {
+                    let _ = window.paint_svg(
+                        b,
+                        path.clone(),
+                        None,
+                        TransformationMatrix::unit(),
+                        colors.no_preview,
+                        cx,
+                    );
                 }
             });
             window.paint_layer(clip, |window| {

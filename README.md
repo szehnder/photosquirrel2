@@ -182,15 +182,21 @@ it is in use, and `doctor` shows it).
 Everything PhotoSquirrel keeps out of the library is listed under **Excluded**, each file once, under the first of
 these categories that fits: excluded by you, an AI suggestion you accepted (screenshots, documents, graphics, not a
 photo), thumbnail caches, graphics, too small (icons, tiny images, very short videos), could not be read (a photo or
-video format whose file could not be read here, such as a damaged TIFF) and **Not a supported file** (anything that is
-not a photo or video format at all). Every file still lists all of its reasons.
+video whose file could not be read here: a damaged TIFF, an `IMG_9999.JPG` whose first bytes are broken, a file the
+disk would not give back) and **Not a supported file** (anything that is not a photo or video at all). Every file
+still lists all of its reasons.
 
 - **Filter by category.** Each chip shows its count and turns its files on or off; the AI chip has one entry per kind
   of suggestion. "Not a supported file" is off at first, and the view says how many files the filters hide (**Show
-  all** turns every chip on). A search box matches names and folders, and the list sorts by name, folder, size or
-  category. Your choices are remembered for each catalog.
+  all** turns every chip on). A search box matches the path the list shows (the source folder, the folders under it
+  and the name, in any case and script), and the list sorts by name, folder, size or category. Your choices are
+  remembered for each catalog. The chips are keyboard stops: Tab moves between them, Space or Enter turns one on or
+  off.
 - **List or Grid.** The list shows a thumbnail, the file and its folder, its category and its reasons; the grid is
-  the Library's grid limited to the files shown. Selecting a file shows it in the inspector.
+  the Library's grid limited to the files shown, with each file's category on its tile. Selecting a file shows it in
+  the inspector. In the list, the arrow keys (or J and K) move, Shift extends the selection, Ctrl+A (⌘A) selects
+  every file shown, P puts the selection back, Shift+P asks to put back everything shown, Enter confirms and Escape
+  cancels.
 - **Put back in Library.** Put back the selected files, or every file the filters show (after a confirmation with
   the count). They are included by you from then on, rescans keep that, and excluding them again undoes it. Putting
   back a file an AI suggestion excluded also rejects that suggestion, so the next AI run does not suggest it again.

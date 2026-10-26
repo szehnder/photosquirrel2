@@ -478,3 +478,13 @@ window size) when the delay is long; focus can still move.
   `gpui_kit` glob (`use gpui_kit::*` brings in `gpui_kit::test`), so plain `#[test]` expands to the gpui test macro
   and fails with "recursion limit reached while expanding `#[test]`". Import the items the test needs by name
   instead of `super::*` (as `views/reports.rs`'s `alert_tests` does), or use `#[gpui_kit::test]` deliberately.
+
+## Scripted captures draw only the start-up frames
+
+A window launched by `cargo xtask screenshot` (no input arriving) presented two frames and then nothing more on
+KDE Wayland: an entity notified later (a detail loaded on a background task) was not drawn, even after KWin
+activated the window. Whatever a capture must show has to be ready inside the start-up grace
+(`ui_workspace::startup::StartupGrace`): state the first frame reads must be set synchronously, not from an event
+delivered after the update (the Excluded view sets its inspected file when it installs its list, so the inspector
+loads the details within the grace). Headless tests call `window.render_frame` themselves and do not show this.
+

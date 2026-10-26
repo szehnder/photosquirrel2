@@ -1849,7 +1849,7 @@ impl ui_gallery::source::GallerySource for DemoThumbs {
     fn excluded_open(
         &self,
         query: &ui_gallery::source::GalleryQuery,
-    ) -> anyhow::Result<(ps_model::ExclusionCounts, ps_model::IdList)> {
+    ) -> anyhow::Result<ps_model::ExcludedListing> {
         self.inner.excluded_open(query)
     }
     fn excluded_page(
@@ -1858,7 +1858,7 @@ impl ui_gallery::source::GallerySource for DemoThumbs {
     ) -> anyhow::Result<Vec<ui_gallery::source::ExcludedRow>> {
         self.inner.excluded_page(ids)
     }
-    fn put_back(&self, ids: &[ps_model::ItemId]) -> anyhow::Result<usize> {
+    fn put_back(&self, ids: &[ps_model::ItemId]) -> anyhow::Result<ui_gallery::source::PutBack> {
         self.inner.put_back(ids)
     }
 }

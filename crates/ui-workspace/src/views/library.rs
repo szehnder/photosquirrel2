@@ -8,14 +8,12 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
-use gpui_kit::component::{
-    Icon, Sizable as _, button::Button, button::ButtonVariants as _, h_flex, v_flex,
-};
+use gpui_kit::component::{Icon, Sizable as _, ThemeStyled as _, button::Button, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ps_model::{
-    AiKind, Disposition, ExclusionCategory, ExclusionCounts, ExclusionSelection, Filter, ItemId,
-    MediaKind, SceneCategory, Sort, SortField,
+    AiKind, Disposition, ExcludedListing, ExclusionCategory, ExclusionCounts, ExclusionSelection,
+    Filter, ItemId, MediaKind, SceneCategory, Sort, SortField,
 };
 use ui_gallery::loupe::LoupeEvent;
 use ui_gallery::model::GalleryEvent;
@@ -110,8 +108,61 @@ pub fn default_query() -> GalleryQuery {
     }
 }
 
+actions!(
+    excluded,
+    [
+        /// The next file of the Excluded list (Down, J).
+        NextRow,
+        /// The previous file (Up, K).
+        PrevRow,
+        /// Extend the selection to the next file (Shift+Down).
+        ExtendNext,
+        /// Extend the selection to the previous file (Shift+Up).
+        ExtendPrev,
+        /// The first file (Home).
+        FirstRow,
+        /// The last file (End).
+        LastRow,
+        /// Select every file shown (Ctrl/Cmd+A).
+        SelectAllRows,
+        /// Put the selected files back in the Library (P).
+        PutBackSelection,
+        /// Put back every file shown, after a confirmation (Shift+P).
+        AskPutBackAll,
+        /// Confirm "Put back all shown" (Enter).
+        ConfirmPutBack,
+        /// Cancel the confirmation, else clear the selection (Escape).
+        CancelOrClear,
+    ]
+);
+
+/// Key context of the Excluded list.
+pub const EXCLUDED_LIST_CONTEXT: &str = "ExcludedList";
+
+/// The Excluded list's keys: the arrows (and J/K, as in Duplicates) move, Shift extends, single letters act on
+/// the selection, Enter confirms and Escape cancels a pending confirmation (as Duplicates' keys do).
+fn bind_excluded_keys(cx: &mut App) {
+    let c = Some(EXCLUDED_LIST_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("down", NextRow, c),
+        KeyBinding::new("j", NextRow, c),
+        KeyBinding::new("up", PrevRow, c),
+        KeyBinding::new("k", PrevRow, c),
+        KeyBinding::new("shift-down", ExtendNext, c),
+        KeyBinding::new("shift-up", ExtendPrev, c),
+        KeyBinding::new("home", FirstRow, c),
+        KeyBinding::new("end", LastRow, c),
+        KeyBinding::new("secondary-a", SelectAllRows, c),
+        KeyBinding::new("p", PutBackSelection, c),
+        KeyBinding::new("shift-p", AskPutBackAll, c),
+        KeyBinding::new("enter", ConfirmPutBack, c),
+        KeyBinding::new("escape", CancelOrClear, c),
+    ]);
+}
+
 /// Register the Library and Excluded views and the gallery inspector.
 pub fn register(cx: &mut App) {
+    bind_excluded_keys(cx);
     ViewRegistry::register(cx, ViewId::Library, |ctx, window, cx| {
         if let Some(v) = LibraryHub::library(cx) {
             v.update(cx, |v, cx| v.set_mode(ctx.library_mode, window, cx));
@@ -962,8 +1013,6 @@ impl gpui_kit::Global for LibraryTotals {}
 const EXCLUDED_FILE_COLUMN: f32 = 360.0;
 /// Width of the Excluded list's Category column.
 const EXCLUDED_CATEGORY_COLUMN: f32 = 150.0;
-/// The narrowest the chip area gets before the search, sort and mode controls wrap below it (default-size px).
-const EXCLUDED_CHIPS_MIN: f32 = 300.0;
 /// Height of an Excluded list row (a [`Tokens::thumb_sm`] thumbnail and its padding).
 const EXCLUDED_ROW_HEIGHT: f32 = 44.0;
 /// Rows of the Excluded list read per page (only pages that come on screen are read, ADR-0103).
@@ -1003,8 +1052,17 @@ pub struct ExcludedView {
     pending: HashSet<(u64, usize)>,
     /// Page reads so far (the paging test counts them).
     pub page_reads: usize,
-    /// "Put back all shown" waits for this confirmation (the number of files it will put back).
-    confirm_all: Option<usize>,
+    /// "Put back all shown" waits for this confirmation: the exact files it will put back (the list as it was
+    /// when asked, or as it became while the confirmation was open; the confirm button carries this set).
+    confirm_all: Option<std::rc::Rc<Vec<ItemId>>>,
+    /// Each listed file's category, by list position (the Grid's cell labels).
+    tags: std::rc::Rc<std::cell::RefCell<Vec<(ItemId, ExclusionCategory, Option<AiKind>)>>>,
+    /// The List mode's keyboard focus (arrows, Shift, select all, put back).
+    list_focus: FocusHandle,
+    /// The category chips' focus handles (tab stops; Space or Enter toggles).
+    chip_focus: Vec<(ExclusionCategory, FocusHandle)>,
+    /// Files were put back but an accepted AI suggestion among them could not be marked rejected.
+    pub warning: Option<String>,
     /// Files being put back.
     busy: Option<usize>,
     /// The file the inspector shows: the last one the user selected, kept after it leaves the list (a put back),
@@ -1028,6 +1086,28 @@ impl ExcludedView {
         let query = Self::query_for(&state, "");
         let model = cx.new(|_| GalleryModel::new(source.clone(), query.clone()));
         let grid = cx.new(|cx| GalleryGrid::new(model.clone(), cx));
+        let tags: std::rc::Rc<
+            std::cell::RefCell<Vec<(ItemId, ExclusionCategory, Option<AiKind>)>>,
+        > = Default::default();
+        {
+            let tags = tags.clone();
+            grid.update(cx, |g, cx| {
+                g.set_cell_label(
+                    Some(Box::new(move |i, id| {
+                        let tags = tags.borrow();
+                        tags.get(i)
+                            .filter(|t| t.0 == id)
+                            .map(|t| SharedString::from(category_badge(t.1, t.2)))
+                    })),
+                    cx,
+                )
+            });
+        }
+        let chip_focus = ExclusionCategory::ALL
+            .into_iter()
+            .filter(|c| *c != ExclusionCategory::Ai)
+            .map(|c| (c, cx.focus_handle().tab_stop(true)))
+            .collect();
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search name or folder"));
         let subs = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
@@ -1068,6 +1148,10 @@ impl ExcludedView {
             pending: HashSet::new(),
             page_reads: 0,
             confirm_all: None,
+            tags,
+            list_focus: cx.focus_handle(),
+            chip_focus,
+            warning: None,
             busy: None,
             inspected: None,
             last_error: None,
@@ -1116,8 +1200,14 @@ impl ExcludedView {
         let source = self.source.clone();
         let rows = 40;
         let job = move || -> anyhow::Result<_> {
-            let (counts, list) = source.excluded_open(&query)?;
-            let first: Vec<ItemId> = list.ids.iter().take(EXCLUDED_PAGE).copied().collect();
+            let listing = source.excluded_open(&query)?;
+            let first: Vec<ItemId> = listing
+                .list
+                .ids
+                .iter()
+                .take(EXCLUDED_PAGE)
+                .copied()
+                .collect();
             let page = source.excluded_page(&first)?;
             let summaries = source.summaries(&first)?;
             let mut thumbs = Vec::new();
@@ -1129,14 +1219,14 @@ impl ExcludedView {
                     thumbs.push((t, bgra));
                 }
             }
-            Ok((query, counts, list, first, page, summaries, thumbs))
+            Ok((query, listing, first, page, summaries, thumbs))
         };
-        let Some(Ok((query, counts, list, first, page, summaries, thumbs))) =
+        let Some(Ok((query, listing, first, page, summaries, thumbs))) =
             crate::startup::StartupGrace::within(deadline, job)
         else {
             return false;
         };
-        self.install(query, counts, list, cx);
+        self.install(query, listing, cx);
         let generation = self.model.read(cx).index.generation;
         self.insert_page((generation, 0), first, page);
         self.model.update(cx, |m, _| {
@@ -1168,7 +1258,7 @@ impl ExcludedView {
                     return;
                 }
                 match result {
-                    Ok((counts, list)) => this.install(query, counts, list, cx),
+                    Ok(listing) => this.install(query, listing, cx),
                     Err(e) => {
                         this.last_error = Some(e);
                         cx.notify();
@@ -1182,16 +1272,32 @@ impl ExcludedView {
     fn install(
         &mut self,
         query: GalleryQuery,
-        counts: ExclusionCounts,
-        list: ps_model::IdList,
+        listing: ExcludedListing,
         cx: &mut Context<'_, Self>,
     ) {
+        let ExcludedListing {
+            counts,
+            list,
+            categories,
+        } = listing;
         self.counts = Some(counts);
         self.loaded = true;
         self.pending.clear();
         self.pages.clear();
-        // A list that no longer holds what "Put back all shown" counted needs a new confirmation.
-        self.confirm_all = None;
+        // A pending "Put back all shown" stays while the list is the same (a scan's 2 s refresh reads it again).
+        // When the list changed, the confirmation shows the new list and its count, and only a confirmation of
+        // that list puts it back: the button carries the set it showed.
+        if let Some(pending) = &self.confirm_all
+            && pending.as_slice() != list.ids.as_slice()
+        {
+            self.confirm_all = (!list.ids.is_empty()).then(|| std::rc::Rc::new(list.ids.clone()));
+        }
+        *self.tags.borrow_mut() = list
+            .ids
+            .iter()
+            .zip(categories)
+            .map(|(id, (c, k))| (*id, c, k))
+            .collect();
         let first = self.inspected.is_none();
         self.model.update(cx, |m, cx| {
             m.set_query_and_list(query, list, cx);
@@ -1202,6 +1308,12 @@ impl ExcludedView {
                 m.selection_changed(cx);
             }
         });
+        // The inspector reads this on its next render. Set it here, not only from the selection event (delivered
+        // after this update): a scripted launch into the view primes it inside the start-up grace, and the inspector
+        // reads the details then, so its first frame shows them instead of "Loading…".
+        if first {
+            self.inspected = self.model.read(cx).selected_ids(1).first().copied();
+        }
         cx.notify();
     }
 
@@ -1283,6 +1395,8 @@ impl ExcludedView {
         if mode && state.mode == ExcludedMode::Grid {
             let f = self.grid.read(cx).focus_handle().clone();
             window.focus(&f, cx);
+        } else if mode {
+            window.focus(&self.list_focus, cx);
         }
         window.defer(cx, move |window, cx| {
             if let Some(shell) = Shell::for_window(window, cx) {
@@ -1487,18 +1601,93 @@ impl ExcludedView {
         self.click(ix, Modifiers::none(), cx);
     }
 
+    /// The List mode's focus handle (arrows, Shift+arrows, select all, P, Shift+P, Enter, Escape).
+    pub fn list_focus(&self) -> &FocusHandle {
+        &self.list_focus
+    }
+
+    /// The focus handle of a category's chip (every chip but the AI menu, which is a button).
+    pub fn chip_focus(&self, c: ExclusionCategory) -> Option<&FocusHandle> {
+        self.chip_focus
+            .iter()
+            .find(|(k, _)| *k == c)
+            .map(|(_, f)| f)
+    }
+
+    /// Move the keyboard focus to `to` (clamped), selecting it, or extending the selection from the anchor.
+    pub fn move_to(&mut self, to: isize, extend: bool, cx: &mut Context<'_, Self>) {
+        let len = self.model.read(cx).len();
+        if len == 0 {
+            return;
+        }
+        let ix = to.clamp(0, len as isize - 1) as usize;
+        self.model.update(cx, |m, cx| {
+            let ids = m.index.ids.clone();
+            if extend {
+                if m.selection.anchor.is_none() {
+                    m.selection.anchor = m.selection.focus.or(Some(ix));
+                }
+                m.selection.select_range(&ids, ix, false);
+                m.selection.focus = Some(ix);
+            } else {
+                m.selection.click(&ids, ix);
+            }
+            m.selection_changed(cx);
+        });
+        self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// Move the keyboard focus by `delta` rows (from nothing: the first row).
+    pub fn step(&mut self, delta: isize, extend: bool, cx: &mut Context<'_, Self>) {
+        let focus = self.model.read(cx).selection.focus;
+        let to = match focus {
+            Some(f) => f as isize + delta,
+            None => 0,
+        };
+        self.move_to(to, extend, cx);
+    }
+
+    /// Select every file shown.
+    pub fn select_all(&mut self, cx: &mut Context<'_, Self>) {
+        self.model.update(cx, |m, cx| {
+            let ids = m.index.ids.clone();
+            m.selection.select_all(&ids);
+            m.selection_changed(cx);
+        });
+        cx.notify();
+    }
+
+    /// Escape: cancel a pending confirmation, else clear the selection.
+    pub fn cancel_or_clear(&mut self, cx: &mut Context<'_, Self>) {
+        if self.confirm_all.is_some() {
+            self.cancel_put_back_all(cx);
+            return;
+        }
+        self.model.update(cx, |m, cx| {
+            m.selection.clear();
+            m.selection_changed(cx);
+        });
+        cx.notify();
+    }
+
     /// Ask before putting back every file shown.
     pub fn ask_put_back_all(&mut self, cx: &mut Context<'_, Self>) {
-        let n = self.model.read(cx).len();
-        if n > 0 {
-            self.confirm_all = Some(n);
+        let ids = self.ids(cx);
+        if !ids.is_empty() {
+            self.confirm_all = Some(std::rc::Rc::new(ids));
             cx.notify();
         }
     }
 
     /// The pending "Put back all shown" confirmation's file count.
     pub fn confirming(&self) -> Option<usize> {
-        self.confirm_all
+        self.confirm_all.as_ref().map(|s| s.len())
+    }
+
+    /// The files the pending confirmation will put back.
+    pub fn confirming_set(&self) -> Option<std::rc::Rc<Vec<ItemId>>> {
+        self.confirm_all.clone()
     }
 
     pub fn cancel_put_back_all(&mut self, cx: &mut Context<'_, Self>) {
@@ -1506,12 +1695,30 @@ impl ExcludedView {
         cx.notify();
     }
 
+    /// Confirm what the confirmation shows now.
     pub fn confirm_put_back_all(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        if self.confirm_all.take().is_none() {
+        if let Some(set) = self.confirm_all.clone() {
+            self.confirm_put_back(&set, window, cx);
+        }
+    }
+
+    /// Confirm `set`, the files a rendered confirmation showed: put back only while that is still the pending
+    /// confirmation. A list that changed in between shows its own count and needs its own confirmation.
+    pub fn confirm_put_back(
+        &mut self,
+        set: &std::rc::Rc<Vec<ItemId>>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self
+            .confirm_all
+            .as_ref()
+            .is_some_and(|p| std::rc::Rc::ptr_eq(p, set))
+        {
             return;
         }
-        let ids = self.ids(cx);
-        self.put_back(ids, window, cx);
+        self.confirm_all = None;
+        self.put_back(set.to_vec(), window, cx);
     }
 
     pub fn put_back_selected(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -1531,6 +1738,7 @@ impl ExcludedView {
         let n = ids.len();
         self.busy = Some(n);
         self.last_error = None;
+        self.warning = None;
         if n > PUT_BACK_TOAST_ABOVE
             && let Some(shell) = Shell::for_window(window, cx)
         {
@@ -1552,8 +1760,19 @@ impl ExcludedView {
             let r = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
-                if let Err(e) = r {
-                    this.last_error = Some(format!("{e:#}"));
+                match r {
+                    Ok(done) => {
+                        if let Some(e) = done.rejection_error {
+                            this.warning = Some(format!(
+                                "Put back {} in the Library. The AI's suggestions for {} could not be marked \
+                                 rejected ({e}), so the AI may suggest {} again.",
+                                files(done.files as u64),
+                                if done.files == 1 { "it" } else { "them" },
+                                if done.files == 1 { "it" } else { "them" },
+                            ));
+                        }
+                    }
+                    Err(e) => this.last_error = Some(format!("{e:#}")),
                 }
                 cx.notify();
             });
@@ -1565,21 +1784,28 @@ impl ExcludedView {
 }
 
 impl ExcludedView {
+    #[allow(clippy::too_many_arguments)]
     fn chip(
         &self,
         id: &'static str,
+        category: ExclusionCategory,
         label: String,
         on: bool,
+        window: &Window,
         cx: &mut Context<'_, Self>,
         toggle: impl Fn(&mut Self, &mut Window, &mut Context<'_, Self>) + 'static,
     ) -> AnyElement {
         let colors = *ui_theme::colors(cx);
         let label = SharedString::from(label);
+        let focus = self.chip_focus(category).cloned();
+        let focused = focus.as_ref().is_some_and(|f| f.is_focused(window));
         h_flex()
             .id(id)
             .test_support()
             .role(Role::CheckBox)
             .aria_label(label.clone())
+            .when_some(focus, |d, f| d.track_focus(&f))
+            .when(focused, |d| d.focus_ring_style(window, cx))
             .flex_none()
             .whitespace_nowrap()
             .h(Tokens::size(24.0))
@@ -1609,19 +1835,17 @@ impl ExcludedView {
             .into_any_element()
     }
 
-    fn toolbar(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+    fn toolbar(&self, window: &Window, cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
         let counts = self.counts.clone().unwrap_or_default();
         let chips = self.state.chips.clone();
         let n = |c: ExclusionCategory| counts.of(c);
-        // The chips take what is left and wrap cluster by cluster; when even one line of them would be too narrow
-        // (inspector open on a small window) the search, sort and mode controls wrap below them as a group.
+        // The chips take the toolbar's width and wrap cluster by cluster (the search, sort and mode controls are
+        // in the header row, the put back buttons in their own row below).
         let mut categories = h_flex()
             .id("excluded-chips")
             .test_support()
-            .flex_grow(1.0)
-            .flex_shrink(1.0)
-            .flex_basis(Tokens::size(EXCLUDED_CHIPS_MIN))
+            .w_full()
             .min_w_0()
             .flex_wrap()
             .items_center()
@@ -1630,8 +1854,10 @@ impl ExcludedView {
         // Clusters: yours and the AI's decisions; the classifier's; files PhotoSquirrel cannot read at all.
         let mut decided = filter_cluster("excluded-chips-decided").child(self.chip(
             "excluded-chip-you",
+            ExclusionCategory::You,
             chip_label(ExclusionCategory::You.label(), n(ExclusionCategory::You)),
             chips.is_on(ExclusionCategory::You),
+            window,
             cx,
             |this, w, cx| {
                 let on = this.state.chips.is_on(ExclusionCategory::You);
@@ -1648,8 +1874,10 @@ impl ExcludedView {
         ] {
             classifier = classifier.child(self.chip(
                 id,
+                c,
                 chip_label(c.label(), n(c)),
                 chips.is_on(c),
+                window,
                 cx,
                 move |this, w, cx| {
                     let on = this.state.chips.is_on(c);
@@ -1659,11 +1887,13 @@ impl ExcludedView {
         }
         let unsupported = filter_cluster("excluded-chips-unsupported").child(self.chip(
             "excluded-chip-unsupported",
+            ExclusionCategory::Unsupported,
             chip_label(
                 ExclusionCategory::Unsupported.label(),
                 n(ExclusionCategory::Unsupported),
             ),
             chips.is_on(ExclusionCategory::Unsupported),
+            window,
             cx,
             |this, w, cx| {
                 let on = this.state.chips.is_on(ExclusionCategory::Unsupported);
@@ -1675,18 +1905,16 @@ impl ExcludedView {
             .child(classifier)
             .child(unsupported);
 
+        // The put back buttons have their own row under the chips, right-aligned, with the selection's size on
+        // the left: they never sit between wrapped chip rows.
         let actions = self.actions(cx);
-        h_flex()
+        v_flex()
             .id("excluded-toolbar")
             .test_support()
             .flex_none()
-            .flex_wrap()
-            .min_h(Tokens::size(44.0))
-            .py(Tokens::space(1.0))
+            .py(Tokens::space(1.5))
             .px(Tokens::space(4.0))
-            .gap_x(Tokens::space(FILTER_CLUSTER_GAP))
-            .gap_y(Tokens::space(1.0))
-            .items_center()
+            .gap(Tokens::space(1.5))
             .bg(colors.background)
             .border_b_1()
             .border_color(colors.border)
@@ -1717,11 +1945,27 @@ impl ExcludedView {
         let counts = counts.clone();
         let weak = cx.weak_entity();
         let any = !on.is_empty();
+        let colors = *ui_theme::colors(cx);
+        // The same outlined chip as the others: accent outline and tint when on, a hairline when off.
         Button::new("excluded-chip-ai")
             .label(label)
-            .icon(Icon::new(IconName::Sparkles))
+            .icon(Icon::new(IconName::Sparkles).size(Tokens::icon_sm()))
             .compact()
-            .when(any, |b| b.primary())
+            .h(Tokens::size(24.0))
+            .px(Tokens::space(2.5))
+            .rounded(Tokens::RADIUS_LG)
+            .border_1()
+            .text_size(Tokens::text_xs())
+            .when(any, |b| {
+                b.bg(colors.accent_soft)
+                    .border_color(colors.accent)
+                    .text_color(colors.accent_text)
+            })
+            .when(!any, |b| {
+                b.bg(colors.raised)
+                    .border_color(colors.border)
+                    .text_color(colors.text_muted)
+            })
             .dropdown_caret(true)
             .dropdown_menu(move |menu, _, _| {
                 let all = AiKind::ALL
@@ -1830,25 +2074,44 @@ impl ExcludedView {
         controls.into_any_element()
     }
 
-    /// Put back the selection, or everything shown (after a confirmation).
+    /// Put back the selection, or everything shown (after a confirmation): a row of its own, right-aligned, with
+    /// the selection's size on the left.
     fn actions(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        let colors = *ui_theme::colors(cx);
         let shown = self.model.read(cx).len();
-        let selected = self.model.read(cx).selection.len();
+        let selected = self.selected_ids(cx).len();
         let busy = self.busy;
+        let note = match (busy, selected) {
+            (Some(n), _) => format!("Putting back {}…", files(n as u64)),
+            (None, 0) => "Select files to put them back, or put back all shown".to_owned(),
+            (None, n) => format!("{} selected", files(n as u64)),
+        };
         h_flex()
             .id("excluded-actions")
             .test_support()
-            .flex_none()
-            .max_w_full()
+            .w_full()
             .flex_wrap()
             .items_center()
             .gap(Tokens::space(2.0))
+            .child(
+                div()
+                    .id("excluded-selected")
+                    .test_support()
+                    .aria_label(SharedString::from(note.clone()))
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text_muted)
+                    .child(note),
+            )
             .child(crate::views::kit::button(
                 "excluded-put-back",
                 match (busy, selected) {
                     (Some(n), _) => format!("Putting back {}…", format_count(n as u64)),
-                    (None, 0 | 1) => "Put back in Library".to_owned(),
-                    (None, n) => format!("Put back {} in Library", format_count(n as u64)),
+                    (None, n) => put_back_label(n),
                 },
                 Some(IconName::Undo2),
                 crate::views::kit::Tone::Secondary,
@@ -1881,17 +2144,8 @@ impl ExcludedView {
         let colors = *ui_theme::colors(cx);
         let shown = self.model.read(cx).len();
         let hidden = self.hidden();
-        let count = if !self.loaded {
-            "Loading…".to_owned()
-        } else if self.text.trim().is_empty() {
-            format!("{} files set aside", format_count(shown as u64))
-        } else {
-            format!(
-                "{} files match \u{201c}{}\u{201d}",
-                format_count(shown as u64),
-                self.text.trim()
-            )
-        };
+        let total = self.counts.as_ref().map_or(0, ExclusionCounts::total);
+        let count = header_count(self.loaded, shown as u64, total, hidden, self.text.trim());
         h_flex()
             .id("excluded-header")
             .test_support()
@@ -1959,11 +2213,21 @@ impl ExcludedView {
     }
 
     /// What "Put back all shown" will do, and its two buttons.
-    fn confirmation(&self, n: usize, cx: &mut Context<'_, Self>) -> AnyElement {
+    fn confirmation(
+        &self,
+        set: std::rc::Rc<Vec<ItemId>>,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
         let colors = *ui_theme::colors(cx);
+        let n = set.len();
         let what = describe_selection(&self.state.chips, &self.text);
         let weak = cx.weak_entity();
         let weak2 = weak.clone();
+        let (they, them) = if n == 1 {
+            ("It is", "it")
+        } else {
+            ("They are", "them")
+        };
         h_flex()
             .id("excluded-confirm")
             .test_support()
@@ -1983,18 +2247,18 @@ impl ExcludedView {
                     .text_size(Tokens::text_sm())
                     .text_color(colors.text)
                     .child(format!(
-                        "Put back {} files ({what}) in the Library? They are included by you from now on; rescans keep \
-                         that, and you can exclude them again. Files are not touched.",
-                        format_count(n as u64)
+                        "Put back {} ({what}) in the Library? {they} included by you from now on; rescans keep \
+                         that, and you can exclude {them} again. Files are not touched.",
+                        files(n as u64)
                     )),
             )
             .child(crate::views::kit::button(
                 "excluded-confirm-put-back",
-                format!("Put back {} files", format_count(n as u64)),
+                format!("Put back {}", files(n as u64)),
                 Some(IconName::Undo2),
                 crate::views::kit::Tone::Primary,
                 crate::views::kit::on(move |_, window, cx| {
-                    let _ = weak.update(cx, |v, cx| v.confirm_put_back_all(window, cx));
+                    let _ = weak.update(cx, |v, cx| v.confirm_put_back(&set, window, cx));
                 }),
                 cx,
             ))
@@ -2114,7 +2378,8 @@ impl ExcludedView {
                     .border_color(colors.border)
                     .when(selected[k], |d| d.bg(colors.accent_soft))
                     .hover(|d| d.bg(colors.hover))
-                    .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                        window.focus(&this.list_focus, cx);
                         this.click(ix, e.modifiers(), cx);
                     }))
                     .on_mouse_down(
@@ -2241,6 +2506,63 @@ fn excluded_sort_label(s: Sort) -> &'static str {
     }
 }
 
+/// "1 file", "12 files", "1,204 files".
+pub fn files(n: u64) -> String {
+    if n == 1 {
+        "1 file".to_owned()
+    } else {
+        format!("{} files", format_count(n))
+    }
+}
+
+/// The selection's put back label: "Put back in Library" for none or one file, "Put back 3 in Library".
+pub fn put_back_label(selected: usize) -> String {
+    if selected > 1 {
+        format!("Put back {} in Library", format_count(selected as u64))
+    } else {
+        "Put back in Library".to_owned()
+    }
+}
+
+/// The Excluded header's count line: "129 files set aside", "Showing 126 of 129 set aside" when chips hide
+/// some, "3 files match “scan”" while searching.
+pub fn header_count(loaded: bool, shown: u64, total: u64, hidden: u64, search: &str) -> String {
+    if !loaded {
+        "Loading…".to_owned()
+    } else if !search.is_empty() {
+        format!(
+            "{} {} \u{201c}{search}\u{201d}",
+            files(shown),
+            if shown == 1 { "matches" } else { "match" }
+        )
+    } else if hidden > 0 {
+        format!(
+            "Showing {} of {} set aside",
+            format_count(shown),
+            format_count(total)
+        )
+    } else {
+        format!("{} set aside", files(total))
+    }
+}
+
+/// A file's category on its Grid tile, short ("AI: Document", "Cache", "Too small").
+pub fn category_badge(c: ExclusionCategory, kind: Option<AiKind>) -> &'static str {
+    match (c, kind) {
+        (ExclusionCategory::You, _) => "By you",
+        (ExclusionCategory::Ai, Some(AiKind::Screenshot)) => "AI: Screenshot",
+        (ExclusionCategory::Ai, Some(AiKind::Document)) => "AI: Document",
+        (ExclusionCategory::Ai, Some(AiKind::Graphic)) => "AI: Graphic",
+        (ExclusionCategory::Ai, Some(AiKind::NotPhoto)) => "AI: Not a photo",
+        (ExclusionCategory::Ai, None) => "AI",
+        (ExclusionCategory::Cache, _) => "Cache",
+        (ExclusionCategory::Graphic, _) => "Graphic",
+        (ExclusionCategory::Small, _) => "Too small",
+        (ExclusionCategory::Unreadable, _) => "Unreadable",
+        (ExclusionCategory::Unsupported, _) => "Unsupported",
+    }
+}
+
 /// A file's category as the list shows it ("AI: Documents", "Thumbnail caches").
 pub fn category_text(c: Option<ExclusionCategory>, kind: Option<AiKind>) -> String {
     match (c, kind) {
@@ -2286,8 +2608,23 @@ impl Render for ExcludedView {
         let colors = *ui_theme::colors(cx);
         let n = self.model.read(cx).len();
         let header = self.header(cx);
-        let toolbar = self.toolbar(cx);
-        let confirm = self.confirm_all.map(|n| self.confirmation(n, cx));
+        let toolbar = self.toolbar(window, cx);
+        let confirm = self
+            .confirm_all
+            .clone()
+            .map(|set| self.confirmation(set, cx));
+        let warning = self.warning.clone().map(|w| {
+            div()
+                .id("excluded-warning")
+                .test_support()
+                .aria_label(SharedString::from(w.clone()))
+                .flex_none()
+                .px(Tokens::space(4.0))
+                .py(Tokens::space(1.5))
+                .text_size(Tokens::text_sm())
+                .text_color(colors.warning)
+                .child(w)
+        });
         let error = self.last_error.clone().map(|e| {
             div()
                 .id("excluded-error")
@@ -2320,10 +2657,43 @@ impl Render for ExcludedView {
                     )
                     .track_scroll(&self.scroll)
                     .flex_1();
+                    let focused = self.list_focus.is_focused(window);
                     v_flex()
                         .id("excluded-list")
                         .test_support()
+                        .key_context(EXCLUDED_LIST_CONTEXT)
+                        .track_focus(&self.list_focus)
+                        .on_action(cx.listener(|this, _: &NextRow, _, cx| this.step(1, false, cx)))
+                        .on_action(cx.listener(|this, _: &PrevRow, _, cx| this.step(-1, false, cx)))
+                        .on_action(
+                            cx.listener(|this, _: &ExtendNext, _, cx| this.step(1, true, cx)),
+                        )
+                        .on_action(
+                            cx.listener(|this, _: &ExtendPrev, _, cx| this.step(-1, true, cx)),
+                        )
+                        .on_action(
+                            cx.listener(|this, _: &FirstRow, _, cx| this.move_to(0, false, cx)),
+                        )
+                        .on_action(cx.listener(|this, _: &LastRow, _, cx| {
+                            this.move_to(isize::MAX, false, cx)
+                        }))
+                        .on_action(
+                            cx.listener(|this, _: &SelectAllRows, _, cx| this.select_all(cx)),
+                        )
+                        .on_action(cx.listener(|this, _: &PutBackSelection, window, cx| {
+                            this.put_back_selected(window, cx)
+                        }))
+                        .on_action(
+                            cx.listener(|this, _: &AskPutBackAll, _, cx| this.ask_put_back_all(cx)),
+                        )
+                        .on_action(cx.listener(|this, _: &ConfirmPutBack, window, cx| {
+                            this.confirm_put_back_all(window, cx)
+                        }))
+                        .on_action(
+                            cx.listener(|this, _: &CancelOrClear, _, cx| this.cancel_or_clear(cx)),
+                        )
                         .size_full()
+                        .when(focused, |d| d.border_t_1().border_color(colors.accent))
                         .child(self.columns(cx))
                         .child(list)
                         .into_any_element()
@@ -2340,6 +2710,7 @@ impl Render for ExcludedView {
             .child(header)
             .child(toolbar)
             .children(confirm)
+            .children(warning)
             .children(error)
             .child(
                 div()
@@ -2348,20 +2719,18 @@ impl Render for ExcludedView {
                     .min_h_0()
                     .child(body)
                     .context_menu(move |menu, _, cx| {
+                        // The same set the action puts back: the selection among the files shown.
                         let n = weak
                             .upgrade()
-                            .map_or(0, |v| v.read(cx).model.read(cx).selection.len());
+                            .map_or(0, |v| v.read(cx).selected_ids(cx).len());
                         let weak = weak.clone();
                         menu.item(
-                            PopupMenuItem::new(if n > 1 {
-                                format!("Put back {} in Library", format_count(n as u64))
-                            } else {
-                                "Put back in Library".to_owned()
-                            })
-                            .disabled(n == 0)
-                            .on_click(move |_, window, cx| {
-                                let _ = weak.update(cx, |v, cx| v.put_back_selected(window, cx));
-                            }),
+                            PopupMenuItem::new(put_back_label(n))
+                                .disabled(n == 0)
+                                .on_click(move |_, window, cx| {
+                                    let _ =
+                                        weak.update(cx, |v, cx| v.put_back_selected(window, cx));
+                                }),
                         )
                     }),
             )

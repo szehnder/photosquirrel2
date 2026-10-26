@@ -35,6 +35,8 @@ struct Surface {
     /// Starts from a seeded demo library instead of an empty data directory.
     seeded: bool,
     args: &'static [&'static str],
+    /// A `ui-state.json` written into the data directory before the launch (a remembered view mode).
+    ui_state: Option<&'static str>,
 }
 
 const SURFACES: &[Surface] = &[
@@ -43,18 +45,21 @@ const SURFACES: &[Surface] = &[
         caption: "First launch: empty library and the welcome view",
         seeded: false,
         args: &[],
+        ui_state: None,
     },
     Surface {
         name: "library",
         caption: "Library gallery",
         seeded: true,
         args: &[],
+        ui_state: None,
     },
     Surface {
         name: "duplicates",
         caption: "Duplicates: a group, its keeper and why",
         seeded: true,
         args: &["--command", "shell::ShowDuplicates"],
+        ui_state: None,
     },
     Surface {
         name: "ai-review",
@@ -66,24 +71,42 @@ const SURFACES: &[Surface] = &[
             "--command",
             "shell::ShowAiReview",
         ],
+        ui_state: None,
     },
     Surface {
         name: "sources",
         caption: "Sources and the scan dashboard (simulated run over the demo library's sources)",
         seeded: true,
         args: &["--demo-scan", "running", "--command", "shell::ShowSources"],
+        ui_state: None,
     },
     Surface {
         name: "export",
         caption: "Export plan of the demo library (two drives exported, a third scanned later)",
         seeded: true,
         args: &["--command", "shell::ShowExport"],
+        ui_state: None,
+    },
+    Surface {
+        name: "excluded",
+        caption: "Excluded view in List mode: category chips with counts, unsupported files hidden",
+        seeded: true,
+        args: &["--command", "shell::ShowExcluded"],
+        ui_state: None,
+    },
+    Surface {
+        name: "excluded-grid",
+        caption: "Excluded view in Grid mode: each tile labelled with its category",
+        seeded: true,
+        args: &["--command", "shell::ShowExcluded"],
+        ui_state: Some(r#"{"version": 1, "excluded": {"mode": "grid"}}"#),
     },
     Surface {
         name: "reports",
         caption: "Completion report of the demo library",
         seeded: true,
         args: &["--command", "shell::ShowReports"],
+        ui_state: None,
     },
 ];
 
@@ -184,6 +207,9 @@ fn gallery(root: &Path, bin: &Path, shots: &Path, delay: f32) -> Result<()> {
         for theme in ["light", "dark"] {
             let data = dir.join(format!("data-{}-{theme}", surface.name));
             seed_data_dir(root, &data, surface.seeded)?;
+            if let Some(state) = surface.ui_state {
+                std::fs::write(data.join("ui-state.json"), state)?;
+            }
             let mut args: Vec<String> = vec!["--theme".into(), theme.into()];
             args.extend(surface.args.iter().map(|a| (*a).to_owned()));
             let file = format!("{}-{theme}.png", surface.name);

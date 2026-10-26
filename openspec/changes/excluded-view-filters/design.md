@@ -197,8 +197,11 @@ placeholder art for files with no preview (that is `preview-placeholders`).
   (`Library::excluded_open` and the first `excluded_page` of 200 rows, whose decisions are read in one query instead
   of one per row), in `ps-service/tests/budgets.rs`. The first run and the median of 5 are printed; the budget stays
   the median of the warm runs. A search over the same set is printed and held to the same bound.
-- **Screenshots.** `cargo xtask screenshot --all-surfaces` gains the Excluded view in List and Grid modes; the
-  harness waits for the inspector's details before it captures.
+- **Screenshots.** `cargo xtask screenshot --all-surfaces` gains the Excluded view in List and Grid modes (Grid
+  through a `ui-state.json` written before the launch). The inspector was stuck on "Loading…" in captures because
+  the view set its inspected file only from the selection event, delivered after the start-up grace's first frame,
+  and a scripted window draws nothing later (no input arrives); the view now sets it when it installs the list, so
+  the inspector reads the details inside the grace, as `--gallery-select` does for the Library.
 
 ## Risks / Trade-offs
 

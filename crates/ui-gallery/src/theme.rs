@@ -37,6 +37,8 @@ pub const BADGE_PX: f32 = 11.0;
 pub const BADGE_HEIGHT: f32 = 18.0;
 pub const BADGE_PAD: f32 = 6.0;
 pub const BADGE_MARGIN: f32 = 6.0;
+/// The no-preview icon's side, as a fraction of the cell size.
+pub const NO_PREVIEW_ICON: f32 = 0.24;
 
 /// Loupe and filmstrip.
 pub const FILMSTRIP_HEIGHT: f32 = 84.0;
@@ -90,6 +92,8 @@ pub struct GridColors {
     pub notice_text: Hsla,
     pub loupe: Hsla,
     pub missing: Hsla,
+    /// The no-preview icon on a cell without a thumbnail (the Excluded list's placeholder colour).
+    pub no_preview: Hsla,
 }
 
 impl GridColors {
@@ -132,6 +136,7 @@ impl GridColors {
             notice_text: c.text,
             loupe: c.loupe,
             missing: c.warning,
+            no_preview: c.text_faint,
         }
     }
 

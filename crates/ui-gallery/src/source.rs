@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
-use ps_model::{ExclusionCounts, IdList, ItemId};
+use ps_model::{ExcludedListing, IdList, ItemId};
 
 /// The data types live in `ps_model::library` (shared with the `ps-service` facade, which produces them).
 pub use ps_model::library::{
     CopyInfo, Decision, DispositionDetail, ExcludedRow, GalleryQuery, InsightCriteria,
-    InsightDetail, ItemDetail, ItemSummary, Preview, ThumbKey,
+    InsightDetail, ItemDetail, ItemSummary, Preview, PutBack, ThumbKey,
 };
 
 pub trait GallerySource: Send + Sync + 'static {
@@ -36,9 +36,13 @@ pub trait GallerySource: Send + Sync + 'static {
     /// Camera models present, most common first (filter bar).
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>>;
     /// The Excluded view's opening read (ADR-0102, ADR-0103): every chip's count (honouring the query's search
-    /// text, not its chips) and the ordered list the query's exclusion selection shows, from one pass.
-    fn excluded_open(&self, query: &GalleryQuery) -> anyhow::Result<(ExclusionCounts, IdList)> {
-        Ok((ExclusionCounts::default(), self.id_list(query)?))
+    /// text, not its chips), the ordered list the query's exclusion selection shows and each listed file's
+    /// category, from one pass.
+    fn excluded_open(&self, query: &GalleryQuery) -> anyhow::Result<ExcludedListing> {
+        Ok(ExcludedListing {
+            list: self.id_list(query)?,
+            ..ExcludedListing::default()
+        })
     }
     /// Rows of the Excluded view for up to 512 ids (the visible page), in order, with category, thumbnail and
     /// reasons.
@@ -46,13 +50,16 @@ pub trait GallerySource: Send + Sync + 'static {
         let _ = ids;
         Ok(Vec::new())
     }
-    /// Put files back in the Library (include decisions; an accepted AI suggestion becomes rejected). Returns
-    /// the number of files.
-    fn put_back(&self, ids: &[ItemId]) -> anyhow::Result<usize> {
+    /// Put files back in the Library (include decisions; an accepted AI suggestion becomes rejected): how many,
+    /// and whether a rejection could not be saved after the decisions committed.
+    fn put_back(&self, ids: &[ItemId]) -> anyhow::Result<PutBack> {
         for id in ids {
             self.set_decision(*id, Some(Decision::Include), None)?;
         }
-        Ok(ids.len())
+        Ok(PutBack {
+            files: ids.len(),
+            rejection_error: None,
+        })
     }
     /// A cleanup run is moving files: decisions are refused until it ends (ADR-0099). Never blocks (called
     /// while rendering).
