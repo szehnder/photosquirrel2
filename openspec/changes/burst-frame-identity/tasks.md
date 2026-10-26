@@ -5,7 +5,7 @@ migration 24).
 
 ## 1. Decisions
 
-- [ ] 1.1 Write the ADR "Recorded frame identities keep frames apart" (D1-D4; amends 0035) from the next free number, accepted, with an index row. Confirm migration 23 is free. Verify: the index lists it, and `ls crates/ps-catalog/migrations` has no 0023.
+- [x] 1.1 Write the ADR "Recorded frame identities keep frames apart" (D1-D4; amends 0035) from the next free number, accepted, with an index row. Confirm migration 23 is free. Verify: the index lists it, and `ls crates/ps-catalog/migrations` has no 0023. Done: ADR-0105 (index row added); migrations end at 0022.
 
 ## 2. Corpus first
 

@@ -92,3 +92,22 @@ corpus would have caught the bug).
   and the pair becomes a suggestion the user can merge.
 - Re-reading RAW headers on the first rescan costs about one small read per RAW file (the card: 1,458 RAW and DNG
   files, a few MB in total). Offline sources are re-read when they come back.
+
+## Deviations (as built)
+
+- **A frame identity holds both kinds.** `FrameId` has two optional parts, the `OriginalRawFileName` stem and the
+  Canon file number, because a converted DNG records both; each kind compares only with the same kind.
+- **Canon file numbers also come from `CameraInfo`.** The owner's EOS 70D (like every current Canon DSLR) writes no
+  tag 0x0008; its file number is `FileIndex` + 1 and `DirectoryIndex` - 1 at model-specific offsets of `CameraInfo`
+  (0x000D). A table of the models with known offsets is read; out-of-range values are ignored.
+- **No stem comparison (D2's second paragraph).** A RAW file's own name is never treated as a frame identity: names
+  are not recorded identity (the proposal puts names out of scope), a renamed CR2 would be split from its own DNG,
+  and the Canon file number in both files covers the CR2-vs-DNG case.
+- **The re-read merges, it does not replace.** A re-read reads the probe window only, so it writes the frame
+  identity, `has_maker_notes` (or-ed) and the camera-original signal (or-ed) into the stored metadata and keeps the
+  rest of the metadata the full analysis read.
+- **`META_LOGIC_VERSION` lives in `ps-model`** next to `DATE_LOGIC_VERSION` (the catalog and the scanner both read
+  it); `ps-media` re-exports it.
+- **One test hook.** `ps_model::frame::set_frame_identity_enabled(false)` turns off reading frame identities and
+  `DNGPrivateData` maker notes (ps-media) and the frame and RAW-original rules (ps-dedup), so a test can group a
+  corpus the way the build before this change did. It is only called by tests.
