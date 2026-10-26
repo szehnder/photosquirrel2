@@ -582,7 +582,7 @@ impl Render for SourcesView {
                     .id("sources-list")
                     .test_support()
                     .child(
-                        kit::card_title(format!("{count} sources · {online} online"), cx),
+                        kit::card_title(sources_title(count, online), cx),
                     )
                     .child(list),
             )
@@ -592,5 +592,24 @@ impl Render for SourcesView {
             self.frame_times.drain(..256);
         }
         el
+    }
+}
+
+/// The list's title: "1 source · 1 online", "3 sources · 2 online".
+pub fn sources_title(count: usize, online: usize) -> String {
+    format!(
+        "{count} {} · {online} online",
+        if count == 1 { "source" } else { "sources" }
+    )
+}
+
+#[cfg(test)]
+mod title_tests {
+    /// "1 SOURCES" in the screenshot review: the count agrees with its noun.
+    #[test]
+    fn sources_title_is_plural_only_when_needed() {
+        assert_eq!(super::sources_title(1, 1), "1 source · 1 online");
+        assert_eq!(super::sources_title(0, 0), "0 sources · 0 online");
+        assert_eq!(super::sources_title(3, 2), "3 sources · 2 online");
     }
 }

@@ -231,6 +231,13 @@ impl Colors {
         color.opacity(alpha)
     }
 
+    /// A recessed well for monospace command blocks inside panels and tinted notices: the chrome in dark (below
+    /// the panel), the raised white in light, always with a [`Colors::border_strong`] outline. `raised`, used
+    /// before, was barely distinguishable from an info notice in dark.
+    pub fn inset(&self) -> Hsla {
+        if self.dark { self.chrome } else { self.raised }
+    }
+
     /// Alpha of the soft background of a status chip ([`Colors::chip_bg`]).
     pub const CHIP_TINT: f32 = 0.14;
 
@@ -256,5 +263,30 @@ impl Colors {
             };
         }
         fg
+    }
+}
+
+#[cfg(test)]
+mod inset_tests {
+    use super::*;
+
+    /// The command block stands out from an info notice (info at 8% over a panel) in both themes, clearly more
+    /// than the raised surface did in dark, and its outline more still.
+    #[test]
+    fn inset_wells_stand_out_from_notices() {
+        for mode in [Mode::Dark, Mode::Light] {
+            let c = Palette::for_mode(mode).resolve();
+            let notice = crate::contrast::over(Colors::tint(c.info, 0.08), c.panel);
+            let well = crate::contrast::ratio(c.inset(), notice);
+            let outline = crate::contrast::ratio(c.border_strong, notice);
+            if c.dark {
+                let before = crate::contrast::ratio(c.raised, notice);
+                assert!(well > before * 1.1, "{mode:?}: {well} vs raised {before}");
+                assert!(well >= 1.2, "{mode:?}: {well}");
+            } else {
+                assert!(well >= 1.05, "{mode:?}: {well}");
+            }
+            assert!(outline >= 1.3, "{mode:?}: outline {outline}");
+        }
     }
 }

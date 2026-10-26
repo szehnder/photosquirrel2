@@ -69,7 +69,10 @@ pub fn fix_panel(id: &str, reason: Option<&str>, fix: &Fix, cx: &App) -> AnyElem
                     .items_center()
                     .p(Tokens::space(1.5))
                     .rounded(Tokens::RADIUS_SM)
-                    .bg(colors.raised)
+                    // A recessed, outlined well: visible against the tinted notice in both themes.
+                    .bg(colors.inset())
+                    .border_1()
+                    .border_color(colors.border_strong)
                     .child(
                         div()
                             .flex_1()
