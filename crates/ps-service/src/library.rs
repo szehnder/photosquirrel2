@@ -103,11 +103,25 @@ pub fn file_disposition_reason(
                 .into(),
         };
     }
+    if let (true, Disposition::Pending, Some(q)) =
+        (x.regrouped, x.disposition, x.quarantine_path.as_ref())
+    {
+        return regrouped_reason(q);
+    }
     disposition_reason(
         x.disposition,
         x.reason,
         library_path,
         x.quarantine_path.as_ref(),
+    )
+}
+
+/// Why a quarantined file a regroup moved out of its group is pending (ADR-0105).
+pub fn regrouped_reason(quarantine_path: &ps_model::RelPath) -> String {
+    format!(
+        "only in the quarantine folder ({quarantine_path}) and its group changed: the library copy that covered it \
+         when cleanup moved it is of another photo (burst frames told apart). Export again (it is copied from the \
+         quarantine folder) or put it back with `cleanup undo` (Undo in the Cleanup view)"
     )
 }
 

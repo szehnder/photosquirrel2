@@ -423,6 +423,20 @@ fn summary_card(
                     .child(redated_text(o.redated)),
             )
         })
+        .when(o.frame_reread > 0, |d| {
+            let text = frame_reread_text(o.frame_reread, o.groups_split);
+            d.child(
+                h_flex()
+                    .id("summary-frame-reread")
+                    .test_support()
+                    .aria_label(SharedString::from(text.clone()))
+                    .gap(Tokens::space(1.5))
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text_muted)
+                    .child(Icon::new(IconName::Info).size(Tokens::icon_sm()))
+                    .child(text),
+            )
+        })
         .children(undecoded_notices(m, o, cx))
         .when(o.needs_refresh > 0, |d| {
             let mon = m.entity.clone();
@@ -567,6 +581,17 @@ pub fn redated_text(n: u64) -> String {
         "{} capture {} updated by the current date rules (folder names, local days); no file was read",
         format_count(n),
         if n == 1 { "date" } else { "dates" }
+    )
+}
+
+/// "40 files re-read for frame numbers (header only); 5 groups split" (ADR-0105).
+pub fn frame_reread_text(files: u64, split: u64) -> String {
+    format!(
+        "{} {} re-read for frame numbers (header only, read-only); {} {} split into separate photos",
+        format_count(files),
+        if files == 1 { "file" } else { "files" },
+        format_count(split),
+        if split == 1 { "group" } else { "groups" }
     )
 }
 

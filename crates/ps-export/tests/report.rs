@@ -280,6 +280,7 @@ fn scenario_completion_report_pending_blocks_badge() {
                     unreadable: 0,
                     in_quarantine: 0,
                     superseded: 0,
+                    regrouped: 0,
                 }
             );
             assert_eq!(s.badge.label(), "1 pending");

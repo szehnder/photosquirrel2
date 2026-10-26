@@ -376,8 +376,11 @@ pub fn run(ctx: &Ctx, library: &Path, settings: ProfileSettings, threads: usize)
 struct CountsOut {
     files: std::collections::BTreeMap<&'static str, u64>,
     bytes: std::collections::BTreeMap<&'static str, u64>,
-    /// Of the pending files, those only in a quarantine folder (their library copy is gone).
+    /// Of the pending files, those only in a quarantine folder (their library copy is gone, or their group
+    /// changed).
     pending_in_quarantine: u64,
+    /// Of those, the ones a regroup moved out of the group their library copy covers (ADR-0105).
+    pending_regrouped: u64,
     fully_accounted: bool,
 }
 
@@ -392,6 +395,7 @@ fn counts(c: &CompletionCounts) -> CountsOut {
             .map(|d| (d.as_str(), c.bytes[*d as usize]))
             .collect(),
         pending_in_quarantine: c.pending_in_quarantine,
+        pending_regrouped: c.pending_regrouped,
         fully_accounted: c.fully_accounted(),
     }
 }
@@ -510,12 +514,22 @@ fn print_report(o: &ReportOut) {
                 ps_export::SUPERSEDED_HINT
             );
         }
-        if s.counts.pending_in_quarantine > 0 {
+        let gone = s
+            .counts
+            .pending_in_quarantine
+            .saturating_sub(s.counts.pending_regrouped);
+        if gone > 0 {
             println!(
-                "    {} files are only in the quarantine folder and their library copy is gone: NOT accounted \
+                "    {gone} files are only in the quarantine folder and their library copy is gone: NOT accounted \
                  for. Keep the quarantine folder; run `export run` to copy them again (read from the \
-                 quarantine folder) or `cleanup undo` to put them back.",
-                s.counts.pending_in_quarantine
+                 quarantine folder) or `cleanup undo` to put them back."
+            );
+        }
+        if s.counts.pending_regrouped > 0 {
+            println!(
+                "    {} files are only in the quarantine folder and their group changed: NOT accounted for; {}",
+                s.counts.pending_regrouped,
+                ps_export::REGROUPED_HINT
             );
         }
         for fo in s.folders.iter().flatten() {

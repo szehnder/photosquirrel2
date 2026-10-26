@@ -109,3 +109,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0103](0103-excluded-view-budget.md) | The Excluded view's opening budget: `excluded-view-open` (extends 0026, 0018) |
 | [0104](0104-damaged-photos-are-unreadable-and-the-excluded-budget-covers-the-service.md) | Damaged photos are "could not be read"; the Excluded view's search and budget follow what it shows (migration 22; amends 0102, 0103) |
 | [0105](0105-recorded-frame-identities-keep-frames-apart.md) | Recorded frame identities keep frames apart; RAW files are camera originals; RAW rows re-read once (migration 23; amends 0035, 0039, 0007) |
+| [0106](0106-frame-identity-re-read-covers-same-second-canon-files-and-quarantine.md) | The frame-identity re-read also covers same-second Canon files and files in quarantine (amends 0105) |

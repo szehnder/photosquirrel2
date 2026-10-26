@@ -870,13 +870,13 @@ fn process_file(
         return;
     }
     let rel = t.path.to_path_buf();
-    let abs = t.path.under(&src.root);
+    let abs = t.read_path.as_ref().unwrap_or(&t.path).under(&src.root);
     let mut file = match ctx.opts.fs.open(&abs) {
         Ok(f) => f,
         Err(e) => {
             if !ctx.root_available(idx) {
                 ctx.lose(idx);
-            } else if e.kind() == io::ErrorKind::NotFound {
+            } else if e.kind() == io::ErrorKind::NotFound && t.read_path.is_none() {
                 // Deleted between the walk and the read: it is missing now.
                 ctx.submit(Command::MarkMissing {
                     files: vec![FileKey::new(src.id, t.path.clone())],

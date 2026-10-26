@@ -49,10 +49,17 @@ pub fn badge_label(c: &CompletionCounts) -> String {
     if pending > 0 || superseded == 0 {
         let mut p = format!("{} pending", format_count(pending));
         if c.pending_in_quarantine > 0 {
-            p.push_str(&format!(
-                " ({} only in quarantine, library copy gone)",
-                format_count(c.pending_in_quarantine)
-            ));
+            if c.pending_regrouped == c.pending_in_quarantine {
+                p.push_str(&format!(
+                    " ({} only in quarantine, group changed: undo the cleanup or export again)",
+                    format_count(c.pending_in_quarantine)
+                ));
+            } else {
+                p.push_str(&format!(
+                    " ({} only in quarantine, library copy gone)",
+                    format_count(c.pending_in_quarantine)
+                ));
+            }
         }
         parts.push(p);
     }

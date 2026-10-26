@@ -601,6 +601,7 @@ fn scenario_completion_report_better_copy_not_in_the_library_is_not_accounted_fo
             unreadable: 0,
             in_quarantine: 0,
             superseded: 1,
+            regrouped: 0,
         }
     );
     assert_eq!(

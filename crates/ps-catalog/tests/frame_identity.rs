@@ -1,20 +1,47 @@
-//! Catalog migration 23 (burst-frame-identity, ADR-0105): `file.frame_id` and `file.meta_version`, every non-RAW
-//! row marked current without reading it.
+//! Catalog migration 23 (burst-frame-identity, ADR-0105): `file.frame_id` and `file.meta_version`; every row whose
+//! frame cannot matter marked current without reading it.
 
 use ps_catalog::{Catalog, db};
 use rusqlite::{Connection, params};
 
 #[test]
-fn migration_23_marks_non_raw_rows_current_and_keeps_raw_rows_for_a_re_read() {
+fn migration_23_keeps_raw_rows_and_their_same_second_canon_files_for_a_re_read() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("catalog.db");
     db::create_catalog_at_version(&path, db::FRAME_IDENTITY_MIGRATION.version - 1).unwrap();
-    let rows: [(&str, Option<&str>); 5] = [
-        ("IMG_0034.CR2", Some("raw:cr2")),
-        ("IMG_0034.DNG", Some("raw:dng")),
-        ("IMG_0034.JPG", Some("jpeg")),
-        ("clip.mov", Some("mov")),
-        ("notes.txt", None),
+    // (name, format, camera model, capture ms): the burst second is 1_587_348_023 s.
+    let burst = 1_587_348_023_000i64;
+    let rows: [(&str, Option<&str>, Option<&str>, Option<i64>); 8] = [
+        (
+            "IMG_0034.CR2",
+            Some("raw:cr2"),
+            Some("Canon EOS 70D"),
+            Some(burst),
+        ),
+        ("IMG_0034.DNG", Some("raw:dng"), Some("Canon EOS 70D"), None),
+        // Same second as the CR2, a Canon camera file: its file number matters.
+        (
+            "IMG_0035.JPG",
+            Some("jpeg"),
+            Some("Canon EOS 70D"),
+            Some(burst + 130),
+        ),
+        // Another second, or another maker: marked current.
+        (
+            "IMG_0099.JPG",
+            Some("jpeg"),
+            Some("Canon EOS 70D"),
+            Some(burst + 5_000),
+        ),
+        (
+            "DSC_0001.JPG",
+            Some("jpeg"),
+            Some("NIKON D750"),
+            Some(burst),
+        ),
+        ("IMG_1234.HEIC", Some("heic"), Some("iPhone 12"), None),
+        ("clip.mov", Some("mov"), None, None),
+        ("notes.txt", None, None, None),
     ];
     {
         let c = Connection::open(&path).unwrap();
@@ -23,12 +50,12 @@ fn migration_23_marks_non_raw_rows_current_and_keeps_raw_rows_for_a_re_read() {
             [],
         )
         .unwrap();
-        for (i, (name, format)) in rows.iter().enumerate() {
+        for (i, (name, format, model, ts)) in rows.iter().enumerate() {
             c.execute(
                 "INSERT INTO file (id, source_id, rel_path, name, size, mtime_ns, stage, class, reasons, format,
-                                   kflags, metadata)
-                 VALUES (?1, 1, ?2, ?2, 10, 1, 3, 0, '[]', ?3, 0, '{}')",
-                params![i as i64 + 1, name.as_bytes(), format],
+                                   kflags, metadata, camera_model, capture_ts)
+                 VALUES (?1, 1, ?2, ?2, 10, 1, 3, 0, '[]', ?3, 0, '{}', ?4, ?5)",
+                params![i as i64 + 1, name.as_bytes(), format, model, ts],
             )
             .unwrap();
         }
@@ -43,15 +70,21 @@ fn migration_23_marks_non_raw_rows_current_and_keeps_raw_rows_for_a_re_read() {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
+    let want = [
+        ("IMG_0034.CR2", 0),
+        ("IMG_0034.DNG", 0),
+        ("IMG_0035.JPG", 0),
+        ("IMG_0099.JPG", 1),
+        ("DSC_0001.JPG", 1),
+        ("IMG_1234.HEIC", 1),
+        ("clip.mov", 1),
+        ("notes.txt", 1),
+    ];
     assert_eq!(
         got,
-        vec![
-            ("IMG_0034.CR2".to_owned(), None, 0),
-            ("IMG_0034.DNG".to_owned(), None, 0),
-            ("IMG_0034.JPG".to_owned(), None, 1),
-            ("clip.mov".to_owned(), None, 1),
-            ("notes.txt".to_owned(), None, 1),
-        ]
+        want.iter()
+            .map(|(n, v)| (n.to_string(), None, *v))
+            .collect::<Vec<_>>()
     );
     let v: u32 = c
         .pragma_query_value(None, "user_version", |r| r.get(0))

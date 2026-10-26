@@ -36,6 +36,15 @@ impl Drop for Legacy {
     }
 }
 
+/// What catalog migration 23 leaves of a catalog the build before frame identity wrote: no frame ids, every row
+/// current but the RAW-format rows and the Canon camera files of their capture seconds (the migration's rule).
+const DOWNGRADE: &str = "UPDATE file SET meta_version = 0, frame_id = NULL;
+    UPDATE file SET meta_version = 1
+    WHERE (format IS NULL OR format NOT LIKE 'raw:%')
+      AND NOT (camera_model LIKE 'canon%' AND capture_ts IS NOT NULL
+               AND capture_ts / 1000 IN (SELECT capture_ts / 1000 FROM file
+                                         WHERE format LIKE 'raw:%' AND capture_ts IS NOT NULL));";
+
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
     ps_fixtures::scratch::write(path, bytes).expect("write");
@@ -95,11 +104,7 @@ fn old_catalog(root: &Path) -> (Env, SourceId) {
     }
     env.close();
     let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&env.dir)).expect("db");
-    c.execute(
-        "UPDATE file SET meta_version = 0, frame_id = NULL WHERE format LIKE 'raw:%'",
-        [],
-    )
-    .expect("downgrade");
+    c.execute_batch(DOWNGRADE).expect("downgrade");
     drop(c);
     env.reopen(ScanOptions::default());
     (env, id)
@@ -127,22 +132,22 @@ fn scenario_incremental_rescan_old_catalog_splits_merged_burst_frames_on_rescan(
     env.instr.reset();
     let summary = env.scan(&[id]);
     completed(&summary);
-    // Only RAW and DNG files were read, each at most its header.
+    // Only the RAW and DNG files and the Canon JPEGs of their second were read, each at most its header.
     let read = env.instr.bytes_per_file();
-    assert_eq!(read.len(), 4, "{read:?}");
+    assert_eq!(read.len(), 8, "{read:?}");
     for (path, n) in &read {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or_default();
-        assert!(matches!(ext, "CR2" | "DNG"), "{path:?} read");
+        assert!(matches!(ext, "CR2" | "DNG" | "JPG"), "{path:?} read");
         assert!(*n <= ps_media::PROBE_LIMIT as u64, "{path:?}: {n} bytes");
     }
     assert!(
         env.instr.opens().iter().all(|o| !o.access.writes()),
         "read-only"
     );
-    assert_eq!(summary.diff.frame_reread, 4);
+    assert_eq!(summary.diff.frame_reread, 8);
     assert_eq!(summary.grouping.as_ref().map(|g| g.groups_split), Some(1));
 
     let after = groups(&env, id);
@@ -179,7 +184,7 @@ fn scenario_incremental_rescan_the_re_read_happens_once() {
     let (env, id) = old_catalog(&root);
     let first = env.scan(&[id]);
     completed(&first);
-    assert_eq!(first.diff.frame_reread, 4);
+    assert_eq!(first.diff.frame_reread, 8);
     env.instr.reset();
     let second = env.scan(&[id]);
     completed(&second);

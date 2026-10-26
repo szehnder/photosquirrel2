@@ -103,6 +103,11 @@ corpus would have caught the bug).
 - **No stem comparison (D2's second paragraph).** A RAW file's own name is never treated as a frame identity: names
   are not recorded identity (the proposal puts names out of scope), a renamed CR2 would be split from its own DNG,
   and the Canon file number in both files covers the CR2-vs-DNG case.
+- **The re-read covers more than RAW rows (ADR-0106).** Re-reading RAW rows only left old catalogs wrong: the
+  JPEGs of a burst have no stored frame number, so frame 34's converted DNG could still join frame 35's JPEGs and
+  CR2 and push frame 35's own DNG out (found by the cleanup test, `ps-service/tests/frame_identity.rs`). Migration 23
+  therefore also leaves Canon camera files of the same capture second as a RAW-format row for the re-read, and a
+  row in a quarantine folder is re-read there (read-only). The incremental-rescan delta says so.
 - **The re-read merges, it does not replace.** A re-read reads the probe window only, so it writes the frame
   identity, `has_maker_notes` (or-ed) and the camera-original signal (or-ed) into the stored metadata and keeps the
   rest of the metadata the full analysis read.

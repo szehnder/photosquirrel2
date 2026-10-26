@@ -589,6 +589,8 @@ impl FakeScanService {
                 .map(|x| x.source)
                 .collect(),
             redecoded: 0,
+            frame_reread: 0,
+            groups_split: 0,
             undecoded: s.undecoded.clone(),
         })
     }

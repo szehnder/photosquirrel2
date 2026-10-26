@@ -380,8 +380,9 @@ fn scenario_catalog_old_catalog_gets_categories() {
     let cat = svc.engine().catalog();
     assert_eq!(
         cat.read().schema_version().unwrap(),
-        db::EXCLUSION_CATEGORY_FIX_MIGRATION.version
+        db::latest(db::CATALOG_MIGRATIONS)
     );
+    assert!(db::latest(db::CATALOG_MIGRATIONS) >= db::EXCLUSION_CATEGORY_FIX_MIGRATION.version);
     let counts = cat.read().exclusion_counts(&Filter::default()).unwrap();
     assert_eq!(counts.of(ExclusionCategory::Unsupported), 3);
     assert_eq!(counts.of(ExclusionCategory::Ai), 4);

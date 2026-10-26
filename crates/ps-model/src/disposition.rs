@@ -81,6 +81,10 @@ pub struct CompletionCounts {
     /// the quarantine folder again; undo puts them back.
     #[serde(default)]
     pub pending_in_quarantine: u64,
+    /// Of `pending_in_quarantine`, those whose library copy still exists but a regroup moved them out of the group
+    /// it covers: that copy is of another photo (burst frames told apart, ADR-0105).
+    #[serde(default)]
+    pub pending_regrouped: u64,
 }
 
 impl CompletionCounts {
@@ -102,6 +106,7 @@ impl CompletionCounts {
             self.bytes[i] += o.bytes[i];
         }
         self.pending_in_quarantine += o.pending_in_quarantine;
+        self.pending_regrouped += o.pending_regrouped;
     }
 
     pub fn files_of(&self, d: Disposition) -> u64 {

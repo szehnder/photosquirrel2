@@ -603,6 +603,7 @@ fn eligibility_and_plan_are_pure() {
         prior: None,
         quarantine_path: None,
         better_than_keeper: false,
+        regrouped: false,
     };
     let f: Vec<FileFacts> = vec![
         facts(1, "a/1.jpg"),

@@ -19,10 +19,11 @@
 //! - **re-decoded**: an unchanged, thumbed file analysed without the decoder its format needs (its
 //!   `decoder_missing` marker, ADR-0091) is queued for a re-decode when the run's decoder registry has that
 //!   decoder (one full read); otherwise it is counted as awaiting a decoder and nothing is read.
-//! - **re-read for frame identity**: an unchanged, analysed RAW-format row (DNG included) analysed before frame
-//!   identity existed (`meta_version` below [`ps_model::META_LOGIC_VERSION`]) has its probe window read again
-//!   (at most [`ps_media::PROBE_LIMIT`] bytes, read-only, no decode, no hashing) and its frame identity merged into
-//!   the stored metadata, once (ADR-0105).
+//! - **re-read for frame identity**: an unchanged, analysed row analysed before frame identity existed
+//!   (`meta_version` below [`ps_model::META_LOGIC_VERSION`]: RAW-format rows and the Canon camera files of their
+//!   capture seconds, catalog migration 23) has its probe window read again (at most [`ps_media::PROBE_LIMIT`]
+//!   bytes, read-only, no decode, no hashing) and its frame identity merged into the stored metadata, once
+//!   (ADR-0105). A file in the quarantine folder is read there.
 //! - **needs refresh**: an unchanged, finished file probed before classification facts were stored (catalog
 //!   migration 13) is counted; only with [`ScanOptions::refresh_analysis`](crate::ScanOptions) is its probe
 //!   data read again (at most [`ps_media::PROBE_LIMIT`] bytes, read-only) to re-classify it (ADR-0071).
@@ -69,6 +70,9 @@ pub struct Todo {
     /// A header re-read of an unchanged RAW row analysed before frame identity (ADR-0105): read the probe window
     /// only (read-only, no decode, no hashing) and merge its frame identity into the stored metadata.
     pub meta_reread: bool,
+    /// Where to read the file when it is not at `path`: a frame-identity re-read of a file a cleanup run moved
+    /// into the source's quarantine folder (ADR-0105). The catalog row stays at `path`.
+    pub read_path: Option<RelPath>,
 }
 
 /// The diff of one source.
@@ -118,12 +122,12 @@ fn catalogued_without_dimensions(r: &ps_catalog::FileRecord, stat: &StatFingerpr
         && stat.size > ps_media::PROBE_LIMIT as u64
 }
 
-/// An analysed RAW-format row (DNG included) whose stored metadata predates the current metadata rules
-/// ([`ps_model::META_LOGIC_VERSION`], ADR-0105). Other formats are marked current by catalog migration 23.
+/// An analysed row whose stored metadata predates the current metadata rules ([`ps_model::META_LOGIC_VERSION`],
+/// ADR-0105). Catalog migration 23 marks current every row but the RAW-format ones and the Canon camera files of the
+/// same capture second as one; rows analysed since are current.
 fn needs_frame_reread(r: &ps_catalog::FileRecord) -> bool {
     r.stage == Stage::Thumbed
         && r.meta_version < ps_model::META_LOGIC_VERSION
-        && r.format.is_some_and(ps_model::Format::is_raw)
         && r.identity.is_some()
 }
 
@@ -143,11 +147,11 @@ pub fn diff(
     };
     // Files a cleanup run moved into this source's quarantine folder (the scanner never walks it): accounted
     // for, so counted as quarantined rather than missing, and never "found moved" to another path.
-    let quarantined: HashMap<RelPath, (u64, i64)> = readers
+    let quarantined: HashMap<RelPath, (u64, i64, RelPath)> = readers
         .quarantined_files()?
         .into_iter()
         .filter(|q| q.source == source)
-        .map(|q| (q.rel_path, (q.size, q.mtime_ns)))
+        .map(|q| (q.rel_path, (q.size, q.mtime_ns, q.quarantine_rel_path)))
         .collect();
     let mut page = readers.source_files(source, None, PAGE)?;
     let mut pi = 0usize;
@@ -164,11 +168,30 @@ pub fn diff(
             (None, None) => break,
             (Some(r), w) if w.is_none_or(|w| r.key.path < w.path) => {
                 // In the catalog only: missing (or in the quarantine folder).
-                let in_quarantine = quarantined
+                let quarantine_path = quarantined
                     .get(&r.key.path)
-                    .is_some_and(|&(size, mtime)| size == r.stat.size && mtime == r.stat.mtime_ns);
-                if in_quarantine {
+                    .filter(|(size, mtime, _)| *size == r.stat.size && *mtime == r.stat.mtime_ns)
+                    .map(|(_, _, q)| q.clone());
+                let in_quarantine = quarantine_path.is_some();
+                if let Some(q) = quarantine_path {
                     out.counts.quarantined += 1;
+                    // Still a grouping input (ADR-0034): its frame identity is read where it is (ADR-0105).
+                    if needs_frame_reread(r) {
+                        out.todo.push(Todo {
+                            path: r.key.path.clone(),
+                            stat: r.stat,
+                            order: u32::MAX,
+                            thumbs_db_sibling: false,
+                            stage: r.stage,
+                            is_new: false,
+                            refresh: false,
+                            redecode: None,
+                            prior_failure: None,
+                            meta_reread: true,
+                            read_path: Some(q),
+                        });
+                        out.bytes_to_process += r.stat.size.min(ps_media::PROBE_LIMIT as u64);
+                    }
                 } else {
                     out.counts.missing += 1;
                 }
@@ -201,6 +224,7 @@ pub fn diff(
                     redecode: None,
                     prior_failure: None,
                     meta_reread: false,
+                    read_path: None,
                 };
                 match rec {
                     None => {

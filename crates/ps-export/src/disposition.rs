@@ -24,7 +24,8 @@
 //!   prior disposition is exported or covered, that is while a valid library copy covers it: a quarantined
 //!   file whose library copy is gone or differs is `pending` again, with its `quarantine_path`, even when it
 //!   is excluded, so it is not accounted for and export copies it from the quarantine folder (ADR-0066,
-//!   ADR-0067);
+//!   ADR-0067). When no member of its group (or, in no group, its own content) has any library copy at all, valid
+//!   or not, a regroup moved it out of the group whose copy covered it: `regrouped` (ADR-0105);
 //! - gone from the source: `missing`; failed after retries: `unreadable`;
 //! - user-excluded, a member of a group whose keeper the user excluded (the photo itself was excluded, every
 //!   copy goes with it; the export skips such groups), or (in no group) junk, graphic or a cache thumbnail:
@@ -129,6 +130,10 @@ pub struct FileDisposition {
     /// accounted for by the user's choice, but kept: never eligible for cleanup.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub better_than_keeper: bool,
+    /// Pending in a quarantine folder because a regroup moved it out of the group whose library copy covered it
+    /// when it was moved: that copy is of another photo (ADR-0105). Otherwise its library copy is gone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub regrouped: bool,
 }
 
 /// Check the library copy of every `done` row with [`check_copy`]: present with its recorded size (and, when
@@ -204,6 +209,26 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
         keeper_path.push(kp.or(covering.map(|(_, p)| p)));
     }
 
+    // Contents with any library copy at all (valid or not): a quarantined file whose group holds none was moved out
+    // of the group whose copy covered it (ADR-0105), rather than having lost that copy.
+    let recorded: std::collections::HashSet<ContentId> = facts
+        .ledger
+        .iter()
+        .filter(|e| e.is_exported_file())
+        .map(|e| e.content)
+        .collect();
+    let has_any_copy = |f: &FileFacts| -> bool {
+        let copied = |id: &FileId| {
+            by_id
+                .get(id)
+                .and_then(|x| x.content)
+                .is_some_and(|c| recorded.contains(&c))
+        };
+        match group_of.get(&f.file) {
+            Some(&gi) => facts.groups[gi].members.iter().any(copied),
+            None => f.content.is_some_and(|c| recorded.contains(&c)),
+        }
+    };
     let d = |f: &FileFacts, disposition, reason, library_path| FileDisposition {
         file: f.file,
         disposition,
@@ -212,6 +237,7 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
         prior: None,
         quarantine_path: None,
         better_than_keeper: false,
+        regrouped: false,
     };
     let derive = |f: &FileFacts| -> FileDisposition {
         if let Some(&gi) = group_of.get(&f.file) {
@@ -315,6 +341,7 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
                         library_path: None,
                         prior: None,
                         quarantine_path: Some(q.clone()),
+                        regrouped: !has_any_copy(f),
                         ..prior
                     }
                 }
@@ -338,6 +365,9 @@ pub enum Badge {
         /// Better copies not in the library yet (ADR-0093).
         #[serde(default)]
         superseded: u64,
+        /// Of `in_quarantine`, the files a regroup moved out of the group their library copy covers (ADR-0105).
+        #[serde(default)]
+        regrouped: u64,
     },
 }
 
@@ -351,6 +381,7 @@ impl Badge {
                 unreadable: c.files_of(Disposition::Unreadable),
                 in_quarantine: c.pending_in_quarantine,
                 superseded: c.files_of(Disposition::Superseded),
+                regrouped: c.pending_regrouped,
             }
         }
     }
@@ -363,13 +394,15 @@ impl Badge {
                 unreadable,
                 in_quarantine,
                 superseded,
+                regrouped,
             } => {
                 let mut parts = Vec::new();
                 if pending > 0 || superseded == 0 {
                     let mut s = format!("{pending} pending");
                     if in_quarantine > 0 {
                         s.push_str(&format!(
-                            " ({in_quarantine} only in the quarantine folder, library copy gone)"
+                            " ({})",
+                            in_quarantine_label(in_quarantine, regrouped)
                         ));
                     }
                     parts.push(s);
@@ -386,6 +419,24 @@ impl Badge {
         }
     }
 }
+
+/// "N only in the quarantine folder, library copy gone" / "..., group changed" (ADR-0066, ADR-0105): the pending
+/// files of a report whose only copy is in a quarantine folder, `regrouped` of them moved out of their group.
+pub fn in_quarantine_label(in_quarantine: u64, regrouped: u64) -> String {
+    let gone = in_quarantine.saturating_sub(regrouped);
+    match (gone, regrouped) {
+        (_, 0) => format!("{in_quarantine} only in the quarantine folder, library copy gone"),
+        (0, _) => format!(
+            "{in_quarantine} only in the quarantine folder, group changed: the library copy is of another photo"
+        ),
+        _ => format!(
+            "{in_quarantine} only in the quarantine folder: {gone} library copy gone, {regrouped} group changed"
+        ),
+    }
+}
+
+/// What to do about files a regroup moved out of the group their library copy covers (ADR-0105).
+pub const REGROUPED_HINT: &str = "a regroup moved them out of the group whose library copy covered them when      cleanup moved them (burst frames told apart), so that copy is of another photo. Keep the quarantine folder;      run `export run` to copy them (read from the quarantine folder) or `cleanup undo` (Undo in the Cleanup view)      to put them back.";
 
 /// "N better copies not in the library yet", the superseded files of a report (ADR-0093).
 pub fn superseded_label(n: u64) -> String {
@@ -435,6 +486,9 @@ pub fn count_disposition(c: &mut CompletionCounts, d: &FileDisposition, size: u6
     c.add(d.disposition, size);
     if d.disposition == Disposition::Pending && d.quarantine_path.is_some() {
         c.add_pending_in_quarantine();
+        if d.regrouped {
+            c.pending_regrouped += 1;
+        }
     }
 }
 

@@ -190,8 +190,8 @@ pub const EXCLUSION_CATEGORY_FIX_MIGRATION: Migration = Migration {
     name: "exclusion_category_fix",
     sql: include_str!("../migrations/0022_exclusion_category_fix.sql"),
 };
-/// Migration 23 (ADR-0105: `file.frame_id` and `file.meta_version`; every non-RAW row marked current, so a rescan
-/// re-reads the header of unchanged RAW rows only).
+/// Migration 23 (ADR-0105: `file.frame_id` and `file.meta_version`; every row marked current except RAW-format rows
+/// and Canon camera files of the same capture second as one, whose header a rescan re-reads once).
 pub const FRAME_IDENTITY_MIGRATION: Migration = Migration {
     version: 23,
     name: "frame_identity",

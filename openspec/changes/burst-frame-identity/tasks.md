@@ -23,11 +23,11 @@ migration 24).
 ## 5. Catalog and rescan
 
 - [x] 5.1 Migration 23: `file.frame_id`, `file.meta_version`, non-RAW rows stamped to the current version without reading. Verify: a migration test on a catalog written by migration 22.
-- [x] 5.2 Rescan: re-read RAW metadata for rows below `META_LOGIC_VERSION` (header bytes only), bump the dedup stamp, report re-read files and split groups. Verify: `scenario_incremental_rescan_old_catalog_splits_merged_burst_frames_on_rescan`, `scenario_incremental_rescan_the_re_read_happens_once`, and every existing `scenario_incremental_rescan_*` test still passes.
+- [x] 5.2 Rescan: re-read RAW metadata for rows below `META_LOGIC_VERSION` (header bytes only; also the Canon camera files of the same second and quarantined rows, ADR-0106), bump the dedup stamp, report re-read files and split groups. Verify: `scenario_incremental_rescan_old_catalog_splits_merged_burst_frames_on_rescan`, `scenario_incremental_rescan_the_re_read_happens_once`, and every existing `scenario_incremental_rescan_*` test still passes.
 
 ## 6. Export, report and cleanup
 
-- [ ] 6.1 A split frame is pending and the next export copies it; a quarantined file whose group changed is pending with the reason and the restore hint, in the CLI report and the app. Verify: `scenario_cleanup_quarantined_frame_of_a_split_burst_is_pending`, an export test that copies exactly the split frame's keeper.
+- [x] 6.1 A split frame is pending and the next export copies it; a quarantined file whose group changed is pending with the reason and the restore hint, in the CLI report and the app. Verify: `scenario_cleanup_quarantined_frame_of_a_split_burst_is_pending`, an export test that copies exactly the split frame's keeper.
 
 ## 7. Verification
 

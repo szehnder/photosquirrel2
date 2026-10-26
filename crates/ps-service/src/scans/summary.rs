@@ -42,6 +42,10 @@ pub struct RunOverview {
     pub incomplete_sources: Vec<SourceId>,
     /// Previews this run filled in for files that waited for a decoder (ADR-0091).
     pub redecoded: u64,
+    /// Files analysed before frame identity whose header this run re-read for frame numbers, and the groups the
+    /// regroup split (ADR-0105).
+    pub frame_reread: u64,
+    pub groups_split: u64,
     /// Files of the run's sources still waiting for a decoder, per format, with the decoder's availability now
     /// and the reason and fix when it is missing (one aggregate query when the summary is read).
     pub undecoded: Vec<ps_model::Undecoded>,
@@ -117,6 +121,8 @@ impl ScanService {
                 refreshed: s.diff.refreshed,
                 incomplete_sources: s.incomplete_sources,
                 redecoded: s.diff.redecoded,
+                frame_reread: s.diff.frame_reread,
+                groups_split: s.grouping.as_ref().map_or(0, |g| g.groups_split),
                 undecoded: self.undecoded(&rec.sources).unwrap_or_default(),
             },
             None => RunOverview {
@@ -143,6 +149,8 @@ impl ScanService {
                 refreshed: 0,
                 incomplete_sources: Vec::new(),
                 redecoded: 0,
+                frame_reread: 0,
+                groups_split: 0,
                 undecoded: self.undecoded(&rec.sources).unwrap_or_default(),
             },
         })
