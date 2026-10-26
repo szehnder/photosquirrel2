@@ -52,6 +52,31 @@ jobs:
           cargo run --locked -q -p photosquirrel-cli -- --data-dir "$RUNNER_TEMP/doctor" --json doctor > doctor.json
           jq -e '.data.heic == false and (.data.decoders[] | select(.name == "heic") | .reason | test("not installed"))' doctor.json
 
+  # The oldest supported libheif for real (ADR-0089): Ubuntu 22.04's libheif 1.12, in a container of the
+  # packaging image's base, decoding the HEIC samples through the run-time loader.
+  oldest-libheif:
+    name: Oldest libheif (Ubuntu 22.04, libheif 1.12)
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956
+    steps:
+      - name: Build tools and the distribution's libheif
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config nasm libheif1
+          dpkg-query -W libheif1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - name: Real decoder tests against libheif 1.12
+        env:
+          PHOTOSQUIRREL_REQUIRE_SYSTEM_HEIF: "1"
+          PHOTOSQUIRREL_EXPECT_LIBHEIF: "1.12"
+        run: cargo test --locked -p ps-sysdecode --test sysdecode
+
   bench-regressions:
     name: Performance budgets (relative to the parent commit)
     needs: linux

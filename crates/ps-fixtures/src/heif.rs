@@ -187,3 +187,50 @@ mod tests {
         assert!(heif_with_transforms(b"not a heif", 1, None).is_none());
     }
 }
+
+/// `heic` with its image sizes (`ispe` properties) rewritten in place: the first (the primary image of the
+/// project's samples) declares `width` x `height`, the others are scaled by the same factors. The coded payload
+/// is unchanged, so a real decoder fails on it or decodes the old size; probes, size checks and fake decoders
+/// see the new size. Cheap fixtures of huge or panoramic declared sizes (gate review of `heic-system-decoders`).
+/// `None` when the file has no `ispe`.
+pub fn heif_with_size(heic: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    let mut out = heic.to_vec();
+    let mut at = Vec::new();
+    let mut i = 0;
+    while let Some(p) = out
+        .get(i..)
+        .and_then(|s| s.windows(4).position(|w| w == b"ispe"))
+    {
+        let p = i + p;
+        // `ispe`: version and flags, then two 32-bit sizes.
+        if p + 16 <= out.len() {
+            at.push(p + 8);
+        }
+        i = p + 4;
+    }
+    let first = *at.first()?;
+    let (w0, h0) = (be32(heic, first)?, be32(heic, first + 4)?);
+    for p in at {
+        let (w, h) = (be32(heic, p)?, be32(heic, p + 4)?);
+        let nw = (u64::from(w) * u64::from(width) / u64::from(w0.max(1))).max(1) as u32;
+        let nh = (u64::from(h) * u64::from(height) / u64::from(h0.max(1))).max(1) as u32;
+        out[p..p + 4].copy_from_slice(&nw.to_be_bytes());
+        out[p + 4..p + 8].copy_from_slice(&nh.to_be_bytes());
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn declared_size_is_rewritten() {
+        let sample = include_bytes!("../../ps-sysdecode/data/selftest.heic");
+        let b = heif_with_size(sample, 3000, 2000).expect("rewritten");
+        assert_eq!(b.len(), sample.len());
+        let p = b.windows(4).position(|w| w == b"ispe").unwrap() + 8;
+        assert_eq!(be32(&b, p), Some(3000));
+        assert_eq!(be32(&b, p + 4), Some(2000));
+    }
+}

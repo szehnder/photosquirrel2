@@ -8,8 +8,9 @@ license.workspace = true
 
 [dependencies]
 ps-model.workspace = true
-# `test-support` for the debug-only `PHOTOSQUIRREL_HEIF_DECODER=fake` registry (ADR-0089).
-ps-media = { workspace = true, features = ["test-support"] }
+# `FakeHeif` for `PHOTOSQUIRREL_HEIF_DECODER=fake` exists in debug builds of ps-media without a feature, so a
+# release binary never contains it (ADR-0089; no `test-support` in normal dependencies, `cargo xtask` checks).
+ps-media.workspace = true
 log.workspace = true
 
 # The system libheif, loaded at run time (no link-time dependency; ADR-0089).
@@ -31,6 +32,7 @@ windows = { version = "0.62", features = [
 ] }
 
 [dev-dependencies]
+ps-media = { workspace = true, features = ["test-support"] }
 ps-fixtures.workspace = true
 ps-hash.workspace = true
 

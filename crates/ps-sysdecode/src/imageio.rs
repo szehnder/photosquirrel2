@@ -158,6 +158,10 @@ fn decode(bytes: &[u8], max_pixel_size: u32) -> Result<RgbImage, String> {
             K_CF_NUMBER_SINT32,
             (&size as *const i32).cast(),
         ));
+        // A NULL value would end the dictionary's value list early (and CFRetain(NULL) crashes).
+        if number.0.is_null() {
+            return Err("CFNumberCreate failed".into());
+        }
         let keys = [
             kCGImageSourceCreateThumbnailFromImageAlways,
             kCGImageSourceCreateThumbnailWithTransform,
@@ -173,7 +177,7 @@ fn decode(bytes: &[u8], max_pixel_size: u32) -> Result<RgbImage, String> {
             &kCFTypeDictionaryKeyCallBacks,
             &kCFTypeDictionaryValueCallBacks,
         ));
-        if options.0.is_null() || number.0.is_null() {
+        if options.0.is_null() {
             return Err("CFDictionaryCreate failed".into());
         }
         let image = Cf(CGImageSourceCreateThumbnailAtIndex(source.0, 0, options.0));

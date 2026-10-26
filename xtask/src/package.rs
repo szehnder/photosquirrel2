@@ -32,17 +32,14 @@ pub const LICENCES_FILE: &str = "THIRD-PARTY-LICENSES";
 const LICENCES_DIR: &str = "target/licenses";
 /// The binaries shipped in every package; their dependency graphs make up the licence notices.
 const SHIPPED: [&str; 2] = ["photosquirrel", "photosquirrel-cli"];
-/// Crates that are (or bundle) an HEVC decoder: none may be in a shipped program's dependency graph (ADR-0089).
-pub const HEVC_DENY: &[&str] = &[
-    "libheif-rs",
-    "libheif-sys",
-    "libde265",
-    "ffmpeg",
-    "x265",
-    "hevc",
-];
-/// Shared libraries no shipped Linux program may need (ADR-0089: libheif is loaded at run time, never linked).
-pub const NEEDED_DENY: &[&str] = &["libheif", "libde265"];
+/// Words in the names of crates that are (or bundle) an HEVC decoder: no crate of a shipped program's dependency
+/// graph may have one anywhere in its name (ADR-0089).
+pub const HEVC_DENY: &[&str] = &["ffmpeg", "hevc", "x265", "libde265", "heif-sys", "libheif"];
+/// Words in `links =` keys (native libraries a crate links) that are HEVC decoders or libheif.
+pub const LINKS_DENY: &[&str] = &["heif", "de265", "avcodec", "x265"];
+/// Words in the names of shared libraries no shipped program may need (ADR-0089: libheif is loaded at run time,
+/// never linked): checked against Linux `NEEDED` entries, macOS `otool -L` and Windows imports.
+pub const NEEDED_DENY: &[&str] = &["heif", "de265", "avcodec", "x265"];
 
 pub struct Options {
     pub docker: bool,
@@ -170,7 +167,10 @@ pub fn hevc_components(tree: &str) -> Vec<String> {
     let mut v: Vec<String> = tree
         .lines()
         .filter_map(|l| l.split_whitespace().next())
-        .filter(|name| HEVC_DENY.iter().any(|d| name.starts_with(d)))
+        .filter(|name| {
+            let n = name.to_ascii_lowercase();
+            HEVC_DENY.iter().any(|d| n.contains(d))
+        })
         .map(str::to_owned)
         .collect();
     v.sort();
@@ -190,6 +190,59 @@ pub fn check_hevc_free(tree: &str) -> Result<()> {
     Ok(())
 }
 
+/// Packages of the shipped graph (`cargo tree --prefix none` lines) whose `links` key (from `cargo metadata`)
+/// names an HEVC decoder or libheif, as `name (links = key)`.
+pub fn hevc_links(tree: &str, metadata: &serde_json::Value) -> Vec<String> {
+    let shipped: std::collections::HashSet<(String, String)> = tree
+        .lines()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            let name = w.next()?;
+            let version = w.next()?.strip_prefix('v')?;
+            Some((name.to_owned(), version.to_owned()))
+        })
+        .collect();
+    let mut v: Vec<String> = metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let name = p["name"].as_str()?;
+            let version = p["version"].as_str()?;
+            let links = p["links"].as_str()?;
+            let l = links.to_ascii_lowercase();
+            (shipped.contains(&(name.to_owned(), version.to_owned()))
+                && LINKS_DENY.iter().any(|d| l.contains(d)))
+            .then(|| format!("{name} (links = \"{links}\")"))
+        })
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Fail when a crate of the shipped graph links an HEVC decoder or libheif.
+pub fn check_hevc_links(tree: &str, metadata: &serde_json::Value) -> Result<()> {
+    let found = hevc_links(tree, metadata);
+    if !found.is_empty() {
+        bail!(
+            "the shipped programs link an HEVC decoder or libheif ({}); PhotoSquirrel ships none (ADR-0089)",
+            found.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// The libraries of `otool -L` output (macOS), without the program's own first line.
+pub fn otool_libs(otool: &str) -> Vec<String> {
+    otool
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The `NEEDED` entries of `readelf -d` output.
 pub fn needed_libs(readelf: &str) -> Vec<String> {
     readelf
@@ -203,11 +256,14 @@ pub fn needed_libs(readelf: &str) -> Vec<String> {
         .collect()
 }
 
-/// Fail when a Linux program links libheif or an HEVC decoder.
+/// Fail when a program links libheif or an HEVC decoder (Linux `NEEDED`, macOS `otool -L`, Windows imports).
 pub fn check_needed(program: &str, needed: &[String]) -> Result<()> {
     let bad: Vec<&String> = needed
         .iter()
-        .filter(|n| NEEDED_DENY.iter().any(|d| n.starts_with(d)))
+        .filter(|n| {
+            let file = n.rsplit(['/', '\\']).next().unwrap_or(n).to_ascii_lowercase();
+            NEEDED_DENY.iter().any(|d| file.contains(d))
+        })
         .collect();
     if !bad.is_empty() {
         bail!(
@@ -245,6 +301,19 @@ fn shipped_tree(root: &Path) -> Result<String> {
         bail!("cargo tree: {}", String::from_utf8_lossy(&out.stderr));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `cargo metadata` of the workspace (for the `links` keys of the shipped graph).
+fn cargo_metadata(root: &Path) -> Result<serde_json::Value> {
+    let out = Command::new("cargo")
+        .current_dir(root)
+        .args(["metadata", "--locked", "--format-version", "1"])
+        .output()
+        .context("cargo metadata")?;
+    if !out.status.success() {
+        bail!("cargo metadata: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    serde_json::from_slice(&out.stdout).context("cargo metadata output")
 }
 
 /// rav1d's x86_64 assembly needs nasm (ADR-0090): packages are never built without it.
@@ -1020,7 +1089,9 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         fs::create_dir_all(dir)?;
     }
 
-    check_hevc_free(&shipped_tree(root)?)?;
+    let tree = shipped_tree(root)?;
+    check_hevc_free(&tree)?;
+    check_hevc_links(&tree, &cargo_metadata(root)?)?;
     check_avif_assembly(opts.universal)?;
     // The programs' default features (`avif-asm`) and nothing else: no build option adds an HEVC decoder.
     let features: Vec<&str> = Vec::new();
@@ -1053,12 +1124,33 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
             eprintln!("{bin} needs: {}", needed.join(", "));
         }
     }
+    if os == Os::Macos {
+        for bin in SHIPPED {
+            let path = bins.join(bin);
+            let out = Command::new("otool")
+                .arg("-L")
+                .arg(&path)
+                .output()
+                .context("otool (Xcode command line tools) is needed to check the macOS programs")?;
+            if !out.status.success() {
+                bail!(
+                    "otool -L {}: {}",
+                    path.display(),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            let libs = otool_libs(&String::from_utf8_lossy(&out.stdout));
+            check_needed(bin, &libs)?;
+            eprintln!("{bin} links: {}", libs.join(", "));
+        }
+    }
     if os == Os::Windows {
         for bin in SHIPPED {
             let exe = os.exe(bin);
             let imports = pe_imports(&fs::read(bins.join(&exe))?)
                 .with_context(|| format!("reading the imports of {exe}"))?;
             check_windows_imports(&exe, &imports)?;
+            check_needed(&exe, &imports)?;
             eprintln!("{exe} imports: {}", imports.join(", "));
         }
     }
@@ -1956,10 +2048,13 @@ mod tests {
         assert!(workflow.contains("packages/PhotoSquirrel-*"));
     }
 
-    /// The packaging container's check (`cargo xtask package --docker` runs `heif_smoke`: the packaged doctor in
-    /// Ubuntu 22.04 with its libheif 1.12, and without any). Here: the evaluation of doctor's output it uses.
+    /// How the packaging smoke test reads doctor's output (`cargo xtask package --docker` runs `heif_smoke`: the
+    /// packaged doctor in Ubuntu 22.04 without libheif and with its libheif 1.12). This parses canned JSON and
+    /// checks that packaging calls the smoke test; it decodes nothing. The real decode with libheif 1.12 is
+    /// `scenario_decoder_support_oldest_supported_library_decodes` in ps-sysdecode, run by the `oldest-libheif`
+    /// CI job.
     #[test]
-    fn scenario_decoder_support_oldest_supported_library_decodes() {
+    fn packaging_smoke_reads_doctors_heic_entry() {
         let with = r#"{"schema_version":1,"data":{"heic":true,"decoders":[{"name":"heic","available":true,
             "detail":"libheif 1.12.0","backend":"libheif 1.12.0","version":"1.12.0"}]}}"#;
         assert_eq!(doctor_heic(with).expect("parse"), (true, None));
@@ -1999,8 +2094,40 @@ mod tests {
             err.contains("photosquirrel-cli") && err.contains("libheif.so.1"),
             "{err}"
         );
-        // The graph of the current release is free of HEVC decoders.
-        check_hevc_free(&shipped_tree(&root()).expect("cargo tree")).expect("no HEVC decoder");
+        // Names containing a deny word anywhere, not only at the start (gate review fix 10).
+        for name in ["rust-ffmpeg-sys", "my-hevc-decoder", "x265-rs", "rs-libde265", "safe-heif-sys"] {
+            assert!(
+                check_hevc_free(&format!("{name} v1.0.0\n")).is_err(),
+                "{name}"
+            );
+        }
+        assert!(check_hevc_free("ps-sysdecode v0.2.0\nrav1d v1.1.0\n").is_ok());
+        // `links` keys of the shipped graph's packages.
+        let meta = serde_json::json!({"packages": [
+            {"name": "innocent", "version": "1.0.0", "links": "heif"},
+            {"name": "video", "version": "2.0.0", "links": "avcodec"},
+            {"name": "dev-only", "version": "1.0.0", "links": "de265"},
+            {"name": "rav1d", "version": "1.1.0", "links": null},
+        ]});
+        let tree = "innocent v1.0.0\nvideo v2.0.0\nrav1d v1.1.0\n";
+        assert_eq!(
+            hevc_links(tree, &meta),
+            ["innocent (links = \"heif\")", "video (links = \"avcodec\")"]
+        );
+        assert!(check_hevc_links(tree, &meta).is_err());
+        assert!(check_hevc_links("rav1d v1.1.0\n", &meta).is_ok());
+        // macOS `otool -L` and Windows imports go through the same check.
+        let otool = "/x/photosquirrel-cli:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n\t/opt/homebrew/lib/libheif.1.dylib (compatibility version 1.0.0)\n";
+        let libs = otool_libs(otool);
+        assert_eq!(libs, ["/usr/lib/libSystem.B.dylib", "/opt/homebrew/lib/libheif.1.dylib"]);
+        assert!(check_needed("photosquirrel-cli", &libs).is_err());
+        assert!(check_needed("photosquirrel.exe", &["KERNEL32.dll".into(), "avcodec-61.dll".into()]).is_err());
+        assert!(check_needed("photosquirrel.exe", &["libde265.dll".into()]).is_err());
+        assert!(check_needed("photosquirrel.exe", &["KERNEL32.dll".into(), "ole32.dll".into()]).is_ok());
+        // The graph of the current release is free of HEVC decoders, by name and by `links`.
+        let tree = shipped_tree(&root()).expect("cargo tree");
+        check_hevc_free(&tree).expect("no HEVC decoder");
+        check_hevc_links(&tree, &cargo_metadata(&root()).expect("metadata")).expect("no HEVC links");
         // And a program of this build needs no HEIF library (this test binary links what the programs link
         // from the workspace's C code: libc and friends only).
         #[cfg(target_os = "linux")]
@@ -2013,6 +2140,44 @@ mod tests {
             assert!(!needed.is_empty(), "readelf output parsed");
             check_needed("xtask tests", &needed).expect("no libheif");
         }
+    }
+
+    /// The fake HEIC decoder is never in a release binary (gate review fix 10): no workspace crate enables
+    /// ps-media's `test-support` in its normal dependencies (only dev-dependencies may), and without it the fake
+    /// exists only with `debug_assertions`.
+    #[test]
+    fn release_builds_contain_no_fake_decoder() {
+        let mut checked = 0;
+        for entry in fs::read_dir(root().join("crates")).expect("crates") {
+            let manifest = entry.expect("entry").path().join("Cargo.toml");
+            let Ok(text) = fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let v: toml::Value = toml::from_str(&text).expect("manifest");
+            let mut tables = vec![v.get("dependencies")];
+            if let Some(t) = v.get("target").and_then(|t| t.as_table()) {
+                tables.extend(t.values().map(|x| x.get("dependencies")));
+            }
+            for deps in tables.into_iter().flatten() {
+                let features = deps
+                    .get("ps-media")
+                    .and_then(|d| d.get("features"))
+                    .and_then(|f| f.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(
+                    !features.iter().any(|f| f.as_str() == Some("test-support")),
+                    "{}: ps-media's test-support in normal dependencies puts the fake decoder in release builds",
+                    manifest.display()
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked > 10, "{checked} manifests");
+        let decoders = fs::read_to_string(root().join("crates/ps-media/src/decoders.rs")).expect("src");
+        assert!(decoders.contains(
+            "#[cfg(any(test, feature = \"test-support\", debug_assertions))]\npub mod fake {"
+        ));
     }
 
     #[test]

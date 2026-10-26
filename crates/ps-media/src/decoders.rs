@@ -121,7 +121,9 @@ pub fn missing_note(key: DecoderKey) -> String {
 
 /// A deterministic test decoder for HEIC (feature `test-support`): an image derived from the input bytes, or a
 /// given image per input; it can fail, and may or may not apply the container's rotation.
-#[cfg(any(test, feature = "test-support"))]
+// In tests and test builds (`test-support`, enabled by dev-dependencies only), and in debug builds for
+// `PHOTOSQUIRREL_HEIF_DECODER=fake`: never in a release binary (ADR-0089).
+#[cfg(any(test, feature = "test-support", debug_assertions))]
 pub mod fake {
     use std::collections::HashMap;
     use std::sync::Mutex;

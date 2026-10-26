@@ -56,6 +56,45 @@ pub const LOOK_DHASH: u64 = 0x7f7f_7fff_ffff_ffff;
 /// The pixel cap of a system decode (the same as other decoders).
 pub const MAX_PIXELS: u64 = 768 * 1024 * 1024 / 3;
 
+/// End a real-decoder test that cannot run on this machine, visibly (gate review of `heic-system-decoders`):
+/// fails with `PHOTOSQUIRREL_REQUIRE_SYSTEM_HEIF=1`; otherwise writes `SKIPPED: <why>` to the process's stderr
+/// directly (the test harness captures `println!`/`eprintln!` of passing tests, not the handle), and on GitHub
+/// Actions a `::warning::` annotation and a line in the job summary, so a skip never looks like a pass.
+#[doc(hidden)]
+pub fn skip_test(why: &str) {
+    let require = std::env::var(ENV_REQUIRE_SYSTEM_HEIF).is_ok_and(|v| v == "1");
+    assert!(
+        !require,
+        "{ENV_REQUIRE_SYSTEM_HEIF}=1 but this test cannot run: {why}"
+    );
+    skip_note(why);
+}
+
+/// [`skip_test`] without the require flag's failure: for a test that needs something more specific than a HEIC
+/// decoder (a particular libheif version), which the require flag does not promise.
+#[doc(hidden)]
+pub fn skip_note(why: &str) {
+    use std::io::Write as _;
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("a real-decoder test")
+        .to_owned();
+    let _ = writeln!(std::io::stderr(), "SKIPPED: {test}: {why}");
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let one_line = why.replace(['\n', '\r'], " ");
+        let _ = writeln!(
+            std::io::stdout(),
+            "::warning title=real-decoder test skipped::{test}: {one_line}"
+        );
+        if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+            // The runner's own summary file, outside every user folder.
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(summary) {
+                let _ = writeln!(f, "- SKIPPED `{test}`: {one_line}");
+            }
+        }
+    }
+}
+
 /// How `PHOTOSQUIRREL_HEIF_DECODER` chooses the HEIC entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeifChoice {

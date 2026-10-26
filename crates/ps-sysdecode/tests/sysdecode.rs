@@ -496,8 +496,42 @@ fn fake_choice_follows_the_build_profile() {
 
 // ---- the real decoder of this machine ----
 
-fn require_system_heif() -> bool {
-    std::env::var(ps_sysdecode::ENV_REQUIRE_SYSTEM_HEIF).is_ok_and(|v| v == "1")
+/// A skip in the child below, run without output capture by the harness.
+#[test]
+fn skip_probe_child() {
+    if std::env::var_os("PS_SKIP_PROBE").is_some() {
+        ps_sysdecode::skip_test("probe reason");
+    }
+}
+
+/// Skips are visible in a passing run (gate review fix 3): the `SKIPPED:` line reaches stderr although the
+/// harness captures a passing test's output, and on GitHub Actions a `::warning::` annotation reaches stdout.
+#[test]
+fn skips_are_visible_in_a_passing_run() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "skip_probe_child", "--test-threads=1"])
+        .env("PS_SKIP_PROBE", "1")
+        .env("GITHUB_ACTIONS", "true")
+        .env_remove("GITHUB_STEP_SUMMARY")
+        .env_remove(ps_sysdecode::ENV_REQUIRE_SYSTEM_HEIF)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(err.contains("SKIPPED: skip_probe_child: probe reason"), "{err}");
+    assert!(
+        stdout.contains("::warning title=real-decoder test skipped::skip_probe_child: probe reason"),
+        "{stdout}"
+    );
+    // With the require flag the skip is a failure.
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "skip_probe_child", "--test-threads=1"])
+        .env("PS_SKIP_PROBE", "1")
+        .env(ps_sysdecode::ENV_REQUIRE_SYSTEM_HEIF, "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
 }
 
 /// This machine's decoder, or `None` after printing why the test is skipped (a failure with
@@ -509,11 +543,8 @@ fn system_decoders() -> Option<Decoders> {
     }
     let e = d.report().entry(DecoderFormat::Heic).unwrap();
     let why = e.reason.clone().unwrap_or_default();
-    assert!(
-        !require_system_heif(),
-        "PHOTOSQUIRREL_REQUIRE_SYSTEM_HEIF=1 but no HEIC decoder: {why}"
-    );
-    println!("SKIPPED: no HEIC decoder on this runner: {why}");
+    // Visible in CI, a failure with the require flag.
+    ps_sysdecode::skip_test(&format!("no HEIC decoder on this runner: {why}"));
     None
 }
 
@@ -643,11 +674,10 @@ fn scenario_decoder_support_windows_decodes_heic_when_the_extensions_are_install
                     || why.contains("1809"),
                 "{fix:?}"
             );
-            assert!(
-                !require_system_heif(),
-                "PHOTOSQUIRREL_REQUIRE_SYSTEM_HEIF=1 but no HEIC decoder: {why}"
-            );
-            println!("SKIPPED: no HEIC decoder on this runner: {why}");
+            // The detection half ran; the decode half is skipped, visibly (a `::warning::` on GitHub).
+            ps_sysdecode::skip_test(&format!(
+                "no HEIC decoder on this runner, the WIC decode was not exercised: {why}"
+            ));
         }
     }
 }
@@ -695,4 +725,123 @@ fn scenario_media_probe_availability_listed() {
         commands(h.fix.as_ref().unwrap()),
         vec!["sudo apt install libheif1 libheif-plugin-libde265"]
     );
+}
+
+/// The oldest supported libheif, for real: the `oldest-libheif` CI job runs this file in an Ubuntu 22.04
+/// container with its distribution's libheif 1.12 and `PHOTOSQUIRREL_EXPECT_LIBHEIF=1.12` (and the require
+/// flag), so detection must load exactly that version and decode the samples upright and to the reference look.
+/// Elsewhere it is skipped, visibly.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+#[test]
+fn scenario_decoder_support_oldest_supported_library_decodes() {
+    let Some(want) = std::env::var("PHOTOSQUIRREL_EXPECT_LIBHEIF").ok() else {
+        ps_sysdecode::skip_note(
+            "PHOTOSQUIRREL_EXPECT_LIBHEIF is not set; this runs in the oldest-libheif CI job (Ubuntu 22.04)",
+        );
+        return;
+    };
+    let d = ps_sysdecode::detect(&OsInfo::current(), &Overrides::default());
+    let e = d.report().entry(DecoderFormat::Heic).unwrap().clone();
+    assert!(e.available, "{e:?}");
+    let v = e.version.clone().expect("version");
+    assert!(
+        v == want || v.starts_with(&format!("{want}.")),
+        "libheif {v}, expected {want}"
+    );
+    let dec = d.heif().unwrap();
+    let img = dec.decode(ps_sysdecode::SELFTEST_HEIC, 512).unwrap();
+    ps_sysdecode::check_upright(&img).unwrap();
+    let p = ps_media::probe_bytes(
+        ps_sysdecode::SELFTEST_ROT_HEIC,
+        ps_sysdecode::SELFTEST_ROT_HEIC.len() as u64,
+        None,
+    );
+    let rot = ps_media::decode_for_analysis(ps_sysdecode::SELFTEST_ROT_HEIC, &p, &d)
+        .unwrap()
+        .image;
+    assert!(rot.height > rot.width, "{}x{}", rot.width, rot.height);
+    let look = dec.decode(ps_sysdecode::LOOK_HEIC, 640).unwrap();
+    let h = ps_hash::perceptual_hash(
+        &ps_hash::ImageView::new(look.width, look.height, ps_hash::PixelLayout::Rgb8, &look.data)
+            .unwrap(),
+    );
+    assert!((h.phash ^ ps_sysdecode::LOOK_PHASH).count_ones() <= 4, "{h:?}");
+    assert!((h.dhash ^ ps_sysdecode::LOOK_DHASH).count_ones() <= 4, "{h:?}");
+}
+
+/// libheif's size limit by version (gate review fix 9): up to 1.17 the limit is per side, so it gets the area cap
+/// (panoramas wider than 16,384 px are not refused); from 1.18 it is the root of an area. Our own check refuses
+/// an image over the area cap from its declared size before decoding, with any version.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+#[test]
+fn scenario_decoder_support_panoramas_pass_the_heif_library_size_limit() {
+    use ps_sysdecode::libheif::size_limit_arg;
+    let side = i32::try_from(ps_sysdecode::MAX_PIXELS).unwrap();
+    assert_eq!(size_limit_arg((1, 12, 0)), side);
+    assert_eq!(size_limit_arg((1, 17, 6)), side);
+    assert_eq!(size_limit_arg((1, 18, 0)), 16_384);
+    assert_eq!(size_limit_arg((1, 23, 3)), 16_384);
+    let Some(d) = system_decoders() else {
+        return;
+    };
+    let dec = d.heif().unwrap();
+    // A sample declaring a 20000x400 panorama: whatever libheif makes of the payload (the coded image is
+    // 640x480), it is not refused by a size limit.
+    let pano = ps_fixtures::heif::heif_with_size(ps_sysdecode::SELFTEST_HEIC, 20_000, 400).unwrap();
+    if let Err(e) = dec.decode(&pano, 512) {
+        let m = e.to_string();
+        assert!(
+            !m.contains("Security limit") && !m.contains("exceeds the maximum") && !m.contains("decode cap"),
+            "{m}"
+        );
+    }
+    // Over the area cap: refused by our check before decoding.
+    let huge = ps_fixtures::heif::heif_with_size(ps_sysdecode::SELFTEST_HEIC, 20_000, 20_000).unwrap();
+    let e = dec.decode(&huge, 512).expect_err("over the cap").to_string();
+    assert!(e.contains("decode cap") || e.contains("limit"), "{e}");
+}
+
+/// Ubuntu and Debian derivatives get their base release's command (gate review fix 5): Linux Mint 21 and
+/// Pop!_OS 22.04 are jammy (no `libheif-plugin-libde265` there), Linux Mint 22 is noble, LMDE 6 is bookworm;
+/// a detected libheif version decides first.
+#[test]
+fn scenario_decoder_support_ubuntu_derivatives_follow_their_base_release() {
+    let plugin = vec!["sudo apt install libheif1 libheif-plugin-libde265"];
+    let built_in = vec!["sudo apt install libheif1"];
+    let mint21 = OsInfo::linux(
+        "NAME=\"Linux Mint\"\nVERSION=\"21.3 (Virginia)\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\n\
+         VERSION_ID=\"21.3\"\nVERSION_CODENAME=virginia\nUBUNTU_CODENAME=jammy\n",
+    );
+    assert_eq!(commands(&guidance(&mint21, &Finding::NoLibrary)), built_in);
+    let pop = OsInfo::linux(
+        "NAME=\"Pop!_OS\"\nVERSION=\"22.04 LTS\"\nID=pop\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"22.04\"\n\
+         VERSION_CODENAME=jammy\nUBUNTU_CODENAME=jammy\n",
+    );
+    assert_eq!(commands(&guidance(&pop, &Finding::NoLibrary)), built_in);
+    let mint22 = OsInfo::linux(
+        "NAME=\"Linux Mint\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"22\"\n\
+         VERSION_CODENAME=wilma\nUBUNTU_CODENAME=noble\n",
+    );
+    assert_eq!(commands(&guidance(&mint22, &Finding::NoLibrary)), plugin);
+    let zorin = OsInfo::linux(
+        "ID=zorin\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"17\"\nUBUNTU_CODENAME=jammy\n",
+    );
+    assert_eq!(commands(&guidance(&zorin, &Finding::NoLibrary)), built_in);
+    let lmde = OsInfo::linux(
+        "ID=linuxmint\nID_LIKE=debian\nVERSION_ID=\"6\"\nVERSION_CODENAME=faye\nDEBIAN_CODENAME=bookworm\n",
+    );
+    assert_eq!(commands(&guidance(&lmde, &Finding::NoLibrary)), built_in);
+    // Ubuntu's own release by codename too.
+    let noble = OsInfo::linux("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\nVERSION_CODENAME=noble\n");
+    assert_eq!(noble.ubuntu_codename.as_deref(), Some("noble"));
+    assert_eq!(commands(&guidance(&noble, &Finding::NoLibrary)), plugin);
+    // A loaded libheif without HEVC: its version decides (1.12 has the decoder built in, 1.17 a plugin).
+    let old = Finding::NoHevc {
+        version: "1.12.0".into(),
+    };
+    assert_eq!(commands(&guidance(&mint22, &old)), built_in);
+    let new = Finding::NoHevc {
+        version: "1.17.6".into(),
+    };
+    assert_eq!(commands(&guidance(&mint21, &new)), plugin);
 }

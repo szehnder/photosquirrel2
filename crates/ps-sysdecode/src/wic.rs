@@ -1,6 +1,6 @@
 //! Windows: WIC with the HEIF Image Extensions and an HEVC decoder (ADR-0089, design D2). Per thread, COM is
 //! initialised multithreaded once (an apartment set up otherwise by the host is used as found) and one
-//! `IWICImagingFactory` is created. A memory stream over the bytes, `CreateDecoderFromStream`, frame 0, a
+//! `IWICImagingFactory` is created, both held by one thread-local ([`ComThread`]). A memory stream over the bytes, `CreateDecoderFromStream`, frame 0, a
 //! scaler when the frame is larger than needed, a format converter to 24-bit RGB, `CopyPixels`.
 //!
 //! The platform checks explain a failure: the Windows build (HEIF Image Extensions need 10 version 1809,
@@ -29,7 +29,6 @@ use windows::Win32::Media::MediaFoundation::{
 };
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-    CoUninitialize,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Shell::SHCreateMemStream;
@@ -37,23 +36,28 @@ use windows::core::{GUID, HRESULT, IUnknown, Interface, PCSTR, w};
 
 use crate::{MAX_PIXELS, PlatformProbe};
 
-/// COM on this thread, uninitialised when the thread ends if this module initialised it.
+/// COM and the WIC factory of one thread, in one thread-local so their order at thread exit is ours, not the
+/// unspecified order of separate thread-locals.
+///
+/// At thread exit Rust runs thread-local destructors from the loader's thread-detach callback, with the loader
+/// lock held. Releasing the factory there is a reference-count decrement in the in-process WIC component
+/// (`windowscodecs.dll` stays loaded), so it is done first; `CoUninitialize` is deliberately not called there:
+/// it may unload COM servers and wait on other threads under the loader lock (a deadlock), and the system frees
+/// a thread's COM state when the thread ends anyway. A thread that initialised COM itself keeps it until it
+/// ends.
 struct ComThread {
-    owned: bool,
+    factory: Option<IWICImagingFactory>,
 }
 
 impl Drop for ComThread {
     fn drop(&mut self) {
-        if self.owned {
-            // SAFETY: balances the successful `CoInitializeEx` of this thread.
-            unsafe { CoUninitialize() };
-        }
+        // Released before anything else; no CoUninitialize (see the type's docs).
+        drop(self.factory.take());
     }
 }
 
 thread_local! {
     static COM: RefCell<Option<ComThread>> = const { RefCell::new(None) };
-    static FACTORY: RefCell<Option<IWICImagingFactory>> = const { RefCell::new(None) };
 }
 
 /// Initialise COM on this thread once (S_FALSE and RPC_E_CHANGED_MODE tolerated).
@@ -64,30 +68,28 @@ fn ensure_com() -> Result<(), String> {
         }
         // SAFETY: reserved pointer NULL; called on the current thread.
         let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        let owned = if hr.is_ok() {
-            true
-        } else if hr == RPC_E_CHANGED_MODE {
-            // The thread already has another apartment: use it as found.
-            false
-        } else {
+        if hr.is_err() && hr != RPC_E_CHANGED_MODE {
             return Err(format!("CoInitializeEx failed ({hr:?})"));
-        };
-        *c.borrow_mut() = Some(ComThread { owned });
+        }
+        // RPC_E_CHANGED_MODE: the thread already has another apartment; it is used as found.
+        *c.borrow_mut() = Some(ComThread { factory: None });
         Ok(())
     })
 }
 
 fn factory() -> Result<IWICImagingFactory, String> {
     ensure_com()?;
-    FACTORY.with(|f| {
-        if let Some(x) = f.borrow().as_ref() {
+    COM.with(|c| {
+        let mut c = c.borrow_mut();
+        let state = c.as_mut().ok_or("COM is not initialised on this thread")?;
+        if let Some(x) = state.factory.as_ref() {
             return Ok(x.clone());
         }
         // SAFETY: COM is initialised on this thread; the CLSID and interface are WIC's.
         let x: IWICImagingFactory =
             unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) }
                 .map_err(|e| format!("WIC factory: {e}"))?;
-        *f.borrow_mut() = Some(x.clone());
+        state.factory = Some(x.clone());
         Ok(x)
     })
 }

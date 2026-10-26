@@ -251,6 +251,19 @@ fn open(path: &Path) -> Result<SystemLibheif, String> {
     Ok(table)
 }
 
+/// The argument of `heif_context_set_maximum_image_size_limit` for libheif `version`. Up to 1.17 it is a limit
+/// on each side (`width > limit || height > limit`, some paths `>=`), so the square root of the area cap would
+/// refuse panoramas wider than 16,384 px: there it gets the area cap itself, which no side of an image within
+/// the area can reach, and our own check of the primary image's size enforces the area before decoding. From
+/// 1.18 it is the square root of a maximum area (`limit * limit` as 64-bit), so it gets the root of the cap.
+pub fn size_limit_arg(version: (u32, u32, u32)) -> c_int {
+    if (version.0, version.1) >= (1, 18) {
+        (MAX_PIXELS as f64).sqrt() as c_int
+    } else {
+        c_int::try_from(MAX_PIXELS).unwrap_or(c_int::MAX)
+    }
+}
+
 /// Frees a context, handle or image on every exit path.
 struct Guard(*const c_void, unsafe extern "C" fn(*const c_void));
 
@@ -286,8 +299,8 @@ impl HeifLib for SystemLibheif {
                 return Err("heif_context_alloc failed".into());
             }
             let _ctx = Guard(ctx, self.ctx_free);
-            // The cap is a maximum width whose square is the area (MAX_PIXELS).
-            (self.set_limit)(ctx, (MAX_PIXELS as f64).sqrt() as c_int);
+            // libheif's own limit, by version; the area cap is enforced below from the handle's size.
+            (self.set_limit)(ctx, size_limit_arg(self.version()));
             (self.read_mem)(ctx, bytes.as_ptr().cast(), bytes.len(), std::ptr::null())
                 .check("read")?;
             let mut handle = std::ptr::null_mut();
@@ -296,9 +309,10 @@ impl HeifLib for SystemLibheif {
                 return Err("no primary image".into());
             }
             let _handle = Guard(handle, self.handle_release);
+            // The area cap, from the primary image's declared size, before anything is decoded.
             let (w, h) = ((self.handle_width)(handle), (self.handle_height)(handle));
             if w <= 0 || h <= 0 || (w as u64) * (h as u64) > MAX_PIXELS {
-                return Err(format!("unsupported image size {w}x{h}"));
+                return Err(format!("unsupported image size {w}x{h} (over the decode cap)"));
             }
             let mut img = std::ptr::null_mut();
             (self.decode_image)(

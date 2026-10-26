@@ -237,6 +237,43 @@ fn windows(os: &OsInfo, f: &Finding) -> Fix {
     }
 }
 
+/// Ubuntu releases whose libheif predates plugins (1.14): the HEVC decoder is built into `libheif1`.
+const UBUNTU_BUILT_IN_HEVC: &[&str] = &["bionic", "focal", "jammy", "kinetic"];
+/// The same for Debian.
+const DEBIAN_BUILT_IN_HEVC: &[&str] = &["buster", "bullseye", "bookworm"];
+
+/// Whether this Debian-family system packages libheif's HEVC decoder as `libheif-plugin-libde265` (gate review
+/// fix 5). In order: the libheif version detection found (plugins exist from 1.14); the Ubuntu base release a
+/// derivative names (`UBUNTU_CODENAME`: Linux Mint 21 and Pop!_OS 22.04 are jammy); the Debian base release
+/// (`DEBIAN_CODENAME`, Debian's `VERSION_CODENAME`); Ubuntu's and Debian's own version numbers. Unknown: the
+/// plugin (every current release).
+fn debian_family_has_hevc_plugin(os: &OsInfo, f: &Finding) -> bool {
+    let detected = match f {
+        Finding::NoHevc { version } | Finding::TooOld { version } => parse_version(version),
+        _ => None,
+    };
+    if let Some(v) = detected {
+        return v >= (1, 14);
+    }
+    if let Some(c) = os.ubuntu_codename.as_deref() {
+        return !UBUNTU_BUILT_IN_HEVC.contains(&c);
+    }
+    if let Some(c) = os.debian_codename.as_deref() {
+        return !DEBIAN_BUILT_IN_HEVC.contains(&c);
+    }
+    match os.id.as_deref() {
+        Some("ubuntu") => os.major().is_none_or(|m| m >= 23),
+        Some("debian") => os.major().is_none_or(|m| m >= 13),
+        _ => true,
+    }
+}
+
+/// `1.12.0` -> (1, 12).
+fn parse_version(v: &str) -> Option<(u32, u32)> {
+    let mut it = v.split('.');
+    Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+}
+
 /// Linux and other Unix systems: the distribution's libheif with an HEVC decoder.
 fn unix(os: &OsInfo, f: &Finding) -> Fix {
     if *f == Finding::Forced {
@@ -312,23 +349,19 @@ fn unix(os: &OsInfo, f: &Finding) -> Fix {
             "sudo zypper install --from packman --allow-vendor-change libheif1 libheif-ffmpeg",
         ));
     } else if os.is_like(&["debian", "ubuntu"]) {
-        // Ubuntu 22.04 and Debian 12 ship libheif with libde265 built in; later releases package the HEVC
-        // decoder as a plugin.
-        let ubuntu = os.id.as_deref() == Some("ubuntu");
-        let debian = os.id.as_deref() == Some("debian");
-        let old = (ubuntu && os.major().is_some_and(|m| m < 24))
-            || (debian && os.major().is_some_and(|m| m < 13));
-        if old {
-            summary = "Install libheif1".to_owned();
-            steps.push(cmd(
-                "Install libheif (its HEVC decoder is included)",
-                "sudo apt install libheif1",
-            ));
-        } else {
+        // Ubuntu 22.04 and Debian 12 (and their derivatives) ship libheif with libde265 built in; later releases
+        // package the HEVC decoder as a plugin, `libheif-plugin-libde265`, which does not exist before.
+        if debian_family_has_hevc_plugin(os, f) {
             summary = "Install libheif1 and its HEVC plugin".to_owned();
             steps.push(cmd(
                 "Install libheif and its HEVC decoder plugin",
                 "sudo apt install libheif1 libheif-plugin-libde265",
+            ));
+        } else {
+            summary = "Install libheif1".to_owned();
+            steps.push(cmd(
+                "Install libheif (its HEVC decoder is included)",
+                "sudo apt install libheif1",
             ));
         }
     } else {

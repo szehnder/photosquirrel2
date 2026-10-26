@@ -23,6 +23,12 @@ pub struct OsInfo {
     pub id_like: Vec<String>,
     /// `/etc/os-release` `VERSION_ID`: `24.04`, `12`, ...
     pub version_id: Option<String>,
+    /// `/etc/os-release` `UBUNTU_CODENAME` (Ubuntu and its derivatives: Linux Mint, Pop!_OS, Zorin, ...):
+    /// `jammy`, `noble`, ...
+    pub ubuntu_codename: Option<String>,
+    /// `/etc/os-release` `DEBIAN_CODENAME` (Debian derivatives such as LMDE), else Debian's own
+    /// `VERSION_CODENAME`: `bookworm`, `trixie`, ...
+    pub debian_codename: Option<String>,
     /// Windows build number (17763 is Windows 10 1809; 22000 and later is Windows 11).
     pub windows_build: Option<u32>,
     /// A Windows "N" edition (no Media Foundation unless the Media Feature Pack is installed).
@@ -36,6 +42,8 @@ impl OsInfo {
             id: None,
             id_like: Vec::new(),
             version_id: None,
+            ubuntu_codename: None,
+            debian_codename: None,
             windows_build: None,
             windows_n: false,
         }
@@ -56,6 +64,7 @@ impl OsInfo {
             family: OsFamily::Linux,
             ..OsInfo::macos()
         };
+        let mut codename = None;
         for line in os_release.lines() {
             let Some((k, v)) = line.split_once('=') else {
                 continue;
@@ -67,8 +76,21 @@ impl OsInfo {
                     o.id_like = v.split_whitespace().map(str::to_ascii_lowercase).collect();
                 }
                 "VERSION_ID" => o.version_id = Some(v.to_owned()),
+                "UBUNTU_CODENAME" if !v.is_empty() => {
+                    o.ubuntu_codename = Some(v.to_ascii_lowercase());
+                }
+                "DEBIAN_CODENAME" if !v.is_empty() => {
+                    o.debian_codename = Some(v.to_ascii_lowercase());
+                }
+                "VERSION_CODENAME" if !v.is_empty() => codename = Some(v.to_ascii_lowercase()),
                 _ => {}
             }
+        }
+        // Debian and Ubuntu name their own release in VERSION_CODENAME only.
+        match o.id.as_deref() {
+            Some("debian") if o.debian_codename.is_none() => o.debian_codename = codename,
+            Some("ubuntu") if o.ubuntu_codename.is_none() => o.ubuntu_codename = codename,
+            _ => {}
         }
         o
     }
