@@ -1,6 +1,6 @@
 # Manual check: HEIC on Windows through WIC
 
-CI's windows-2022 runner has neither the HEIF Image Extensions nor an HEVC decoder, so the WIC decode path
+CI's windows-2022 runner has the HEIF Image Extensions but no HEVC decoder, so the WIC decode path
 (`crates/ps-sysdecode/src/wic.rs`) is compile-checked and its detection and reason mapping are tested there, but it
 has **not run** on a machine with the extensions. This check runs it on a Windows 10 (1809 or newer) or Windows 11 PC
 with both installed. It takes about five minutes and touches nothing but a temporary folder.
