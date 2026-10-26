@@ -419,7 +419,7 @@ impl CleanupView {
             let _ = this.update(cx, |this, cx| {
                 match r {
                     Ok(planned) => {
-                        this.kept = (planned.kept_total > 0).then(|| Kept {
+                        this.kept = (planned.kept_total > 0).then_some(Kept {
                             source,
                             rows: planned.kept,
                             total: planned.kept_total,
