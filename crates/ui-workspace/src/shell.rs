@@ -694,12 +694,26 @@ impl Shell {
         }
     }
 
+    /// Remember the Excluded view's chips, sort and mode (written with the layout, after changes settle).
+    pub fn set_excluded_state(
+        &mut self,
+        state: crate::persist::ExcludedViewState,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.layout.excluded != state {
+            self.layout.excluded = state;
+            self.schedule_save(window, cx);
+        }
+    }
+
     // ---- views --------------------------------------------------------------------------------------
 
     fn view_context(&self) -> ViewContext {
         ViewContext {
             service: self.service.clone(),
             library_mode: self.layout.library_mode,
+            excluded: self.layout.excluded.clone(),
             default_inspector: self.inspector_default.clone(),
         }
     }

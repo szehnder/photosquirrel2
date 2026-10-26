@@ -1846,8 +1846,20 @@ impl ui_gallery::source::GallerySource for DemoThumbs {
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>> {
         self.inner.camera_models()
     }
-    fn excluded(&self) -> anyhow::Result<Vec<ui_gallery::source::ExcludedRow>> {
-        self.inner.excluded()
+    fn excluded_open(
+        &self,
+        query: &ui_gallery::source::GalleryQuery,
+    ) -> anyhow::Result<(ps_model::ExclusionCounts, ps_model::IdList)> {
+        self.inner.excluded_open(query)
+    }
+    fn excluded_page(
+        &self,
+        ids: &[ps_model::ItemId],
+    ) -> anyhow::Result<Vec<ui_gallery::source::ExcludedRow>> {
+        self.inner.excluded_page(ids)
+    }
+    fn put_back(&self, ids: &[ps_model::ItemId]) -> anyhow::Result<usize> {
+        self.inner.put_back(ids)
     }
 }
 

@@ -107,6 +107,10 @@ impl Tokens {
     pub fn control_height() -> Rems {
         Self::size(28.0)
     }
+    /// A list row's thumbnail (the Excluded view's list).
+    pub fn thumb_sm() -> Rems {
+        Self::size(32.0)
+    }
     /// Settings window size (an overlay inside the main window).
     pub fn settings_width() -> Rems {
         Self::size(860.0)

@@ -71,9 +71,6 @@ impl GallerySource for JpegThumbs {
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>> {
         Ok(Vec::new())
     }
-    fn excluded(&self) -> anyhow::Result<Vec<ui_gallery::source::ExcludedRow>> {
-        Ok(Vec::new())
-    }
 }
 
 struct Rig {

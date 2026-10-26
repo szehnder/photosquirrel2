@@ -79,6 +79,41 @@ pub struct UiState {
     pub work_inspector_open: bool,
     pub active_view: ViewId,
     pub library_mode: LibraryMode,
+    /// The Excluded view's chips, sort and mode (ADR-0102). The file lives in the catalog's data directory, so
+    /// this is remembered per catalog.
+    pub excluded: ExcludedViewState,
+}
+
+/// How the Excluded view shows its files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExcludedMode {
+    /// A list with a thumbnail column, the category and the reasons.
+    #[default]
+    List,
+    /// The gallery grid limited to excluded files.
+    Grid,
+}
+
+/// The Excluded view's remembered state. The search text is not remembered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExcludedViewState {
+    /// The chips that are on (its `text` is always empty here).
+    pub chips: ps_model::ExclusionSelection,
+    pub sort: ps_model::Sort,
+    pub mode: ExcludedMode,
+}
+
+impl Default for ExcludedViewState {
+    /// First time: every chip on except "not a supported file", by name, as a list.
+    fn default() -> Self {
+        Self {
+            chips: ps_model::ExclusionSelection::default_view(),
+            sort: ps_model::Sort::by(ps_model::SortField::FileName),
+            mode: ExcludedMode::List,
+        }
+    }
 }
 
 impl Default for UiState {
@@ -93,6 +128,7 @@ impl Default for UiState {
             work_inspector_open: false,
             active_view: ViewId::Library,
             library_mode: LibraryMode::Grid,
+            excluded: ExcludedViewState::default(),
         }
     }
 }

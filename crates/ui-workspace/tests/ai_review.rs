@@ -343,6 +343,8 @@ fn scenario_ai_review_accept_exclusion_suggestion(cx: &mut TestAppContext) {
                     d.decision.reason_text(d.reason.as_deref()),
                     "excluded by you: screenshot (AI suggestion)"
                 );
+                // Stored as coming from an AI suggestion of kind screenshot (ADR-0102).
+                assert_eq!(d.ai_kind, Some(ps_model::AiKind::Screenshot));
             } else {
                 assert!(d.is_none());
             }

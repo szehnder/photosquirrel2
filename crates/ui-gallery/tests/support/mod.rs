@@ -163,9 +163,6 @@ impl GallerySource for FakeSource {
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>> {
         Ok(Vec::new())
     }
-    fn excluded(&self) -> anyhow::Result<Vec<ExcludedRow>> {
-        Ok(Vec::new())
-    }
 }
 
 pub fn init(cx: &mut TestAppContext) {

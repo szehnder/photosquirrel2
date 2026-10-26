@@ -939,7 +939,7 @@ impl Render for GalleryInspector {
         let view = Self::active_view(window, cx);
         // The Excluded view's selection.
         if view == ViewId::Excluded {
-            let sel = LibraryHub::excluded(cx).and_then(|x| x.read(cx).selected_id());
+            let sel = LibraryHub::excluded(cx).and_then(|x| x.read(cx).selected_id(cx));
             if sel != self.excluded_item {
                 self.show_excluded(sel, cx);
             }

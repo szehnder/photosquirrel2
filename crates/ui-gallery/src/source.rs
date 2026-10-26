@@ -5,8 +5,7 @@
 
 use std::sync::Arc;
 
-use ps_model::IdList;
-use ps_model::ItemId;
+use ps_model::{ExclusionCounts, IdList, ItemId};
 
 /// The data types live in `ps_model::library` (shared with the `ps-service` facade, which produces them).
 pub use ps_model::library::{
@@ -36,8 +35,25 @@ pub trait GallerySource: Send + Sync + 'static {
     ) -> anyhow::Result<()>;
     /// Camera models present, most common first (filter bar).
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>>;
-    /// Rows of the Excluded view (classes set aside plus user exclusions), with their reasons.
-    fn excluded(&self) -> anyhow::Result<Vec<ExcludedRow>>;
+    /// The Excluded view's opening read (ADR-0102, ADR-0103): every chip's count (honouring the query's search
+    /// text, not its chips) and the ordered list the query's exclusion selection shows, from one pass.
+    fn excluded_open(&self, query: &GalleryQuery) -> anyhow::Result<(ExclusionCounts, IdList)> {
+        Ok((ExclusionCounts::default(), self.id_list(query)?))
+    }
+    /// Rows of the Excluded view for up to 512 ids (the visible page), in order, with category, thumbnail and
+    /// reasons.
+    fn excluded_page(&self, ids: &[ItemId]) -> anyhow::Result<Vec<ExcludedRow>> {
+        let _ = ids;
+        Ok(Vec::new())
+    }
+    /// Put files back in the Library (include decisions; an accepted AI suggestion becomes rejected). Returns
+    /// the number of files.
+    fn put_back(&self, ids: &[ItemId]) -> anyhow::Result<usize> {
+        for id in ids {
+            self.set_decision(*id, Some(Decision::Include), None)?;
+        }
+        Ok(ids.len())
+    }
     /// A cleanup run is moving files: decisions are refused until it ends (ADR-0099). Never blocks (called
     /// while rendering).
     fn cleanup_running(&self) -> bool {
@@ -77,9 +93,6 @@ impl GallerySource for EmptySource {
         anyhow::bail!("no library is open")
     }
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>> {
-        Ok(Vec::new())
-    }
-    fn excluded(&self) -> anyhow::Result<Vec<ExcludedRow>> {
         Ok(Vec::new())
     }
 }

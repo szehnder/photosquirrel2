@@ -189,6 +189,8 @@ pub enum LibraryMode {
 pub struct ViewContext {
     pub service: ServiceHandle,
     pub library_mode: LibraryMode,
+    /// The Excluded view's remembered chips, sort and mode.
+    pub excluded: crate::persist::ExcludedViewState,
     /// The shell's default inspector (a custom inspector shows it when it has nothing selected).
     pub default_inspector: Entity<crate::inspector::InspectorView>,
 }

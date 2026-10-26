@@ -8,7 +8,7 @@ use ps_model::{IdList, ItemId, SortKey};
 
 use crate::decode::Bgra;
 use crate::source::{
-    Decision, ExcludedRow, GalleryQuery, GallerySource, ItemDetail, ItemSummary, Preview, ThumbKey,
+    Decision, GalleryQuery, GallerySource, ItemDetail, ItemSummary, Preview, ThumbKey,
 };
 
 /// Frame timing samples.
@@ -262,9 +262,6 @@ impl GallerySource for SyntheticSource {
         Ok(())
     }
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>> {
-        Ok(Vec::new())
-    }
-    fn excluded(&self) -> anyhow::Result<Vec<ExcludedRow>> {
         Ok(Vec::new())
     }
 }

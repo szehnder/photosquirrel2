@@ -134,6 +134,29 @@ impl GalleryModel {
         self.load(cx);
     }
 
+    /// Install a query together with its list, read by the caller with other data in one pass (the Excluded
+    /// view's counts and list, ADR-0103). Any list still loading for an older query is dropped.
+    pub fn set_query_and_list(
+        &mut self,
+        query: GalleryQuery,
+        list: IdList,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.query = query;
+        self.list_request += 1;
+        self.apply_list(list, cx);
+    }
+
+    /// Put a texture decoded before the first frame in the LRU as already shown (no fade-in, no upload wait),
+    /// like [`Self::prime`] does.
+    pub fn insert_primed_texture(&mut self, key: TexKey, image: Arc<RenderImage>) {
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(5))
+            .unwrap_or_else(Instant::now);
+        self.insert_texture(key, image);
+        self.textures.shown_at(&key, past);
+    }
+
     /// Re-run the current query keeping the item at `top` in place (live updates during scans).
     pub fn refresh_keeping(&mut self, top: Option<usize>, cx: &mut Context<'_, Self>) {
         self.pending_anchor = top.and_then(|i| self.index.keys.get(i).copied());

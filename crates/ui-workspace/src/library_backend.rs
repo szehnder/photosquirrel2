@@ -215,8 +215,19 @@ impl GallerySource for CatalogBackend {
         self.lib.camera_models()
     }
 
-    fn excluded(&self) -> anyhow::Result<Vec<ExcludedRow>> {
-        self.lib.excluded()
+    fn excluded_open(
+        &self,
+        query: &GalleryQuery,
+    ) -> anyhow::Result<(ps_model::ExclusionCounts, IdList)> {
+        self.lib.excluded_open(&query.filter, &query.sort)
+    }
+
+    fn excluded_page(&self, ids: &[ItemId]) -> anyhow::Result<Vec<ExcludedRow>> {
+        self.lib.excluded_page(ids)
+    }
+
+    fn put_back(&self, ids: &[ItemId]) -> anyhow::Result<usize> {
+        self.lib.put_back(ids)
     }
 }
 

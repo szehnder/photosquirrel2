@@ -238,22 +238,31 @@ fn scenario_gallery_filter_by_camera_model(cx: &mut TestAppContext) {
     );
 }
 
+/// The Excluded view once its counts and list are read.
+fn excluded_view(cx: &mut VisualTestContext) -> Entity<ui_workspace::views::library::ExcludedView> {
+    wait_until(cx, "the excluded list", |cx| {
+        cx.update(|_, cx| LibraryHub::excluded(cx).is_some_and(|x| x.read(cx).is_loaded()))
+    });
+    cx.update(|_, cx| LibraryHub::excluded(cx).unwrap())
+}
+
 #[gpui_kit::test]
 fn scenario_gallery_excluded_view_lists_reasons(cx: &mut TestAppContext) {
     let (_tmp, dir) = catalog_copy(false);
-    let (_backend, shell, mut cx) = open_app(cx, &dir);
+    let (backend, shell, mut cx) = open_app(cx, &dir);
     shell.update_in(&mut cx, |s, w, cx| s.show_view(ViewId::Excluded, w, cx));
-    wait_until(&mut cx, "the excluded rows", |cx| {
-        cx.update(|_, cx| LibraryHub::excluded(cx).is_some_and(|x| x.read(cx).rows().is_some()))
+    let x = excluded_view(&mut cx);
+    // Every category on.
+    x.update_in(&mut cx, |x, w, cx| x.show_all(w, cx));
+    let x2 = x.clone();
+    wait_until(&mut cx, "every category", move |cx| {
+        cx.update(|_, cx| x2.read(cx).hidden() == 0 && x2.read(cx).is_loaded())
     });
-    let rows = cx.update(|_, cx| {
-        LibraryHub::excluded(cx)
-            .unwrap()
-            .read(cx)
-            .rows()
-            .unwrap()
-            .to_vec()
-    });
+    let ids = cx.update(|_, cx| x.read(cx).ids(cx));
+    let mut rows = Vec::new();
+    for chunk in ids.chunks(512) {
+        rows.extend(backend.excluded_page(chunk).unwrap());
+    }
     let t = template();
     let set_aside: Vec<_> = t
         .truth
@@ -273,6 +282,7 @@ fn scenario_gallery_excluded_view_lists_reasons(cx: &mut TestAppContext) {
             .find(|r| r.path.ends_with(&f.path))
             .unwrap_or_else(|| panic!("{} ({:?}) is listed", f.path, f.category));
         assert!(!row.reasons.is_empty(), "{} has reasons", f.path);
+        assert!(row.category.is_some(), "{} has a category", f.path);
     }
 }
 
@@ -557,19 +567,9 @@ fn scenario_photo_inspector_include_an_excluded_file(cx: &mut TestAppContext) {
         .unwrap();
     let id = file_id(&backend, &graphic.path);
     shell.update_in(&mut cx, |s, w, cx| s.show_view(ViewId::Excluded, w, cx));
-    wait_until(&mut cx, "the excluded rows", |cx| {
-        cx.update(|_, cx| LibraryHub::excluded(cx).is_some_and(|x| x.read(cx).rows().is_some()))
-    });
-    let excluded = cx.update(|_, cx| LibraryHub::excluded(cx).unwrap());
+    let excluded = excluded_view(&mut cx);
     let row = cx
-        .update(|_, cx| {
-            excluded
-                .read(cx)
-                .rows()
-                .unwrap()
-                .iter()
-                .position(|r| r.id == id)
-        })
+        .update(|_, cx| excluded.read(cx).ids(cx).iter().position(|r| *r == id))
         .unwrap();
     excluded.update(&mut cx, |x, cx| x.select(row, cx));
     let insp = inspector(&mut cx);
@@ -592,9 +592,8 @@ fn scenario_photo_inspector_include_an_excluded_file(cx: &mut TestAppContext) {
     let ex = excluded.clone();
     wait_until(&mut cx, "the excluded view to drop it", move |cx| {
         cx.update(|_, cx| {
-            ex.read(cx)
-                .rows()
-                .is_some_and(|r| !r.iter().any(|r| r.id == id))
+            let x = ex.read(cx);
+            x.is_loaded() && !x.ids(cx).contains(&id)
         })
     });
     let in_library = |b: &CatalogBackend| {
@@ -642,11 +641,12 @@ fn scenario_photo_inspector_exclude_a_photo(cx: &mut TestAppContext) {
                 .is_some_and(|d| d.decision == Some(Decision::Exclude))
         })
     });
-    let rows = backend.excluded().unwrap();
+    let rows = backend.excluded_page(&[id]).unwrap();
     let row = rows
         .iter()
         .find(|r| r.id == id)
         .expect("in the Excluded view");
+    assert_eq!(row.category, Some(ps_model::ExclusionCategory::You));
     assert_eq!(row.reasons[0], "excluded by you: screenshot");
     assert!(
         !backend
@@ -711,9 +711,6 @@ impl GallerySource for DatedSource {
         Ok(())
     }
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>> {
-        Ok(Vec::new())
-    }
-    fn excluded(&self) -> anyhow::Result<Vec<ui_gallery::source::ExcludedRow>> {
         Ok(Vec::new())
     }
 }
