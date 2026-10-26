@@ -394,6 +394,18 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
             s.diff.reanalyzed
         );
     }
+    if s.diff.frame_reread > 0 {
+        let split = s.grouping.as_ref().map_or(0, |g| g.groups_split);
+        println!(
+            "{} re-read for frame numbers (header only, read-only), {} split",
+            files(s.diff.frame_reread).replacen("file", "RAW file", 1),
+            if split == 1 {
+                "1 group".to_owned()
+            } else {
+                format!("{split} groups")
+            }
+        );
+    }
     for l in refresh_lines(&s.diff, s.status, refresh) {
         println!("{l}");
     }

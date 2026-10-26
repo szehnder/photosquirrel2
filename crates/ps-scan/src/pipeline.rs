@@ -886,6 +886,8 @@ fn process_file(
                 ctx.progress.file_done(idx);
             } else if t.refresh {
                 refresh_unreadable(ctx, idx, &t, &e);
+            } else if t.meta_reread {
+                reread_unreadable(ctx, idx, &t, &e);
             } else if t.redecode.is_some() {
                 redecode_unreadable(ctx, idx, &t, &io_message(&e));
             } else {
@@ -913,6 +915,36 @@ fn process_file(
         idx,
         delay: ctx.opts.chunk_delay,
     };
+
+    // A header re-read for frame identity (ADR-0105): the probe window only, read-only; the facts are merged into
+    // the stored metadata. No decode, no hashing, nothing else changes.
+    if t.meta_reread {
+        let mut head = Vec::with_capacity((size as usize).min(ps_media::PROBE_LIMIT));
+        if let Err(e) = read_into(&mut r, &mut head, ps_media::PROBE_LIMIT) {
+            if !is_cancel(&e) {
+                if ctx.root_available(idx) {
+                    reread_unreadable(ctx, idx, &t, &e);
+                } else {
+                    ctx.lose(idx);
+                }
+            }
+            return;
+        }
+        drop(file);
+        let probe = ps_media::probe_bytes(&head, size, Some(rel.as_path()));
+        let facts = ps_media::read_frame_facts(&head, &probe);
+        ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
+            key: FileKey::new(src.id, t.path.clone()),
+            frame_id: facts.frame_id,
+            maker_notes: facts.maker_notes,
+            camera_original: facts.camera_original,
+            version: ps_model::META_LOGIC_VERSION,
+        }]));
+        ctx.progress.frame_reread(idx);
+        ctx.progress.file_done(idx);
+        ctx.progress.set_dir(idx, reader, None);
+        return;
+    }
 
     // A re-decode (ADR-0091): the single full read, then the identity check. The same content goes on as a
     // re-decode; other content under an unchanged fingerprint is analysed like a changed file.
@@ -1201,6 +1233,19 @@ fn refresh_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, e: &io::Error) {
         stage: t.stage,
         message: format!(
             "could not be read for the analysis refresh ({}); it keeps its analysis",
+            io_message(e)
+        ),
+    });
+    ctx.progress.file_done(idx);
+}
+
+fn reread_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, e: &io::Error) {
+    ctx.progress.error(RecentError {
+        source: ctx.sources[idx].id,
+        path: t.path.clone(),
+        stage: t.stage,
+        message: format!(
+            "could not be read for its frame number ({}); it keeps its analysis and is re-read next time",
             io_message(e)
         ),
     });

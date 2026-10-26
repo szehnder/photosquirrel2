@@ -474,14 +474,15 @@ pub enum GroupOrder {
 impl Readers {
     /// A change stamp per grouping input (analyzed, present files with a content identity), ordered by id.
     /// The stamp covers every column grouping and ranking read except the metadata JSON, which only changes
-    /// together with them (re-analysis follows a fingerprint change). Not the capture date columns: grouping
+    /// together with them (re-analysis follows a fingerprint change; a frame-identity re-read, ADR-0105, changes
+    /// `frame_id` and `meta_version`). Not the capture date columns: grouping
     /// and ranking read the embedded capture time from the metadata, so re-dating a row (ADR-0071) is no
     /// grouping change.
     pub fn dedup_stamps(&self) -> Result<Vec<(FileId, u64)>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(&format!(
                 "SELECT id, source_id, rel_path, size, mtime_ns, class, format, width, height, content_id,
-                        identity_kind, phash, dhash, hash_version
+                        identity_kind, phash, dhash, hash_version, frame_id, meta_version
                  FROM file WHERE {INPUT_WHERE} ORDER BY id"
             ))?;
             let mut rows = stmt.query([])?;
@@ -500,6 +501,9 @@ impl Readers {
                 for i in 10..=13 {
                     s.int(r.get(i)?);
                 }
+                // A header re-read for frame identity (ADR-0105) changes the metadata JSON with these two.
+                s.bytes(r.get::<_, Option<String>>(14)?.unwrap_or_default().as_bytes());
+                s.int(r.get(15)?);
                 out.push((FileId(r.get(0)?), s.0));
             }
             Ok(out)

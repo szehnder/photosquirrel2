@@ -14,7 +14,7 @@ migration 24).
 
 ## 3. Metadata
 
-- [ ] 3.1 `ps_model` `FrameId` and `fields.frame_id`; `ps-media` reads DNG 0xC68B, the Canon maker-note `FileNumber`, and maker notes inside `DNGPrivateData` (`has_maker_notes`). Verify: `scenario_media_metadata_converted_dng_records_its_frame`, `scenario_media_metadata_frame_identity_costs_no_extra_read` (byte-counting layer), fuzz-style truncation tests of the `DNGPrivateData` parser.
+- [x] 3.1 `ps_model` `FrameId` and `fields.frame_id`; `ps-media` reads DNG 0xC68B, the Canon maker-note `FileNumber`, and maker notes inside `DNGPrivateData` (`has_maker_notes`). Verify: `scenario_media_metadata_converted_dng_records_its_frame`, `scenario_media_metadata_frame_identity_costs_no_extra_read` (byte-counting layer), fuzz-style truncation tests of the `DNGPrivateData` parser.
 
 ## 4. Grouping
 
@@ -22,8 +22,8 @@ migration 24).
 
 ## 5. Catalog and rescan
 
-- [ ] 5.1 Migration 23: `file.frame_id`, `file.meta_version`, non-RAW rows stamped to the current version without reading. Verify: a migration test on a catalog written by migration 22.
-- [ ] 5.2 Rescan: re-read RAW metadata for rows below `META_LOGIC_VERSION` (header bytes only), bump the dedup stamp, report re-read files and split groups. Verify: `scenario_incremental_rescan_old_catalog_splits_merged_burst_frames_on_rescan`, `scenario_incremental_rescan_the_re_read_happens_once`, and every existing `scenario_incremental_rescan_*` test still passes.
+- [x] 5.1 Migration 23: `file.frame_id`, `file.meta_version`, non-RAW rows stamped to the current version without reading. Verify: a migration test on a catalog written by migration 22.
+- [x] 5.2 Rescan: re-read RAW metadata for rows below `META_LOGIC_VERSION` (header bytes only), bump the dedup stamp, report re-read files and split groups. Verify: `scenario_incremental_rescan_old_catalog_splits_merged_burst_frames_on_rescan`, `scenario_incremental_rescan_the_re_read_happens_once`, and every existing `scenario_incremental_rescan_*` test still passes.
 
 ## 6. Export, report and cleanup
 

@@ -19,6 +19,10 @@
 //! - **re-decoded**: an unchanged, thumbed file analysed without the decoder its format needs (its
 //!   `decoder_missing` marker, ADR-0091) is queued for a re-decode when the run's decoder registry has that
 //!   decoder (one full read); otherwise it is counted as awaiting a decoder and nothing is read.
+//! - **re-read for frame identity**: an unchanged, analysed RAW-format row (DNG included) analysed before frame
+//!   identity existed (`meta_version` below [`ps_model::META_LOGIC_VERSION`]) has its probe window read again
+//!   (at most [`ps_media::PROBE_LIMIT`] bytes, read-only, no decode, no hashing) and its frame identity merged into
+//!   the stored metadata, once (ADR-0105).
 //! - **needs refresh**: an unchanged, finished file probed before classification facts were stored (catalog
 //!   migration 13) is counted; only with [`ScanOptions::refresh_analysis`](crate::ScanOptions) is its probe
 //!   data read again (at most [`ps_media::PROBE_LIMIT`] bytes, read-only) to re-classify it (ADR-0071).
@@ -62,6 +66,9 @@ pub struct Todo {
     /// A re-decode of a file whose decode failed with the decoder present (ADR-0098): that failure, so a new one
     /// counts its attempts on.
     pub prior_failure: Option<ps_model::DecodeFailure>,
+    /// A header re-read of an unchanged RAW row analysed before frame identity (ADR-0105): read the probe window
+    /// only (read-only, no decode, no hashing) and merge its frame identity into the stored metadata.
+    pub meta_reread: bool,
 }
 
 /// The diff of one source.
@@ -109,6 +116,15 @@ fn catalogued_without_dimensions(r: &ps_catalog::FileRecord, stat: &StatFingerpr
         && r.width.is_none()
         && r.missing_since_ms.is_none()
         && stat.size > ps_media::PROBE_LIMIT as u64
+}
+
+/// An analysed RAW-format row (DNG included) whose stored metadata predates the current metadata rules
+/// ([`ps_model::META_LOGIC_VERSION`], ADR-0105). Other formats are marked current by catalog migration 23.
+fn needs_frame_reread(r: &ps_catalog::FileRecord) -> bool {
+    r.stage == Stage::Thumbed
+        && r.meta_version < ps_model::META_LOGIC_VERSION
+        && r.format.is_some_and(ps_model::Format::is_raw)
+        && r.identity.is_some()
 }
 
 pub fn diff(
@@ -184,6 +200,7 @@ pub fn diff(
                     refresh: false,
                     redecode: None,
                     prior_failure: None,
+                    meta_reread: false,
                 };
                 match rec {
                     None => {
@@ -264,6 +281,7 @@ pub fn diff(
                                     _ => out.counts.awaiting_decoder += 1,
                                 }
                             }
+                            let mut refreshing = false;
                             match r.classifier_hash {
                                 Some(h) if h != classifier_hash => stale.push(Stale {
                                     id: r.id,
@@ -275,6 +293,7 @@ pub fn diff(
                                 None => {
                                     out.counts.needs_refresh += 1;
                                     if refresh_analysis && !redecoding {
+                                        refreshing = true;
                                         out.todo.push(Todo {
                                             refresh: true,
                                             ..todo(r.stage, false)
@@ -283,6 +302,16 @@ pub fn diff(
                                             w.stat.size.min(ps_media::PROBE_LIMIT as u64);
                                     }
                                 }
+                            }
+                            // Frame identity (ADR-0105): an analysed RAW row read before it existed has its header
+                            // re-read once. A row already queued for other work waits for the next rescan.
+                            if needs_frame_reread(r) && !redecoding && !refreshing {
+                                out.todo.push(Todo {
+                                    meta_reread: true,
+                                    ..todo(r.stage, false)
+                                });
+                                out.bytes_to_process +=
+                                    w.stat.size.min(ps_media::PROBE_LIMIT as u64);
                             }
                             if r.date_version < DATE_LOGIC_VERSION && r.capture_provenance.is_some()
                             {

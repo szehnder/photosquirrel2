@@ -37,8 +37,8 @@ pub use groups::{
     SuggestionRow,
 };
 pub use model::{
-    AnalysisResult, FileErrorRecord, FileFailure, FileKey, FileRecord, FileRow, NewSource,
-    ProbeResult, Reclassification, Redate, Results, RunRecord, SourceRecord,
+    AnalysisResult, FileErrorRecord, FileFailure, FileKey, FileRecord, FileRow, MetaReread,
+    NewSource, ProbeResult, Reclassification, Redate, Results, RunRecord, SourceRecord,
 };
 pub use read::{PAGE_SIZE, Readers};
 pub use stores::{AiCounts, AiItemState, AiQueueRow, AiResultRow, AiRunState, LibraryRecord};

@@ -183,6 +183,19 @@ pub struct BurstFrameFiles {
 /// (two-digit sub-seconds, `00` below 10 ms), file `IMG_<34 + frame>`; `seed` picks the scene (equal seeds, one
 /// burst) and `long` the long edge of the 3:2 picture. Frames differ like burst frames (pHash distance about 2).
 pub fn converted_burst_frame(seed: u64, frame: u32, millis: u16, long: u32) -> BurstFrameFiles {
+    converted_burst_frame_with(seed, frame, millis, long, frame)
+}
+
+/// [`converted_burst_frame`] whose converted DNG shows frame `rendered_as` of the burst instead of its own (the
+/// converter's rendering of frame N closer to frame N+1 than to frame N's camera JPEG, which is what made frame N's
+/// DNG join frame N+1 on the owner's card).
+pub fn converted_burst_frame_with(
+    seed: u64,
+    frame: u32,
+    millis: u16,
+    long: u32,
+    rendered_as: u32,
+) -> BurstFrameFiles {
     use crate::camera::{Body, Capture, Exposure, MODELS, spec_maker_note};
     use crate::jpeg::{app1_exif, camera_jpeg, encode_jpeg, strip_segments};
     use crate::synth::{Perturb, Scene, render};
@@ -219,7 +232,14 @@ pub fn converted_burst_frame(seed: u64, frame: u32, millis: u16, long: u32) -> B
     let jpeg = camera_jpeg(&encoded, &app1_exif(&crate::camera::exif_tiff(&spec)));
     let preview = strip_segments(&encoded, &[0xE0]);
     let cr2 = cr2_like(&spec, &preview, w, h);
-    let mut render_p = perturb;
+    let mut render_p = if rendered_as == frame {
+        perturb
+    } else {
+        Perturb::near(
+            &mut crate::rng::derive(seed, "burst-frame", u64::from(rendered_as)),
+            1.0,
+        )
+    };
     render_p.light *= 1.02;
     render_p.grain_seed ^= 0x5eed;
     let dng_preview = strip_segments(&encode_jpeg(&render(&scene, &render_p, w, h), 90), &[0xE0]);

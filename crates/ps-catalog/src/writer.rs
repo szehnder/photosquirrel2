@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
 use parking_lot::Mutex;
+use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use ps_model::{
@@ -26,8 +27,8 @@ use ps_model::{
 
 use crate::error::{CatalogError, Result, WriteError, WriteErrors};
 use crate::model::{
-    AnalysisResult, FileFailure, FileKey, FileRow, NewSource, ProbeResult, Reclassification,
-    Redate, Results, codes, now_ms,
+    AnalysisResult, FileFailure, FileKey, FileRow, MetaReread, NewSource, ProbeResult,
+    Reclassification, Redate, Results, codes, now_ms,
 };
 
 /// Batching parameters (ADR-0005 defaults).
@@ -66,6 +67,10 @@ pub enum Command {
     /// Capture dates chosen again by the current date rules from stored facts (ADR-0071): only the five date
     /// columns and `date_version` change. Rows without metadata are left alone.
     Redate(Vec<Redate>),
+    /// Frame identities re-read from the header of unchanged RAW rows (ADR-0105): merged into the stored
+    /// metadata with `frame_id` and `meta_version`; the dedup stamp changes, so the next regroup takes them up.
+    /// Rows without metadata are left alone.
+    MetaReread(Vec<MetaReread>),
     /// Analysis results with stage `analyzed`. The file must have been probed.
     Analyzed(Vec<(FileKey, Box<AnalysisResult>)>),
     /// Stage `thumbed`: the thumbnail is in `thumbs.db`. The file must be analyzed.
@@ -140,6 +145,7 @@ impl Command {
             Command::Probed(_) => "probed",
             Command::Reclassify(_) => "reclassify",
             Command::Redate(_) => "redate",
+            Command::MetaReread(_) => "meta_reread",
             Command::Analyzed(_) => "analyzed",
             Command::Thumbed(_) => "thumbed",
             Command::Failed(_) => "failed",
@@ -714,6 +720,13 @@ impl WriterThread {
                     });
                 }
             }
+            Command::MetaReread(rows) => {
+                for r in &rows {
+                    self.row(name, Some(&r.key), |c| {
+                        expect_one(set_meta_reread(c, r)?, "unknown or unanalysed file")
+                    });
+                }
+            }
             Command::Analyzed(rows) => {
                 for (k, a) in &rows {
                     self.row(name, Some(k), |c| {
@@ -913,6 +926,8 @@ const ANALYSIS_COLUMNS: &[(&str, &str)] = &[
     ("metadata", "NULL"),
     ("decoder_missing", "NULL"),
     ("decode_failure", "NULL"),
+    ("frame_id", "NULL"),
+    ("meta_version", "0"),
 ];
 const PROBE_COLUMNS: &[(&str, &str)] = &[
     ("class", "NULL"),
@@ -1006,7 +1021,8 @@ const ANALYZED_SQL: &str = "UPDATE file SET stage = 2,
         capture_ts = ?8, capture_offset_min = ?9, capture_provenance = ?10, capture_undated = ?11,
         camera_model = ?12, has_gps = ?13, metadata = ?14,
         width = coalesce(?15, width), height = coalesce(?16, height),
-        capture_precision = ?17, date_version = ?18, decoder_missing = ?19, decode_failure = ?20
+        capture_precision = ?17, date_version = ?18, decoder_missing = ?19, decode_failure = ?20,
+        frame_id = ?21, meta_version = ?22
     WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
 
 /// All columns at once, for rows that arrive with results and are new (the common synthetic/import case).
@@ -1016,9 +1032,11 @@ static INSERT_FULL_SQL: LazyLock<String> = LazyLock::new(|| {
         stage, class, reasons, format, media_kind, width, height,
         content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_offset_min,
         capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen,
-        class_facts, classifier_hash, capture_precision, date_version, decoder_missing, decode_failure, exclusion)
+        class_facts, classifier_hash, capture_precision, date_version, decoder_missing, decode_failure,
+        frame_id, meta_version, exclusion)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31, ?32, {})
+            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
+            ?34, {})
     ON CONFLICT (source_id, rel_path) DO NOTHING",
         exclusion_sql("?8", "?10", "?9", "?3")
     )
@@ -1071,6 +1089,7 @@ struct AnalysisCols {
     metadata: String,
     width: Option<u32>,
     height: Option<u32>,
+    frame_id: Option<String>,
 }
 
 fn analysis_cols(a: &AnalysisResult) -> rusqlite::Result<AnalysisCols> {
@@ -1093,6 +1112,7 @@ fn analysis_cols(a: &AnalysisResult) -> rusqlite::Result<AnalysisCols> {
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
         width: m.fields.width,
         height: m.fields.height,
+        frame_id: m.fields.frame_id.as_ref().map(ps_model::FrameId::storage),
     })
 }
 
@@ -1140,6 +1160,8 @@ fn insert_full(
         a.decode_failure
             .as_ref()
             .map(ps_model::DecodeFailure::to_storage),
+        x.frame_id,
+        i64::from(ps_model::META_LOGIC_VERSION),
     ])
 }
 
@@ -1246,6 +1268,42 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
         a.decode_failure
             .as_ref()
             .map(ps_model::DecodeFailure::to_storage),
+        x.frame_id,
+        i64::from(ps_model::META_LOGIC_VERSION),
+    ])
+}
+
+/// A header re-read for frame identity (ADR-0105): the frame identity, maker notes and the camera-original signal
+/// merged into the stored metadata (or-ed: the full analysis may have seen more than the header shows), the
+/// `frame_id` column and the version. Everything else the analysis stored stays. Only analysed rows are written.
+fn set_meta_reread(c: &Connection, r: &MetaReread) -> rusqlite::Result<usize> {
+    let stored: Option<String> = c
+        .prepare_cached(
+            "SELECT metadata FROM file
+             WHERE source_id = ?1 AND rel_path = ?2 AND metadata IS NOT NULL",
+        )?
+        .query_row(params![r.key.source.0, r.key.path.as_bytes()], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let Some(json) = stored else { return Ok(0) };
+    let mut m: ps_model::Metadata = serde_json::from_str(&json)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(e)))?;
+    m.fields.frame_id.clone_from(&r.frame_id);
+    m.fields.has_maker_notes |= r.maker_notes;
+    m.likely_camera_original |= r.camera_original;
+    let json = serde_json::to_string(&m)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    c.prepare_cached(
+        "UPDATE file SET metadata = ?3, frame_id = ?4, meta_version = ?5
+         WHERE source_id = ?1 AND rel_path = ?2 AND metadata IS NOT NULL",
+    )?
+    .execute(params![
+        r.key.source.0,
+        r.key.path.as_bytes(),
+        json,
+        r.frame_id.as_ref().map(ps_model::FrameId::storage),
+        i64::from(r.version),
     ])
 }
 

@@ -168,6 +168,10 @@ pub struct DiffCounts {
     /// because the failure was transient or the decoder backend changed (ADR-0098).
     #[serde(default)]
     pub decode_retries: u64,
+    /// Unchanged RAW files analysed before frame identity existed whose header this run re-read for frame numbers
+    /// (read-only, at most the probe window; counted in `unchanged` too; ADR-0105).
+    #[serde(default)]
+    pub frame_reread: u64,
 }
 
 impl DiffCounts {
@@ -188,6 +192,7 @@ impl DiffCounts {
         self.redecode += o.redecode;
         self.redecoded += o.redecoded;
         self.decode_retries += o.decode_retries;
+        self.frame_reread += o.frame_reread;
     }
 
     /// Unchanged files that still keep a class decided before facts were stored, after this run.

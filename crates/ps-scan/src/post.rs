@@ -43,6 +43,10 @@ pub struct RegroupReport {
     /// Groups written (inserted or replaced) and deleted in the catalog.
     pub groups_written: u64,
     pub groups_removed: u64,
+    /// Stored groups whose members this refresh put in more than one place (another group, or no group): for
+    /// example burst frames separated by their frame identities (ADR-0105).
+    #[serde(default)]
+    pub groups_split: u64,
     /// Time spent grouping (in memory), and in total.
     pub group_ms: u64,
     pub elapsed_ms: u64,
@@ -299,6 +303,9 @@ impl GroupEngine {
         };
         report.groups_written = changes.groups.len() as u64;
         report.groups_removed = changes.removed_groups.len() as u64;
+        if let Some(st) = slot.as_ref() {
+            report.groups_split = groups_split(catalog, &changes, &st.live)?;
+        }
         if !changes.is_empty() {
             catalog.writer().apply_groups(changes)?;
         }
@@ -322,6 +329,34 @@ impl GroupEngine {
         );
         Ok(report)
     }
+}
+
+/// How many of the stored groups that `changes` rewrites or removes now have their members in more than one group
+/// of `live` (members in no group, such as files gone missing, are not counted). Reads only the touched groups.
+fn groups_split(catalog: &Catalog, changes: &GroupChanges, live: &LiveGrouping) -> Result<u64> {
+    let mut touched: Vec<FileId> = changes
+        .removed_groups
+        .iter()
+        .copied()
+        .chain(changes.groups.iter().map(|g| g.id))
+        .collect();
+    touched.sort();
+    touched.dedup();
+    let mut split = 0;
+    for id in touched {
+        let Some(old) = catalog.read().group(id)? else {
+            continue;
+        };
+        let places: std::collections::HashSet<FileId> = old
+            .members
+            .iter()
+            .filter_map(|m| live.group_of(m.file).map(|g| g.members[0].file))
+            .collect();
+        if places.len() > 1 {
+            split += 1;
+        }
+    }
+    Ok(split)
 }
 
 /// The changes that make the stored groups equal `grouping`, writing only what differs.

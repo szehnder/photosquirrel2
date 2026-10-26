@@ -76,6 +76,7 @@ struct Diff {
     redecode: AtomicU64,
     redecoded: AtomicU64,
     decode_retries: AtomicU64,
+    frame_reread: AtomicU64,
 }
 
 impl Diff {
@@ -97,6 +98,7 @@ impl Diff {
             redecode: self.redecode.load(Ordering::Relaxed),
             redecoded: self.redecoded.load(Ordering::Relaxed),
             decode_retries: self.decode_retries.load(Ordering::Relaxed),
+            frame_reread: self.frame_reread.load(Ordering::Relaxed),
         }
     }
 
@@ -117,8 +119,8 @@ impl Diff {
         self.redecode.store(d.redecode, Ordering::Relaxed);
         self.decode_retries
             .store(d.decode_retries, Ordering::Relaxed);
-        // `refreshed` and `redecoded` count during the run (Progress::refreshed, Progress::redecoded), after the
-        // diff.
+        // `refreshed`, `redecoded` and `frame_reread` count during the run (Progress::refreshed,
+        // Progress::redecoded, Progress::frame_reread), after the diff.
     }
 }
 
@@ -323,6 +325,14 @@ impl Progress {
         self.sources[idx]
             .diff
             .refreshed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A file's header was re-read for its frame identity (ADR-0105).
+    pub fn frame_reread(&self, idx: usize) {
+        self.sources[idx]
+            .diff
+            .frame_reread
             .fetch_add(1, Ordering::Relaxed);
     }
 

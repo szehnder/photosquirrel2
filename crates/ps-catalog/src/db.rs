@@ -51,6 +51,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     DECODE_FAILURE_MIGRATION,
     EXCLUSION_CATEGORY_MIGRATION,
     EXCLUSION_CATEGORY_FIX_MIGRATION,
+    FRAME_IDENTITY_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -188,6 +189,13 @@ pub const EXCLUSION_CATEGORY_FIX_MIGRATION: Migration = Migration {
     version: 22,
     name: "exclusion_category_fix",
     sql: include_str!("../migrations/0022_exclusion_category_fix.sql"),
+};
+/// Migration 23 (ADR-0105: `file.frame_id` and `file.meta_version`; every non-RAW row marked current, so a rescan
+/// re-reads the header of unchanged RAW rows only).
+pub const FRAME_IDENTITY_MIGRATION: Migration = Migration {
+    version: 23,
+    name: "frame_identity",
+    sql: include_str!("../migrations/0023_frame_identity.sql"),
 };
 /// `thumbs.db` migrations.
 pub const THUMB_MIGRATIONS: &[Migration] = &[Migration {

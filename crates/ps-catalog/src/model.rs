@@ -90,6 +90,19 @@ pub struct Redate {
     pub version: u8,
 }
 
+/// What a header re-read found about a file's frame ([`crate::Command::MetaReread`], ADR-0105).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetaReread {
+    pub key: FileKey,
+    pub frame_id: Option<ps_model::FrameId>,
+    /// Maker notes found (also in `DNGPrivateData`): or-ed into the stored `has_maker_notes`.
+    pub maker_notes: bool,
+    /// Camera-original signal from the header: or-ed into the stored `likely_camera_original`.
+    pub camera_original: bool,
+    /// The metadata-rules version the facts were read under.
+    pub version: u8,
+}
+
 impl ProbeResult {
     pub fn media_kind(&self) -> Option<MediaKind> {
         self.format.map(Format::kind)
@@ -215,6 +228,8 @@ pub struct FileRecord {
     pub decoder_missing: Option<ps_model::DecoderKey>,
     /// How its HEIC or AVIF decode failed with the decoder present (catalog migration 20, ADR-0098).
     pub decode_failure: Option<ps_model::DecodeFailure>,
+    /// The metadata rules its stored metadata was read under (catalog migration 23, ADR-0105).
+    pub meta_version: u8,
 }
 
 /// One recorded failure of a file (`file_error` row).
