@@ -168,3 +168,88 @@ fn scenario_incremental_rescan_unreadable_file_keeps_its_analysis_during_a_re_de
     let (plan, _) = svc.exports().plan(&library, settings).unwrap();
     assert_eq!(plan.totals.files, 0, "the export copies nothing new");
 }
+
+/// Scan and export a source holding one truncated HEIC with `decoders`; the number of files copied.
+fn export_truncated_heic(decoders: Decoders) -> u64 {
+    let tmp = tempfile::tempdir().unwrap();
+    let truncated = &HEIC[..HEIC.len() * 3 / 4];
+    let root = source(tmp.path(), &[("DCIM/IMG_0001.HEIC", truncated)]);
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default())
+        .unwrap()
+        .with_decoders(decoders);
+    svc.add_source(&root).unwrap();
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    let rec = svc
+        .engine()
+        .catalog()
+        .read()
+        .file_by_id(ps_model::FileId(1))
+        .unwrap()
+        .unwrap();
+    assert_eq!(rec.stage, Stage::Thumbed, "catalogued, not unreadable");
+    let library = tmp.path().join("Library");
+    let (_, r) = svc
+        .exports()
+        .run(
+            &library,
+            profile_settings("google").unwrap(),
+            &Default::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    // The copy is the truncated file, byte for byte.
+    let copied: Vec<_> = walk(&library)
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("heic")))
+        .collect();
+    assert_eq!(copied.len() as u64, r.copied, "{copied:?}");
+    for p in &copied {
+        assert_eq!(std::fs::read(p).unwrap(), truncated);
+    }
+    r.copied
+}
+
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// A truncated HEIC is still exported once a decoder is installed (ADR-0095): with a decoder that rejects it.
+#[test]
+fn scenario_export_truncated_heic_is_exported_with_a_decoder() {
+    let failing = Decoders::with_heif(Arc::new(FakeHeif::failing("truncated HEVC data")));
+    assert_eq!(export_truncated_heic(failing), 1);
+}
+
+/// The same with this machine's real HEIC decoder ([Linux-real], [macOS]; a visible skip elsewhere, a failure
+/// with `PHOTOSQUIRREL_REQUIRE_SYSTEM_HEIF=1`).
+#[test]
+fn scenario_export_truncated_heic_is_exported_with_the_system_decoder() {
+    let d = ps_sysdecode::detect(
+        &ps_sysdecode::OsInfo::current(),
+        &ps_sysdecode::Overrides::default(),
+    );
+    if d.heif().is_none() {
+        let why = d
+            .report()
+            .entry(ps_model::DecoderFormat::Heic)
+            .and_then(|e| e.reason.clone())
+            .unwrap_or_default();
+        ps_sysdecode::skip_test(&format!("no HEIC decoder on this machine: {why}"));
+        return;
+    }
+    assert_eq!(export_truncated_heic(d), 1);
+}

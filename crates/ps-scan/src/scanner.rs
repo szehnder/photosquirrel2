@@ -673,6 +673,7 @@ impl Scanner {
             ctl: Arc::new(Control::new()),
             progress: Arc::new(Progress::new(run, &ids)),
             budget: ByteBudget::new(opts.memory_cap),
+            decode_budget: ByteBudget::new(opts.decode_memory_cap),
             sources,
             changed_during_scan: AtomicU64::new(0),
             retries_exhausted: AtomicU64::new(0),

@@ -14,6 +14,9 @@ use crate::control::Cancelled;
 /// Default global cap on buffered file bytes (512 MB).
 pub const DEFAULT_MEMORY_CAP: u64 = 512 * 1024 * 1024;
 
+/// Default cap on the estimated working memory of HEIC and AVIF decodes in flight (1 GiB, ADR-0095).
+pub const DEFAULT_DECODE_MEMORY_CAP: u64 = 1024 * 1024 * 1024;
+
 /// Buffers one reader may have in flight.
 pub const BUFFERS_PER_READER: u32 = 2;
 

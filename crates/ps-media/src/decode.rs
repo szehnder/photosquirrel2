@@ -596,6 +596,20 @@ pub fn decode_tiff_reader_with<R: std::io::Read + std::io::Seek>(
     )
 }
 
+/// The estimated peak working memory of decoding this HEIC or AVIF for analysis, from its declared size
+/// (ADR-0095); `None` for other formats or without a declared size. HEIC: the system decoder's RGB image plus
+/// our copy of it (6 bytes per pixel). AVIF: rav1d's picture at worst 16-bit 4:4:4 plus the RGB output (9 bytes
+/// per pixel; the planes are read in place, ADR-0094).
+pub fn decode_working_bytes(probe: &ProbeRecord) -> Option<u64> {
+    let d = probe.stored?;
+    let px = u64::from(d.width) * u64::from(d.height);
+    match probe.format? {
+        ps_model::Format::Heic => Some(px * 6),
+        ps_model::Format::Avif => Some(px * 9),
+        _ => None,
+    }
+}
+
 /// Refuse a HEIC whose declared size exceeds the decode cap, before any system decoder is called.
 fn check_pixels(probe: &ProbeRecord) -> Result<(), DecodeError> {
     match probe.stored {

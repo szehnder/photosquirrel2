@@ -369,3 +369,176 @@ fn scenario_incremental_rescan_old_catalog_marks_undecoded_heic_and_avif() {
     let t = env.s().thumbs().get(&a.identity.unwrap()).unwrap().unwrap();
     assert_eq!(t.kind, ThumbKind::Image, "the AVIF preview is filled in");
 }
+
+/// A new HEIC or AVIF the decoder rejects (truncated, corrupt, or declaring more pixels than the decode cap)
+/// keeps its identity and metadata with a placeholder: catalogued, grouped by exact content, never
+/// `unreadable` (ADR-0095). Without this, a truncated HEIC was exported in 0.2.0 (no decoder) but became
+/// unreadable once a decoder was installed.
+#[test]
+fn scenario_decoder_support_corrupt_heic_or_avif_keeps_a_placeholder() {
+    let _g = shared();
+    let truncated = HEIC[..HEIC.len() * 3 / 4].to_vec();
+    let huge = ps_fixtures::heif::heif_with_size(HEIC, 30_000, 30_000).expect("rewrite");
+    let avif = AVIF[..AVIF.len() * 2 / 3].to_vec();
+    let src = source(&[
+        ("a/IMG_0001.HEIC".into(), truncated.clone()),
+        ("b/IMG_0001.HEIC".into(), truncated),
+        ("c/IMG_0002.HEIC".into(), huge),
+        ("d/IMG_0003.avif".into(), avif),
+    ]);
+    // The fake decoder fails like a real one on corrupt data.
+    let env = env_with(with(FakeHeif::failing("corrupt HEVC data")));
+    let id = env.add(&src.root);
+    let s = env.scan(&[id]);
+    completed(&s);
+    let rows = env.files(id);
+    assert_eq!(rows.len(), 4);
+    for (rel, r) in &rows {
+        assert_eq!(r.stage, Stage::Thumbed, "{rel}: catalogued, not failed");
+        assert!(r.identity.is_some(), "{rel}");
+        assert_eq!(r.decoder_missing, None, "{rel}");
+        assert!(r.hashes.is_none(), "{rel}");
+        let t = env.s().thumbs().get(&r.identity.unwrap()).unwrap().unwrap();
+        assert_eq!(t.kind, ThumbKind::Placeholder, "{rel}");
+        assert!(
+            t.placeholder.as_ref().unwrap().note.contains("could not be decoded"),
+            "{rel}: {:?}",
+            t.placeholder
+        );
+    }
+    // The two truncated copies are exact duplicates of each other.
+    let groups = env.readers().group_memberships().unwrap();
+    assert_eq!(groups.len(), 1, "{groups:?}");
+    assert_eq!(groups[0].1.len(), 2);
+    let snap = env.s().snapshot().expect("snapshot");
+    for want in ["corrupt HEVC data", "HEIF image", "AVIF"] {
+        assert!(
+            snap.recent_errors
+                .iter()
+                .any(|e| e.message.contains("could not be decoded") && e.message.contains(want)),
+            "{want}: {:?}",
+            snap.recent_errors
+        );
+    }
+}
+
+/// A HEIC decoder that counts how many decodes run at once.
+struct Counting {
+    now: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ps_media::StillDecoder for Counting {
+    fn name(&self) -> &str {
+        "counting"
+    }
+
+    fn decode(&self, _: &[u8], _: u32) -> Result<ps_media::RgbImage, ps_media::decode::DecodeError> {
+        use std::sync::atomic::Ordering;
+        let n = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(n, Ordering::SeqCst);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        Ok(ps_media::RgbImage {
+            width: 64,
+            height: 64,
+            data: vec![128; 64 * 64 * 3],
+        })
+    }
+
+    fn applies_transforms(&self) -> bool {
+        true
+    }
+}
+
+/// HEIC and AVIF decodes count their working memory, estimated from the declared size, in the scan's decode
+/// budget (ADR-0095): huge images (cheap fixtures that declare 12000x12000) decode one at a time, while small
+/// ones run in parallel.
+#[test]
+fn scenario_decoder_support_huge_heic_decodes_are_throttled_by_the_memory_budget() {
+    let _g = shared();
+    use std::sync::atomic::Ordering;
+    let run = |w: u32, h: u32| {
+        let files: Vec<(String, Vec<u8>)> = heics()
+            .into_iter()
+            .take(4)
+            .enumerate()
+            .map(|(i, b)| {
+                (
+                    format!("DCIM/IMG_{i}.HEIC"),
+                    ps_fixtures::heif::heif_with_size(&b, w, h).expect("size"),
+                )
+            })
+            .collect();
+        let src = source(&files);
+        let dec = Arc::new(Counting {
+            now: 0.into(),
+            peak: 0.into(),
+            calls: 0.into(),
+        });
+        let env = env_with(ScanOptions {
+            decoders: Arc::new(Decoders::with_heif(dec.clone())),
+            cpu_threads: 4,
+            ..ScanOptions::default()
+        });
+        let id = env.add(&src.root);
+        completed(&env.scan(&[id]));
+        assert_eq!(dec.calls.load(Ordering::SeqCst), 4);
+        dec.peak.load(Ordering::SeqCst)
+    };
+    // 12000 x 12000 x 6 bytes = 864 MB each: two do not fit in the 1 GiB budget.
+    assert_eq!(run(12_000, 12_000), 1, "huge decodes one at a time");
+    // 640 x 480: all four fit.
+    assert!(run(640, 480) > 1, "small decodes in parallel");
+    let p = ps_media::probe_bytes(
+        &ps_fixtures::heif::heif_with_size(HEIC, 12_000, 12_000).unwrap(),
+        HEIC.len() as u64,
+        None,
+    );
+    assert_eq!(
+        ps_media::decode::decode_working_bytes(&p),
+        Some(12_000 * 12_000 * 6)
+    );
+}
+
+/// A waiting HEIC whose content changed while its stat fingerprint did not (same size, time and inode) is not
+/// re-decoded under its old identity: the re-decode's full read finds another identity and the file is
+/// analysed again like a changed file (ADR-0091).
+#[test]
+fn scenario_incremental_rescan_content_changed_under_an_unchanged_fingerprint_is_analysed_again() {
+    let _g = shared();
+    let src = source(&[("DCIM/IMG_0001.HEIC".into(), HEIC.to_vec())]);
+    let mut env = env_with(no_decoder());
+    let id = env.add(&src.root);
+    completed(&env.scan(&[id]));
+    let before = env.files(id)["DCIM/IMG_0001.HEIC"].clone();
+    assert_eq!(before.decoder_missing, Some(DecoderKey::Heif));
+    // Same length, one byte of the coded payload different; the fingerprint is restored.
+    let mut other = HEIC.to_vec();
+    let last = other.len() - 1;
+    other[last] ^= 0x5A;
+    let path = src.root.join("DCIM/IMG_0001.HEIC");
+    let st = std::fs::metadata(&path).unwrap();
+    ps_fixtures::writer::rewrite_keeping_stat(&path, &other).unwrap();
+    let st2 = std::fs::metadata(&path).unwrap();
+    assert_eq!(ps_scan::fs::fingerprint(&st), ps_scan::fs::fingerprint(&st2));
+    let fake = FakeHeif::new();
+    env.reopen(with(fake));
+    let s = env.scan(&[id]);
+    completed(&s);
+    let after = env.files(id)["DCIM/IMG_0001.HEIC"].clone();
+    assert_ne!(after.identity, before.identity, "the new content's identity");
+    assert_eq!(
+        after.identity,
+        Some(ps_hash::identity_from_buffer(&other)),
+        "identity of the bytes now on disk"
+    );
+    assert_eq!(after.decoder_missing, None);
+    assert!(after.hashes.is_some(), "decoded as the changed file");
+    assert_eq!(after.stage, Stage::Thumbed);
+    // Its thumbnail is stored under the new identity.
+    let t = env.s().thumbs().get(&after.identity.unwrap()).unwrap().unwrap();
+    assert_eq!(t.kind, ThumbKind::Image);
+}

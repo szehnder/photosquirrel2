@@ -9,7 +9,7 @@ use ps_model::{ClassifierSettings, DeviceClass};
 
 use crate::fs::SourceFs;
 use crate::lane::{MAX_READERS, WINDOW};
-use crate::memory::DEFAULT_MEMORY_CAP;
+use crate::memory::{DEFAULT_DECODE_MEMORY_CAP, DEFAULT_MEMORY_CAP};
 
 /// Decides a source root's device class (default: [`crate::source::volume_info`]).
 pub type DeviceClassFn = Arc<dyn Fn(&Path) -> DeviceClass + Send + Sync>;
@@ -29,6 +29,10 @@ pub struct ScanOptions {
     pub cpu_threads: usize,
     /// Global cap on file buffers in flight (512 MB).
     pub memory_cap: u64,
+    /// Cap on the working memory of HEIC and AVIF decodes in flight (1 GiB; ADR-0095): estimated from each
+    /// file's declared size, so parallel decodes of huge images wait for each other. A single decode larger
+    /// than the cap runs alone.
+    pub decode_memory_cap: u64,
     /// Upper bound of a lane's readers (16).
     pub max_readers: usize,
     /// Lane controller measurement window (2 s).
@@ -64,6 +68,7 @@ impl Default for ScanOptions {
             include_hidden: true,
             cpu_threads: default_cpu_threads(),
             memory_cap: DEFAULT_MEMORY_CAP,
+            decode_memory_cap: DEFAULT_DECODE_MEMORY_CAP,
             max_readers: MAX_READERS,
             lane_window: WINDOW,
             device_class: None,
@@ -86,6 +91,7 @@ impl std::fmt::Debug for ScanOptions {
             .field("include_hidden", &self.include_hidden)
             .field("cpu_threads", &self.cpu_threads)
             .field("memory_cap", &self.memory_cap)
+            .field("decode_memory_cap", &self.decode_memory_cap)
             .field("max_readers", &self.max_readers)
             .field("lane_window", &self.lane_window)
             .field("read_delay", &self.read_delay)

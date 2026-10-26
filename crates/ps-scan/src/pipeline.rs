@@ -78,6 +78,10 @@ pub(crate) struct RunCtx {
     pub ctl: Arc<Control>,
     pub progress: Arc<Progress>,
     pub budget: Arc<ByteBudget>,
+    /// Estimated working memory of HEIC and AVIF decodes in flight (ADR-0095). Separate from `budget`: a
+    /// decode waits only for other decodes, which never wait for anything, so it cannot deadlock with the
+    /// readers' file buffers.
+    pub decode_budget: Arc<ByteBudget>,
     pub sources: Vec<RunSource>,
     pub changed_during_scan: AtomicU64,
     pub retries_exhausted: AtomicU64,
@@ -1341,6 +1345,9 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
             ps_media::thumb::placeholder(&probe, capture, "preview unavailable (file too large)"),
         )
     } else {
+        let Ok(_decode) = decode_permit(ctx, &probe, busy) else {
+            return None;
+        };
         match ps_media::analyze_still_with(&bytes, &probe, &ctx.opts.decoders, &stop) {
             Ok((decoded, thumb, _)) => (still_hashes(&decoded.image), thumb),
             Err(DecodeError::Cancelled) => return None,
@@ -1361,6 +1368,27 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
                     "preview unavailable (no embedded preview)",
                 ),
             ),
+            // A HEIC or AVIF the decoder rejects (truncated, corrupt, or larger than the decode cap) keeps its
+            // identity and metadata with a placeholder, as without a decoder: catalogued, de-duplicated by exact
+            // content and exported (ADR-0095, as a re-decode does, ADR-0091). Reported, never `unreadable`.
+            Err(e) if is_system_or_av1_still(&probe) => {
+                ctx.progress.error(RecentError {
+                    source: ctx.sources[idx].id,
+                    path: path.clone(),
+                    stage: Stage::Thumbed,
+                    message: format!(
+                        "could not be decoded ({e}); it is catalogued with a placeholder and exported as is"
+                    ),
+                });
+                (
+                    None,
+                    ps_media::thumb::placeholder(
+                        &probe,
+                        capture,
+                        &format!("preview unavailable (could not be decoded: {e})"),
+                    ),
+                )
+            }
             Err(e) => {
                 return Some(Persist::Failed {
                     idx,
@@ -1386,6 +1414,33 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
     })
 }
 
+/// Reserve the estimated working memory of a HEIC or AVIF decode in the run's decode budget (ADR-0095); `None`
+/// for other formats. Waits while other decodes hold the budget (a decode larger than the cap runs alone);
+/// `Err` when the run is cancelled meanwhile.
+fn decode_permit(
+    ctx: &RunCtx,
+    probe: &ProbeRecord,
+    busy: &Busy<'_>,
+) -> Result<Option<BufferPermit>, Cancelled> {
+    let Some(bytes) = ps_media::decode::decode_working_bytes(probe) else {
+        return Ok(None);
+    };
+    // One slot key per CPU worker: a worker decodes one file at a time.
+    let worker = rayon::current_thread_index().unwrap_or(usize::MAX);
+    ctx.decode_budget
+        .acquire(bytes, (usize::MAX, worker), &|| busy.checkpoint())
+        .map(Some)
+}
+
+/// HEIC and AVIF: formats whose decode failure keeps a placeholder instead of failing the file (ADR-0095).
+/// Other stills keep failing as before: their decoders are bundled and a failure means unreadable data.
+fn is_system_or_av1_still(probe: &ProbeRecord) -> bool {
+    matches!(
+        probe.format,
+        Some(ps_model::Format::Heic | ps_model::Format::Avif)
+    )
+}
+
 /// A re-decode (ADR-0091): decode the whole buffer with this run's decoders, hash it and make its thumbnail.
 /// Never a failure of the file. `None` when a cancel stopped the decode.
 fn analyze_redecode(
@@ -1401,6 +1456,9 @@ fn analyze_redecode(
     };
     let identity = ps_hash::identity_from_buffer(&bytes);
     let stop = || busy.checkpoint().is_err();
+    let Ok(_decode) = decode_permit(ctx, probe, busy) else {
+        return None;
+    };
     let outcome = match ps_media::analyze_still_with(&bytes, probe, &ctx.opts.decoders, &stop) {
         Ok((decoded, thumb, _)) => Redecode::Filled {
             hashes: still_hashes(&decoded.image),

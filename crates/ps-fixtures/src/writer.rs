@@ -128,6 +128,23 @@ impl CorpusWriter for DirWriter {
     }
 }
 
+/// Replace the bytes of an existing test file in place with `bytes` of the same length and give it back its
+/// modification time, so its stat fingerprint (size, modification time, inode) is unchanged while its content
+/// differs: the case a scanner must catch by content (ADR-0091's re-decode identity check). Test corpora only.
+pub fn rewrite_keeping_stat(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let before = fs::metadata(path)?;
+    if before.len() != bytes.len() as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rewrite_keeping_stat needs bytes of the file's length",
+        ));
+    }
+    let mut f = fs::OpenOptions::new().write(true).open(path)?;
+    f.write_all(bytes)?;
+    f.set_modified(before.modified()?)?;
+    Ok(())
+}
+
 /// Unix seconds to `SystemTime` (supports times before 1970).
 pub fn unix_time(secs: i64) -> SystemTime {
     if secs >= 0 {
