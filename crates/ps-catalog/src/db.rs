@@ -50,6 +50,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     DECODER_MISSING_MIGRATION,
     DECODE_FAILURE_MIGRATION,
     EXCLUSION_CATEGORY_MIGRATION,
+    EXCLUSION_CATEGORY_FIX_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -180,6 +181,13 @@ pub const EXCLUSION_CATEGORY_MIGRATION: Migration = Migration {
     version: 21,
     name: "exclusion_category",
     sql: include_str!("../migrations/0021_exclusion_category.sql"),
+};
+/// Migration 22 (ADR-0104: `file.exclusion` recomputed with the amended rule, a damaged photo or a file that could
+/// not be read is `unreadable`, not `unsupported`; an AI decision without its kind refused).
+pub const EXCLUSION_CATEGORY_FIX_MIGRATION: Migration = Migration {
+    version: 22,
+    name: "exclusion_category_fix",
+    sql: include_str!("../migrations/0022_exclusion_category_fix.sql"),
 };
 /// `thumbs.db` migrations.
 pub const THUMB_MIGRATIONS: &[Migration] = &[Migration {

@@ -16,6 +16,8 @@
 //! - [`decoders`]: the machine's HEIC decoder, detected once off the caller's thread (ADR-0089).
 
 pub mod ai;
+/// How paths are shown (the home folder as `~`): the app's lists and the Excluded view's search use the same rule.
+pub use ps_catalog::display;
 pub mod cleanup;
 pub mod decoders;
 pub mod export;

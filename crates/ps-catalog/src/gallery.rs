@@ -12,8 +12,8 @@ use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use ps_model::{
-    AiKind, ExclusionCategory, ExclusionCounts, ExclusionSelection, FileId, Filter, IdList, ItemId,
-    ItemSet, PhotoClass, Sort, SortField, SortKey,
+    AiKind, ExcludedListing, ExclusionCategory, ExclusionCounts, ExclusionSelection, FileId,
+    Filter, IdList, ItemId, ItemSet, PhotoClass, Sort, SortField, SortKey,
 };
 
 use crate::error::{CatalogError, Result};
@@ -158,6 +158,26 @@ impl Readers {
             .query_row([id.0], decision_row)
             .optional()?
             .transpose()
+        })
+    }
+
+    /// The stored decisions of `ids` (one query; files without a decision are left out).
+    pub fn user_decisions_of(&self, ids: &[FileId]) -> Result<HashMap<FileId, UserDecisionRecord>> {
+        let values: Rc<Vec<Value>> = Rc::new(ids.iter().map(|i| Value::Integer(i.0)).collect());
+        self.with(|c| {
+            if !table_exists(c, "user_inclusion")? {
+                return Ok(HashMap::new());
+            }
+            let mut stmt = c.prepare_cached(
+                "SELECT file_id, decision, reason, at, ai_kind FROM user_inclusion WHERE file_id IN rarray(?1)",
+            )?;
+            let rows = stmt.query_map([values], decision_row)?;
+            let mut out = HashMap::new();
+            for r in rows {
+                let d = r.map_err(CatalogError::from).and_then(|r| r)?;
+                out.insert(d.file, d);
+            }
+            Ok(out)
         })
     }
 
@@ -387,11 +407,69 @@ fn parse_kind(v: ValueRef<'_>) -> Option<AiKind> {
     }
 }
 
+/// The Excluded view's search (ADR-0104): the text, folded, matched against each source's displayed root and
+/// the path under it, folded the same way ([`crate::display::search_fold`]).
+struct Search {
+    needle: String,
+    /// Each source's displayed root, folded, with the separator the lists print after it.
+    roots: HashMap<i64, String>,
+    hay: String,
+}
+
+impl Search {
+    fn new(c: &Connection, text: &str) -> Result<Search> {
+        let mut needle = String::new();
+        crate::display::search_fold(text, &mut needle);
+        let home = crate::display::display_home();
+        let mut roots = HashMap::new();
+        let mut stmt = c.prepare_cached("SELECT id, root_path FROM source")?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            let root = ps_model::path_from_bytes(&r.get::<_, Vec<u8>>(1)?);
+            let shown = crate::display::display_path_with(&root, home.as_deref());
+            let mut folded = String::new();
+            crate::display::search_fold(&shown, &mut folded);
+            if !folded.ends_with(std::path::MAIN_SEPARATOR) {
+                folded.push(std::path::MAIN_SEPARATOR);
+            }
+            roots.insert(r.get(0)?, folded);
+        }
+        Ok(Search {
+            needle,
+            roots,
+            hay: String::new(),
+        })
+    }
+
+    /// Whether the file of `source` at `rel` (the stored relative path) is matched.
+    fn matches(&mut self, source: ValueRef<'_>, rel: ValueRef<'_>) -> bool {
+        let (ValueRef::Integer(source), ValueRef::Blob(rel) | ValueRef::Text(rel)) = (source, rel)
+        else {
+            return false;
+        };
+        self.hay.clear();
+        if let Some(root) = self.roots.get(&source) {
+            self.hay.push_str(root);
+        }
+        let rel = String::from_utf8_lossy(rel);
+        if std::path::MAIN_SEPARATOR == '/' {
+            crate::display::search_fold(&rel, &mut self.hay);
+        } else {
+            crate::display::search_fold(
+                &rel.replace('/', std::path::MAIN_SEPARATOR_STR),
+                &mut self.hay,
+            );
+        }
+        self.hay.contains(self.needle.as_str())
+    }
+}
+
 /// One listed file and what its order needs.
 struct Entry {
     id: ItemId,
     kflags: i64,
     rank: u8,
+    kind: Option<AiKind>,
     /// The numeric sort value (size, capture time) or the 8-byte prefix of the sort bytes.
     primary: u64,
     /// The sort bytes (name or path) in `Scan::bytes`, for ties of the prefix.
@@ -430,11 +508,16 @@ fn scan_excluded(
         exclusion: None,
         ..f.clone()
     };
-    let (cond, mut args) = crate::read::filter_sql_for(c, &base)?;
-    let search = sel.search().map(str::to_ascii_lowercase);
-    let text = if let Some(t) = &search {
-        args.push(Value::Text(t.clone()));
-        " AND instr(lower(CAST(rel_path AS TEXT)), ?) > 0"
+    let (cond, args) = crate::read::filter_sql_for(c, &base)?;
+    // The search matches what the lists print (ADR-0104): the source's root as displayed (the home folder as
+    // `~`) and the path under it, case-insensitively for any script. It is applied here, not in SQL (SQLite's
+    // `lower` folds ASCII only).
+    let mut search = match sel.search() {
+        Some(t) => Some(Search::new(c, t)?),
+        None => None,
+    };
+    let text = if search.is_some() {
+        ", source_id, rel_path"
     } else {
         ""
     };
@@ -459,6 +542,7 @@ fn scan_excluded(
             id,
             kflags,
             rank: cat.rank(),
+            kind,
             primary: 0,
             bytes: (0, 0),
             undated: false,
@@ -488,9 +572,13 @@ fn scan_excluded(
             let excluded = matches!(r.get_ref(1)?, ValueRef::Text(b"exclude"));
             let cat = if !excluded {
                 None
-            } else if matches!(r.get_ref(2)?, ValueRef::Text(b"ai")) {
-                Some((ExclusionCategory::Ai, parse_kind(r.get_ref(3)?)))
+            } else if matches!(r.get_ref(2)?, ValueRef::Text(b"ai"))
+                && let Some(kind) = parse_kind(r.get_ref(3)?)
+            {
+                Some((ExclusionCategory::Ai, Some(kind)))
             } else {
+                // The user's own, or an AI decision without its kind (refused since migration 22): "you", so
+                // it is in a chip.
                 Some((ExclusionCategory::You, None))
             };
             decided.insert(r.get(0)?, cat);
@@ -499,8 +587,8 @@ fn scan_excluded(
     // Classifier-excluded files without a decision.
     {
         let sql = format!(
-            "SELECT id, exclusion, kflags, {col} FROM file INDEXED BY file_exclusion
-             WHERE exclusion IS NOT NULL{cond}{text}"
+            "SELECT id, exclusion, kflags, {col}{text} FROM file INDEXED BY file_exclusion
+             WHERE exclusion IS NOT NULL{cond}"
         );
         let mut stmt = c.prepare_cached(&sql)?;
         let mut rows = stmt.query(params_from_iter(args.iter()))?;
@@ -514,6 +602,11 @@ fn scan_excluded(
             let Some(cat) = parse_category(r.get_ref(1)?) else {
                 continue;
             };
+            if let Some(s) = &mut search
+                && !s.matches(r.get_ref(4)?, r.get_ref(5)?)
+            {
+                continue;
+            }
             let ValueRef::Integer(k) = r.get_ref(2)? else {
                 return Err(CatalogError::Corrupt("kflags".into()));
             };
@@ -529,7 +622,7 @@ fn scan_excluded(
             .collect(),
     );
     if !excluded.is_empty() {
-        let sql = format!("SELECT id, kflags, {col} FROM file WHERE id IN rarray(?){cond}{text}");
+        let sql = format!("SELECT id, kflags, {col}{text} FROM file WHERE id IN rarray(?){cond}");
         let mut stmt = c.prepare_cached(&sql)?;
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&excluded];
         for a in &args {
@@ -543,6 +636,11 @@ fn scan_excluded(
             let Some(Some((cat, kind))) = decided.get(&id).copied() else {
                 continue;
             };
+            if let Some(s) = &mut search
+                && !s.matches(r.get_ref(3)?, r.get_ref(4)?)
+            {
+                continue;
+            }
             let ValueRef::Integer(k) = r.get_ref(1)? else {
                 return Err(CatalogError::Corrupt("kflags".into()));
             };
@@ -560,7 +658,15 @@ impl Scan {
     }
 
     /// The collected files in `sort` order as an ID list (keys non-decreasing, ADR-0018).
-    fn into_list(mut self, sort: &Sort) -> IdList {
+    fn into_list(self, sort: &Sort) -> IdList {
+        self.into_tagged_list(sort).0
+    }
+
+    /// [`Scan::into_list`], with each listed file's category and AI kind by list position.
+    fn into_tagged_list(
+        mut self,
+        sort: &Sort,
+    ) -> (IdList, Vec<(ExclusionCategory, Option<AiKind>)>) {
         let bytes = std::mem::take(&mut self.bytes);
         let slice = |e: &Entry| &bytes[e.bytes.0 as usize..(e.bytes.0 + e.bytes.1) as usize];
         let by_bytes = matches!(
@@ -595,7 +701,9 @@ impl Scan {
         let mut out = IdList::default();
         out.ids.reserve(self.entries.len());
         out.keys.reserve(self.entries.len());
+        let mut tags = Vec::with_capacity(self.entries.len());
         for e in &self.entries {
+            tags.push((ExclusionCategory::ALL[usize::from(e.rank)], e.kind));
             let primary = match sort.field {
                 SortField::Category => invert(u64::from(e.rank)),
                 SortField::CaptureDate if e.undated => SortKey::UNDATED,
@@ -605,7 +713,7 @@ impl Scan {
             out.keys
                 .push(crate::read::sort_key(primary, e.id, e.kflags));
         }
-        out
+        (out, tags)
     }
 }
 
@@ -632,12 +740,17 @@ impl Readers {
     /// The Excluded view's opening read: the counts of [`Readers::exclusion_counts`] and the ID list of
     /// [`Readers::id_list`] for an exclusion filter, from one pass over the excluded set (`excluded-view-open`,
     /// ADR-0103). A filter without an exclusion selection lists every excluded file.
-    pub fn excluded_view(&self, f: &Filter, sort: &Sort) -> Result<(ExclusionCounts, IdList)> {
+    pub fn excluded_view(&self, f: &Filter, sort: &Sort) -> Result<ExcludedListing> {
         let sel = f.exclusion.clone().unwrap_or_else(ExclusionSelection::all);
         self.with(|c| {
             let scan = scan_excluded(c, f, &sel, Some(sort), None)?;
             let counts = scan.counts();
-            Ok((counts, scan.into_list(sort)))
+            let (list, categories) = scan.into_tagged_list(sort);
+            Ok(ExcludedListing {
+                counts,
+                list,
+                categories,
+            })
         })
     }
 
@@ -660,7 +773,13 @@ impl Readers {
             let mut out = HashMap::with_capacity(ids.len());
             while let Some(r) = rows.next()? {
                 if let Some(cat) = parse_category(r.get_ref(1)?) {
-                    out.insert(FileId(r.get(0)?), (cat, parse_kind(r.get_ref(2)?)));
+                    let kind = parse_kind(r.get_ref(2)?);
+                    // An AI decision without its kind is filed as the user's own (as the lists do).
+                    let entry = match (cat, kind) {
+                        (ExclusionCategory::Ai, None) => (ExclusionCategory::You, None),
+                        (c, k) => (c, k),
+                    };
+                    out.insert(FileId(r.get(0)?), entry);
                 }
             }
             Ok(out)

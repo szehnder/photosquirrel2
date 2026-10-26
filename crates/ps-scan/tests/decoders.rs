@@ -343,6 +343,8 @@ fn scenario_incremental_rescan_old_catalog_marks_undecoded_heic_and_avif() {
              ALTER TABLE file DROP COLUMN decoder_missing;
              DROP INDEX file_decode_failure;
              ALTER TABLE file DROP COLUMN decode_failure;
+             DROP TRIGGER user_inclusion_ai_kind_insert;
+             DROP TRIGGER user_inclusion_ai_kind_update;
              DROP INDEX file_exclusion;
              ALTER TABLE file DROP COLUMN exclusion;
              ALTER TABLE user_inclusion DROP COLUMN ai_kind;

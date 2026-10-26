@@ -927,16 +927,36 @@ const PROBE_COLUMNS: &[(&str, &str)] = &[
     ("attempts", "0"),
 ];
 
-/// The classifier's exclusion category (`file.exclusion`, migration 21, ADR-0102) as an SQL expression over a
-/// class code, a format and a reasons JSON array (columns or parameters): the same rule as
-/// [`ps_model::ExclusionCategory::of`] and migration 21's backfill. Written in the statement that writes the class.
-pub(crate) fn exclusion_sql(class: &str, format: &str, reasons: &str) -> String {
+/// The classifier's exclusion category (`file.exclusion`, migration 21, ADR-0102 as amended by ADR-0104) as an SQL
+/// expression over a class code, a format, a reasons JSON array and a file name (columns or parameters): the same
+/// rule as [`ps_model::ExclusionCategory::of`] and migration 22's recomputation. Written in the statement that
+/// writes the class.
+pub(crate) fn exclusion_sql(class: &str, format: &str, reasons: &str, name: &str) -> String {
+    let prefix = ps_model::PROBE_FAILED_PREFIX;
+    let media: Vec<String> = ps_model::media_extensions()
+        .iter()
+        .map(|e| format!("'{e}'"))
+        .collect();
     format!(
         "(CASE {class} WHEN 2 THEN 'cache' WHEN 3 THEN 'graphic' WHEN 4 THEN CASE
-            WHEN {format} IS NULL THEN 'unsupported'
-            WHEN json_valid({reasons}) AND json_extract({reasons}, '$[0]') LIKE '{}%' THEN 'unreadable'
-            ELSE 'small' END END)",
-        ps_model::PROBE_FAILED_PREFIX
+            WHEN {format} IS NOT NULL THEN CASE
+                WHEN json_valid({reasons}) AND json_extract({reasons}, '$[0]') LIKE '{prefix}%' THEN 'unreadable'
+                ELSE 'small' END
+            WHEN EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid({reasons}) THEN {reasons} ELSE '[]' END) AS r
+                         WHERE r.value LIKE '{prefix}%') THEN 'unreadable'
+            WHEN {} IN ({}) THEN 'unreadable'
+            ELSE 'unsupported' END END)",
+        extension_sql(name),
+        media.join(", ")
+    )
+}
+
+/// A file name's extension in SQL, lower case (ASCII): the text after its last `.`, NULL without one; the same as
+/// [`ps_model::extension_of`].
+pub(crate) fn extension_sql(name: &str) -> String {
+    let n = format!("CAST({name} AS TEXT)");
+    format!(
+        "(CASE WHEN instr({n}, '.') > 0 THEN lower(substr({n}, length(rtrim({n}, replace({n}, '.', ''))) + 1)) END)"
     )
 }
 
@@ -976,7 +996,7 @@ static PROBED_SQL: LazyLock<String> = LazyLock::new(|| {
                 height = ?9, class_facts = ?10, classifier_hash = ?11, exclusion = {},
                 kflags = (?4 | (coalesce(?7, 0) << 3) | (kflags & 16)), {}
          WHERE source_id = ?1 AND rel_path = ?2",
-        exclusion_sql("?4", "?6", "?5"),
+        exclusion_sql("?4", "?6", "?5", "name"),
         clear.join(", ")
     )
 });
@@ -1000,7 +1020,7 @@ static INSERT_FULL_SQL: LazyLock<String> = LazyLock::new(|| {
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31, ?32, {})
     ON CONFLICT (source_id, rel_path) DO NOTHING",
-        exclusion_sql("?8", "?10", "?9")
+        exclusion_sql("?8", "?10", "?9", "?3")
     )
 });
 
@@ -1139,7 +1159,14 @@ static RECLASSIFY_SQL: LazyLock<String> = LazyLock::new(|| {
         "UPDATE file SET class = ?3, reasons = ?4, classifier_hash = ?5, exclusion = {},
         stage = coalesce(?6, stage), kflags = (?3 | (kflags & 24)), class_facts = coalesce(?7, class_facts)
     WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL",
-        exclusion_sql("?3", "format", "?4")
+        // A refresh re-probes (`?7`, the new facts): the category follows the new probe's format, not the
+        // stored one; without new facts the stored format stands.
+        exclusion_sql(
+            "?3",
+            "(CASE WHEN ?7 IS NULL THEN format ELSE ?8 END)",
+            "?4",
+            "name"
+        )
     )
 });
 
@@ -1152,6 +1179,10 @@ fn set_reclassified(c: &Connection, r: &Reclassification) -> rusqlite::Result<us
         r.classifier_hash as i64,
         r.stage.map(codes::stage),
         facts_json(r.facts.as_ref())?,
+        r.facts
+            .as_ref()
+            .and_then(|f| f.format)
+            .map(|f| f.storage_key()),
     ])
 }
 

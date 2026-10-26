@@ -207,3 +207,43 @@ fn unsupported_and_broken_files_are_junk_with_reason() {
     assert_eq!(c, PhotoClass::Junk);
     assert!(matches!(r[0], ClassReason::Unsupported { .. }));
 }
+
+/// ADR-0104: a file whose content is not recognised is filed "could not be read" (shown by default), not "not a
+/// supported file", when it has a photo or video extension (a damaged JPEG) or could not be read at all (the
+/// probe's I/O error record).
+#[test]
+fn damaged_photos_and_unreadable_files_are_not_unsupported() {
+    use ps_model::ExclusionCategory;
+    let category = |probe: &ProbeRecord, name: &str| {
+        let (class, reasons) = classify(probe, Path::new(name), &ClassifierSettings::default());
+        let reasons: Vec<String> = reasons.iter().map(ToString::to_string).collect();
+        ExclusionCategory::of(
+            Some(class),
+            &reasons,
+            probe.format.is_some(),
+            name.as_bytes(),
+        )
+    };
+    let garbage = fx::random_bytes(4096, 1);
+    assert_eq!(
+        category(&probe(&garbage, "DCIM/IMG_9999.JPG"), "IMG_9999.JPG"),
+        Some(ExclusionCategory::Unreadable)
+    );
+    assert_eq!(
+        category(&probe(&garbage, "Downloads/data.bin"), "data.bin"),
+        Some(ExclusionCategory::Unsupported)
+    );
+    // A read that fails (a disk error, a permission problem): the probe's I/O error record.
+    struct Failing;
+    impl std::io::Read for Failing {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("input/output error"))
+        }
+    }
+    let io = ps_media::probe_reader(Failing, 4096, Some(Path::new("notes.txt")));
+    assert!(io.error.is_some() && io.format.is_none());
+    assert_eq!(
+        category(&io, "notes.txt"),
+        Some(ExclusionCategory::Unreadable)
+    );
+}

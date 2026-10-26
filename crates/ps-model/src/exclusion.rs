@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::PhotoClass;
+use crate::{Format, PhotoClass};
 
 /// Why a file is in the Excluded view, in priority order (the first that applies wins).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -85,30 +85,81 @@ impl ExclusionCategory {
         Self::ALL.iter().position(|c| *c == self).unwrap_or(0) as u8
     }
 
-    /// The classifier's category of a file: from its class, its first reason (as stored, the reason's display
-    /// text) and whether its format was recognised. `None` for files the classifier keeps (and unclassified
-    /// ones). The catalog computes the same in SQL (`ps_catalog`'s exclusion expression).
-    pub fn of(
+    /// The classifier's category of a file (ADR-0102 as amended by ADR-0104): from its class, its stored reasons
+    /// (display texts), whether its format was recognised and its file name. `None` for files the classifier
+    /// keeps (and unclassified ones). The catalog computes the same in SQL (`ps_catalog`'s exclusion expression).
+    ///
+    /// Junk of a recognised format is "could not be read" when its first reason is a probe failure, else "too
+    /// small". Junk of no recognised format is "could not be read" when any reason is a probe failure (the file
+    /// could not be opened or read: an I/O error) or its name has a photo or video extension
+    /// ([`is_media_extension`]: a damaged `IMG_9999.JPG`), else "not a supported file".
+    pub fn of<S: AsRef<str>>(
         class: Option<PhotoClass>,
-        first_reason: Option<&str>,
+        reasons: &[S],
         format_known: bool,
+        name: &[u8],
     ) -> Option<ExclusionCategory> {
+        let probe_failed = |r: &S| {
+            r.as_ref()
+                .as_bytes()
+                .get(..PROBE_FAILED_PREFIX.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(PROBE_FAILED_PREFIX.as_bytes()))
+        };
         match class? {
             PhotoClass::Photo | PhotoClass::LikelyPhoto => None,
             PhotoClass::ThumbnailCache => Some(ExclusionCategory::Cache),
             PhotoClass::Graphic => Some(ExclusionCategory::Graphic),
-            PhotoClass::Junk if !format_known => Some(ExclusionCategory::Unsupported),
+            PhotoClass::Junk if format_known => {
+                Some(if reasons.first().is_some_and(probe_failed) {
+                    ExclusionCategory::Unreadable
+                } else {
+                    ExclusionCategory::Small
+                })
+            }
             PhotoClass::Junk
-                if first_reason.is_some_and(|r| {
-                    r.get(..PROBE_FAILED_PREFIX.len())
-                        .is_some_and(|p| p.eq_ignore_ascii_case(PROBE_FAILED_PREFIX))
-                }) =>
+                if reasons.iter().any(probe_failed)
+                    || extension_of(name).is_some_and(is_media_extension) =>
             {
                 Some(ExclusionCategory::Unreadable)
             }
-            PhotoClass::Junk => Some(ExclusionCategory::Small),
+            PhotoClass::Junk => Some(ExclusionCategory::Unsupported),
         }
     }
+}
+
+/// Extensions of photo and video formats that are left out of [`media_extensions`]: audio containers that share a
+/// video format's table (`m4a`, `mka`) and `ts`, which is far more often TypeScript source than an MPEG transport
+/// stream (a real transport stream is recognised by its content anyway).
+const NOT_MEDIA_EXTENSIONS: &[&str] = &["m4a", "mka", "ts"];
+
+/// The photo and video extensions (lower case, sorted, no duplicates): every [`Format::extensions`] of an image or
+/// video format except the graphics formats (SVG, ICO, PSD) and [`NOT_MEDIA_EXTENSIONS`]. A file with one of these
+/// whose content is not recognised is a damaged photo or video, not an unsupported file (ADR-0104).
+pub fn media_extensions() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = crate::ALL_FORMATS
+        .iter()
+        .filter(|f| !matches!(f, Format::Svg | Format::Ico | Format::Psd))
+        .flat_map(|f| f.extensions().iter().copied())
+        .filter(|e| !NOT_MEDIA_EXTENSIONS.contains(e))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Whether `ext` (without the dot, any ASCII case) is one of the [`media_extensions`].
+pub fn is_media_extension(ext: &[u8]) -> bool {
+    media_extensions()
+        .iter()
+        .any(|e| e.as_bytes().eq_ignore_ascii_case(ext))
+}
+
+/// A file name's extension as the exclusion rule reads it: the bytes after its last `.` (`None` without one).
+/// Unlike [`std::path::Path::extension`], `.jpg` has the extension `jpg`; the catalog's SQL derives the same.
+pub fn extension_of(name: &[u8]) -> Option<&[u8]> {
+    name.iter()
+        .rposition(|b| *b == b'.')
+        .map(|i| &name[i + 1..])
 }
 
 /// The display text a probe-failure reason starts with (`ClassReason::ProbeFailed`): a junk file of a
@@ -352,6 +403,15 @@ impl ExclusionCounts {
     }
 }
 
+/// What the Excluded view opens with (ADR-0102, ADR-0103): every chip's count, the ordered list the chips show,
+/// and each listed file's category and AI kind by list position (the Grid mode's badges, ADR-0104).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExcludedListing {
+    pub counts: ExclusionCounts,
+    pub list: crate::IdList,
+    pub categories: Vec<(ExclusionCategory, Option<AiKind>)>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,39 +451,93 @@ mod tests {
         let unsupported = text(ClassReason::Unsupported {
             reason: "unrecognised content".into(),
         });
-        assert_eq!(C::of(Some(PhotoClass::Photo), None, true), None);
-        assert_eq!(C::of(Some(PhotoClass::LikelyPhoto), None, true), None);
-        assert_eq!(C::of(None, None, false), None);
+        let none: [&str; 0] = [];
+        let of = |class, reasons: &[&String], known, name: &str| {
+            C::of(class, reasons, known, name.as_bytes())
+        };
+        assert_eq!(C::of(Some(PhotoClass::Photo), &none, true, b"a.jpg"), None);
         assert_eq!(
-            C::of(Some(PhotoClass::ThumbnailCache), None, true),
+            C::of(Some(PhotoClass::LikelyPhoto), &none, true, b"a.jpg"),
+            None
+        );
+        assert_eq!(C::of(None, &none, false, b"a.txt"), None);
+        assert_eq!(
+            C::of(Some(PhotoClass::ThumbnailCache), &none, true, b"a.jpg"),
             Some(C::Cache)
         );
         assert_eq!(
-            C::of(Some(PhotoClass::Graphic), None, true),
+            C::of(Some(PhotoClass::Graphic), &none, true, b"a.png"),
             Some(C::Graphic)
         );
-        assert_eq!(
-            C::of(Some(PhotoClass::Junk), Some(&small), true),
-            Some(C::Small)
-        );
-        assert_eq!(
-            C::of(Some(PhotoClass::Junk), Some(&short), true),
-            Some(C::Small)
-        );
+        let junk = Some(PhotoClass::Junk);
+        assert_eq!(of(junk, &[&small], true, "a.png"), Some(C::Small));
+        assert_eq!(of(junk, &[&short], true, "a.mp4"), Some(C::Small));
         // A recognised format (a TIFF signature) whose probe failed: could not be read, not unsupported.
+        assert_eq!(of(junk, &[&probe], true, "scan.tif"), Some(C::Unreadable));
         assert_eq!(
-            C::of(Some(PhotoClass::Junk), Some(&probe), true),
+            of(junk, &[&unsupported], false, "notes.txt"),
+            Some(C::Unsupported)
+        );
+        assert_eq!(
+            of(junk, &[&unsupported], false, "README"),
+            Some(C::Unsupported)
+        );
+        // ADR-0104: a photo or video extension whose content is not recognised is a damaged photo, and a file
+        // that could not be read at all (an I/O error: a probe failure behind the unsupported reason) too.
+        assert_eq!(
+            of(junk, &[&unsupported], false, "IMG_9999.JPG"),
             Some(C::Unreadable)
         );
         assert_eq!(
-            C::of(Some(PhotoClass::Junk), Some(&unsupported), false),
-            Some(C::Unsupported)
+            of(junk, &[&unsupported], false, "clip.MOV"),
+            Some(C::Unreadable)
         );
-        // An unrecognised file whose probe also failed is still unsupported.
         assert_eq!(
-            C::of(Some(PhotoClass::Junk), Some(&probe), false),
-            Some(C::Unsupported)
+            of(junk, &[&unsupported], false, ".jpg"),
+            Some(C::Unreadable)
         );
+        assert_eq!(
+            of(junk, &[&unsupported, &probe], false, "notes.txt"),
+            Some(C::Unreadable)
+        );
+        // Graphics formats, audio and TypeScript stay unsupported when their content is not recognised.
+        for name in [
+            "logo.svg",
+            "favicon.ico",
+            "art.psd",
+            "song.m4a",
+            "main.ts",
+            "a.jpg.txt",
+            "jpg",
+        ] {
+            assert_eq!(
+                of(junk, &[&unsupported], false, name),
+                Some(C::Unsupported),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn media_extensions_come_from_the_format_tables() {
+        let exts = media_extensions();
+        assert!(
+            exts.windows(2).all(|w| w[0] < w[1]),
+            "sorted, no duplicates"
+        );
+        for e in [
+            "jpg", "jpeg", "heic", "tif", "cr2", "dng", "mov", "mp4", "avi", "png", "gif", "webp",
+        ] {
+            assert!(exts.contains(&e), "{e}");
+            assert!(is_media_extension(e.to_ascii_uppercase().as_bytes()));
+        }
+        for e in ["svg", "ico", "psd", "m4a", "mka", "ts", "txt", ""] {
+            assert!(!is_media_extension(e.as_bytes()), "{e}");
+        }
+        assert_eq!(extension_of(b"IMG_1.JPG"), Some(&b"JPG"[..]));
+        assert_eq!(extension_of(b"a.tar.gz"), Some(&b"gz"[..]));
+        assert_eq!(extension_of(b"a."), Some(&b""[..]));
+        assert_eq!(extension_of(b"README"), None);
     }
 
     #[test]

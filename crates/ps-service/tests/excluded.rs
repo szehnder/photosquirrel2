@@ -13,8 +13,8 @@ use ps_llm::queue::{PreviewLoader, QueueConfig};
 use ps_llm::testing::{MockServer, Reply, insight_json, openai_reply, preview};
 use ps_llm::{PRESETS, PreviewError, PreviewJpeg, ProviderConfig, RetryPolicy};
 use ps_model::{
-    AiKind, ClassReason, ContentId, ExclusionCategory, ExclusionSelection, FileId, Filter, ItemId,
-    PhotoClass, Sort, SortField,
+    AiKind, ClassReason, ClassifierSettings, ContentId, ExclusionCategory, ExclusionSelection,
+    FileId, Filter, ItemId, PhotoClass, Sort, SortField,
 };
 use ps_scan::SourceFs;
 use ps_service::ai::AiService;
@@ -78,46 +78,56 @@ fn rescan(svc: &ScanService) {
     svc.wait().unwrap();
 }
 
-fn stored(
-    cat: &Catalog,
-) -> Vec<(
-    FileId,
-    Option<PhotoClass>,
-    Option<String>,
-    Option<String>,
-    bool,
-)> {
-    cat.read()
+/// Every row's stored category, against a derivation that does not read the catalog's class, reasons or format:
+/// the file is probed again from disk and classified with `settings` (the scanner's rules, ADR-0015), and
+/// `ExclusionCategory::of` files the result. The stored class must be the same too.
+fn assert_categories_derive(cat: &Catalog, settings: &ClassifierSettings, when: &str) -> usize {
+    let rows: Vec<(i64, Vec<u8>, Vec<u8>, Vec<u8>, Option<i64>, Option<String>)> = cat
+        .read()
         .with(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, class, exclusion, json_extract(reasons, '$[0]'), format IS NOT NULL FROM file",
+                "SELECT file.id, source.root_path, file.rel_path, file.name, file.class, file.exclusion
+                 FROM file JOIN source ON source.id = file.source_id WHERE file.class IS NOT NULL",
             )?;
             let rows = stmt.query_map([], |r| {
-                Ok((
-                    FileId(r.get(0)?),
-                    r.get::<_, Option<i64>>(1)?
-                        .and_then(|c| PhotoClass::from_code(c as u8)),
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                ))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
-        .unwrap()
-}
-
-/// Every row's stored category is the one its class, first reason and format give.
-fn assert_categories_derive(cat: &Catalog, when: &str) -> usize {
-    let rows = stored(cat);
+        .unwrap();
+    assert!(!rows.is_empty());
     let mut excluded = 0;
-    for (id, class, exclusion, first, known) in &rows {
-        let want =
-            ExclusionCategory::of(*class, first.as_deref(), *known).map(ExclusionCategory::key);
+    for (id, root, rel, name, class, exclusion) in &rows {
+        let rel = ps_model::RelPath::from_bytes(rel.clone()).unwrap();
+        let path = rel.under(&ps_model::path_from_bytes(root));
+        let probe = ps_media::probe_path(&path);
+        let thumbs_db = std::fs::read_dir(path.parent().unwrap()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("thumbs.db")
+        });
+        let (want_class, reasons) = ps_media::classify_with(
+            &probe,
+            &rel.to_path_buf(),
+            settings,
+            ps_media::FolderHints {
+                has_thumbs_db: thumbs_db,
+            },
+        );
+        let reasons: Vec<String> = reasons.iter().map(ToString::to_string).collect();
+        let want = ExclusionCategory::of(Some(want_class), &reasons, probe.format.is_some(), name);
+        assert_eq!(
+            *class,
+            Some(i64::from(want_class.code())),
+            "{when}: file {id} {} class",
+            path.display()
+        );
         assert_eq!(
             exclusion.as_deref(),
-            want,
-            "{when}: file {id:?} ({class:?}, {first:?})"
+            want.map(ExclusionCategory::key),
+            "{when}: file {id} {} ({want_class:?}, {reasons:?})",
+            path.display()
         );
         excluded += usize::from(want.is_some());
     }
@@ -148,17 +158,19 @@ fn stored_category_matches_the_rule_after_scan_reclassify_and_refresh() {
     let tmp = tempfile::tempdir().unwrap();
     let svc = corpus(tmp.path(), ScanOptions::default());
     let cat = svc.engine().catalog().clone();
-    let before = assert_categories_derive(&cat, "after the scan");
+    let before =
+        assert_categories_derive(&cat, &ScanOptions::default().classifier, "after the scan");
     drop(cat);
     drop(svc);
     // A lower minimum side re-classifies the small web images from their stored facts.
     let mut opts = ScanOptions::default();
     opts.classifier.min_side_px = 20;
     opts.classifier.min_pixels = 400;
+    let classifier = opts.classifier.clone();
     let svc = ScanService::open(&tmp.path().join("data"), opts).unwrap();
     rescan(&svc);
     let cat = svc.engine().catalog().clone();
-    let after = assert_categories_derive(&cat, "after re-classification");
+    let after = assert_categories_derive(&cat, &classifier, "after re-classification");
     assert!(
         after < before,
         "re-classification took files out ({before} -> {after})"
@@ -183,7 +195,7 @@ fn stored_category_matches_the_rule_after_scan_reclassify_and_refresh() {
     }
     svc.start_refreshing_analysis(&[]).unwrap();
     svc.wait().unwrap();
-    assert_categories_derive(&cat, "after an analysis refresh");
+    assert_categories_derive(&cat, &classifier, "after an analysis refresh");
 }
 
 #[test]
@@ -367,7 +379,7 @@ fn scenario_catalog_old_catalog_gets_categories() {
     let cat = svc.engine().catalog();
     assert_eq!(
         cat.read().schema_version().unwrap(),
-        db::EXCLUSION_CATEGORY_MIGRATION.version
+        db::EXCLUSION_CATEGORY_FIX_MIGRATION.version
     );
     let counts = cat.read().exclusion_counts(&Filter::default()).unwrap();
     assert_eq!(counts.of(ExclusionCategory::Unsupported), 3);
@@ -413,13 +425,19 @@ fn scenario_gallery_put_back_a_classifier_exclusion() {
         exclusion: Some(ExclusionSelection::only(ExclusionCategory::Cache)),
         ..Filter::default()
     };
-    let (counts, list) = lib
+    let ps_model::ExcludedListing { counts, list, .. } = lib
         .excluded_open(&caches, &Sort::by(SortField::FileName))
         .unwrap();
     let before = counts.of(ExclusionCategory::Cache);
     assert!(list.len() >= 2, "the corpus has thumbnail caches");
     let two = vec![list.ids[0], list.ids[1]];
-    assert_eq!(lib.put_back(&two).unwrap(), 2);
+    assert_eq!(
+        lib.put_back(&two).unwrap(),
+        ps_model::library::PutBack {
+            files: 2,
+            rejection_error: None
+        }
+    );
     for id in &two {
         assert!(in_library(&lib, *id));
         assert_eq!(reason_of(&lib, *id), "included by you");
@@ -522,7 +540,7 @@ fn scenario_ai_review_put_back_stays_put_after_another_ai_run() {
         files.len() as u64
     );
 
-    lib.put_back(&files).unwrap();
+    assert_eq!(lib.put_back(&files).unwrap().rejection_error, None);
     assert!(files.iter().all(|f| in_library(&lib, *f)));
     // Another AI run re-describes the unchanged file with the same result.
     let content = cat
@@ -558,4 +576,111 @@ fn scenario_ai_review_put_back_stays_put_after_another_ai_run() {
         files.iter().all(|f| in_library(&lib, *f)),
         "it stays in the Library"
     );
+}
+
+/// ADR-0104: a photo whose first bytes are damaged is not recognised by its content; its photo extension files it
+/// under "could not be read", which the Excluded view shows by default, not under the hidden "not a supported file".
+#[test]
+fn scenario_catalog_damaged_photo_is_not_unsupported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let svc = corpus(tmp.path(), ScanOptions::default());
+    let downloads = tmp.path().join("corpus/drive-a/Downloads");
+    let mut damaged = ps_fixtures::media::jpeg(800, 600, 9, 90);
+    damaged[..16].copy_from_slice(&[0x5a; 16]);
+    std::fs::write(downloads.join("IMG_9999.JPG"), &damaged).unwrap();
+    rescan(&svc);
+    let cat = svc.engine().catalog().clone();
+    assert_eq!(
+        category_of(&cat, "IMG_9999.JPG"),
+        Some(ExclusionCategory::Unreadable)
+    );
+    for name in UNSUPPORTED {
+        assert_eq!(
+            category_of(&cat, name),
+            Some(ExclusionCategory::Unsupported),
+            "{name}"
+        );
+    }
+    let lib = library(svc, tmp.path());
+    let shown = lib
+        .excluded_open(
+            &Filter {
+                exclusion: Some(ExclusionSelection::default_view()),
+                ..Filter::default()
+            },
+            &Sort::by(SortField::FileName),
+        )
+        .unwrap();
+    let rows: Vec<ps_model::library::ExcludedRow> = shown
+        .list
+        .ids
+        .chunks(512)
+        .flat_map(|c| lib.excluded_page(c).unwrap())
+        .collect();
+    let row = rows
+        .iter()
+        .find(|r| r.name == "IMG_9999.JPG")
+        .expect("shown by default");
+    assert_eq!(row.category, Some(ExclusionCategory::Unreadable));
+    assert!(
+        row.reasons
+            .iter()
+            .any(|r| r.starts_with("unsupported format"))
+    );
+}
+
+/// ADR-0104: the AI review's rejection is saved after the include decisions commit. When it cannot be saved, put
+/// back still reports the files as put back, with the rejection's failure beside them (not a plain error).
+#[test]
+fn put_back_reports_an_ai_rejection_that_could_not_be_saved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let lib = library(corpus(tmp.path(), ScanOptions::default()), tmp.path());
+    let cat = lib.catalog().unwrap().clone();
+    let server = MockServer::with_handler(|_| document_reply());
+    let cfg = cfg_for(&server.url());
+    let mut qc = QueueConfig::local(&cfg.name);
+    qc.concurrency = 1;
+    let ai = AiService::with_loader(cat.clone(), cfg, qc, Arc::new(Loader)).unwrap();
+    assert!(ai.start(false).unwrap() > 0);
+    assert!(ai.wait_idle(Duration::from_secs(60)));
+    let store = lib.insight_store().unwrap();
+    let item = insights::items(
+        &cat,
+        store,
+        &InsightFilter {
+            suggestions: true,
+            ..InsightFilter::default()
+        },
+        10_000,
+    )
+    .unwrap()
+    .into_iter()
+    .next()
+    .expect("a document suggestion");
+    assert!(insights::decide(&cat, store, &item.content, true).unwrap() > 0);
+    let files: Vec<ItemId> = item
+        .files
+        .iter()
+        .map(|f| ItemId::try_from(*f).unwrap())
+        .collect();
+    // The store's temporary file cannot be created: a folder is in its way.
+    let blocker = tmp
+        .path()
+        .join("data")
+        .join(format!("{}.tmp", insights::INSIGHTS_FILE));
+    std::fs::create_dir_all(blocker.join("in-the-way")).unwrap();
+    let done = lib.put_back(&files).unwrap();
+    assert_eq!(done.files, files.len());
+    assert!(done.rejection_error.is_some(), "{done:?}");
+    assert!(
+        files.iter().all(|f| in_library(&lib, *f)),
+        "the files are back although the rejection was not saved"
+    );
+    for f in &item.files {
+        assert_eq!(
+            cat.read().user_decision(*f).unwrap().unwrap().decision,
+            UserDecision::Include
+        );
+    }
+    std::fs::remove_dir_all(&blocker).unwrap();
 }

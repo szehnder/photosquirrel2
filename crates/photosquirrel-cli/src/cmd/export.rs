@@ -576,7 +576,8 @@ struct ExcludedFileOut {
     file: ps_model::FileId,
     category: &'static str,
     ai_kind: Option<&'static str>,
-    path: PathBuf,
+    /// The path's bytes: printed as a string, with `path_raw` beside it when they are not UTF-8 (`out.rs`).
+    path: Vec<u8>,
     size: u64,
     reasons: Vec<String>,
 }
@@ -624,7 +625,7 @@ pub fn report_excluded(ctx: &Ctx, categories: &[String]) -> Result<()> {
         exclusion: Some(sel),
         ..ps_model::Filter::default()
     };
-    let (counts, list) =
+    let ps_model::ExcludedListing { counts, list, .. } =
         r.excluded_view(&filter, &ps_model::Sort::by(ps_model::SortField::Folder))?;
     let roots: std::collections::HashMap<SourceId, PathBuf> =
         svc.sources()?.into_iter().map(|s| (s.id, s.root)).collect();
@@ -634,12 +635,13 @@ pub fn report_excluded(ctx: &Ctx, categories: &[String]) -> Result<()> {
             let records = r.details(chunk)?;
             let ids: Vec<ps_model::FileId> = records.iter().map(|x| x.id).collect();
             let of = r.exclusion_of(&ids)?;
+            let decisions = r.user_decisions_of(&ids)?;
             for rec in records {
                 let Some((c, k)) = of.get(&rec.id).copied() else {
                     continue;
                 };
                 let mut reasons = rec.reasons.clone();
-                if let Some(d) = r.user_decision(rec.id)? {
+                if let Some(d) = decisions.get(&rec.id) {
                     reasons.insert(0, d.decision.reason_text(d.reason.as_deref()));
                 }
                 let root = roots.get(&rec.key.source).cloned().unwrap_or_default();
@@ -647,7 +649,12 @@ pub fn report_excluded(ctx: &Ctx, categories: &[String]) -> Result<()> {
                     file: rec.id,
                     category: c.key(),
                     ai_kind: k.map(ps_model::AiKind::key),
-                    path: rec.key.path.under(&root),
+                    path: rec
+                        .key
+                        .path
+                        .under(&root)
+                        .into_os_string()
+                        .into_encoded_bytes(),
                     size: rec.stat.size,
                     reasons,
                 });
@@ -686,7 +693,7 @@ pub fn report_excluded(ctx: &Ctx, categories: &[String]) -> Result<()> {
             for f in &o.files {
                 println!(
                     "{}  [{}]  {}",
-                    f.path.display(),
+                    String::from_utf8_lossy(&f.path),
                     f.category,
                     f.reasons.join("; ")
                 );

@@ -1382,7 +1382,7 @@ impl Library {
     /// The Excluded view's opening read: every chip's count and the ordered list of the files `filter`'s
     /// exclusion selection shows, from one pass over the excluded set. The counts honour the search text and the
     /// filter's other fields, not its chips.
-    pub fn excluded_open(&self, filter: &Filter, sort: &Sort) -> Result<(ExclusionCounts, IdList)> {
+    pub fn excluded_open(&self, filter: &Filter, sort: &Sort) -> Result<ps_model::ExcludedListing> {
         Ok(self.catalog()?.read().excluded_view(filter, sort)?)
     }
 
@@ -1398,11 +1398,17 @@ impl Library {
         let records = reader.details(ids)?;
         let file_ids: Vec<FileId> = records.iter().map(|r| r.id).collect();
         let categories = reader.exclusion_of(&file_ids)?;
+        // One query for the page's decisions, not one per row (ADR-0103's measurement covers this call).
+        let decisions = reader.user_decisions_of(&file_ids)?;
+        let sources = self.sources()?;
         let mut out = Vec::with_capacity(records.len());
         for r in records {
-            let (path, _, _) = self.path_of(&r)?;
+            let path = match sources.get(&r.key.source) {
+                Some(s) => r.key.path.under(&s.root),
+                None => r.key.path.to_path_buf(),
+            };
             let mut reasons = r.reasons.clone();
-            if let Some(d) = reader.user_decision(r.id)? {
+            if let Some(d) = decisions.get(&r.id) {
                 reasons.insert(0, d.decision.reason_text(d.reason.as_deref()));
             }
             let (category, ai_kind) = match categories.get(&r.id) {
@@ -1427,8 +1433,11 @@ impl Library {
     /// Put files back in the Library (ADR-0102): an include decision of the user's own, which rescans respect and
     /// which excluding again undoes. A file excluded by accepting an AI suggestion also has that suggestion marked
     /// rejected, so the next AI run does not suggest it again for the unchanged file. Stored 10,000 files per
-    /// transaction; refused while a cleanup run is moving files (ADR-0099). Returns the number of files.
-    pub fn put_back(&self, ids: &[ItemId]) -> Result<usize> {
+    /// transaction; refused while a cleanup run is moving files (ADR-0099).
+    ///
+    /// The rejections are saved after the decisions commit (the AI review keeps them in its own store): when they
+    /// cannot be saved, the files are still back and [`PutBack::rejection_error`] says what failed (ADR-0104).
+    pub fn put_back(&self, ids: &[ItemId]) -> Result<ps_model::library::PutBack> {
         let _edit = self.edit()?;
         let cat = self.catalog()?;
         let reader = cat.read();
@@ -1456,15 +1465,21 @@ impl Library {
             }
             cat.writer().set_user_decisions(writes)?;
         }
+        // A decision moves files between excluded and pending.
+        self.forget_dispositions();
+        let mut rejection_error = None;
         if !rejected.is_empty() {
             let store = self.insight_store()?;
             for (content, kind) in rejected {
-                crate::insights::reject_suggestion(cat, store, &content, kind)?;
+                if let Err(e) = crate::insights::reject_suggestion(cat, store, &content, kind) {
+                    rejection_error.get_or_insert_with(|| format!("{e:#}"));
+                }
             }
         }
-        // A decision moves files between excluded and pending.
-        self.forget_dispositions();
-        Ok(ids.len())
+        Ok(ps_model::library::PutBack {
+            files: ids.len(),
+            rejection_error,
+        })
     }
 }
 

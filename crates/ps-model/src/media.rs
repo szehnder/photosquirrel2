@@ -132,6 +132,48 @@ impl Format {
         }
     }
 
+    /// Extensions that are consistent with this format (lower case, without the dot). The probe's extension check
+    /// and the exclusion rule's "known photo or video extension" ([`crate::is_media_extension`]) read this table.
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Format::Jpeg => &["jpg", "jpeg", "jpe", "jfif", "jif"],
+            Format::Png => &["png", "apng"],
+            Format::Gif => &["gif"],
+            Format::Webp => &["webp"],
+            Format::Tiff => &["tif", "tiff"],
+            Format::Bmp => &["bmp", "dib"],
+            Format::Heic => &["heic", "heif", "hif", "heics"],
+            Format::Avif => &["avif"],
+            Format::Raw(r) => match r {
+                RawFormat::Cr2 => &["cr2"],
+                RawFormat::Cr3 => &["cr3"],
+                RawFormat::Crw => &["crw"],
+                RawFormat::Nef | RawFormat::Nrw => &["nef", "nrw"],
+                RawFormat::Arw | RawFormat::Srf | RawFormat::Sr2 => &["arw", "srf", "sr2"],
+                RawFormat::Dng => &["dng"],
+                RawFormat::Raf => &["raf"],
+                RawFormat::Orf => &["orf"],
+                RawFormat::Rw2 => &["rw2", "raw", "rwl"],
+                RawFormat::Pef => &["pef", "dng"],
+                RawFormat::Srw => &["srw"],
+                RawFormat::X3f => &["x3f"],
+                RawFormat::Iiq => &["iiq"],
+                RawFormat::ThreeFr => &["3fr", "fff"],
+                RawFormat::Other => &[],
+            },
+            Format::Mov => &["mov", "qt"],
+            Format::Mp4 => &["mp4", "m4v", "mov", "m4a"],
+            Format::M4v => &["m4v", "mp4"],
+            Format::Avi => &["avi"],
+            Format::Mkv => &["mkv", "webm", "mka"],
+            Format::ThreeGp => &["3gp", "3g2", "mp4"],
+            Format::Mts => &["mts", "m2ts", "ts", "m2t"],
+            Format::Svg => &["svg"],
+            Format::Ico => &["ico", "cur"],
+            Format::Psd => &["psd", "psb"],
+        }
+    }
+
     /// Stable string for storage (`jpeg`, `raw:cr2`, ...). Round-trips through [`Format::from_storage`].
     pub fn storage_key(self) -> String {
         match self {

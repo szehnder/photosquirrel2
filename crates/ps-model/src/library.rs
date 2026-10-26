@@ -237,6 +237,17 @@ pub struct ExcludedRow {
     pub thumb: Option<ThumbKey>,
 }
 
+/// What putting files back in the Library did (ADR-0102, ADR-0104).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PutBack {
+    /// Files that now have the user's include decision (committed).
+    pub files: usize,
+    /// Accepted AI suggestions among them that could not be marked rejected (the AI review's decision store could
+    /// not be saved after the decisions committed): the files are back in the Library, but the AI may suggest
+    /// them again. `None` when every rejection was saved.
+    pub rejection_error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

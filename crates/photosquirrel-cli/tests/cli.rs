@@ -654,6 +654,59 @@ fn report_excluded_counts_match_the_excluded_view() {
     assert!(String::from_utf8_lossy(&r.stderr).contains("no export library is registered yet"));
 }
 
+/// `report excluded --json` prints a path that is not UTF-8 as a string, with its exact bytes in `path_raw`
+/// (ADR-0104; the CLI's JSON rule since the final gate review fix 4), instead of failing the whole report.
+#[cfg(target_os = "linux")]
+#[test]
+fn report_excluded_json_prints_a_non_utf8_path_as_a_string() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let src = tempfile::tempdir().unwrap();
+    let name = std::ffi::OsStr::from_bytes(b"bad\xffname.dat");
+    std::fs::write(src.path().join(name), vec![0x5a; 4096]).unwrap();
+    std::fs::write(src.path().join("notes.txt"), vec![0x5b; 4096]).unwrap();
+    let data = tempfile::tempdir().unwrap();
+    ok(
+        data.path(),
+        &["sources", "add", src.path().to_str().unwrap()],
+    );
+    ok(data.path(), &["scan"]);
+    let v = json(&ok(
+        data.path(),
+        &["--json", "report", "excluded", "--category", "unsupported"],
+    ));
+    let files = v["data"]["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2, "{v}");
+    let bad = files
+        .iter()
+        .find(|f| f["path"].as_str().unwrap().ends_with("bad\u{fffd}name.dat"))
+        .unwrap_or_else(|| panic!("{v}"));
+    let raw: Vec<u8> = bad["path_raw"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b.as_u64().unwrap() as u8)
+        .collect();
+    assert!(raw.ends_with(b"/bad\xffname.dat"));
+    let good = files
+        .iter()
+        .find(|f| f["path"].as_str().unwrap().ends_with("/notes.txt"))
+        .unwrap();
+    assert!(
+        good.get("path_raw").is_none(),
+        "only for bytes that are not UTF-8"
+    );
+    // The human report prints it too.
+    let text = String::from_utf8_lossy(
+        &ok(
+            data.path(),
+            &["report", "excluded", "--category", "unsupported"],
+        )
+        .stdout,
+    )
+    .into_owned();
+    assert!(text.contains("bad\u{fffd}name.dat"), "{text}");
+}
+
 fn recording_settings(data: &Path, url: &str) {
     std::fs::create_dir_all(data.join("config")).unwrap();
     std::fs::write(

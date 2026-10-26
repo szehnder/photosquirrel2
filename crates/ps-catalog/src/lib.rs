@@ -14,6 +14,7 @@
 
 pub mod cleanup;
 pub mod db;
+pub mod display;
 mod error;
 mod gallery;
 pub mod groups;
