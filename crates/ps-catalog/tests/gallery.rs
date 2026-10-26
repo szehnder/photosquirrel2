@@ -72,6 +72,7 @@ fn user_decisions_win_and_survive_reprobing() {
                 file,
                 decision: Some(d),
                 reason: reason.map(str::to_owned),
+                ai_kind: None,
             })
             .expect("submit");
         cat.writer().flush().expect("flush");

@@ -170,6 +170,20 @@ struct ReportArgs {
     /// Include the per-folder breakdown.
     #[arg(long)]
     folders: bool,
+    #[command(subcommand)]
+    what: Option<ReportCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum ReportCommand {
+    /// The Excluded view's files by category (ADR-0102): counts per category and AI kind, and with `--category`
+    /// the files of those categories with their reasons.
+    Excluded {
+        /// List the files of this category (repeatable): you, ai, ai:screenshot, ai:document, ai:graphic,
+        /// ai:not_photo, cache, graphic, small, unreadable, unsupported.
+        #[arg(long = "category")]
+        categories: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -460,9 +474,14 @@ fn run(cli: Cli) -> Result<()> {
             Some(ScanCommand::Status) => cmd::scan::status(&ctx),
         },
         Command::Status => cmd::scan::status(&ctx),
-        Command::Report(r) => {
-            cmd::export::report(&ctx, r.library.as_deref(), r.verify, &r.sources, r.folders)
-        }
+        Command::Report(r) => match r.what {
+            Some(ReportCommand::Excluded { categories }) => {
+                cmd::export::report_excluded(&ctx, &categories)
+            }
+            None => {
+                cmd::export::report(&ctx, r.library.as_deref(), r.verify, &r.sources, r.folders)
+            }
+        },
         Command::Groups { command } => match command {
             GroupsCommand::List {
                 order,

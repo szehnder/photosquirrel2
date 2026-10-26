@@ -84,7 +84,7 @@ fn scenario_catalog_full_id_list_for_filter() {
         let mut exp: Vec<&FileRecord> = recs.iter().filter(|r| keep(r)).collect();
         match sort.field {
             SortField::FileSize => exp.sort_by_key(|r| (r.stat.size, r.id)),
-            SortField::FileName => exp.sort_by(|a, b| {
+            SortField::FileName | SortField::Folder | SortField::Category => exp.sort_by(|a, b| {
                 (a.key.path.file_name(), a.id).cmp(&(b.key.path.file_name(), b.id))
             }),
             SortField::CaptureDate => {

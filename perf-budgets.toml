@@ -62,6 +62,17 @@ unit = "ms"
 change = "catalog"
 source = { kind = "test", package = "ps-catalog", test = "budgets", name = "scenario_catalog_id_list_for_1m_within_300_ms" }
 
+# excluded-view-filters (ADR-0103, ADR-0026). The Excluded view opening on 1M files with 200,000 excluded (180,000 by the
+# classifier in five categories, 20,000 by accepted AI suggestions): the chip counts, the default view's ID list and its
+# first 200-row page, from one pass over the excluded set. Median of 5 runs. Measured 105 ms.
+[[budget]]
+name = "excluded-view-open"
+metric = "median"
+max = 150.0
+unit = "ms"
+change = "excluded-view-filters"
+source = { kind = "test", package = "ps-catalog", test = "budgets", name = "scenario_performance_budgets_excluded_view_open_within_budget" }
+
 # app-shell (ADR-0026): the release app with measurement flags (opens a window; skipped by `--ci`).
 # Cold start: launch to the first presented frame, median of 10 runs. Idle RSS: resident memory after 5 s idle
 # on the gallery's 1M synthetic catalog (built once, like first-gallery-frame; PHOTOSQUIRREL_SYNTHETIC_DIR moves

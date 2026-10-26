@@ -539,6 +539,8 @@ pub fn decide(
                 file: f,
                 decision: Some(UserDecision::Exclude),
                 reason: Some(s.exclusion_reason()),
+                // Stored provenance (ADR-0102): the Excluded view files it under the AI's kind.
+                ai_kind: ps_model::AiKind::from_suggestion_kind(&s.kind),
             })?;
             excluded += 1;
         }
@@ -553,6 +555,21 @@ pub fn decide(
         store.set_decision(&c.to_hex(), &s.kind, status)?;
     }
     Ok(excluded)
+}
+
+/// Mark the `kind` suggestion of `content` and of the rest of its capture set rejected: the user put a file it
+/// excluded back in the Library (ADR-0102), so the suggestion is not offered again for the unchanged content (the
+/// queue re-describing it with the same result finds the decision). A rejection records only the decision.
+pub fn reject_suggestion(
+    catalog: &Catalog,
+    store: &InsightStore,
+    content: &ContentId,
+    kind: &str,
+) -> Result<()> {
+    for c in crate::ai::capture_set(catalog, content)? {
+        store.set_decision(&c.to_hex(), kind, SuggestionStatus::Rejected)?;
+    }
+    Ok(())
 }
 
 /// Undo an accepted (or rejected) suggestion of `content` (hex): the decision is open again, and the exclusions
@@ -579,6 +596,7 @@ pub fn undo(catalog: &Catalog, store: &InsightStore, content: &str) -> Result<us
                     file: f,
                     decision: None,
                     reason: None,
+                    ai_kind: None,
                 })?;
                 restored += 1;
             }

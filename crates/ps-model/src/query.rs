@@ -35,6 +35,10 @@ pub enum SortField {
     FileName,
     /// File size in bytes.
     FileSize,
+    /// Path relative to the source root (folder, then name), byte order. Excluded lists only.
+    Folder,
+    /// Exclusion category in priority order ([`crate::ExclusionCategory::rank`]), then name. Excluded lists only.
+    Category,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -76,6 +80,10 @@ pub struct Filter {
     /// Only files captured in `[start, end)` (wall-clock milliseconds, like the catalog's `capture_ts`).
     #[serde(default)]
     pub captured: Option<(i64, i64)>,
+    /// Only excluded files of these categories, AI kinds and search text (the Excluded view, ADR-0102). When
+    /// set, `classes` is ignored: the list is the excluded set narrowed by the selection.
+    #[serde(default)]
+    pub exclusion: Option<crate::ExclusionSelection>,
 }
 
 impl Filter {

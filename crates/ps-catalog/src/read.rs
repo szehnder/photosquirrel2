@@ -94,6 +94,9 @@ impl Readers {
 
     /// Number of files matching `filter`.
     pub fn count(&self, filter: &Filter) -> Result<u64> {
+        if let Some(sel) = &filter.exclusion {
+            return Ok(self.exclusion_counts(filter)?.shown(sel));
+        }
         self.with(|c| {
             let (cond, args) = filter_sql_for(c, filter)?;
             let sql = format!("SELECT count(*) FROM file WHERE 1 {cond}");
@@ -453,7 +456,7 @@ fn to_sql_err(e: CatalogError) -> rusqlite::Error {
 
 /// [`filter_sql`] for every field but the classes, then the class filter with user decisions and the
 /// gallery predicates ([`crate::gallery::extend_filter_sql`]).
-fn filter_sql_for(c: &Connection, f: &Filter) -> Result<(String, Vec<Value>)> {
+pub(crate) fn filter_sql_for(c: &Connection, f: &Filter) -> Result<(String, Vec<Value>)> {
     let base = Filter {
         classes: None,
         ..f.clone()
@@ -508,6 +511,9 @@ fn id_list(
     sort: &Sort,
     within: Option<&ItemSet>,
 ) -> Result<IdList> {
+    if let Some(sel) = &filter.exclusion {
+        return crate::gallery::excluded_id_list(c, filter, sel, sort, within);
+    }
     let (cond, args) = filter_sql_for(c, filter)?;
     let dir = if sort.descending { "DESC" } else { "ASC" };
     let tail = "kflags";
@@ -558,7 +564,8 @@ fn id_list(
                 _ => Err(corrupt("size")),
             })?;
         }
-        SortField::FileName => {
+        SortField::Folder | SortField::Category | SortField::FileName => {
+            // Folder and category orders exist for excluded lists only; elsewhere they sort by name.
             let sql = format!(
                 "SELECT id, name, {tail} FROM file INDEXED BY file_by_name
                  WHERE 1 {cond} ORDER BY name {dir}, id {dir}"
@@ -595,21 +602,26 @@ fn collect(
         let ValueRef::Integer(k) = r.get_ref(2)? else {
             return Err(corrupt("kflags"));
         };
-        let class = match (k & 7) as u8 {
-            7 => SortKey::CLASS_NONE,
-            c => c,
-        };
-        let mut flags = 0;
-        if k & 8 != 0 {
-            flags |= SortKey::FLAG_VIDEO;
-        }
-        if k & 16 != 0 {
-            flags |= SortKey::FLAG_MISSING;
-        }
         out.ids.push(id);
-        out.keys.push(SortKey::new(p, id, class, flags));
+        out.keys.push(sort_key(p, id, k));
     }
     Ok(())
+}
+
+/// A sort key from its primary, the item and the row's `kflags` (class, video and missing bits).
+pub(crate) fn sort_key(primary: u64, id: ItemId, kflags: i64) -> SortKey {
+    let class = match (kflags & 7) as u8 {
+        7 => SortKey::CLASS_NONE,
+        c => c,
+    };
+    let mut flags = 0;
+    if kflags & 8 != 0 {
+        flags |= SortKey::FLAG_VIDEO;
+    }
+    if kflags & 16 != 0 {
+        flags |= SortKey::FLAG_MISSING;
+    }
+    SortKey::new(primary, id, class, flags)
 }
 
 pub(crate) fn file_record(r: &Row<'_>) -> Result<FileRecord> {

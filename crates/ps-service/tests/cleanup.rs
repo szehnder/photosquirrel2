@@ -673,6 +673,7 @@ fn scenario_cleanup_excluded_quarantined_file_without_library_copy_not_accounted
         file: m.file,
         decision: Some(ps_catalog::UserDecision::Exclude),
         reason: Some("test".into()),
+        ai_kind: None,
     })
     .unwrap();
     w.flush().unwrap();

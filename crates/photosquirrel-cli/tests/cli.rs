@@ -317,6 +317,7 @@ fn help_paths() -> Vec<Vec<&'static str>> {
             ][..],
         ),
         ("export", &["dry-run", "run", "check"][..]),
+        ("report", &["excluded"][..]),
         ("cleanup", &["plan", "run", "list", "show", "undo"][..]),
         (
             "ai",
@@ -589,6 +590,68 @@ fn scenario_completion_report_cli_report_matches_ui() {
         );
     }
     assert_eq!(cli["counts"]["fully_accounted"], true);
+}
+
+/// `report excluded` counts with the catalog's query behind the Excluded view's chips (ADR-0102), lists the
+/// files of the categories asked for, and leaves `report` itself as it was.
+#[test]
+fn report_excluded_counts_match_the_excluded_view() {
+    let data = scanned();
+    let v = json(&ok(data.path(), &["--json", "report", "excluded"]));
+    assert_eq!(v["command"], "report excluded");
+    let svc = ps_service::scan::ScanService::open(data.path(), Default::default()).unwrap();
+    let counts = svc
+        .engine()
+        .catalog()
+        .read()
+        .exclusion_counts(&ps_model::Filter::default())
+        .unwrap();
+    assert!(counts.total() > 0);
+    assert_eq!(v["data"]["total"].as_u64().unwrap(), counts.total());
+    let rows = v["data"]["counts"].as_array().unwrap();
+    assert_eq!(rows.len(), counts.rows.len());
+    for (c, k, n) in &counts.rows {
+        let row = rows
+            .iter()
+            .find(|r| {
+                r["category"] == c.key() && r["ai_kind"].as_str() == k.map(ps_model::AiKind::key)
+            })
+            .unwrap_or_else(|| panic!("{c:?} {k:?} in {rows:?}"));
+        assert_eq!(row["files"].as_u64().unwrap(), *n);
+    }
+    assert!(
+        v["data"]["files"].as_array().unwrap().is_empty(),
+        "counts only"
+    );
+    let cache = ps_model::ExclusionCategory::Cache;
+    let v = json(&ok(
+        data.path(),
+        &["--json", "report", "excluded", "--category", "cache"],
+    ));
+    let files = v["data"]["files"].as_array().unwrap();
+    assert_eq!(files.len() as u64, counts.of(cache));
+    assert!(
+        files
+            .iter()
+            .all(|f| f["category"] == "cache" && !f["reasons"].as_array().unwrap().is_empty())
+    );
+    let human = ok(data.path(), &["report", "excluded", "--category", "cache"]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("Thumbnail caches"), "{text}");
+    assert_eq!(
+        run(
+            data.path(),
+            &["report", "excluded", "--category", "nonsense"]
+        )
+        .status
+        .code(),
+        Some(1)
+    );
+    drop(svc);
+    // `report` itself is unchanged: before an export it still asks for a library.
+    let r = run(data.path(), &["report"]);
+    assert_eq!(r.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("no export library is registered yet"));
 }
 
 fn recording_settings(data: &Path, url: &str) {

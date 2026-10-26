@@ -206,6 +206,7 @@ fn constraint_edits_bump_the_constraints_generation() {
         file: FileId(1),
         decision: None,
         reason: None,
+        ai_kind: None,
     })
     .expect("decision");
     w.flush().expect("flush");

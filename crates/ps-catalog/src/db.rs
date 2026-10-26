@@ -49,6 +49,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     RUN_REFRESH_MIGRATION,
     DECODER_MISSING_MIGRATION,
     DECODE_FAILURE_MIGRATION,
+    EXCLUSION_CATEGORY_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -172,6 +173,13 @@ pub const DECODE_FAILURE_MIGRATION: Migration = Migration {
     version: 20,
     name: "decode_failure",
     sql: include_str!("../migrations/0020_decode_failure.sql"),
+};
+/// Migration 21 (ADR-0102: `file.exclusion`, `user_inclusion.origin` and `ai_kind`, the partial index
+/// `file_exclusion`; existing rows backfilled from their class, reasons and decision reason text).
+pub const EXCLUSION_CATEGORY_MIGRATION: Migration = Migration {
+    version: 21,
+    name: "exclusion_category",
+    sql: include_str!("../migrations/0021_exclusion_category.sql"),
 };
 /// `thumbs.db` migrations.
 pub const THUMB_MIGRATIONS: &[Migration] = &[Migration {

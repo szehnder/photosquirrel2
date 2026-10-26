@@ -229,6 +229,12 @@ pub struct ExcludedRow {
     pub class: Option<PhotoClass>,
     pub reasons: Vec<String>,
     pub size: u64,
+    /// The file's exclusion category (ADR-0102); `None` only for a file that is no longer excluded.
+    pub category: Option<crate::ExclusionCategory>,
+    /// The AI kind of an accepted AI suggestion.
+    pub ai_kind: Option<crate::AiKind>,
+    /// Its stored thumbnail, if any.
+    pub thumb: Option<ThumbKey>,
 }
 
 #[cfg(test)]

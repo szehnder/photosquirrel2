@@ -29,7 +29,7 @@ use std::sync::Arc;
 pub use cleanup::{NewCleanupRun, QuarantinedFile};
 pub use error::{CatalogError, Result, WriteError, WriteErrors};
 pub use gallery::{
-    UserDecision, UserDecisionRecord, excluded_classes, is_library, library_classes,
+    DecisionWrite, UserDecision, UserDecisionRecord, excluded_classes, is_library, library_classes,
 };
 pub use groups::{
     ConstraintRows, GroupChanges, GroupOrder, GroupRow, GroupSummary, MemberEdge, MemberRow,

@@ -33,8 +33,8 @@ use ps_model::library::{
     InsightDetail, ItemDetail, ItemSummary, Preview, ThumbKey,
 };
 use ps_model::{
-    ContentId, Disposition, ExclusionReason, FileId, Filter, IdList, ImageInsight, ItemId, ItemSet,
-    MediaKind, PhotoClass, SceneCategory, SortKey, SourceId, SourceStatus,
+    ContentId, Disposition, ExclusionCounts, ExclusionReason, FileId, Filter, IdList, ImageInsight,
+    ItemId, ItemSet, MediaKind, PhotoClass, SceneCategory, Sort, SortKey, SourceId, SourceStatus,
 };
 
 use crate::export_progress::FileDisposition;
@@ -1345,6 +1345,11 @@ impl Library {
         decision: Option<Decision>,
         reason: Option<String>,
     ) -> Result<()> {
+        if decision == Some(Decision::Include) {
+            // The inspector's Include is a put back (ADR-0102): an accepted AI suggestion becomes rejected.
+            self.put_back(&[id])?;
+            return Ok(());
+        }
         let _edit = self.edit()?;
         if !self.catalog()?.read().has_user_decisions()? {
             anyhow::bail!(
@@ -1359,6 +1364,7 @@ impl Library {
                 Decision::Exclude => UserDecision::Exclude,
             }),
             reason,
+            ai_kind: None,
         })?;
         self.catalog()?.writer().flush()?;
         // A decision moves files between excluded and pending.
@@ -1371,39 +1377,99 @@ impl Library {
         Ok(self.catalog()?.read().camera_models()?)
     }
 
-    /// Rows of the Excluded view (classes set aside plus user exclusions), with their reasons.
-    pub fn excluded(&self) -> Result<Vec<ExcludedRow>> {
+    // ---- Excluded view (excluded-view-filters, ADR-0102, ADR-0103) ------------------------------------------
+
+    /// The Excluded view's opening read: every chip's count and the ordered list of the files `filter`'s
+    /// exclusion selection shows, from one pass over the excluded set. The counts honour the search text and the
+    /// filter's other fields, not its chips.
+    pub fn excluded_open(&self, filter: &Filter, sort: &Sort) -> Result<(ExclusionCounts, IdList)> {
+        Ok(self.catalog()?.read().excluded_view(filter, sort)?)
+    }
+
+    /// Every chip's count for the excluded files `filter`'s search text and other fields allow.
+    pub fn exclusion_counts(&self, filter: &Filter) -> Result<ExclusionCounts> {
+        Ok(self.catalog()?.read().exclusion_counts(filter)?)
+    }
+
+    /// Rows of the Excluded view for up to 512 ids (the visible page), in order, with each file's category,
+    /// thumbnail and reasons (the decision's first). Ids no longer in the catalog are left out.
+    pub fn excluded_page(&self, ids: &[ItemId]) -> Result<Vec<ExcludedRow>> {
         let reader = self.catalog()?.read();
-        let list = reader.id_list(
-            &excluded_filter(),
-            &ps_model::Sort::by(ps_model::SortField::FileName),
-        )?;
-        let decisions: HashMap<FileId, (UserDecision, Option<String>)> = reader
-            .user_decisions()?
-            .into_iter()
-            .map(|d| (d.file, (d.decision, d.reason)))
-            .collect();
-        let mut out = Vec::with_capacity(list.len());
-        for chunk in list.ids.chunks(ps_catalog::PAGE_SIZE) {
-            for r in reader.details(chunk)? {
-                let (path, _, _) = self.path_of(&r)?;
-                let mut reasons = r.reasons.clone();
-                if let Some((d, why)) = decisions.get(&r.id) {
-                    reasons.insert(0, d.reason_text(why.as_deref()));
-                }
-                out.push(ExcludedRow {
-                    id: ItemId::try_from(r.id).unwrap_or_default(),
-                    name: String::from_utf8_lossy(r.key.path.file_name()).into_owned(),
-                    path: path.display().to_string(),
-                    class: r.class,
-                    reasons,
-                    size: r.stat.size,
-                });
+        let records = reader.details(ids)?;
+        let file_ids: Vec<FileId> = records.iter().map(|r| r.id).collect();
+        let categories = reader.exclusion_of(&file_ids)?;
+        let mut out = Vec::with_capacity(records.len());
+        for r in records {
+            let (path, _, _) = self.path_of(&r)?;
+            let mut reasons = r.reasons.clone();
+            if let Some(d) = reader.user_decision(r.id)? {
+                reasons.insert(0, d.decision.reason_text(d.reason.as_deref()));
             }
+            let (category, ai_kind) = match categories.get(&r.id) {
+                Some((c, k)) => (Some(*c), *k),
+                None => (None, None),
+            };
+            out.push(ExcludedRow {
+                id: ItemId::try_from(r.id).unwrap_or_default(),
+                name: String::from_utf8_lossy(r.key.path.file_name()).into_owned(),
+                path: path.display().to_string(),
+                class: r.class,
+                reasons,
+                size: r.stat.size,
+                category,
+                ai_kind,
+                thumb: r.identity.map(|c| ThumbKey(c.digest)),
+            });
         }
         Ok(out)
     }
+
+    /// Put files back in the Library (ADR-0102): an include decision of the user's own, which rescans respect and
+    /// which excluding again undoes. A file excluded by accepting an AI suggestion also has that suggestion marked
+    /// rejected, so the next AI run does not suggest it again for the unchanged file. Stored 10,000 files per
+    /// transaction; refused while a cleanup run is moving files (ADR-0099). Returns the number of files.
+    pub fn put_back(&self, ids: &[ItemId]) -> Result<usize> {
+        let _edit = self.edit()?;
+        let cat = self.catalog()?;
+        let reader = cat.read();
+        let decisions: HashMap<FileId, ps_catalog::UserDecisionRecord> = reader
+            .user_decisions()?
+            .into_iter()
+            .map(|d| (d.file, d))
+            .collect();
+        let mut rejected: HashSet<(ContentId, &'static str)> = HashSet::new();
+        for chunk in ids.chunks(PUT_BACK_BATCH) {
+            let mut writes = Vec::with_capacity(chunk.len());
+            for id in chunk {
+                let file = FileId::from(*id);
+                if let Some(kind) = decisions.get(&file).and_then(|d| d.ai_kind)
+                    && let Some(content) = reader.file_by_id(file)?.and_then(|r| r.identity)
+                {
+                    rejected.insert((content, kind.suggestion_kind()));
+                }
+                writes.push(ps_catalog::DecisionWrite {
+                    file,
+                    decision: Some(UserDecision::Include),
+                    reason: None,
+                    ai_kind: None,
+                });
+            }
+            cat.writer().set_user_decisions(writes)?;
+        }
+        if !rejected.is_empty() {
+            let store = self.insight_store()?;
+            for (content, kind) in rejected {
+                crate::insights::reject_suggestion(cat, store, &content, kind)?;
+            }
+        }
+        // A decision moves files between excluded and pending.
+        self.forget_dispositions();
+        Ok(ids.len())
+    }
 }
+
+/// Files stored per transaction when putting files back ([`Library::put_back`]).
+pub const PUT_BACK_BATCH: usize = 10_000;
 
 fn parse_digest(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 {

@@ -560,3 +560,138 @@ pub fn check(ctx: &Ctx, library: &Path, verify: bool) -> Result<()> {
     }
     Ok(())
 }
+
+// ---- report excluded (excluded-view-filters, ADR-0102) ------------------------------------------------------
+
+#[derive(Serialize)]
+struct ExcludedCountOut {
+    category: &'static str,
+    label: &'static str,
+    ai_kind: Option<&'static str>,
+    files: u64,
+}
+
+#[derive(Serialize)]
+struct ExcludedFileOut {
+    file: ps_model::FileId,
+    category: &'static str,
+    ai_kind: Option<&'static str>,
+    path: PathBuf,
+    size: u64,
+    reasons: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ExcludedOut {
+    counts: Vec<ExcludedCountOut>,
+    total: u64,
+    /// The categories asked for with `--category` (empty: counts only).
+    listed: Vec<String>,
+    files: Vec<ExcludedFileOut>,
+}
+
+/// A `--category` value as a selection.
+fn parse_category(
+    s: &str,
+    sel: ps_model::ExclusionSelection,
+) -> Result<ps_model::ExclusionSelection> {
+    use ps_model::{AiKind, ExclusionCategory};
+    if let Some(kind) = s.strip_prefix("ai:") {
+        let k = AiKind::from_key(kind).ok_or_else(|| {
+            anyhow::anyhow!("unknown AI kind {kind} (screenshot, document, graphic, not_photo)")
+        })?;
+        return Ok(sel.with_ai_kind(k, true));
+    }
+    let c = ExclusionCategory::from_key(s).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown category {s} (you, ai, ai:<kind>, cache, graphic, small, unreadable, unsupported)"
+        )
+    })?;
+    Ok(sel.with_category(c, true))
+}
+
+/// `report excluded [--category k ...]`: the counts behind the Excluded view's chips, from the same query
+/// (`Readers::exclusion_counts`), and the files of the categories asked for.
+pub fn report_excluded(ctx: &Ctx, categories: &[String]) -> Result<()> {
+    let mut sel = ps_model::ExclusionSelection::default();
+    for c in categories {
+        sel = parse_category(c, sel)?;
+    }
+    let svc = ctx.reader()?;
+    let cat = svc.engine().catalog();
+    let r = cat.read();
+    let filter = ps_model::Filter {
+        exclusion: Some(sel),
+        ..ps_model::Filter::default()
+    };
+    let (counts, list) =
+        r.excluded_view(&filter, &ps_model::Sort::by(ps_model::SortField::Folder))?;
+    let roots: std::collections::HashMap<SourceId, PathBuf> =
+        svc.sources()?.into_iter().map(|s| (s.id, s.root)).collect();
+    let mut files = Vec::new();
+    if !categories.is_empty() {
+        for chunk in list.ids.chunks(ps_catalog::PAGE_SIZE) {
+            let records = r.details(chunk)?;
+            let ids: Vec<ps_model::FileId> = records.iter().map(|x| x.id).collect();
+            let of = r.exclusion_of(&ids)?;
+            for rec in records {
+                let Some((c, k)) = of.get(&rec.id).copied() else {
+                    continue;
+                };
+                let mut reasons = rec.reasons.clone();
+                if let Some(d) = r.user_decision(rec.id)? {
+                    reasons.insert(0, d.decision.reason_text(d.reason.as_deref()));
+                }
+                let root = roots.get(&rec.key.source).cloned().unwrap_or_default();
+                files.push(ExcludedFileOut {
+                    file: rec.id,
+                    category: c.key(),
+                    ai_kind: k.map(ps_model::AiKind::key),
+                    path: rec.key.path.under(&root),
+                    size: rec.stat.size,
+                    reasons,
+                });
+            }
+        }
+    }
+    let out = ExcludedOut {
+        counts: counts
+            .rows
+            .iter()
+            .map(|(c, k, n)| ExcludedCountOut {
+                category: c.key(),
+                label: k.map_or(c.label(), ps_model::AiKind::label),
+                ai_kind: k.map(ps_model::AiKind::key),
+                files: *n,
+            })
+            .collect(),
+        total: counts.total(),
+        listed: categories.to_vec(),
+        files,
+    };
+    emit(ctx.json, "report excluded", &out, |o| {
+        println!("excluded files: {}", o.total);
+        for c in &o.counts {
+            match c.ai_kind {
+                Some(k) => println!(
+                    "  {:<24} {:>8}  (ai:{k})",
+                    format!("AI: {}", c.label),
+                    c.files
+                ),
+                None => println!("  {:<24} {:>8}  ({})", c.label, c.files, c.category),
+            }
+        }
+        if !o.listed.is_empty() {
+            println!();
+            for f in &o.files {
+                println!(
+                    "{}  [{}]  {}",
+                    f.path.display(),
+                    f.category,
+                    f.reasons.join("; ")
+                );
+            }
+            println!("{} files listed", o.files.len());
+        }
+    })
+}

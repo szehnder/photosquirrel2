@@ -122,10 +122,14 @@ pub enum Command {
     DecodeFailed(Vec<(FileKey, ps_model::DecodeFailure)>),
     /// The user's include/exclude decision about a file (`None` clears it). Needs catalog migration 7
     /// (`user_inclusion`, [`crate::db::GALLERY_MIGRATION`]); without it the command reports an error.
+    ///
+    /// `ai_kind` is set for an exclusion recorded by accepting an AI suggestion of that kind (`origin = 'ai'`,
+    /// migration 21, ADR-0102); every other decision is the user's own.
     SetUserDecision {
         file: FileId,
         decision: Option<crate::UserDecision>,
         reason: Option<String>,
+        ai_kind: Option<ps_model::AiKind>,
     },
 }
 
@@ -814,23 +818,9 @@ impl WriterThread {
                 file,
                 decision,
                 reason,
+                ai_kind,
             } => self.row(name, None, |c| {
-                match decision {
-                    Some(d) => {
-                        c.prepare_cached(
-                            "INSERT INTO user_inclusion (file_id, decision, reason, at)
-                             VALUES (?1, ?2, ?3, ?4)
-                             ON CONFLICT (file_id) DO UPDATE SET
-                                decision = excluded.decision, reason = excluded.reason, at = excluded.at",
-                        )?
-                        .execute(params![file.0, d.as_str(), reason, now_ms()])?;
-                    }
-                    None => {
-                        c.prepare_cached("DELETE FROM user_inclusion WHERE file_id = ?1")?
-                            .execute([file.0])?;
-                    }
-                }
-                Ok(())
+                crate::gallery::write_decision(c, file, decision, reason.as_deref(), ai_kind, now_ms())
             }),
             Command::Redecoded(rows) => {
                 for (k, h) in &rows {
@@ -933,8 +923,22 @@ const PROBE_COLUMNS: &[(&str, &str)] = &[
     ("height", "NULL"),
     ("class_facts", "NULL"),
     ("classifier_hash", "NULL"),
+    ("exclusion", "NULL"),
     ("attempts", "0"),
 ];
+
+/// The classifier's exclusion category (`file.exclusion`, migration 21, ADR-0102) as an SQL expression over a
+/// class code, a format and a reasons JSON array (columns or parameters): the same rule as
+/// [`ps_model::ExclusionCategory::of`] and migration 21's backfill. Written in the statement that writes the class.
+pub(crate) fn exclusion_sql(class: &str, format: &str, reasons: &str) -> String {
+    format!(
+        "(CASE {class} WHEN 2 THEN 'cache' WHEN 3 THEN 'graphic' WHEN 4 THEN CASE
+            WHEN {format} IS NULL THEN 'unsupported'
+            WHEN json_valid({reasons}) AND json_extract({reasons}, '$[0]') LIKE '{}%' THEN 'unreadable'
+            ELSE 'small' END END)",
+        ps_model::PROBE_FAILED_PREFIX
+    )
+}
 
 static UPSERT_SQL: LazyLock<String> = LazyLock::new(|| {
     let changed = "(size != excluded.size OR mtime_ns != excluded.mtime_ns
@@ -969,9 +973,10 @@ static PROBED_SQL: LazyLock<String> = LazyLock::new(|| {
         .collect();
     format!(
         "UPDATE file SET stage = ?3, class = ?4, reasons = ?5, format = ?6, media_kind = ?7, width = ?8,
-                height = ?9, class_facts = ?10, classifier_hash = ?11,
+                height = ?9, class_facts = ?10, classifier_hash = ?11, exclusion = {},
                 kflags = (?4 | (coalesce(?7, 0) << 3) | (kflags & 16)), {}
          WHERE source_id = ?1 AND rel_path = ?2",
+        exclusion_sql("?4", "?6", "?5"),
         clear.join(", ")
     )
 });
@@ -985,14 +990,19 @@ const ANALYZED_SQL: &str = "UPDATE file SET stage = 2,
     WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
 
 /// All columns at once, for rows that arrive with results and are new (the common synthetic/import case).
-const INSERT_FULL_SQL: &str = "INSERT INTO file (source_id, rel_path, name, size, mtime_ns, file_index,
+static INSERT_FULL_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "INSERT INTO file (source_id, rel_path, name, size, mtime_ns, file_index,
         stage, class, reasons, format, media_kind, width, height,
         content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_offset_min,
         capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen,
-        class_facts, classifier_hash, capture_precision, date_version, decoder_missing, decode_failure)
+        class_facts, classifier_hash, capture_precision, date_version, decoder_missing, decode_failure, exclusion)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31, ?32)
-    ON CONFLICT (source_id, rel_path) DO NOTHING";
+            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31, ?32, {})
+    ON CONFLICT (source_id, rel_path) DO NOTHING",
+        exclusion_sql("?8", "?10", "?9")
+    )
+});
 
 fn upsert_file(c: &Connection, r: &FileRow) -> rusqlite::Result<()> {
     let file_index = r.stat.file_index.map(|i| i as i64);
@@ -1075,7 +1085,7 @@ fn insert_full(
 ) -> rusqlite::Result<usize> {
     let x = analysis_cols(a)?;
     let reasons = reasons_json(&p.reasons)?;
-    c.prepare_cached(INSERT_FULL_SQL)?.execute(params![
+    c.prepare_cached(&INSERT_FULL_SQL)?.execute(params![
         r.key.source.0,
         r.key.path.as_bytes(),
         r.key.path.file_name(),
@@ -1124,12 +1134,17 @@ fn facts_json(f: Option<&ps_model::ClassFacts>) -> rusqlite::Result<Option<Strin
     .transpose()
 }
 
-const RECLASSIFY_SQL: &str = "UPDATE file SET class = ?3, reasons = ?4, classifier_hash = ?5,
+static RECLASSIFY_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "UPDATE file SET class = ?3, reasons = ?4, classifier_hash = ?5, exclusion = {},
         stage = coalesce(?6, stage), kflags = (?3 | (kflags & 24)), class_facts = coalesce(?7, class_facts)
-    WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
+    WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL",
+        exclusion_sql("?3", "format", "?4")
+    )
+});
 
 fn set_reclassified(c: &Connection, r: &Reclassification) -> rusqlite::Result<usize> {
-    c.prepare_cached(RECLASSIFY_SQL)?.execute(params![
+    c.prepare_cached(&RECLASSIFY_SQL)?.execute(params![
         r.key.source.0,
         r.key.path.as_bytes(),
         r.class.code(),
