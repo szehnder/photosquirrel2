@@ -32,6 +32,9 @@ pub struct DedupMeta {
     pub jpeg_quality: Option<u8>,
     /// Video duration (sampled-identity check, ADR-0011).
     pub duration_ms: Option<u64>,
+    /// The frame the file records (ADR-0105).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<ps_model::FrameId>,
 }
 
 impl DedupMeta {
@@ -64,6 +67,7 @@ impl DedupMeta {
             has_exposure: m.exposure_s.is_some() || m.aperture.is_some() || m.iso.is_some(),
             jpeg_quality: m.jpeg_quality,
             duration_ms: m.duration_ms,
+            frame: m.frame_id.clone(),
         }
     }
 

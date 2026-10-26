@@ -10,7 +10,7 @@ migration 24).
 ## 2. Corpus first
 
 - [x] 2.1 `ps-fixtures`: converted RAW burst sets (D6): CR2-style original, camera JPEG and converted DNG per frame (`OriginalRawFileName`, a Canon maker note with the file number inside `DNGPrivateData`, the first frame's sub-second dropped). Truth groups and must-not-merge sets. Verify: `scenario_test_corpus_converted_bursts_in_the_medium_preset`, and the generator stays deterministic for a seed.
-- [ ] 2.2 Show the bug: with the new sets and today's grouping, `eval-corpus` reports must-not-merge violations. Verify: `scenario_test_corpus_the_corpus_catches_a_merged_converted_burst` (test hook that turns frame identity off), and record the violation count in design.md.
+- [x] 2.2 Show the bug: with the new sets and today's grouping, `eval-corpus` reports must-not-merge violations. Verify: `scenario_test_corpus_the_corpus_catches_a_merged_converted_burst` (test hook that turns frame identity off), and record the violation count in design.md. Done: medium preset before the fix, 6 violations (design.md "Evidence"); the test (24 sets alone) shows 6 with the hook off and 0 with it on.
 
 ## 3. Metadata
 
@@ -18,7 +18,7 @@ migration 24).
 
 ## 4. Grouping
 
-- [ ] 4.1 `Contradiction::FrameId` and its explanation; RAW-format files count as camera originals in the two-originals guard (D2, D3). Verify: `scenario_duplicate_detection_converted_burst_frame_without_sub_second_not_merged`, `scenario_duplicate_detection_resized_copy_still_joins_its_original`, `scenario_duplicate_detection_two_converted_dngs_of_two_frames_not_merged`, and every existing `scenario_duplicate_detection_*` test still passes.
+- [x] 4.1 `Contradiction::FrameId` and its explanation; RAW-format files count as camera originals in the two-originals guard (D2, D3). Verify: `scenario_duplicate_detection_converted_burst_frame_without_sub_second_not_merged`, `scenario_duplicate_detection_resized_copy_still_joins_its_original`, `scenario_duplicate_detection_two_converted_dngs_of_two_frames_not_merged`, and every existing `scenario_duplicate_detection_*` test still passes.
 
 ## 5. Catalog and rescan
 

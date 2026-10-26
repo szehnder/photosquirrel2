@@ -1296,8 +1296,16 @@ impl Planner {
                 };
             }
             let perturb = Perturb::near(&mut self.rng, 1.0);
-            let mut shot =
-                self.make_shot(ev, body, cap, scene.clone(), perturb, orientation, gps, false);
+            let mut shot = self.make_shot(
+                ev,
+                body,
+                cap,
+                scene.clone(),
+                perturb,
+                orientation,
+                gps,
+                false,
+            );
             let (stem, _) = Self::file_name(&shot.path);
             let stem = stem.to_string();
             // The card's own folder, not the event's: the JPEG and its CR2 are camera files.

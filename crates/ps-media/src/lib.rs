@@ -11,6 +11,7 @@ pub mod classify;
 pub mod date;
 pub mod decode;
 pub mod decoders;
+pub mod frame;
 pub mod fs;
 pub mod jpeg;
 pub mod metadata;
@@ -31,12 +32,14 @@ pub use date::{
 };
 pub use decode::{DecodeError, Decoded, RgbImage, decode_for_analysis};
 pub use decoders::{Decoders, StillDecoder};
+pub use frame::{FrameFacts, read_frame_facts};
 pub use fs::{CountingReader, open_read_only, read_all};
 pub use metadata::extract_metadata;
 pub use probe::{
     PROBE_LIMIT, needs_directory_reads, probe_buffer, probe_bytes, probe_path, probe_reader,
     probe_seekable, probe_with_directory_reads, sniff, tiff_metadata_block,
 };
+pub use ps_model::META_LOGIC_VERSION;
 pub use thumb::{analyze_still, analyze_still_held, analyze_still_with, make_thumbnail};
 
 /// The decoder report of this machine with the poster-frame entry for `poster_tool` (the configured ffmpeg

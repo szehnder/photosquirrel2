@@ -125,8 +125,12 @@ pub struct MediaMetadata {
     pub software: Option<String>,
     /// Estimated JPEG quality 1-100 from quantization tables.
     pub jpeg_quality: Option<u8>,
-    /// Maker notes present (a sign of an untouched camera original).
+    /// Maker notes present (a sign of an untouched camera original), also when kept in a DNG's
+    /// `DNGPrivateData` (ADR-0105).
     pub has_maker_notes: bool,
+    /// The frame the file records (`OriginalRawFileName`, maker-note file number; ADR-0105).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<crate::FrameId>,
     /// Video duration in milliseconds.
     pub duration_ms: Option<u64>,
     pub video_codec: Option<String>,

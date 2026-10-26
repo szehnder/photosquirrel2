@@ -98,6 +98,9 @@ pub enum Contradiction {
     /// Both look like camera originals of one model with identical stored dimensions but different content:
     /// two originals are two shots.
     TwoCameraOriginals { model: String, dims: Dimensions },
+    /// Both record which frame they are (`OriginalRawFileName`, maker-note file number) and the frames differ
+    /// (ADR-0105).
+    FrameId { a: String, b: String },
 }
 
 impl fmt::Display for Contradiction {
@@ -123,6 +126,12 @@ impl fmt::Display for Contradiction {
                 f,
                 "two different camera originals from {model} at {dims}: two shots"
             ),
+            Contradiction::FrameId { a, b } => {
+                write!(
+                    f,
+                    "recorded as different frames ({a} and {b}): burst frames"
+                )
+            }
         }
     }
 }
@@ -360,10 +369,20 @@ pub fn metadata_contradiction(a: &DedupInput, b: &DedupInput) -> Option<Contradi
             b: mb.camera_model.clone().unwrap_or_default(),
         });
     }
-    // ADR-0035: two camera originals of one model with identical stored dimensions are two shots. The RAW and
-    // JPEG halves of one capture (same stem, same folder, same time) are one shot, not two originals.
-    if ma.has_maker_notes
-        && mb.has_maker_notes
+    // ADR-0105: two files that record different frames are two shots (a missing identity matches nothing).
+    let rules = ps_model::frame::frame_identity_enabled();
+    if rules
+        && let (Some(fa), Some(fb)) = (&ma.frame, &mb.frame)
+        && let Some((x, y)) = fa.differs(fb)
+    {
+        return Some(Contradiction::FrameId { a: x, b: y });
+    }
+    // ADR-0035: two camera originals of one model with identical stored dimensions are two shots; a RAW file is
+    // a camera original whether or not its maker notes were parsed (ADR-0105). The RAW and JPEG halves of one
+    // capture (same stem, same folder, same time) are one shot, not two originals.
+    let original = |x: &DedupInput| x.meta.has_maker_notes || (rules && x.format.is_raw());
+    if original(a)
+        && original(b)
         && mda.is_some()
         && mda == mdb
         && let (Some(da), Some(db)) = (ma.stored(), mb.stored())

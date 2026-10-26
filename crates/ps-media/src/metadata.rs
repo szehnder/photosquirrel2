@@ -178,6 +178,24 @@ pub fn extract_metadata(
             if f == Format::Jpeg {
                 m.fields.jpeg_quality = crate::quality::estimate(bytes);
             }
+            // Frame identity and maker notes kept in DNGPrivateData (ADR-0105), from the same bytes.
+            let frame = crate::frame::read_frame_facts(bytes, probe);
+            m.fields.has_maker_notes |= frame.maker_notes;
+            if let Some(id) = &frame.frame_id {
+                push_tag(
+                    &mut m.fields,
+                    "Frame",
+                    "OriginalRawFileStem",
+                    id.raw_name.clone(),
+                );
+                push_tag(
+                    &mut m.fields,
+                    "Frame",
+                    "FileNumber",
+                    id.file_number.map(ps_model::FrameId::file_number_label),
+                );
+            }
+            m.fields.frame_id = frame.frame_id;
             // Live Photo still: the maker note's ContentIdentifier (set by apply_exif), else XMP's.
             if m.fields.content_identifier.is_none()
                 && let Some(id) = crate::apple::xmp_content_identifier(bytes)

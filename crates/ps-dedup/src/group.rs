@@ -1047,6 +1047,7 @@ fn swap_reason(r: crate::edges::Contradiction) -> crate::edges::Contradiction {
         },
         C::CameraSerial { a, b } => C::CameraSerial { a: b, b: a },
         C::CameraModel { a, b } => C::CameraModel { a: b, b: a },
+        C::FrameId { a, b } => C::FrameId { a: b, b: a },
         other => other,
     }
 }
@@ -1106,7 +1107,10 @@ impl Grouper<'static> {
 
 /// The input carries metadata a contradiction can come from (capture time, camera serial or model).
 fn constraining(x: &DedupInput) -> bool {
-    x.meta.capture_time.is_some() || x.meta.camera_serial.is_some() || x.meta.camera_model.is_some()
+    x.meta.capture_time.is_some()
+        || x.meta.camera_serial.is_some()
+        || x.meta.camera_model.is_some()
+        || x.meta.frame.is_some()
 }
 
 fn sep_partners(c: &Constraints) -> FxHashMap<ContentId, Vec<ContentId>> {

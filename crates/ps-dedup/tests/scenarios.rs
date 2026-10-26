@@ -66,6 +66,7 @@ fn camera_jpeg(id: i64, path: &str, t: i64) -> DedupInput {
             has_exposure: true,
             jpeg_quality: Some(94),
             duration_ms: None,
+            frame: None,
         },
     }
 }

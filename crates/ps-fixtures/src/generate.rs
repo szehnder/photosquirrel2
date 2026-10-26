@@ -456,13 +456,7 @@ fn render_converted(
             Some(c.raw_path.as_str()),
         ),
     )?;
-    let mut copy = raw_meta(
-        Category::ExactCopy,
-        "jpeg",
-        dw,
-        dh,
-        Some(s.path.as_str()),
-    );
+    let mut copy = raw_meta(Category::ExactCopy, "jpeg", dw, dh, Some(s.path.as_str()));
     copy.tier = 1;
     copy.quality = s.quality;
     out.put(&c.jpeg_copy_path, original, c.dng_mtime, copy)

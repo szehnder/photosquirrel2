@@ -162,3 +162,88 @@ fn raw_tiff(
     }
     write_tiff(&ifd0, m.endian)
 }
+
+/// The three files of one frame of a converted Canon burst (ADR-0105), for tests outside the corpus.
+#[derive(Clone, Debug)]
+pub struct BurstFrameFiles {
+    /// `IMG_<n>.CR2`: the camera RAW (CR2-like), maker note in the Exif IFD.
+    pub cr2: Vec<u8>,
+    /// `IMG_<n>.JPG`: the camera JPEG.
+    pub jpeg: Vec<u8>,
+    /// `IMG_<n>.DNG`: converted, `OriginalRawFileName` `IMG_<n>.CR2`, the maker note in `DNGPrivateData`, no
+    /// sub-second when the camera's was `00`.
+    pub dng: Vec<u8>,
+    /// The camera's file number, `101 * 10000 + n` (`101-0034`).
+    pub file_number: u32,
+    /// `IMG_<n>`.
+    pub stem: String,
+}
+
+/// Frame `frame` (0-based) of a burst of a Canon EOS 5D Mark III shot at 2019-07-04 12:00:05 and `millis` ms
+/// (two-digit sub-seconds, `00` below 10 ms), file `IMG_<34 + frame>`; `seed` picks the scene (equal seeds, one
+/// burst) and `long` the long edge of the 3:2 picture. Frames differ like burst frames (pHash distance about 2).
+pub fn converted_burst_frame(seed: u64, frame: u32, millis: u16, long: u32) -> BurstFrameFiles {
+    use crate::camera::{Body, Capture, Exposure, MODELS, spec_maker_note};
+    use crate::jpeg::{app1_exif, camera_jpeg, encode_jpeg, strip_segments};
+    use crate::synth::{Perturb, Scene, render};
+    let model = &MODELS[0];
+    let body = Body::new(model, &mut crate::rng::derive(seed, "burst-body", 0));
+    let scene = Scene::random(&mut crate::rng::derive(seed, "burst-scene", 0));
+    let mut rng = crate::rng::derive(seed, "burst-frame", u64::from(frame));
+    let perturb = Perturb::near(&mut rng, 1.0);
+    let (w, h) = (long & !1, (long * 2 / 3) & !1);
+    let capture = Capture {
+        local: ps_model::CaptureTime::from_parts(2019, 7, 4, 12, 0, 5).local_seconds,
+        millis,
+        offset_min: 0,
+    };
+    let exposure = Exposure::random(model, &mut rng);
+    let n = 34 + frame;
+    let file_number = 101 * 10_000 + n;
+    let spec = ExifSpec {
+        body: &body,
+        capture: &capture,
+        exposure: &exposure,
+        gps: None,
+        orientation: 1,
+        width: w,
+        height: h,
+        maker_note: Some(u64::from(frame) + seed),
+        software: None,
+        thumbnail: None,
+        subsec: true,
+        file_number: Some(file_number),
+    };
+    let img = render(&scene, &perturb, w, h);
+    let encoded = encode_jpeg(&img, 92);
+    let jpeg = camera_jpeg(&encoded, &app1_exif(&crate::camera::exif_tiff(&spec)));
+    let preview = strip_segments(&encoded, &[0xE0]);
+    let cr2 = cr2_like(&spec, &preview, w, h);
+    let mut render_p = perturb;
+    render_p.light *= 1.02;
+    render_p.grain_seed ^= 0x5eed;
+    let dng_preview = strip_segments(&encode_jpeg(&render(&scene, &render_p, w, h), 90), &[0xE0]);
+    let note = spec_maker_note(&spec).unwrap_or_default();
+    let dng_spec = ExifSpec {
+        maker_note: None,
+        subsec: millis / 10 != 0,
+        ..spec.clone()
+    };
+    let stem = format!("IMG_{n:04}");
+    let dng = converted_dng(
+        &dng_spec,
+        &dng_preview,
+        w,
+        h,
+        &format!("{stem}.CR2"),
+        &note,
+        ((w + w / 64) & !1, (h + h / 64) & !1),
+    );
+    BurstFrameFiles {
+        cr2,
+        jpeg,
+        dng,
+        file_number,
+        stem,
+    }
+}
