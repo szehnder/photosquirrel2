@@ -20,11 +20,15 @@ Every catalogued file SHALL have exactly one disposition derived from the catalo
 ## ADDED Requirements
 
 ### Requirement: Groups covered by an earlier copy
-When no file of a group's keeper set has a valid library copy but another member of the group has one, the members with that copy SHALL be exported and every other member, the keeper included, SHALL be covered by it with its library path, so the group counts as accounted for. A keeper set with only some of its files in the library SHALL leave the group pending.
+When no file of a group's keeper set has a valid library copy but another member of the group has one, the members with that copy SHALL be exported, the members ranked below the best-ranked of them SHALL be covered by it with its library path, and the keeper set and every member ranked above it SHALL be superseded: better than anything of the group in the library, with that copy's path, not accounted for and never eligible for cleanup. Reports (CLI text and `--json`, the Reports view and the inspector) SHALL show superseded files as their own line, "better copy not in the library yet", with a pointer to `export run --upgrade`; once the better copy is exported the group follows the usual rules. A keeper set with only some of its files in the library SHALL leave the group pending.
 
-#### Scenario: Group covered by an earlier copy is accounted for
+#### Scenario: Better copy not in the library is not accounted for
 - **WHEN** a source's only group gets a new keeper after its JPEG was exported, and the report is refreshed
-- **THEN** the JPEG is exported, the new keeper and every other member are covered with the JPEG's library path, none is pending and the source can show the fully accounted badge
+- **THEN** the JPEG is exported, a member ranked below it is covered with the JPEG's library path, the new keeper is superseded with the JPEG's library path, the source's badge reads "1 better copy not in the library yet" and is not fully accounted for, and after `export run --upgrade` copies the keeper it is exported and every other member covered
+
+#### Scenario: Reports name better copies not in the library
+- **WHEN** a HEIC original decoded at last becomes the keeper of a group whose resized JPEG from another source is in the library, and `report` runs in text and with `--json`
+- **THEN** the HEIC's source lists "1 better copy not in the library yet" with a pointer to `export run --upgrade`, its `counts.files.superseded` is 1 and `fully_accounted` is false, and the inspector's reason for the HEIC does not call the JPEG its best copy
 
 #### Scenario: Partly exported keeper set stays pending
 - **WHEN** the JPEG of a RAW+JPEG keeper set is in the library and the RAW is not

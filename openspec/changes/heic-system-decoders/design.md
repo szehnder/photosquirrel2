@@ -168,8 +168,14 @@ does for mozjpeg.
 - **Decoder: `rav1d` 1.1** (crates.io, BSD-2-Clause, the memorysafety/Prossimo Rust port of dav1d). It has no safe
   Rust API yet; it exposes the dav1d API as Rust functions (`rav1d::src::lib::dav1d_open`, `dav1d_send_data`,
   `dav1d_get_picture`, `dav1d_picture_unref`, `dav1d_close`, `dav1d_data_wrap`, `dav1d_default_settings`). A small
-  `ps-media::av1` module wraps them safely (one decoder per call, `n_threads = 1`, `max_frame_delay = 1`: the
-  analysis pool already parallelises across files; `frame_size_limit` = the pixel cap; all-intra stills only).
+  `ps-media::av1` module wraps them (one fresh decoder per call; `frame_size_limit` = the pixel cap; all-intra
+  stills only). As built (ADR-0094): **two frame contexts** (`n_threads = 2`, `max_frame_delay = 2`), because with one
+  a corrupt tile reaches an error path in rav1d 1.1 that panics; rav1d's `dav1d_*` entry points are `extern "C"`, so
+  any panic inside them **aborts the process** and `contain` cannot catch it. The mitigations are an OBU pre-check
+  (`check_obus`: sizes, types, a parsable sequence header before the first frame, the maximum frame size against the
+  cap, key frames only), the two frame contexts, fuzzing (2,000 mutations in CI, 50,000 once), and a watchdog: each
+  decode runs on its own thread and is abandoned after 60 s, with at most two abandoned decodes alive. The planes
+  are read in place from rav1d's picture (no 16-bit copies), so a decode holds rav1d's picture and the RGB output.
   Bit depths 8, 10 and 12 (`bitdepth_8`, `bitdepth_16`); 10/12-bit output is shifted to 8 bits.
 - **Assembly: the `avif-asm` cargo feature (default on).** rav1d's `asm` feature needs `nasm` to build on x86_64
   (aarch64 assembly uses the C toolchain). `ps-media` has `avif-asm = ["rav1d/asm"]` (not in its own defaults);
@@ -425,7 +431,9 @@ bundle of its current keeper set whose `already` is the earlier copies:
   the better copy's own name is taken (a larger JPEG with the same name), the bundle takes the next free suffix and
   gets its own sidecar (`IMG_1234 (2).JPG`, `IMG_1234 (2).xmp`).
 - **RAW+JPEG keeper sets:** the whole set is copied as one bundle with matching stems and one suffix (ADR-0037).
-- **Live Photo bundles:** a bundle is covered when each of its units is exported or covered; nothing is copied. On
+- **Live Photo bundles:** a bundle is covered when each of its units is exported or covered; nothing is copied. A
+  bundle whose still is covered but whose video was never exported copies the video beside the library still with its
+  stem, so the pair stays together (gate review). On
   upgrade the better still is copied into the library video's folder with the video's stem when that name is free,
   and the video is not copied again. When the name is taken, the still and the video are copied together under the
   next free suffix, so the pair stays together for Apple Photos.
@@ -436,9 +444,11 @@ bundle of its current keeper set whose `already` is the earlier copies:
 
 **Dispositions (ADR-0023 amended).** In `derive_dispositions` and the SQL view: a group whose whole keeper set has a
 valid copy is as today; else, when no keeper-set file has a valid copy but another member does, the members with a
-valid copy are `exported` and every other member, the keeper included, is `covered` with that copy's path; a keeper
-set with only some files exported leaves the group `pending` (unchanged, the plan completes it). The fully accounted
-badge counts covered groups. A changed copy (ADR-0046) still does not make its group exported or covered in the
+valid copy are `exported`, the members ranked below the best-ranked of them are `covered` with its path, and the
+keeper set and every member ranked above it are **`superseded`** (ADR-0093, after the gate review: `covered` for the
+keeper let cleanup quarantine the only full-quality original): not accounted for, never cleanup-eligible, reported
+as "better copy not in the library yet" with a pointer to `--upgrade`. A keeper set with only some files exported
+leaves the group `pending` (unchanged, the plan completes it). A changed copy (ADR-0046) still does not make its group exported or covered in the
 report (as today for keepers): the plan lists it, the report says pending, `--verify` names the mismatch.
 
 **Why not the alternatives:** copying the new keeper by default (today's behaviour) puts two copies of the same
@@ -475,7 +485,14 @@ groups and does not work headless; ignoring better copies silently hides that th
 - [nasm becomes a build prerequisite on x86_64] -> doctor reports it; CI and packaging install it and refuse a build
   without `avif-asm`; contributors can opt out with `--no-default-features` (D4, D12).
 - [rav1d maturity] -> 1.1 is a release used in production by others; fuzz the wrapper with mutated fixtures (as the
-  probe's fuzz scenario); the decode is contained (`contain`) for panics.
+  probe's fuzz scenario). A panic inside rav1d's `extern "C"` entry points aborts the process (`contain` only
+  catches panics in our own code), so malformed streams are refused before rav1d sees them (`check_obus`), decoding
+  uses the two-frame-context error path, and a hanging decode is abandoned by a watchdog (ADR-0094).
+- [Decode memory of hostile files] -> HEIC and AVIF decodes reserve their estimated working memory (6 and 9 bytes per
+  declared pixel) in a 1 GiB decode budget of the scan, so huge images decode one at a time (ADR-0095).
+- [A decoder rejects a new HEIC or AVIF] -> it keeps its identity and metadata with a placeholder and is exported, as
+  without a decoder (ADR-0095). Other formats keep failing as before: their decoders are bundled, and a failure there
+  means the data is unreadable (the corpus gate counts them).
 - [Migration number clash] -> `tiff-support` landed without a migration; 19 is free today and task 1.2 re-checks it
   when the change is built. `decoder_missing` is format-generic, so a TIFF variant can reuse it.
 - [After previews fill in, a HEIC joins a group whose JPEG was already exported] -> the group is covered by the JPEG's
@@ -612,7 +629,8 @@ with optional assembly that needs nasm on x86_64.
 
 #### Decision
 - AVIF stills are decoded on every platform by **`rav1d`** (features `bitdepth_8`, `bitdepth_16`, `asm`), wrapped in a
-  safe `ps-media::av1` module (one single-threaded decoder per call, frame size limit, contained panics).
+  `ps-media::av1` module (one decoder per call, frame size limit; as built: two frame contexts, an OBU pre-check and
+  a watchdog, since panics inside rav1d abort the process; see ADR-0094).
 - The AVIF container is parsed by `ps-media::bmff` (`av1C`, `colr`, `pixi`, `irot`, `imir`, `auxC`, `grid` via
   `dimg`); YUV is converted to RGB in `ps-media` (nclx matrix and range, bilinear chroma); 10/12-bit is reduced to 8.
 - `nasm` is a build tool for x86_64 builds, required in CI, the packaging image and release runners (packaging refuses
@@ -705,6 +723,8 @@ one. Import tools see two photos. With system HEIC decoding this happens for man
 - The earlier copy is **never removed, replaced or renamed** (ADR-0004).
 - Dispositions: in such a group the members with a valid library copy are `exported` and every other member, the
   keeper included, `covered` by that copy; the group counts as accounted for.
+  (Amended by ADR-0093 after the gate review: the keeper set and the members ranked above the earlier copy are
+  `superseded`, not accounted for and never cleaned up; only the members ranked below it are `covered`.)
 
 #### Alternatives considered
 - **Copy the new keeper by default** (the old behaviour) - duplicates in the library at scale.

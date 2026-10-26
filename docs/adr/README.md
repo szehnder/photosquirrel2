@@ -96,3 +96,6 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0090](0090-avif-decoded-by-a-bundled-rav1d.md) | AVIF decoded by a bundled rav1d (amends 0017) |
 | [0091](0091-rows-remember-a-missing-decoder.md) | Rows remember a missing decoder; rescans re-decode them (migration 19; amends 0007) |
 | [0092](0092-a-group-already-in-the-library-is-not-copied-again.md) | A group already in the library is not copied again when its keeper changes; better copies are offered (amends 0023, 0071) |
+| [0093](0093-a-better-copy-not-in-the-library-is-superseded.md) | A better copy not in the library is superseded, not covered: not accounted for, never cleaned up (amends 0092, 0024, 0023) |
+| [0094](0094-avif-decoding-as-built-two-frame-contexts-and-a-watchdog.md) | AVIF decoding as built: two frame contexts, panics in rav1d abort, an OBU pre-check, fuzzing and a watchdog (amends 0090) |
+| [0095](0095-heic-and-avif-decode-failures-keep-the-file.md) | HEIC and AVIF decode failures keep the file; decode memory is budgeted; libheif's size limit by version (amends 0091, 0089, 0009) |

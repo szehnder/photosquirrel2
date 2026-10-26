@@ -24,8 +24,19 @@ HEIC and HEIF stills SHALL be decoded only by the operating system's decoder: th
 - **WHEN** a HEIC photo and a byte-identical copy are scanned with no HEIC decoder
 - **THEN** both are grouped as exact copies, the capture date, camera and GPS position are read, and each gets a placeholder that names the missing decoder
 
+### Requirement: A HEIC or AVIF the decoder rejects is still catalogued
+A HEIC or AVIF whose data the decoder rejects (truncated, corrupt) or whose declared size exceeds the decode cap SHALL keep its identity and metadata with a placeholder naming the failure, so it is catalogued, grouped by exact content and exported; the failure SHALL be reported, and the file SHALL NOT become unreadable. The working memory of HEIC and AVIF decodes, estimated from the declared size, SHALL count in a decode budget of the scan so that decodes of huge images run one at a time.
+
+#### Scenario: Corrupt HEIC or AVIF keeps a placeholder
+- **WHEN** two copies of a truncated HEIC, a HEIC declaring 30000x30000 and a truncated AVIF are scanned with a HEIC decoder that rejects the data
+- **THEN** every file is catalogued with its identity and a placeholder saying it could not be decoded, the two copies are grouped as exact copies, and each failure is reported
+
+#### Scenario: Huge HEIC decodes are throttled by the memory budget
+- **WHEN** four HEICs declaring 12000x12000 (an estimated 864 MB of decode memory each) are scanned with four CPU workers, and then four HEICs of 640x480
+- **THEN** the huge ones are decoded one at a time, and the small ones in parallel
+
 ### Requirement: Supported HEIF library versions
-On Linux and other Unix systems, the system HEIF library SHALL be used only when it is version 1.12 or newer and has an HEVC decoder; otherwise HEIC SHALL be reported unavailable with the version found and the missing part.
+On Linux and other Unix systems, the system HEIF library SHALL be used only when it is version 1.12 or newer and has an HEVC decoder; otherwise HEIC SHALL be reported unavailable with the version found and the missing part. The library's own size limit SHALL be set by its version so that no image within the decode cap is refused, and the cap SHALL be enforced from the primary image's declared size before decoding.
 
 #### Scenario: Library without HEVC is reported
 - **WHEN** detection runs against a HEIF library of version 1.17 that reports no HEVC decoder
@@ -36,9 +47,13 @@ On Linux and other Unix systems, the system HEIF library SHALL be used only when
 - **THEN** HEIC is unavailable with the reason naming version 1.11 and the minimum 1.12, and no decode is attempted
 
 #### Scenario: Oldest supported library decodes
-- **WHEN** the Linux packages' build image with its distribution's HEIF library 1.12 runs the packaged doctor against the HEIC sample
-- **THEN** HEIC is reported available and the sample decodes
-- (platform: Linux packaging container, Ubuntu 22.04)
+- **WHEN** detection runs in an Ubuntu 22.04 container with its distribution's HEIF library 1.12 and the HEIC samples are decoded through it
+- **THEN** the library is version 1.12 and available, the sample and its rotated twin decode upright, and the look sample is within 4 bits of the reference hashes
+- (platform: the `oldest-libheif` CI job, an ubuntu:22.04 container; skipped visibly elsewhere)
+
+#### Scenario: Panoramas pass the HEIF library size limit
+- **WHEN** a HEIC declaring a 20000x400 panorama and one declaring 20000x20000 are decoded through the system HEIF library, whose size limit is per side up to version 1.17 and an area from 1.18
+- **THEN** the panorama is not refused by a size limit on any version, and the 20000x20000 image is refused from its declared size before decoding
 
 ### Requirement: Availability decided by a self-test
 A HEIC decoder SHALL count as available only after it decodes an embedded sample to the expected size and colours; a decoder that loads but cannot decode SHALL be unavailable with the most specific reason found. Detection SHALL read no user file, open no network connection and run off the UI thread.
@@ -69,6 +84,10 @@ When HEIC cannot be decoded, PhotoSquirrel SHALL say what to install for the det
 #### Scenario: Ubuntu guidance
 - **WHEN** guidance is asked for Ubuntu 24.04 without a HEIF library and for Ubuntu 22.04 without one
 - **THEN** the first names the apt command installing the HEIF library and its HEVC plugin, the second the apt command installing the HEIF library alone, both followed by restart and rescan
+
+#### Scenario: Ubuntu derivatives follow their base release
+- **WHEN** guidance is asked for Linux Mint 21 and Pop!_OS 22.04 (based on Ubuntu 22.04), Linux Mint 22 (based on 24.04), and for Linux Mint 22 with a loaded libheif 1.12 without HEVC
+- **THEN** the Ubuntu 22.04 derivatives get the apt command installing the HEIF library alone, Linux Mint 22 the command with the HEVC plugin, and the loaded 1.12 library the command without the plugin, which does not exist for it
 
 #### Scenario: Fedora guidance names RPM Fusion
 - **WHEN** guidance is asked for Fedora with a HEIF library that has no HEVC decoder
@@ -113,3 +132,11 @@ AVIF stills SHALL be decoded by a decoder bundled with PhotoSquirrel on every pl
 #### Scenario: Malformed AVIF contained
 - **WHEN** 2,000 randomly mutated copies of the AVIF samples are decoded
 - **THEN** none crashes the process or panics, and each returns an image or a decode error within 1 second
+
+#### Scenario: AVIF size fields wider than needed are accepted
+- **WHEN** an AV1 sequence header codes a 64x48 maximum frame size in 16-bit fields, and another codes a 65000x65000 maximum
+- **THEN** the first passes the pre-decode check (bounded by its maximum frame size, not by the field widths), and the second is refused as too large before rav1d decodes anything
+
+#### Scenario: Hanging AVIF decode is abandoned
+- **WHEN** an AVIF decode does not return within its time limit
+- **THEN** the caller gets a decode error saying it did not finish, the decode thread is counted as abandoned until it ends, and a decode that finishes in time returns its image

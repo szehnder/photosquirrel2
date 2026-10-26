@@ -31,3 +31,7 @@ A file that cannot be read to fill in its preview SHALL keep its catalogued anal
 #### Scenario: Corrupt HEIC keeps its exact-copy analysis
 - **WHEN** a waiting HEIC whose image data is corrupt is re-decoded with a decoder that rejects it
 - **THEN** it keeps its stage, identity, group and placeholder, it is no longer waiting, the error names the decode failure, and a further rescan reads none of its bytes
+
+#### Scenario: Content changed under an unchanged fingerprint is analysed again
+- **WHEN** a HEIC waiting for a decoder is rewritten with different bytes of the same length and its modification time restored, and the next rescan has a HEIC decoder
+- **THEN** the re-decode's full read finds another identity, and the file is analysed again as a changed file: the identity of the new bytes, hashes, no waiting mark, and a thumbnail under the new identity

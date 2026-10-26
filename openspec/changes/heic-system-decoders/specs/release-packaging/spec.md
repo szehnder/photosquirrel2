@@ -16,11 +16,11 @@ Pushing a `v<version>` tag SHALL build packages on Linux, macOS and Windows and 
 ## ADDED Requirements
 
 ### Requirement: No HEVC decoder in packages
-Packaging SHALL fail if the shipped programs' dependency graph contains an HEVC decoder component or if a Linux program links the HEIF library or an HEVC decoder at build time; the programs SHALL load the system HEIF library only at run time.
+Packaging SHALL fail if the shipped programs' dependency graph contains a crate whose name names an HEVC decoder or libheif anywhere (ffmpeg, hevc, x265, libde265, heif-sys, libheif), a crate whose `links` key names the HEIF library or an HEVC decoder (heif, de265, avcodec, x265), or if a shipped program links the HEIF library or an HEVC decoder (Linux `NEEDED` entries, macOS `otool -L`, Windows imports); the programs SHALL load the system HEIF library only at run time. No release binary SHALL contain the fake test decoder.
 
 #### Scenario: Bundled HEVC decoder fails packaging
-- **WHEN** the dependency check reads a dependency graph containing an HEVC decoder component, and the dynamic section of a Linux program that needs the HEIF library
-- **THEN** each check fails naming the component or library, and both pass for the graph and programs of the current release
+- **WHEN** the dependency check reads dependency graphs with such a crate name at the start or inside the name, `cargo metadata` packages with `links = "heif"` and `links = "avcodec"`, the dynamic section of a Linux program that needs the HEIF library, `otool -L` output listing libheif and Windows imports of `avcodec-61.dll` and `libde265.dll`
+- **THEN** each check fails naming the component or library, and every check passes for the graph and programs of the current release
 
 ### Requirement: AV1 decoder notice
 Every package's `THIRD-PARTY-LICENSES` SHALL include the bundled AV1 decoder with its licence text, and packaging SHALL fail if it is missing.

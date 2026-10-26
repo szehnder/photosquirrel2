@@ -29,6 +29,15 @@ When no file of a duplicate group's keeper set has a library copy but another me
 - **WHEN** a JPEG keeper is exported and its RAW later joins it in a RAW+JPEG keeper set, and the export runs with the Lightroom profile
 - **THEN** only the RAW is copied, into the JPEG's library folder with the JPEG's stem, and no better copy is listed
 
+#### Scenario: Live Photo video joins its covered still
+- **WHEN** a Live Photo's still group is in the library only through an earlier copy filed under another name and date, its video was never exported, and the export runs without `--upgrade`
+- **THEN** the video is copied into the earlier copy's folder with that copy's stem, the still is not copied, its better copy is still listed, and every earlier library file is unchanged
+
+#### Scenario: Truncated HEIC is exported with a decoder
+- **WHEN** a truncated HEIC is scanned with a HEIC decoder that rejects its data (the fake decoder, and the system decoder of the machine where one is installed) and the export runs
+- **THEN** the HEIC is catalogued with a placeholder, not as unreadable, and is copied into the library byte for byte
+- (platform: the system-decoder half must pass on the Linux and macOS runners and is skipped visibly elsewhere)
+
 ### Requirement: Better copies offered and copied only on request
 The plan, the CLI dry run and run, and the app's export panel SHALL list the better copies available: per group, its library copy and the current keeper set. Only when the user asks (`--upgrade`, or the panel's option) SHALL they be copied, into the earlier copy's folder under their own names, by the normal collision, pairing and verification rules, beside the earlier copy, which SHALL stay byte-identical at its path.
 
