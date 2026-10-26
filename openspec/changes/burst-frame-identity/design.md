@@ -127,3 +127,33 @@ the release CLI built from the code **before** this change's fix (fixtures only,
 19,723 correct. `groups list --json`: 1,903 groups, 8,834 grouped files, 4,162,408,110 reclaimable bytes, 6,254
 suggestions. Gate: FAIL. The same merge as on the SD card: the first frame's DNG (no sub-second, maker notes only in
 `DNGPrivateData`) joined the next frame's group.
+
+## Gate after the fix (task 7.1)
+
+Medium preset, seed 42, drive-a/b/c, release CLI: precision, recall and keeper accuracy 1.0000, 0 must-not-merge
+violations. New baseline: 19,741 pairs, 1,903 groups, 8,834 grouped files, 4,166,018,502 reclaimable bytes, 6,398
+suggestions (old: 19,381 / 1,843 / 8,594 / 4,048,886,433 / 5,570). The differences are exactly the converted-burst
+sets: +60 groups, +240 files, +360 pairs, +117,132,069 bytes (each frame's CR2 and camera JPEG), +828 suggestions
+(768 across frames of a set, 60 CR2-to-JPEG-copy pairs inside a frame's group; see tasks.md 7.1).
+
+## The owner's SD card (task 7.2)
+
+Read-only mount (`ro` checked), a copy of the scratch catalog written by the pre-fix CLI (schema 22), rescanned by
+the release CLI of this change; nothing exported, cleaned up or sent to AI, nothing written to the card.
+
+- Before: 2,632 files, 752 groups with 2,575 files, 2,145 suggestions. **18** groups held two frames, not 5: the
+  five `IMG_` frames named in the proposal (0022, 0024, 0028, 0033, 0035, each with the previous frame's DNG as its
+  keeper) and 13 more `_MG_` frames (the camera's Adobe RGB file names) with the same merge.
+- Rescan: 2,591 files re-read for frame numbers, 679 MB read in 16.5 s (header only), all opened read-only (strace:
+  0 write-capable opens): 1,071 CR2, 387 DNG and 1,133 JPG (every camera JPEG on the card has a RAW file in its
+  second, ADR-0106); no MOV, PSD or other file was read. The summary reported "18 groups split".
+- After: 752 groups with 2,575 files (unchanged), 2,291 suggestions (+146, all between the separated frames); 0 groups
+  mix two Canon file numbers or two `OriginalRawFileName` stems, 0 groups hold two file stems. The 18 DNGs moved back
+  to their own frame's group (CR2+JPEG groups 390 -> 372, CR2+JPEG+DNG groups 350 -> 368); each of frames 0022,
+  0024, 0028, 0033 and 0035 now has its own DNG as its keeper. All 734 single-frame groups of before are intact (no
+  legitimate CR2+JPG+DNG group was split), and no file became ungrouped.
+- Found on the way, not changed here: on this exFAT card, a first rescan of the untouched copy saw 1,355 of 2,632
+  files as "changed" because their inode numbers (the fingerprint's `file_index`) differ after a remount, and
+  re-analysed them in full (31 GB, 6 minutes). The check above therefore ran on a fresh copy of the catalog with
+  `file_index` cleared (as on a filesystem with stable file ids). Worth its own change: exFAT/FAT inode numbers are
+  not stable file identities (ADR-0007).
