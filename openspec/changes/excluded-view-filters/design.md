@@ -124,6 +124,36 @@ placeholder art for files with no preview (that is `preview-placeholders`).
 - Starting bound: 150 ms on the dev machine, with a relative regression check in CI like the other catalog budgets.
 - It reuses the 1M-row catalog builder from the gallery benches.
 
+### D7. As built (deviations from D1-D6, recorded at implementation)
+
+- **ADR numbers:** "Exclusion categories" is ADR-0102 and "Excluded view budget" is ADR-0103.
+- **Reasons are display texts, not `ClassReason` JSON.** `file.reasons` stores each reason's display text, so the
+  classifier's category is derived from the class code, whether the format was recognised (`format IS NULL` means
+  unsupported) and whether the first reason starts with `probe failed:` (unreadable; otherwise small). The rule is
+  `ExclusionCategory::of` in `ps-model` and one SQL expression (`writer::exclusion_sql`) written inside the probe,
+  re-classification and full-insert statements, and in migration 21's backfill.
+- **The partial index is covering:** `file_exclusion (exclusion, id, kflags, source_id, size, name, rel_path) WHERE
+  exclusion IS NOT NULL`, so the classifier-excluded half of the pass needs no table lookups.
+- **One pass, counted and sorted in Rust.** A SQL `UNION ALL` with `GROUP BY` and `ORDER BY` measured 120 ms for the
+  counts and 200 ms for the list on the budget's catalog. `Readers::excluded_view` streams the excluded set once and
+  returns both the counts and the ordered list (105 ms with the first page). `id_list` with an exclusion filter and
+  `exclusion_counts` use the same pass; the service adds `excluded_open(filter, sort)` and the view uses it (one call
+  when it opens and after each change), installing the list in its gallery model with `set_query_and_list`.
+- **No folder table exists:** the search matches the path relative to the source root (folders and name), ASCII
+  case-insensitively.
+- **Category sort** orders by category, then name, then id.
+- **The rejected suggestion** is stored in the AI review's decision store (`insights.json`), so it is written right
+  after the include decisions commit, not in the same transaction. The inspector's Include also puts back (and so
+  rejects an accepted suggestion).
+- **"Put back all shown" confirms in a bar under the toolbar** (the Sources view's remove confirmation pattern), not a
+  modal dialog. The toolbar's search, sort and mode controls wrap below the chips as a group when the centre is too
+  narrow (inspector open on a small window).
+- **The budget is measured by a `ps-catalog/tests/budgets.rs` test** (the catalog budgets' convention, read by `cargo
+  xtask bench`), not a criterion bench. `scenario_gallery_excluded_view_opens_at_scale` is a headless test that the
+  view reads counts and list once and rows only for the pages on screen.
+- **"Each excluded file has one category":** the classifier stops at its first rule, so a real cache-folder graphic
+  carries only the cache reason; the scenario's test uses a probed row whose stored reasons name both.
+
 ## Risks / Trade-offs
 
 - [The stored category goes stale if a write path forgets it] -> it is set in the one statement that writes `class`

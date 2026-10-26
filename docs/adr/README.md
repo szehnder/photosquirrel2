@@ -105,3 +105,5 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0099](0099-cleanup-runs-recheck-when-the-catalog-changes-and-edits-wait.md) | A cleanup run re-checks its files when the catalog changes under it; keeper, group and exclusion edits wait while it runs (amends 0096, 0065) |
 | [0100](0100-refused-avif-decodes-use-no-attempt-and-one-decode-budget-per-scanner.md) | A refused AVIF decode uses up no attempt; one decode budget serves every run of a scanner (amends 0098, 0097) |
 | [0101](0101-fixture-file-operations-are-test-only.md) | Fixture file operations are test-only: the `scratch` cargo feature and a layering rule (amends 0004) |
+| [0102](0102-exclusion-categories.md) | Exclusion categories: one stored filing key per excluded file (migration 21; amends 0015, 0023) |
+| [0103](0103-excluded-view-budget.md) | The Excluded view's opening budget: `excluded-view-open` (extends 0026, 0018) |
