@@ -66,7 +66,7 @@ a placeholder that looks deliberate, an explanation one click away, and a target
 ## Impact
 
 - `ps-model` (placeholder reasons, decoder generations), `ps-media` (generation constants for each decoder, and the
-  reason classification of decode failures), `ps-catalog` (migration 23 `file.preview_gen`, preview-status queries),
+  reason classification of decode failures), `ps-catalog` (migration 24 `file.preview_gen`, preview-status queries),
   `ps-scan` and `ps-service` (fill-in job on the scan lanes and their stop checks), `ui-gallery` (placeholder paint
   and info hit target), `ui-workspace` (dialog, filter, notice, dashboard row), and `photosquirrel-cli`. There is
   one new ADR.

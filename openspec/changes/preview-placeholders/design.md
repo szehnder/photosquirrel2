@@ -52,7 +52,7 @@
     else to 0.
   - `PlaceholderInfo.generation: u16` uses serde default 0, so old records read as 0.
   - A test lists the constants with a comment saying when to bump them. The ADR says so too.
-- **Catalog (migration 23, `0023_preview_gen.sql`; migrations 21 and 22 are `excluded-view-filters`'; migration 20 is `heic-system-decoders`' `file.decode_failure`, ADR-0098: a row with a failure record counts as an `unreadable` placeholder at the current generation, and a decode-failure retry and the generation rule never conflict).**
+- **Catalog (migration 24, `0024_preview_gen.sql`; migration 23 is `burst-frame-identity`'s frame identity; migrations 21 and 22 are `excluded-view-filters`'; migration 20 is `heic-system-decoders`' `file.decode_failure`, ADR-0098: a row with a failure record counts as an `unreadable` placeholder at the current generation, and a decode-failure retry and the generation rule never conflict).**
   - `ALTER TABLE file ADD COLUMN preview_gen INTEGER`: the generation of a placeholder row, NULL for rows with real
     thumbnails.
   - Backfill: `0` for rows whose thumbnail kind is placeholder. This needs the thumb kind on the file row or a join
@@ -164,7 +164,7 @@
 ## Testing
 
 - `ps-media`: reason mapping for BigTIFF, a truncated JPEG and the fake HEIF; generation constants test.
-- `ps-catalog`: migration 23 backfill, the `fillable` predicate.
+- `ps-catalog`: migration 24 backfill, the `fillable` predicate.
 - `ps-service` and `ps-scan`: the fill job on the small corpus with the fake HEIF registry (`PHOTOSQUIRREL_HEIF_DECODER=fake`,
   debug only). A byte-counting file layer proves that only waiting files are read and that no directory is listed.
   Offline skip, cancel and resume. The re-queue after a generation bump is simulated by test-only generation

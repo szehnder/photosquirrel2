@@ -1,10 +1,10 @@
 # Tasks
 
-Starts after `heic-system-decoders` and `excluded-view-filters` are archived. The TIFF generation is 1, HEIF and AVIF are 1, and every other format is 0.
+Starts after `heic-system-decoders`, `excluded-view-filters` and `burst-frame-identity` are archived. The TIFF generation is 1, HEIF and AVIF are 1, and every other format is 0.
 
 ## 1. Decisions
 
-- [ ] 1.1 Number the ADR "Placeholders carry a reason and a decoder generation" (D1) from the next free number. Add it to `docs/adr/` as accepted, with an index row. Confirm that migration 23 is free (`heic-system-decoders` took 20 for `file.decode_failure`, ADR-0098; `excluded-view-filters` took 21 and 22, ADR-0102 and ADR-0104). Verify: the index lists it, and `ls crates/ps-catalog/migrations` has no 0023.
+- [ ] 1.1 Number the ADR "Placeholders carry a reason and a decoder generation" (D1) from the next free number. Add it to `docs/adr/` as accepted, with an index row. Confirm that migration 24 is free (`heic-system-decoders` took 20 for `file.decode_failure`, ADR-0098; `excluded-view-filters` took 21 and 22, ADR-0102 and ADR-0104; `burst-frame-identity` took 23). Verify: the index lists it, and `ls crates/ps-catalog/migrations` has no 0024.
 
 ## 2. Model and media
 
@@ -13,7 +13,7 @@ Starts after `heic-system-decoders` and `excluded-view-filters` are archived. Th
 
 ## 3. Catalog
 
-- [ ] 3.1 Migration 23: `file.preview_gen` and `preview_reason`, the partial index, and the backfill rule from D1 (record the exact rule in the ADR). Verify: a migration test on a catalog fixture written by migration 22 that has placeholder rows.
+- [ ] 3.1 Migration 24: `file.preview_gen` and `preview_reason`, the partial index, and the backfill rule from D1 (record the exact rule in the ADR). Verify: a migration test on a catalog fixture written by migration 23 that has placeholder rows.
 - [ ] 3.2 Write and clear both columns in the analysis statement. Add the `fillable(registry, generations)` predicate and the counts by format and reason. Verify: unit tests for each row of the waiting rule, including that current-generation `unreadable` rows are not fillable.
 
 ## 4. Fill in job
