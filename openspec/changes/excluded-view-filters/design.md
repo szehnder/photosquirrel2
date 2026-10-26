@@ -154,6 +154,52 @@ placeholder art for files with no preview (that is `preview-placeholders`).
 - **"Each excluded file has one category":** the classifier stops at its first rule, so a real cache-folder graphic
   carries only the cache reason; the scenario's test uses a probed row whose stored reasons name both.
 
+### D8. Gate review fixes (recorded after the gate review; ADR-0104 amends ADR-0102 and ADR-0103)
+
+- **Header wording.** The count line is "Showing N of M set aside" while chips hide files, "M files set aside" when
+  nothing is hidden (M is the sidebar's number), "N files match “x”" while searching. "1 file" and "Put back 1 file"
+  are singular everywhere; the context menu counts the same set the action puts back (the selection among the files
+  shown).
+- **Damaged photos are not "unsupported" (ADR-0104).** Junk of no recognised format is `unreadable` (shown by
+  default) when a reason is a probe failure (the probe's I/O error record: the file could not be opened or read) or
+  its name has a photo or video extension (`ps_model::media_extensions()`, from `Format::extensions()`, the probe's
+  extension table, without SVG, ICO, PSD, `m4a`, `mka` and `ts`); else `unsupported`. The extension is the text after
+  the name's last `.`, derived the same way in Rust (`ps_model::extension_of`) and SQL (`writer::extension_sql`).
+  Migration 21 is applied in catalogs built since it was committed, so it is not edited: migration 22
+  (`0022_exclusion_category_fix.sql`) recomputes `file.exclusion` with the amended rule. `preview-placeholders` now
+  takes migration 23. One test runs `ExclusionCategory::of`, the writer's SQL and migration 22 over 1,995 cases
+  (classes, formats, reasons and names, including names that are not UTF-8) and compares them.
+- **The refresh's category** follows the new probe's format (`RECLASSIFY_SQL` takes it from the new facts when a
+  refresh passes them), and the drift test re-derives every row's category by probing the file again from disk and
+  classifying it, not from the stored class, reasons and format.
+- **An AI decision always has its kind.** Migration 22 files an `origin='ai'` row without `ai_kind` as the user's
+  own, and two triggers refuse new ones; the readers file any that remain under "excluded by you".
+- **"Put back all shown" carries its set.** The pending confirmation holds the exact ids it shows. A reload with the
+  same list (a scan's 2 s refresh) keeps it; a changed list replaces it with the new list and count; the confirm
+  button puts back only the set it was drawn with, while that is still the pending one.
+- **Put back when the AI rejection cannot be saved.** `Library::put_back` returns `PutBack { files,
+  rejection_error }`: the include decisions are committed first, and a failure to save the rejections is reported
+  beside the count. The view shows a warning ("Put back N files in the Library. The AI's suggestions … could not be
+  marked rejected …"), not an error.
+- **Search matches the printed path.** The text is matched against the source's displayed root (the home folder as
+  `~`, `ps_catalog::display::display_path`, which the app's lists also use) and the path under it, folded character
+  by character for any script. The match moved from SQL (`lower` folds ASCII only) into the streaming pass.
+- **Grid labels and the no-preview icon.** `excluded_open` returns `ExcludedListing { counts, list, categories }`;
+  the grid draws each file's category in a corner badge (`GalleryGrid::set_cell_label`) and, for a file without a
+  thumbnail, the List mode's placeholder icon instead of an empty tile.
+- **Keyboard.** The List mode has a focus handle and key context `ExcludedList`: Up/Down and J/K move, Shift+Up/Down
+  extend, Home/End, Ctrl/Cmd+A, P puts the selection back, Shift+P asks to put back all shown, Enter confirms and
+  Escape cancels (else clears the selection), as Duplicates binds its keys. The chips are tab stops with a focus ring;
+  Space and Enter toggle them (GPUI's keyboard click).
+- **Layout.** The AI chip has the other chips' outlined style. The put back buttons have their own row under the
+  chips, right-aligned, with the selection's size on the left.
+- **Budget (ADR-0104).** `excluded-view-open` is measured through the service calls the view makes
+  (`Library::excluded_open` and the first `excluded_page` of 200 rows, whose decisions are read in one query instead
+  of one per row), in `ps-service/tests/budgets.rs`. The first run and the median of 5 are printed; the budget stays
+  the median of the warm runs. A search over the same set is printed and held to the same bound.
+- **Screenshots.** `cargo xtask screenshot --all-surfaces` gains the Excluded view in List and Grid modes; the
+  harness waits for the inspector's details before it captures.
+
 ## Risks / Trade-offs
 
 - [The stored category goes stale if a write path forgets it] -> it is set in the one statement that writes `class`

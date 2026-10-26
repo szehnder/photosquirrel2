@@ -107,3 +107,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0101](0101-fixture-file-operations-are-test-only.md) | Fixture file operations are test-only: the `scratch` cargo feature and a layering rule (amends 0004) |
 | [0102](0102-exclusion-categories.md) | Exclusion categories: one stored filing key per excluded file (migration 21; amends 0015, 0023) |
 | [0103](0103-excluded-view-budget.md) | The Excluded view's opening budget: `excluded-view-open` (extends 0026, 0018) |
+| [0104](0104-damaged-photos-are-unreadable-and-the-excluded-budget-covers-the-service.md) | Damaged photos are "could not be read"; the Excluded view's search and budget follow what it shows (migration 22; amends 0102, 0103) |

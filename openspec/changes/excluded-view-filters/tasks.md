@@ -41,3 +41,20 @@
 - [x] 7.3 Screenshot review of the Excluded view in List and Grid modes, light and dark, with chips and a hidden count.
 - [x] 7.4 Pushed; GitHub CI green on all four jobs.
 - [ ] 7.5 Gate review by a fresh agent that did not write the code: every scenario, the budget, the screenshots and the put-back safety.
+
+## 8. Gate review fixes
+
+- [ ] 8.1 Header wording: "Showing N of M set aside" while chips hide files, "M files set aside" otherwise; "1 file" and "Put back 1 file" singular in the header, the confirmation and the context menu (D8). Verify: `excluded_header_says_shown_of_total`.
+- [ ] 8.2 Damaged photos and unreadable files are "could not be read", not "not a supported file" (ADR-0104): the amended rule in `ExclusionCategory::of` and `writer::exclusion_sql`, migration 22 recomputing stored categories, `preview-placeholders` moved to migration 23. Verify: `scenario_catalog_damaged_photo_is_not_unsupported`, `exclusion_rule_is_the_same_in_rust_the_writer_and_migration_22`, `damaged_photos_and_unreadable_files_are_not_unsupported` (the probe's I/O error record), `migration_21_backfills_categories_and_ai_origins` and `writer_stores_unreadable_for_a_recognised_format_that_failed_to_probe` (updated).
+- [ ] 8.3 "Put back all shown" keeps its confirmation through live refreshes, shows the new count when the list changes, and puts back only the set it showed. Verify: `put_back_confirmation_survives_live_refreshes`.
+- [ ] 8.4 `report excluded --json` prints a path that is not UTF-8 as a string with `path_raw`. Verify: `report_excluded_json_prints_a_non_utf8_path_as_a_string`.
+- [ ] 8.5 Search matches the displayed source root and the path under it, Unicode case-insensitively. Verify: `search_matches_the_displayed_root_and_any_script`, `display::tests::folding_is_unicode`, `scenario_gallery_search_by_folder`.
+- [ ] 8.6 Grid tiles carry a category badge, and files without a thumbnail draw the no-preview icon. Verify: `grid_tiles_show_their_category_and_a_no_preview_icon`.
+- [ ] 8.7 Keyboard: List mode focus, arrows, Shift-extend, select all, P and Shift+P, Enter and Escape; chips are tab stops that Space and Enter toggle. Verify: `list_mode_keyboard`, `chips_toggle_from_the_keyboard`.
+- [ ] 8.8 `excluded-view-open` measured through `Library::excluded_open` and `excluded_page` (decisions in one query), first run and median printed (ADR-0104). Verify: `scenario_performance_budgets_excluded_view_open_within_budget` in `ps-service/tests/budgets.rs` under `cargo xtask bench --check`.
+- [ ] 8.9 A refresh's category follows the new probe's format; the drift test derives categories by probing the files again. Verify: `refresh_files_the_category_by_the_new_probe_format`, `stored_category_matches_the_rule_after_scan_reclassify_and_refresh`.
+- [ ] 8.10 The context menu counts the set the action puts back. Verify: `excluded_header_says_shown_of_total` (`put_back_label`) and the shared `selected_ids` in the code.
+- [ ] 8.11 A failed AI rejection after the decisions commit is reported as put back with a warning. Verify: `put_back_reports_an_ai_rejection_that_could_not_be_saved`, `put_back_warns_when_the_ai_rejection_is_not_saved`.
+- [ ] 8.12 No AI decision without its kind: migration 22 repairs, triggers refuse, readers file any as yours. Verify: `ai_decision_without_a_kind_is_refused_and_repaired`.
+- [ ] 8.13 Screenshot polish: the AI chip's outlined style, the put back row, the inspector loaded before capture; List and Grid captured dark and light, `docs/screenshots/gallery-excluded-dark.png` refreshed. Verify: the PNGs looked at.
+- [ ] 8.14 `cargo xtask ci` green in a clean worktree, the corpus gate unchanged, GitHub CI green.
