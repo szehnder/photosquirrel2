@@ -1675,72 +1675,7 @@ impl ExcludedView {
             .child(classifier)
             .child(unsupported);
 
-        let sort = self.state.sort;
-        let sort_label = excluded_sort_label(sort);
-        let weak = cx.weak_entity();
-        let sort_menu = Button::new("excluded-sort")
-            .label(sort_label)
-            .compact()
-            .dropdown_caret(true)
-            .dropdown_menu(move |menu, _, _| {
-                let mut menu = menu;
-                for (field, descending) in EXCLUDED_SORTS {
-                    let next = Sort { field, descending };
-                    let weak = weak.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(excluded_sort_label(next))
-                            .checked(next == sort)
-                            .on_click(move |_, window, cx| {
-                                let _ = weak.update(cx, |v, cx| v.set_sort(next, window, cx));
-                            }),
-                    );
-                }
-                menu
-            });
-        let weak = cx.weak_entity();
-        let mode = crate::widgets::segmented(
-            "excluded-mode",
-            &["List", "Grid"],
-            usize::from(self.state.mode == ExcludedMode::Grid),
-            move |ix, window, cx| {
-                let mode = if ix == 1 {
-                    ExcludedMode::Grid
-                } else {
-                    ExcludedMode::List
-                };
-                let _ = weak.update(cx, |v, cx| v.set_mode(mode, window, cx));
-            },
-            cx,
-        );
-        let controls = h_flex()
-            .id("excluded-controls")
-            .test_support()
-            .flex_none()
-            .max_w_full()
-            .flex_wrap()
-            .items_center()
-            .gap(Tokens::space(2.0))
-            .child(
-                div()
-                    .id("excluded-search")
-                    .test_support()
-                    .flex_none()
-                    .w(Tokens::size(200.0))
-                    .max_w_full()
-                    .child(
-                        Input::new(&self.search)
-                            .small()
-                            .aria_label("Search name or folder"),
-                    ),
-            )
-            .child(div().flex_none().child(sort_menu))
-            .child(
-                div()
-                    .id("excluded-mode-toggle")
-                    .test_support()
-                    .flex_none()
-                    .child(mode),
-            );
+        let actions = self.actions(cx);
         h_flex()
             .id("excluded-toolbar")
             .test_support()
@@ -1756,7 +1691,7 @@ impl ExcludedView {
             .border_b_1()
             .border_color(colors.border)
             .child(categories)
-            .child(controls)
+            .child(actions)
             .into_any_element()
     }
 
@@ -1824,11 +1759,127 @@ impl ExcludedView {
             .into_any_element()
     }
 
-    /// The count line, the hidden notice and the put back actions.
+    /// The search box, the sort menu and the List/Grid toggle (wrapping as a group).
+    fn controls(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        let sort = self.state.sort;
+        let sort_label = excluded_sort_label(sort);
+        let weak = cx.weak_entity();
+        let sort_menu = Button::new("excluded-sort")
+            .label(sort_label)
+            .compact()
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu;
+                for (field, descending) in EXCLUDED_SORTS {
+                    let next = Sort { field, descending };
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(excluded_sort_label(next))
+                            .checked(next == sort)
+                            .on_click(move |_, window, cx| {
+                                let _ = weak.update(cx, |v, cx| v.set_sort(next, window, cx));
+                            }),
+                    );
+                }
+                menu
+            });
+        let weak = cx.weak_entity();
+        let mode = crate::widgets::segmented(
+            "excluded-mode",
+            &["List", "Grid"],
+            usize::from(self.state.mode == ExcludedMode::Grid),
+            move |ix, window, cx| {
+                let mode = if ix == 1 {
+                    ExcludedMode::Grid
+                } else {
+                    ExcludedMode::List
+                };
+                let _ = weak.update(cx, |v, cx| v.set_mode(mode, window, cx));
+            },
+            cx,
+        );
+        let controls = h_flex()
+            .id("excluded-controls")
+            .test_support()
+            .flex_none()
+            .max_w_full()
+            .flex_wrap()
+            .items_center()
+            .gap(Tokens::space(2.0))
+            .child(
+                div()
+                    .id("excluded-search")
+                    .test_support()
+                    .flex_none()
+                    .w(Tokens::size(200.0))
+                    .max_w_full()
+                    .child(
+                        Input::new(&self.search)
+                            .small()
+                            .aria_label("Search name or folder"),
+                    ),
+            )
+            .child(div().flex_none().child(sort_menu))
+            .child(
+                div()
+                    .id("excluded-mode-toggle")
+                    .test_support()
+                    .flex_none()
+                    .child(mode),
+            );
+        controls.into_any_element()
+    }
+
+    /// Put back the selection, or everything shown (after a confirmation).
+    fn actions(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        let shown = self.model.read(cx).len();
+        let selected = self.model.read(cx).selection.len();
+        let busy = self.busy;
+        h_flex()
+            .id("excluded-actions")
+            .test_support()
+            .flex_none()
+            .max_w_full()
+            .flex_wrap()
+            .items_center()
+            .gap(Tokens::space(2.0))
+            .child(crate::views::kit::button(
+                "excluded-put-back",
+                match (busy, selected) {
+                    (Some(n), _) => format!("Putting back {}…", format_count(n as u64)),
+                    (None, 0 | 1) => "Put back in Library".to_owned(),
+                    (None, n) => format!("Put back {} in Library", format_count(n as u64)),
+                },
+                Some(IconName::Undo2),
+                crate::views::kit::Tone::Secondary,
+                (selected > 0 && busy.is_none()).then(|| {
+                    let weak = cx.weak_entity();
+                    std::rc::Rc::new(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        let _ = weak.update(cx, |v, cx| v.put_back_selected(window, cx));
+                    }) as crate::views::kit::ClickHandler
+                }),
+                cx,
+            ))
+            .child(crate::views::kit::button(
+                "excluded-put-back-all",
+                "Put back all shown…",
+                None,
+                crate::views::kit::Tone::Ghost,
+                (shown > 0 && busy.is_none()).then(|| {
+                    let weak = cx.weak_entity();
+                    std::rc::Rc::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        let _ = weak.update(cx, |v, cx| v.ask_put_back_all(cx));
+                    }) as crate::views::kit::ClickHandler
+                }),
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// The title, the count line, the hidden notice and the search, sort and mode controls.
     fn header(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
         let shown = self.model.read(cx).len();
-        let selected = self.model.read(cx).selection.len();
         let hidden = self.hidden();
         let count = if !self.loaded {
             "Loading…".to_owned()
@@ -1841,9 +1892,10 @@ impl ExcludedView {
                 self.text.trim()
             )
         };
-        let busy = self.busy;
         h_flex()
             .id("excluded-header")
+            .test_support()
+            .py(Tokens::space(1.0))
             .flex_none()
             .min_h(Tokens::size(44.0))
             .px(Tokens::space(4.0))
@@ -1902,36 +1954,7 @@ impl ExcludedView {
                 )
             })
             .child(div().flex_1())
-            .child(crate::views::kit::button(
-                "excluded-put-back",
-                match (busy, selected) {
-                    (Some(n), _) => format!("Putting back {}…", format_count(n as u64)),
-                    (None, 0 | 1) => "Put back in Library".to_owned(),
-                    (None, n) => format!("Put back {} in Library", format_count(n as u64)),
-                },
-                Some(IconName::Undo2),
-                crate::views::kit::Tone::Secondary,
-                (selected > 0 && busy.is_none()).then(|| {
-                    let weak = cx.weak_entity();
-                    std::rc::Rc::new(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                        let _ = weak.update(cx, |v, cx| v.put_back_selected(window, cx));
-                    }) as crate::views::kit::ClickHandler
-                }),
-                cx,
-            ))
-            .child(crate::views::kit::button(
-                "excluded-put-back-all",
-                "Put back all shown…",
-                None,
-                crate::views::kit::Tone::Ghost,
-                (shown > 0 && busy.is_none()).then(|| {
-                    let weak = cx.weak_entity();
-                    std::rc::Rc::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                        let _ = weak.update(cx, |v, cx| v.ask_put_back_all(cx));
-                    }) as crate::views::kit::ClickHandler
-                }),
-                cx,
-            ))
+            .child(self.controls(cx))
             .into_any_element()
     }
 

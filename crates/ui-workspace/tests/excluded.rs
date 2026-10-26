@@ -719,6 +719,8 @@ fn excluded_toolbar_wraps_without_stray_dividers(cx: &mut TestAppContext) {
         "excluded-search",
         "excluded-sort",
         "excluded-mode-toggle",
+        "excluded-put-back",
+        "excluded-put-back-all",
     ];
     let px = gpui_kit::px;
     for inspector_open in [false, true] {
@@ -734,7 +736,9 @@ fn excluded_toolbar_wraps_without_stray_dividers(cx: &mut TestAppContext) {
         for width in (960..=1920).step_by(40) {
             cx.simulate_resize(gpui_kit::size(px(width as f32), px(900.0)));
             cx.run_until_parked();
-            let bar = bounds("excluded-toolbar", &mut cx);
+            // The header (search, sort, mode) and the toolbar (chips, put back) together.
+            let (head, tools) = (bounds("excluded-header", &mut cx), bounds("excluded-toolbar", &mut cx));
+            let bar = gpui_kit::Bounds::from_corners(head.origin, tools.bottom_right());
             for id in controls {
                 let sid = SharedString::from(id.to_owned());
                 let c = cx
