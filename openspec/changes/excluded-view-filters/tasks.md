@@ -36,7 +36,7 @@
 
 ## 7. Verification
 
-- [ ] 7.1 `cargo xtask ci` green in a clean worktree; every scenario of this change mapped (`cargo xtask spec-coverage`).
+- [x] 7.1 `cargo xtask ci` green in a clean worktree; every scenario of this change mapped (`cargo xtask spec-coverage`).
 - [x] 7.2 Corpus gate unchanged: precision, recall and keeper accuracy 1.0000; 0 must-not-merge violations; 19,381 pairs, 1,843 groups, 8,594 files; 4,048,886,433 reclaimable bytes; 5,570 suggestions.
 - [x] 7.3 Screenshot review of the Excluded view in List and Grid modes, light and dark, with chips and a hidden count.
-- [ ] 7.4 Pushed; GitHub CI green on all four jobs.
+- [x] 7.4 Pushed; GitHub CI green on all four jobs.
