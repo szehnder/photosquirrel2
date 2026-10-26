@@ -495,6 +495,27 @@ The second gate review found the decisions above incomplete in four places; the 
   not in bookworm or Ubuntu 23.04), superseded alerts and subtitle in Reports, single-write skip lines, and the
   read-only check over `crates/ps-scan/tests` (their writes go through `ps_fixtures::scratch`).
 
+### D14. Final review fixes (ADR-0099, ADR-0100, ADR-0101)
+
+The final gate review (PASS-WITH-FIXES) found the following; the decisions are:
+
+- **Edits during a running cleanup (ADR-0099, amends 0096 and 0065).** The catalog writer keeps a constraints
+  generation, bumped after every commit of keeper, separation, merge, regroup, export-ledger, user-decision and
+  file-row writes. `quarantine::run` compares it before each move and re-derives the holds of the files still to
+  move when it changed; a file whose re-check fails is skipped, never moved. Group and keeper edits,
+  include/exclude and AI decisions take an edit guard (`ScanService::edit`), refused with "a cleanup is running"
+  while a run holds the slot, and a run does not start while one is saved; the app does not offer those edits
+  during a run (Duplicates view, inspector, AI review).
+- **Refused AVIF decodes and the decode budget (ADR-0100, amends 0098 and 0097).** A decode refused before it
+  started (paused by abandoned decodes, too many threads, no thread) is `DecodeError::Refused` and uses up no
+  attempt; only the file's own timeouts count. One `DecodeBudget` per scanner, shared by every run, so an abandoned
+  decode of a cancelled run stays counted in the next.
+- **Test-only fixture writes (ADR-0101, amends 0004).** `ps_fixtures::scratch` is behind the `scratch` feature,
+  enabled only from dev-dependencies, and `cargo xtask layering` rejects `scratch::` outside tests and benches.
+- Smaller: CLI JSON prints paths as strings (lossy, `<field>_raw` bytes for non-UTF-8) and `scan --json` ends with
+  the run's last snapshot; the Cleanup panel lists a plan's kept files in a "Kept" disclosure;
+  `excluded-view-filters` takes migration 21 (its design said 20).
+
 ## Risks / Trade-offs
 
 - [A system decoder crashes on a hostile file (C code in-process)] -> same exposure as libheif-rs today, now with
