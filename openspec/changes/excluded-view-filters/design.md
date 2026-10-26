@@ -17,7 +17,7 @@
   too short (`ShortSideBelow`, `PixelsBelow`, `VideoTooShort`, `VideoTooSmall`).
 - The Library grid (`ui-gallery`) keeps the whole id list (8 bytes per id) and reads details for visible cells, a
   page at a time. 1M ids is 8 MB, which is fine.
-- Migration 19 belongs to `heic-system-decoders` (`0019_decoder_missing.sql`). This change takes 20.
+- Migrations 19 (`0019_decoder_missing.sql`) and 20 (`0020_decode_failure.sql`, ADR-0098) belong to `heic-system-decoders`. This change takes 21.
 
 ## Goals / Non-Goals
 
