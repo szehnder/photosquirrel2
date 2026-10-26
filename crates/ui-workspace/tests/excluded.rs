@@ -737,7 +737,10 @@ fn excluded_toolbar_wraps_without_stray_dividers(cx: &mut TestAppContext) {
             cx.simulate_resize(gpui_kit::size(px(width as f32), px(900.0)));
             cx.run_until_parked();
             // The header (search, sort, mode) and the toolbar (chips, put back) together.
-            let (head, tools) = (bounds("excluded-header", &mut cx), bounds("excluded-toolbar", &mut cx));
+            let (head, tools) = (
+                bounds("excluded-header", &mut cx),
+                bounds("excluded-toolbar", &mut cx),
+            );
             let bar = gpui_kit::Bounds::from_corners(head.origin, tools.bottom_right());
             for id in controls {
                 let sid = SharedString::from(id.to_owned());
