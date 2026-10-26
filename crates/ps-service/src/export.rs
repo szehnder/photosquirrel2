@@ -529,14 +529,16 @@ impl<'a> Exports<'a> {
                 quarantined: quarantined.of(&f.key, &f.stat),
             });
         })?;
-        let groups: Vec<GroupFacts> = r
+        let mut groups: Vec<GroupFacts> = r
             .group_memberships()?
             .into_iter()
             .map(|(_, members, keeper_set)| GroupFacts {
                 members,
                 keeper_set,
+                ..GroupFacts::default()
             })
             .collect();
+        better_than_chosen_keepers(r, &files, &mut groups)?;
         let d = ps_export::derive_dispositions(&DispositionFacts {
             files: &files,
             groups: &groups,
@@ -613,6 +615,86 @@ impl<'a> Exports<'a> {
             })
             .collect())
     }
+}
+
+/// Fill [`GroupFacts::better_than_keeper`] (ADR-0096): in each group whose keeper the user chose (a keeper-set
+/// file whose content has a keeper override), the members the automatic ranking (ADR-0014, the same ranking
+/// without the override) puts above every keeper-set file, except copies of the keeper set's content. Reads
+/// the grouping inputs of those groups' members from the catalog only (no file is opened); groups without an
+/// override cost nothing.
+fn better_than_chosen_keepers(
+    r: &ps_catalog::Readers,
+    files: &[FileFacts],
+    groups: &mut [GroupFacts],
+) -> Result<()> {
+    let overrides: HashSet<ps_model::ContentId> = r
+        .group_constraints()?
+        .keeper_overrides
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
+    if overrides.is_empty() {
+        return Ok(());
+    }
+    let content: HashMap<FileId, ps_model::ContentId> = files
+        .iter()
+        .filter_map(|f| f.content.map(|c| (f.file, c)))
+        .collect();
+    let chosen: Vec<usize> = groups
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| {
+            g.keeper_set
+                .iter()
+                .any(|k| content.get(k).is_some_and(|c| overrides.contains(c)))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if chosen.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<FileId> = chosen
+        .iter()
+        .flat_map(|&i| groups[i].members.iter().copied())
+        .collect();
+    let mut inputs: HashMap<FileId, ps_dedup::DedupInput> = HashMap::new();
+    r.analyzed_files(Some(&ids), |rec, meta| {
+        if let Some(x) = ps_scan::post::dedup_input(&rec, meta.as_ref()) {
+            inputs.insert(x.file, x);
+        }
+    })?;
+    let none = std::collections::BTreeSet::new();
+    for i in chosen {
+        let g = &mut groups[i];
+        let refs: Vec<&ps_dedup::DedupInput> =
+            g.members.iter().filter_map(|m| inputs.get(m)).collect();
+        if refs.len() != g.members.len() {
+            // A member without its grouping input (not analysed any more): keep every member out of cleanup
+            // rather than guess its rank.
+            g.better_than_keeper = g
+                .members
+                .iter()
+                .filter(|m| !g.keeper_set.contains(m))
+                .copied()
+                .collect();
+            continue;
+        }
+        let auto = ps_dedup::rank(&refs, &none).order;
+        let Some(first_keeper) = auto.iter().position(|m| g.keeper_set.contains(m)) else {
+            continue;
+        };
+        let kept: HashSet<ps_model::ContentId> = g
+            .keeper_set
+            .iter()
+            .filter_map(|k| content.get(k).copied())
+            .collect();
+        g.better_than_keeper = auto[..first_keeper]
+            .iter()
+            .filter(|m| content.get(m).is_none_or(|c| !kept.contains(c)))
+            .copied()
+            .collect();
+    }
+    Ok(())
 }
 
 /// Profile defaults for a profile name (`apple`, `google`, `lightroom`).

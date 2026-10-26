@@ -15,6 +15,9 @@
 //!   anything of the group in the library: not accounted for, never cleanup-eligible, ADR-0093), with that
 //!   copy's path; the members ranked below it are `covered` by it (a keeper set with only some files in the
 //!   library is not covered: pending, the plan completes it);
+//! - a member covered by a keeper the user chose although it ranks above that keeper automatically
+//!   ([`GroupFacts::better_than_keeper`]) is `covered` with `better_than_keeper` set: accounted for by the
+//!   user's choice, never eligible for cleanup (ADR-0096);
 //! - not in a group and its content has a valid library copy: `exported`;
 //! - moved by a cleanup run (ADR-0034): `quarantined`, with the disposition the rules below give it as if it
 //!   were still at its path (`prior`) - checked first, since the scanner sees it as gone. Only while that
@@ -60,13 +63,17 @@ pub struct FileFacts {
 }
 
 /// One duplicate group.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GroupFacts {
     pub members: Vec<FileId>,
     /// The keeper first, then its RAW+JPEG companion (ranking order).
     pub keeper_set: Vec<FileId>,
     // `members` are in ranking order (best first): a member before the best-ranked exported member is better
     // than every copy of the group in the library (ADR-0093).
+    /// A keeper chosen by the user (ADR-0096): the members whose automatic rank (the ranking without the
+    /// override) is above every keeper-set file and whose content differs from the keeper set's. Their
+    /// disposition follows the user's choice, but they are never eligible for cleanup.
+    pub better_than_keeper: Vec<FileId>,
 }
 
 /// State of a ledger row's library copy.
@@ -118,6 +125,10 @@ pub struct FileDisposition {
     /// Quarantined files: where it is, relative to its source root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quarantine_path: Option<RelPath>,
+    /// Covered by a keeper the user chose although this copy ranks above it automatically (ADR-0096):
+    /// accounted for by the user's choice, but kept: never eligible for cleanup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub better_than_keeper: bool,
 }
 
 /// Check the library copy of every `done` row with [`check_copy`]: present with its recorded size (and, when
@@ -200,6 +211,7 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
         library_path,
         prior: None,
         quarantine_path: None,
+        better_than_keeper: false,
     };
     let derive = |f: &FileFacts| -> FileDisposition {
         if let Some(&gi) = group_of.get(&f.file) {
@@ -220,9 +232,20 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
                         None => d(f, Disposition::Covered, None, Some(kp.clone())),
                     };
                 }
-                return if facts.groups[gi].keeper_set.contains(&f.file) {
+                let g = &facts.groups[gi];
+                return if g.keeper_set.contains(&f.file) {
                     let own = exported_path(f.file).unwrap_or_else(|| kp.clone());
                     d(f, Disposition::Exported, None, Some(own))
+                } else if g.better_than_keeper.contains(&f.file) {
+                    // A lesser keeper the user chose is in the library; this better copy is accounted for by
+                    // that choice (or by its own copy) but kept out of cleanup (ADR-0096).
+                    match exported_path(f.file) {
+                        Some(own) => d(f, Disposition::Exported, None, Some(own)),
+                        None => FileDisposition {
+                            better_than_keeper: true,
+                            ..d(f, Disposition::Covered, None, Some(kp.clone()))
+                        },
+                    }
                 } else {
                     d(f, Disposition::Covered, None, Some(kp.clone()))
                 };
@@ -529,6 +552,7 @@ mod tests {
         let groups = vec![GroupFacts {
             members: vec![FileId(3), FileId(4)],
             keeper_set: vec![FileId(3)],
+            ..GroupFacts::default()
         }];
         let ledger: Vec<LedgerEntry> = [1, 2, 3].map(row).into();
         let derive = |checks: &HashMap<RelPath, CopyCheck>| {

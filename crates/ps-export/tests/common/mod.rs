@@ -300,6 +300,7 @@ pub fn corpus_model(c: &SmallCorpus, drives: &[&str], offline: &[&str]) -> Corpu
             groups.push(GroupFacts {
                 members: members.iter().map(|m| ids[&m.path]).collect(),
                 keeper_set: set.iter().map(|m| ids[&m.path]).collect(),
+                ..GroupFacts::default()
             });
         }
         units.push(ExportUnit {

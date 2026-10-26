@@ -363,3 +363,166 @@ fn cleanup_cli_select_warns_about_terms_that_match_nothing() {
         "{help}"
     );
 }
+
+/// Two drives: drive-a holds an 800x533 JPEG made from drive-b's 3000x2000 original. A data folder, a library
+/// and the paths of both.
+struct Pair {
+    tmp: tempfile::TempDir,
+}
+
+impl Pair {
+    fn new(tag: &str) -> Pair {
+        let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        fs::create_dir_all(base).unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("cli-cleanup-{tag}-"))
+            .tempdir_in(base)
+            .unwrap();
+        let (w, h) = (3000, 2000);
+        let rgb = ps_fixtures::media::photo_rgb(w, h, 4243);
+        let full = ps_fixtures::media::encode_jpeg(&rgb, w, h, 92);
+        let small = ps_media::decode::resize_to_long_edge(
+            &ps_media::RgbImage {
+                width: w,
+                height: h,
+                data: rgb,
+            },
+            800,
+        );
+        let web = ps_fixtures::media::encode_jpeg(&small.data, small.width, small.height, 80);
+        let p = Pair { tmp };
+        for (rel, b) in [
+            ("drive-a/Web/IMG_0001.jpg", &web),
+            ("drive-b/DCIM/IMG_0001.jpg", &full),
+        ] {
+            let f = p.tmp.path().join(rel);
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(&f, b).unwrap();
+        }
+        p
+    }
+
+    fn data(&self) -> PathBuf {
+        self.tmp.path().join("data")
+    }
+
+    fn drive(&self, d: &str) -> PathBuf {
+        self.tmp.path().join(d)
+    }
+
+    fn add_and_scan(&self, d: &str) {
+        ok(
+            &self.data(),
+            &["sources", "add", self.drive(d).to_str().unwrap()],
+        );
+        ok(&self.data(), &["scan"]);
+    }
+
+    fn export(&self) {
+        let lib = self.tmp.path().join("library");
+        ok(
+            &self.data(),
+            &[
+                "export",
+                "run",
+                "--library",
+                lib.to_str().unwrap(),
+                "--profile",
+                "lightroom",
+                "--yes",
+            ],
+        );
+    }
+
+    /// The only group's id and the file id of the member whose path ends with `suffix`.
+    fn group_and_file(&self, suffix: &str) -> (i64, i64) {
+        let list = json(&ok(&self.data(), &["--json", "groups", "list"]));
+        let g = &list["data"]["groups"][0];
+        let id = g["id"].as_i64().unwrap();
+        let d = json(&ok(
+            &self.data(),
+            &["--json", "groups", "show", &id.to_string()],
+        ));
+        let m = d["data"]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["path"].as_str().unwrap().ends_with(suffix))
+            .unwrap()
+            .clone();
+        (id, m["file"].as_i64().unwrap())
+    }
+}
+
+/// The gate re-review's repro with JPEGs: a lesser keeper chosen by the user keeps the better original out of
+/// every cleanup plan (ADR-0096), in the text output and `--json`.
+#[test]
+fn cleanup_cli_keeps_a_copy_better_than_the_keeper_you_chose() {
+    let p = Pair::new("chosen-keeper");
+    p.add_and_scan("drive-a");
+    p.export();
+    p.add_and_scan("drive-b");
+    let (g, web) = p.group_and_file("Web/IMG_0001.jpg");
+    ok(
+        &p.data(),
+        &["groups", "set-keeper", &g.to_string(), &web.to_string()],
+    );
+    let o = ok(&p.data(), &["cleanup", "plan", "--source", "2"]);
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        text.contains("kept ")
+            && text.contains("DCIM/IMG_0001.jpg: better than the keeper you chose")
+            && text.contains("nothing to clean up"),
+        "{text}"
+    );
+    let v = json(&ok(
+        &p.data(),
+        &["--json", "cleanup", "plan", "--source", "2"],
+    ));
+    assert!(v["data"]["run"].is_null(), "{v}");
+    assert_eq!(
+        v["data"]["held"][0]["reason"]["kind"], "better_than_keeper",
+        "{v}"
+    );
+    assert!(p.drive("drive-b").join("DCIM/IMG_0001.jpg").exists());
+}
+
+/// A plan re-checked when it runs (ADR-0096): drive-b's original is exported and its web copy on drive-a covered
+/// and planned; then the user makes the web copy the keeper, which is not in the library itself. The run skips
+/// it as "no longer safe" (text, `--json` of `cleanup show`) and leaves it in place.
+#[test]
+fn cleanup_cli_run_skips_a_file_that_became_unsafe_after_planning() {
+    let p = Pair::new("stale-plan");
+    p.add_and_scan("drive-a");
+    p.add_and_scan("drive-b");
+    p.export();
+    let v = json(&ok(
+        &p.data(),
+        &["--json", "cleanup", "plan", "--source", "1"],
+    ));
+    let run = v["data"]["run"].as_i64().unwrap();
+    assert_eq!(v["data"]["moves"][0]["disposition"], "covered", "{v}");
+    let (g, web) = p.group_and_file("Web/IMG_0001.jpg");
+    ok(
+        &p.data(),
+        &["groups", "set-keeper", &g.to_string(), &web.to_string()],
+    );
+    let o = ok(&p.data(), &["cleanup", "run", &run.to_string(), "--yes"]);
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        text.contains("moved 0 files")
+            && text.contains("1 skipped")
+            && text.contains("not moved: Web/IMG_0001.jpg: no longer safe"),
+        "{text}"
+    );
+    let v = json(&ok(
+        &p.data(),
+        &["--json", "cleanup", "show", &run.to_string()],
+    ));
+    let s = v.to_string();
+    assert!(
+        s.contains("\"skipped\"") && s.contains("no longer safe"),
+        "{s}"
+    );
+    assert!(p.drive("drive-a").join("Web/IMG_0001.jpg").exists());
+}

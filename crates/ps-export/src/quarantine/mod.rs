@@ -106,6 +106,11 @@ pub enum SkipReason {
     PermissionDenied(String),
     /// A read or rename failed.
     Io(String),
+    /// Re-checked when the run started (ADR-0096): by the dispositions of now the file is no longer safe to
+    /// move (a better copy of it is not in the library, its library copy is gone, it was excluded, ...).
+    NoLongerSafe(String),
+    /// It ranks above the keeper the user chose (ADR-0096): accounted for by that choice, but kept.
+    BetterThanKeeper,
 }
 
 impl SkipReason {
@@ -133,6 +138,10 @@ impl SkipReason {
                 format!("not moved: permission denied ({s}); nothing was changed")
             }
             SkipReason::Io(s) => s.clone(),
+            SkipReason::NoLongerSafe(s) => format!("no longer safe: {s}; it was not moved"),
+            SkipReason::BetterThanKeeper => {
+                "better than the keeper you chose: this copy is kept".into()
+            }
         }
     }
 }
@@ -148,9 +157,14 @@ pub struct Skipped {
 
 impl Skipped {
     fn new(m: &CleanupMove, reason: SkipReason) -> Self {
+        Self::of(m.file, m.rel_path.clone(), reason)
+    }
+
+    /// A file left out with `reason` (a plan's files kept back, ADR-0096).
+    pub fn of(file: FileId, rel_path: RelPath, reason: SkipReason) -> Self {
         Skipped {
-            file: m.file,
-            rel_path: m.rel_path.clone(),
+            file,
+            rel_path,
             text: reason.text(),
             reason,
         }
@@ -161,12 +175,49 @@ impl Skipped {
 /// readable, analysed and not excluded by the user. Quarantined files are not eligible again.
 pub fn eligible(f: &FileFacts, d: &FileDisposition) -> bool {
     d.disposition.is_accounted_safe()
+        && !d.better_than_keeper
         && d.library_path.is_some()
         && f.content.is_some()
         && !f.missing
         && !f.unreadable
         && !f.user_excluded
         && f.quarantined.is_none()
+}
+
+/// Why a file must not be moved now, from its facts and disposition derived now (ADR-0096); `None` when it is
+/// [`eligible`] and, for a planned move, still made safe by the library copy it was planned with
+/// (`covering`). A run re-derives every disposition when it starts and skips each planned file this names, so
+/// a plan stored before a keeper change or an exclusion never moves a file that is no longer safe.
+pub fn unsafe_now(
+    f: &FileFacts,
+    d: &FileDisposition,
+    covering: Option<&RelPath>,
+) -> Option<SkipReason> {
+    let no = |s: &str| Some(SkipReason::NoLongerSafe(s.to_owned()));
+    if d.better_than_keeper {
+        return Some(SkipReason::BetterThanKeeper);
+    }
+    match d.disposition {
+        Disposition::Exported | Disposition::Covered => {}
+        Disposition::Superseded => {
+            return no("it is the keeper or a better copy, and it is not in the library yet");
+        }
+        Disposition::Pending => return no("no equal or better copy of it is in the library now"),
+        Disposition::Excluded => return no("it is excluded now"),
+        Disposition::Missing => return Some(SkipReason::SourceMissing),
+        Disposition::Unreadable => return no("it could not be read at the last scan"),
+        Disposition::Quarantined => return no("it is in a quarantine folder already"),
+    }
+    if f.user_excluded {
+        return no("you excluded it");
+    }
+    if !eligible(f, d) {
+        return no("it is not exported or covered any more");
+    }
+    if covering.is_some_and(|c| d.library_path.as_ref() != Some(c)) {
+        return no("the library copy that makes it safe changed since planning; plan again");
+    }
+    None
 }
 
 /// What [`plan_moves`] needs of one eligible file beyond its facts: the catalogued stat fingerprint.

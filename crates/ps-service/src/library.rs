@@ -86,6 +86,31 @@ pub fn reason_label(r: ExclusionReason) -> &'static str {
     }
 }
 
+/// Why a file has its disposition ([`disposition_reason`]), and for a copy covered by a lesser keeper the user
+/// chose (ADR-0096) that it is kept: never "its best copy is" that keeper. `library_path` as there.
+pub fn file_disposition_reason(
+    x: &ps_export::FileDisposition,
+    library_path: Option<&ps_model::RelPath>,
+) -> String {
+    if x.better_than_keeper {
+        // Named even where other reasons leave the path to its own row: the user should see which copy they chose.
+        return match library_path.or(x.library_path.as_ref()) {
+            Some(p) => format!(
+                "you chose {p} as the keeper; this copy is better quality and is kept (cleanup never moves it)"
+            ),
+            None => "you chose another copy as the keeper; this copy is better quality and is kept (cleanup \
+                     never moves it)"
+                .into(),
+        };
+    }
+    disposition_reason(
+        x.disposition,
+        x.reason,
+        library_path,
+        x.quarantine_path.as_ref(),
+    )
+}
+
 /// Why a file has its disposition, in a few words.
 pub fn disposition_reason(
     d: Disposition,
@@ -934,7 +959,8 @@ impl Library {
         };
         Ok(d.by_file.get(&file).map(|x| DispositionDetail {
             disposition: x.disposition,
-            reason: disposition_reason(x.disposition, x.reason, None, x.quarantine_path.as_ref()),
+            better_than_keeper: x.better_than_keeper,
+            reason: file_disposition_reason(x, None),
             library_path: x
                 .library_path
                 .as_ref()

@@ -889,12 +889,7 @@ impl ScanBackend for CatalogBackend {
                 path: f.rel_path.under(&root).display().to_string(),
                 size: f.size,
                 disposition: x.disposition,
-                reason: disposition_reason(
-                    x.disposition,
-                    x.reason,
-                    x.library_path.as_ref(),
-                    x.quarantine_path.as_ref(),
-                ),
+                reason: ps_service::library::file_disposition_reason(&x, x.library_path.as_ref()),
             })
             .collect())
     }

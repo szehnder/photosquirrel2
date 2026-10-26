@@ -194,6 +194,9 @@ pub struct DispositionDetail {
     pub reason: String,
     /// Absolute path of the library copy: this file's (exported) or its keeper's (covered).
     pub library_path: Option<String>,
+    /// Covered by a keeper the user chose that ranks below this copy (ADR-0096): the library path is that
+    /// keeper's copy, and this better copy is kept (never cleaned up).
+    pub better_than_keeper: bool,
 }
 
 /// An item's AI insight, as the inspector shows it (spec `ai-review`, "Insight details shown").

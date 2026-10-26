@@ -556,6 +556,7 @@ fn scenario_completion_report_better_copy_not_in_the_library_is_not_accounted_fo
     let groups = vec![GroupFacts {
         members: vec![u.heic.file, u.jpg.file, other.file],
         keeper_set: vec![u.heic.file],
+        ..GroupFacts::default()
     }];
     let derive = |ledger: &MemoryLedger| {
         let rows = ledger.entries().expect("rows");
@@ -638,6 +639,7 @@ fn scenario_completion_report_partly_exported_keeper_set_stays_pending() {
     let groups = vec![GroupFacts {
         members: vec![raw.file, jpg.file],
         keeper_set: vec![raw.file, jpg.file],
+        ..GroupFacts::default()
     }];
     let rows = ledger.entries().expect("rows");
     let checks = check_library(&lib, &rows, false);

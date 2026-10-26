@@ -66,6 +66,7 @@ struct Fixture {
     lib: PathBuf,
     ledger: Vec<LedgerEntry>,
     moves: Vec<CleanupMove>,
+    holds: std::collections::HashMap<FileId, quarantine::SkipReason>,
 }
 
 impl Fixture {
@@ -134,6 +135,7 @@ impl Fixture {
             lib,
             ledger: ledger.into_values().collect(),
             moves,
+            holds: Default::default(),
         }
     }
 
@@ -144,6 +146,7 @@ impl Fixture {
             source_root: &self.root,
             library_root: &self.lib,
             ledger: &self.ledger,
+            holds: &self.holds,
         }
     }
 
@@ -598,6 +601,7 @@ fn eligibility_and_plan_are_pure() {
             .then(|| rel("2020/x.jpg")),
         prior: None,
         quarantine_path: None,
+        better_than_keeper: false,
     };
     let f: Vec<FileFacts> = vec![
         facts(1, "a/1.jpg"),

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use ps_model::{CleanupMove, ContentId, ContentIdKind, LedgerEntry, MoveState, RelPath};
+use ps_model::{CleanupMove, ContentId, ContentIdKind, FileId, LedgerEntry, MoveState, RelPath};
 use serde::Serialize;
 
 use super::fsops::{self, MoveError};
@@ -27,6 +27,9 @@ pub struct RunConfig<'a> {
     /// The export library whose copies make the files safe, and its ledger rows.
     pub library_root: &'a Path,
     pub ledger: &'a [LedgerEntry],
+    /// Planned files that are no longer safe to move, with why, from the dispositions re-derived when the run
+    /// starts ([`super::unsafe_now`], ADR-0096): each is skipped before anything else is checked.
+    pub holds: &'a HashMap<FileId, SkipReason>,
 }
 
 /// Live counters (sampled by the UI, ADR-0019).
@@ -216,6 +219,10 @@ fn move_one(
     hooks: &dyn QuarantineHooks,
 ) -> io::Result<Option<Skipped>> {
     let root = cfg.source_root;
+    // 0. Still safe by the dispositions of now, not only of when it was planned (ADR-0096).
+    if let Some(reason) = cfg.holds.get(&m.file) {
+        return skip(m, reason.clone(), journal, catalog);
+    }
     // 1. The library copy that makes this file safe exists and re-hashes to its ledger hash.
     let check = *checked
         .entry(m.covering_library_path.clone())

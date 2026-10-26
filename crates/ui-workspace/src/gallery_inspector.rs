@@ -1226,6 +1226,9 @@ impl Render for GalleryInspector {
                             // A superseded file's library path is its group's lesser copy (ADR-0093).
                             if x.disposition == ps_model::Disposition::Superseded {
                                 "Lesser copy in library"
+                            } else if x.better_than_keeper {
+                                // ADR-0096: the keeper the user chose, which ranks below this copy.
+                                "Your keeper in library"
                             } else {
                                 "Library copy"
                             },

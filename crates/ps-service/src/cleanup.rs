@@ -170,6 +170,9 @@ pub struct CleanupPlan {
     pub totals: MoveTotals,
     /// The source is a network share: running needs [`RunOptions::network_confirmed`].
     pub network: bool,
+    /// Files of the source (or folder) that would be eligible but are kept back, with why: copies better than
+    /// a keeper the user chose (ADR-0096). Never planned.
+    pub held: Vec<Skipped>,
 }
 
 /// Totals per folder of some moves ([`ps_export::quarantine::totals`]).
@@ -483,6 +486,26 @@ impl<'a> Cleanups<'a> {
                 stats.insert(f.id, f.stat);
             }
         })?;
+        let in_scope = |f: &ps_export::FileFacts| {
+            f.source == source && folder.as_ref().is_none_or(|dir| f.rel_path.is_within(dir))
+        };
+        let mut held: Vec<Skipped> = files
+            .iter()
+            .zip(&dispositions)
+            .filter(|(f, d)| {
+                in_scope(f)
+                    && d.better_than_keeper
+                    && quarantine::eligible(
+                        f,
+                        &ps_export::FileDisposition {
+                            better_than_keeper: false,
+                            ..(*d).clone()
+                        },
+                    )
+            })
+            .map(|(f, _)| Skipped::of(f.file, f.rel_path.clone(), SkipReason::BetterThanKeeper))
+            .collect();
+        held.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         let rows: Vec<_> = files
             .into_iter()
             .zip(dispositions)
@@ -512,6 +535,7 @@ impl<'a> Cleanups<'a> {
                 moves: Vec::new(),
                 totals: MoveTotals::default(),
                 network,
+                held,
             });
         }
         let library_id = ex.library_id(&library)?;
@@ -537,6 +561,7 @@ impl<'a> Cleanups<'a> {
             folder,
             moves,
             network,
+            held,
         })
     }
 
@@ -545,6 +570,7 @@ impl<'a> Cleanups<'a> {
         root: &'c Path,
         library: &'c Path,
         ledger: &'c [ps_model::LedgerEntry],
+        holds: &'c HashMap<FileId, SkipReason>,
     ) -> RunConfig<'c> {
         RunConfig {
             run: run.id,
@@ -552,7 +578,40 @@ impl<'a> Cleanups<'a> {
             source_root: root,
             library_root: library,
             ledger,
+            holds,
         }
+    }
+
+    /// The planned moves of `run` that are no longer safe by the dispositions derived now (ADR-0096), with why:
+    /// a keeper change, an exclusion or a lost library copy since planning makes a stored plan stale, and the
+    /// run must not trust it. Library copies are checked by size here (re-hashed by the run itself).
+    fn holds(
+        &self,
+        run: &CleanupRunRecord,
+        moves: &[CleanupMove],
+        library: &Path,
+    ) -> Result<HashMap<FileId, SkipReason>> {
+        let (files, dispositions, _) = self.svc.exports().dispositions(library, false)?;
+        let now: HashMap<FileId, (&ps_export::FileFacts, &ps_export::FileDisposition)> = files
+            .iter()
+            .zip(&dispositions)
+            .map(|(f, d)| (f.file, (f, d)))
+            .collect();
+        let mut out = HashMap::new();
+        for m in moves.iter().filter(|m| m.state == MoveState::Planned) {
+            let why = match now.get(&m.file) {
+                Some((f, d)) if f.source == run.source && f.rel_path == m.rel_path => {
+                    quarantine::unsafe_now(f, d, Some(&m.covering_library_path))
+                }
+                _ => Some(SkipReason::NoLongerSafe(
+                    "its catalog record changed since planning; plan again".into(),
+                )),
+            };
+            if let Some(w) = why {
+                out.insert(m.file, w);
+            }
+        }
+        Ok(out)
     }
 
     /// Reconcile every run an interruption may have left out of step with the file system: moves `moving` or
@@ -615,7 +674,7 @@ impl<'a> Cleanups<'a> {
             run: id,
         };
         let report = quarantine::reconcile(
-            &Self::config(&run, &root, Path::new(""), &[]),
+            &Self::config(&run, &root, Path::new(""), &[], &HashMap::new()),
             &moves,
             &mut journal,
         )?;
@@ -709,6 +768,7 @@ impl<'a> Cleanups<'a> {
             return Err(CleanupError::LibraryOffline(library));
         }
         let ledger = r.ledger(run.library_id)?;
+        let holds = self.holds(&run, &moves, &library)?;
         self.catalog()
             .writer()
             .cleanup_set_run_state(id, CleanupRunState::Running)?;
@@ -717,7 +777,7 @@ impl<'a> Cleanups<'a> {
             run: id,
         };
         let result = quarantine::run(
-            &Self::config(&run, &root, &library, &ledger),
+            &Self::config(&run, &root, &library, &ledger, &holds),
             &moves,
             &mut journal,
             hooks,
@@ -902,7 +962,7 @@ impl<'a> Cleanups<'a> {
             run: id,
         };
         let report = quarantine::undo(
-            &Self::config(&run, &root, Path::new(""), &[]),
+            &Self::config(&run, &root, Path::new(""), &[], &HashMap::new()),
             &moves,
             &selection.picker(),
             &mut journal,

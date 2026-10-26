@@ -710,3 +710,67 @@ fn scan_backend_cleanup_tree_totals_match_the_plan() {
             .is_empty()
     );
 }
+
+/// The app's plan-then-confirm flow re-checks the plan when it runs (ADR-0096): a planned covered copy that the
+/// user makes the keeper after planning is not in the library itself, so the run leaves it in place with
+/// "no longer safe" in the run summary; every other planned file moves.
+#[gpui_kit::test]
+fn scenario_cleanup_app_run_skips_a_file_that_became_unsafe_after_planning(
+    cx: &mut TestAppContext,
+) {
+    let (app, mut cx) = app(cx, "stale");
+    let run = app.plan(&mut cx);
+    let scan = app.backend.scan().unwrap();
+    let groups = scan.engine().catalog().read().group_memberships().unwrap();
+    // A planned covered copy whose content differs from its exported keeper becomes the keeper.
+    let mut flipped = None;
+    for m in app.moves(run.id) {
+        if m.disposition != ps_model::Disposition::Covered {
+            continue;
+        }
+        let Some(g) = groups.iter().find(|g| g.1.contains(&m.file)) else {
+            continue;
+        };
+        scan.groups().set_keeper(g.0, m.file).unwrap();
+        let (files, d, _) = scan
+            .exports()
+            .dispositions(&app._tmp.path().join("library"), false)
+            .unwrap();
+        let now = files
+            .iter()
+            .zip(&d)
+            .find(|(f, _)| f.file == m.file)
+            .map(|(_, x)| x.disposition)
+            .unwrap();
+        if now == ps_model::Disposition::Superseded {
+            flipped = Some(m);
+            break;
+        }
+        scan.groups().clear_keeper(g.0).unwrap();
+    }
+    let flipped = flipped.expect("a covered lesser copy in the plan");
+    let path = flipped.rel_path.under(&app.drive);
+    let bytes = std::fs::read(&path).unwrap();
+    click("cleanup-confirm", &mut cx);
+    wait(&mut cx, "the confirmation", |cx| {
+        exists("cleanup-confirmation", cx)
+    });
+    click("cleanup-start", &mut cx);
+    wait(&mut cx, "the result", |cx| exists("cleanup-result", cx));
+    assert_eq!(
+        label("cleanup-result", &mut cx).unwrap(),
+        format!("{} moved, 1 left in place", run.planned - 1)
+    );
+    let why = label("cleanup-skipped-0", &mut cx).unwrap();
+    assert!(
+        why.contains(&flipped.rel_path.display().into_owned()) && why.contains("no longer safe"),
+        "{why}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "left in place");
+    let m = app
+        .moves(run.id)
+        .into_iter()
+        .find(|m| m.file == flipped.file)
+        .unwrap();
+    assert_eq!(m.state, ps_model::MoveState::Skipped);
+}

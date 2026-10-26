@@ -130,6 +130,16 @@ struct PlanOut<'a> {
     network: bool,
     totals: &'a ps_export::quarantine::MoveTotals,
     moves: Vec<MoveOut<'a>>,
+    /// Files kept back with why (copies better than a keeper you chose, ADR-0096).
+    held: Vec<HeldOut<'a>>,
+}
+
+#[derive(Serialize)]
+struct HeldOut<'a> {
+    file: FileId,
+    path: PathBuf,
+    reason: &'a ps_export::quarantine::SkipReason,
+    text: &'a str,
 }
 
 fn print_folders(t: &ps_export::quarantine::MoveTotals) {
@@ -164,13 +174,36 @@ pub fn plan(ctx: &Ctx, source: i64, folder: Option<&str>, library: Option<&Path>
         network: p.network,
         totals: &p.totals,
         moves: moves_out(&p.root, &p.moves),
+        held: p
+            .held
+            .iter()
+            .map(|h| HeldOut {
+                file: h.file,
+                path: h.rel_path.under(&p.root),
+                reason: &h.reason,
+                text: &h.text,
+            })
+            .collect(),
     };
     emit(ctx.json, "cleanup plan", &out, |o| {
+        for h in o.held.iter().take(200) {
+            println!("kept {}: {}", h.path.display(), h.text);
+        }
+        if o.held.len() > 200 {
+            println!("... and {} more kept", o.held.len() - 200);
+        }
         let Some(run) = o.run else {
-            println!(
-                "nothing to clean up in {}: no exported or covered file is there",
-                o.root.display()
-            );
+            if o.held.is_empty() {
+                println!(
+                    "nothing to clean up in {}: no exported or covered file is there",
+                    o.root.display()
+                );
+            } else {
+                println!(
+                    "nothing to clean up in {}: the files above are kept",
+                    o.root.display()
+                );
+            }
             return;
         };
         for m in o.moves.iter().take(200) {
