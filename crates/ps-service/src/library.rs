@@ -1319,13 +1319,33 @@ impl Library {
         Ok(copies)
     }
 
-    /// Store (or clear) a user include/exclude decision (ADR-0023).
+    /// A cleanup run is moving files ([`ScanService::cleanup_running`]); `false` before the engine is opened
+    /// (no cleanup can run then). Never blocks: for UI renders.
+    pub fn cleanup_running(&self) -> bool {
+        self.engine
+            .get()
+            .and_then(|e| e.as_ref().ok())
+            .is_some_and(|s| s.cleanup_running().is_some())
+    }
+
+    /// An edit of user decisions may start ([`ScanService::edit`]): refused while a cleanup run is moving files
+    /// (ADR-0099). `None` before the engine is opened.
+    pub fn edit(&self) -> Result<Option<crate::ops::EditGuard<'_>>> {
+        match self.engine.get() {
+            Some(Ok(s)) => Ok(Some(s.edit()?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Store (or clear) a user include/exclude decision (ADR-0023). Refused while a cleanup run is moving files
+    /// (ADR-0099).
     pub fn set_decision(
         &self,
         id: ItemId,
         decision: Option<Decision>,
         reason: Option<String>,
     ) -> Result<()> {
+        let _edit = self.edit()?;
         if !self.catalog()?.read().has_user_decisions()? {
             anyhow::bail!(
                 "this catalog cannot store your decisions yet (catalog migration 7 lands with the integration of \

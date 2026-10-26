@@ -38,6 +38,11 @@ pub trait GallerySource: Send + Sync + 'static {
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>>;
     /// Rows of the Excluded view (classes set aside plus user exclusions), with their reasons.
     fn excluded(&self) -> anyhow::Result<Vec<ExcludedRow>>;
+    /// A cleanup run is moving files: decisions are refused until it ends (ADR-0099). Never blocks (called
+    /// while rendering).
+    fn cleanup_running(&self) -> bool {
+        false
+    }
 }
 
 /// A source with nothing in it (until a catalog is open).

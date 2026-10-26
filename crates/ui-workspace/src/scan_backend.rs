@@ -1820,6 +1820,9 @@ impl ui_gallery::source::GallerySource for DemoThumbs {
     ) -> anyhow::Result<()> {
         self.inner.set_decision(id, decision, reason)
     }
+    fn cleanup_running(&self) -> bool {
+        self.inner.cleanup_running()
+    }
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>> {
         self.inner.camera_models()
     }

@@ -39,6 +39,9 @@ pub enum GroupError {
     OnlyExactCopies { file: FileId, group: FileId },
     #[error("cannot merge group {0} with itself")]
     SameGroup(FileId),
+    /// A cleanup run is moving files (ADR-0099).
+    #[error(transparent)]
+    Busy(#[from] crate::ops::Busy),
 }
 
 pub type Result<T, E = GroupError> = std::result::Result<T, E>;
@@ -363,6 +366,7 @@ impl<'a> Groups<'a> {
     /// Make `file` the keeper of `group` (ADR-0014 override, reason "chosen by you"). Persisted by content
     /// identity: it holds across restarts, rescans and regrouping while the file stays in the group.
     pub fn set_keeper(&self, group: FileId, file: FileId) -> Result<GroupDetail> {
+        let _edit = self.svc.edit()?;
         let g = self.row(group)?;
         if !g.members.iter().any(|m| m.file == file) {
             return Err(GroupError::NotAMember { file, group });
@@ -386,6 +390,7 @@ impl<'a> Groups<'a> {
 
     /// Drop the keeper override of a group (back to the automatic choice).
     pub fn clear_keeper(&self, group: FileId) -> Result<GroupDetail> {
+        let _edit = self.svc.edit()?;
         let g = self.row(group)?;
         let contents: Vec<ContentId> = self.contents(&g)?.into_iter().map(|(_, c)| c).collect();
         self.svc
@@ -403,6 +408,7 @@ impl<'a> Groups<'a> {
     /// Separate `file` from its group (ADR-0033): "never pair" constraints between its content and every
     /// other content of the group, then regroup. Byte-identical copies of `file` go with it.
     pub fn separate(&self, group: FileId, file: FileId) -> Result<SeparateOutcome> {
+        let _edit = self.svc.edit()?;
         let g = self.row(group)?;
         if !g.members.iter().any(|m| m.file == file) {
             return Err(GroupError::NotAMember { file, group });
@@ -443,6 +449,7 @@ impl<'a> Groups<'a> {
     /// Merge two groups (ADR-0033 "always pair" between their keepers' contents), then regroup. Separations
     /// win over merges.
     pub fn merge(&self, a: FileId, b: FileId) -> Result<GroupDetail> {
+        let _edit = self.svc.edit()?;
         if a == b {
             return Err(GroupError::SameGroup(a));
         }
@@ -464,6 +471,7 @@ impl<'a> Groups<'a> {
     /// contents, then regroup. The group falls back to what automatic matching (and separations) decide; the
     /// returned detail is the group that now holds the former keeper.
     pub fn undo_merges(&self, group: FileId) -> Result<GroupDetail> {
+        let _edit = self.svc.edit()?;
         let g = self.row(group)?;
         let contents: std::collections::HashSet<ContentId> =
             self.contents(&g)?.into_iter().map(|(_, c)| c).collect();

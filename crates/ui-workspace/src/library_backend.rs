@@ -207,6 +207,10 @@ impl GallerySource for CatalogBackend {
         self.lib.set_decision(id, decision, reason)
     }
 
+    fn cleanup_running(&self) -> bool {
+        self.lib.cleanup_running()
+    }
+
     fn camera_models(&self) -> anyhow::Result<Vec<(String, u64)>> {
         self.lib.camera_models()
     }

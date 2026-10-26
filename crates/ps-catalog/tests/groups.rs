@@ -175,3 +175,47 @@ fn constraints_are_keyed_by_content_and_persist() {
             .is_empty()
     );
 }
+
+/// Every edit that decides cleanup safety bumps the constraints generation once it is committed; the cleanup
+/// journal's own writes and group review marks do not (ADR-0099).
+#[test]
+fn constraint_edits_bump_the_constraints_generation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cat = Catalog::open(tmp.path()).expect("open");
+    let w = cat.writer();
+    let a = ContentId::full([1; 32]);
+    let b = ContentId::full([2; 32]);
+    let mut seen = w.constraints_generation();
+    let mut bumped = |what: &str| {
+        let now = w.constraints_generation();
+        assert!(now > seen, "{what} bumps the generation");
+        seen = now;
+    };
+    w.set_keeper_override(a, Some(FileId(11)), vec![])
+        .expect("override");
+    bumped("a keeper override");
+    w.clear_keeper_overrides(vec![a]).expect("clear");
+    bumped("clearing a keeper override");
+    w.set_separations(vec![(a, b)], true).expect("sep");
+    bumped("a separation");
+    w.set_merges(vec![(a, b)], true).expect("merge");
+    bumped("a merge");
+    w.apply_groups(GroupChanges::default()).expect("regroup");
+    bumped("a regroup");
+    w.submit(ps_catalog::Command::SetUserDecision {
+        file: FileId(1),
+        decision: None,
+        reason: None,
+    })
+    .expect("decision");
+    w.flush().expect("flush");
+    bumped("a user decision");
+    let before = w.constraints_generation();
+    w.set_group_reviewed(FileId(1), true).expect("reviewed");
+    w.flush().expect("flush");
+    assert_eq!(
+        w.constraints_generation(),
+        before,
+        "a review mark does not decide cleanup safety"
+    );
+}

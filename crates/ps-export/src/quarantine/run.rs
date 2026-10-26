@@ -12,12 +12,12 @@ use serde::Serialize;
 
 use super::fsops::{self, MoveError};
 use super::journal::{Journal, JournalEvent};
-use super::{CleanupJournal, QuarantineHooks, SkipReason, Skipped, run_dir_rel};
+use super::{CleanupJournal, QuarantineHooks, Recheck, SkipReason, Skipped, run_dir_rel};
 use crate::disposition::CopyCheck;
 use crate::library::{FsLibrary, check_copy, full_hash_of};
 
 /// What a run needs besides its moves.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct RunConfig<'a> {
     pub run: i64,
     /// Written into (and checked against) the journal header.
@@ -30,6 +30,21 @@ pub struct RunConfig<'a> {
     /// Planned files that are no longer safe to move, with why, from the dispositions re-derived when the run
     /// starts ([`super::unsafe_now`], ADR-0096): each is skipped before anything else is checked.
     pub holds: &'a HashMap<FileId, SkipReason>,
+    /// [`Recheck::generation`] read before `holds` was derived, and the source of fresh holds when it changes
+    /// during the run (ADR-0099). `None`: `holds` is final (tests of the file checks alone).
+    pub recheck: Option<(&'a dyn Recheck, u64)>,
+}
+
+impl std::fmt::Debug for RunConfig<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunConfig")
+            .field("run", &self.run)
+            .field("source_root", &self.source_root)
+            .field("library_root", &self.library_root)
+            .field("holds", &self.holds.len())
+            .field("recheck", &self.recheck.map(|(_, g)| g))
+            .finish()
+    }
 }
 
 /// Live counters (sampled by the UI, ADR-0019).
@@ -152,6 +167,9 @@ pub fn run(
     let run_dir_rel = run_dir_rel(cfg.run);
     let mut journal: Option<Journal> = None;
     let mut report = RunReport::default();
+    // The holds derived when the run started, replaced whenever the constraints generation moves on.
+    let mut holds: Option<HashMap<FileId, SkipReason>> = None;
+    let mut seen = cfg.recheck.map(|(_, g)| g);
 
     for (i, m) in planned.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
@@ -159,17 +177,49 @@ pub fn run(
             report.not_attempted = (planned.len() - i) as u64;
             break;
         }
-        let outcome = move_one(
-            cfg,
-            m,
-            &ledger,
-            &probe,
-            &mut checked,
-            &run_dir_rel,
-            &mut journal,
-            catalog,
-            hooks,
-        )?;
+        // Something that decides safety changed since the holds were derived (ADR-0099): derive them again
+        // for the files still to move. A failure leaves this file in place, and the next one tries again.
+        let mut unchecked = None;
+        if let Some((rc, _)) = cfg.recheck {
+            let now = rc.generation();
+            if seen != Some(now) {
+                match rc.holds(&planned[i..]) {
+                    Ok(h) => {
+                        log::info!(
+                            "cleanup run {}: the catalog changed during the run; {} of the {} files still                              to move are no longer safe",
+                            cfg.run,
+                            h.len(),
+                            planned.len() - i
+                        );
+                        holds = Some(h);
+                        seen = Some(now);
+                    }
+                    Err(e) => unchecked = Some(e.to_string()),
+                }
+            }
+        }
+        let outcome = match unchecked {
+            Some(e) => skip(
+                m,
+                SkipReason::NoLongerSafe(format!(
+                    "the catalog changed during the run and it could not be checked again ({e})"
+                )),
+                &mut journal,
+                catalog,
+            )?,
+            None => move_one(
+                cfg,
+                holds.as_ref().unwrap_or(cfg.holds),
+                m,
+                &ledger,
+                &probe,
+                &mut checked,
+                &run_dir_rel,
+                &mut journal,
+                catalog,
+                hooks,
+            )?,
+        };
         progress.done.fetch_add(1, Ordering::Relaxed);
         match outcome {
             None => {
@@ -209,6 +259,7 @@ fn skip(
 #[allow(clippy::too_many_arguments)]
 fn move_one(
     cfg: &RunConfig<'_>,
+    holds: &HashMap<FileId, SkipReason>,
     m: &CleanupMove,
     ledger: &HashMap<&RelPath, &LedgerEntry>,
     probe: &FsLibrary,
@@ -220,7 +271,7 @@ fn move_one(
 ) -> io::Result<Option<Skipped>> {
     let root = cfg.source_root;
     // 0. Still safe by the dispositions of now, not only of when it was planned (ADR-0096).
-    if let Some(reason) = cfg.holds.get(&m.file) {
+    if let Some(reason) = holds.get(&m.file) {
         return skip(m, reason.clone(), journal, catalog);
     }
     // 1. The library copy that makes this file safe exists and re-hashes to its ledger hash.

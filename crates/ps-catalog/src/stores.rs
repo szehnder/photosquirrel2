@@ -671,7 +671,7 @@ impl Writer {
 
     /// Insert or replace the ledger row at `entry.library_rel_path`; committed when this returns.
     pub fn ledger_record(&self, library: i64, entry: LedgerEntry) -> Result<()> {
-        self.exec(move |c| {
+        self.exec_constraints(move |c| {
             c.prepare_cached(
                 "INSERT INTO export_ledger (library_id, content_id, identity_kind, full_hash, file_id,
                                             library_rel_path, size, state, profile, at, library_mtime_ns,

@@ -107,6 +107,10 @@ pub fn category_label(c: SceneCategory) -> &'static str {
     }
 }
 
+/// Why accepting or undoing a suggestion is refused while a cleanup run is moving files (ADR-0099).
+pub const AI_CLEANUP_RUNNING: &str =
+    "A cleanup is running: exclusions wait until it ends, so nothing it checked changes under it.";
+
 pub struct AiReviewView {
     source: Option<Arc<dyn ReviewSource>>,
     images: ReviewImages,
@@ -348,6 +352,16 @@ impl AiReviewView {
         cx.notify();
     }
 
+    /// Exclusion decisions wait while a cleanup run is moving files (ADR-0099); `true` when one may go ahead.
+    fn may_edit(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        if self.source.as_ref().is_some_and(|s| s.cleanup_running()) {
+            self.error = Some(AI_CLEANUP_RUNNING.to_owned());
+            cx.notify();
+            return false;
+        }
+        true
+    }
+
     fn run<T: Send + 'static>(
         &mut self,
         cx: &mut Context<'_, Self>,
@@ -476,6 +490,9 @@ impl AiReviewView {
 
     /// Accept or reject several suggestions at once.
     pub fn decide_many(&mut self, contents: Vec<String>, accept: bool, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
         let n = contents.len();
         self.run(
             cx,
@@ -513,6 +530,9 @@ impl AiReviewView {
 
     /// Undo the last bulk exclusion: the suggestions are open again and the files back in the Library.
     pub fn undo_bulk(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
         let Some(contents) = self.last_bulk.take() else {
             return;
         };

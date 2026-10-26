@@ -311,7 +311,7 @@ fn apply(c: &Connection, ch: &GroupChanges) -> rusqlite::Result<()> {
 impl Writer {
     /// Store a regroup's changes atomically and return once committed.
     pub fn apply_groups(&self, changes: GroupChanges) -> Result<()> {
-        self.exec(move |c| apply(c, &changes))
+        self.exec_constraints(move |c| apply(c, &changes))
     }
 
     /// Make `content` the keeper of its group (`chosen` is the copy the user picked). Other overrides among
@@ -322,7 +322,7 @@ impl Writer {
         chosen: Option<FileId>,
         replace: Vec<ContentId>,
     ) -> Result<()> {
-        self.exec(move |c| {
+        self.exec_constraints(move |c| {
             for r in &replace {
                 c.prepare_cached(
                     "DELETE FROM keeper_override WHERE content_id = ?1 AND content_kind = ?2",
@@ -347,7 +347,7 @@ impl Writer {
 
     /// Drop the keeper overrides of `contents` (back to the automatic choice).
     pub fn clear_keeper_overrides(&self, contents: Vec<ContentId>) -> Result<()> {
-        self.exec(move |c| {
+        self.exec_constraints(move |c| {
             for r in &contents {
                 c.prepare_cached(
                     "DELETE FROM keeper_override WHERE content_id = ?1 AND content_kind = ?2",
@@ -360,12 +360,12 @@ impl Writer {
 
     /// Add (`add == true`) or remove "never pair" constraints between content pairs (ADR-0033).
     pub fn set_separations(&self, pairs: Vec<(ContentId, ContentId)>, add: bool) -> Result<()> {
-        self.exec(move |c| pair_rows(c, "dup_separation", &pairs, add))
+        self.exec_constraints(move |c| pair_rows(c, "dup_separation", &pairs, add))
     }
 
     /// Add or remove "always pair" constraints (user merges).
     pub fn set_merges(&self, pairs: Vec<(ContentId, ContentId)>, add: bool) -> Result<()> {
-        self.exec(move |c| pair_rows(c, "dup_merge", &pairs, add))
+        self.exec_constraints(move |c| pair_rows(c, "dup_merge", &pairs, add))
     }
 
     /// Mark a group reviewed (or not).

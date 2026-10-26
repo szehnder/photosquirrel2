@@ -68,6 +68,10 @@ pub enum CleanupError {
     #[error("{0} is running: wait for it to finish first")]
     Busy(crate::ops::Operation),
     #[error(
+        "a keeper, group or exclusion change is being saved: start the cleanup again in a moment"
+    )]
+    EditSaving,
+    #[error(
         "source {0} is a network share, where a rename may not be atomic: confirm cleanup on a network source"
     )]
     NetworkNotConfirmed(i64),
@@ -99,6 +103,26 @@ impl CleanupJournal for CatalogJournal {
         self.catalog
             .writer()
             .cleanup_set_move(self.run, file, state, note)
+            .map_err(|e| io::Error::other(e.to_string()))
+    }
+}
+
+/// A running cleanup's view of the catalog's constraints (ADR-0099): the generation, and the holds of the files
+/// still to move derived again by [`Cleanups::holds`] when it changed.
+struct RunRecheck<'c, 'a> {
+    cleanups: &'c Cleanups<'a>,
+    run: &'c CleanupRunRecord,
+    library: &'c Path,
+}
+
+impl quarantine::Recheck for RunRecheck<'_, '_> {
+    fn generation(&self) -> u64 {
+        self.cleanups.catalog().writer().constraints_generation()
+    }
+
+    fn holds(&self, planned: &[&CleanupMove]) -> io::Result<HashMap<FileId, SkipReason>> {
+        self.cleanups
+            .holds(self.run, planned.iter().copied(), self.library)
             .map_err(|e| io::Error::other(e.to_string()))
     }
 }
@@ -359,6 +383,10 @@ impl<'a> Cleanups<'a> {
         self.svc.begin(op).map_err(|b| match b {
             crate::ops::Busy::Scan(_) => CleanupError::ScanRunning,
             crate::ops::Busy::Operation(o) => CleanupError::Busy(o),
+            crate::ops::Busy::Cleanup(id) => {
+                CleanupError::Busy(crate::ops::Operation::CleanupRun(id))
+            }
+            crate::ops::Busy::Edit => CleanupError::EditSaving,
         })
     }
 
@@ -579,16 +607,17 @@ impl<'a> Cleanups<'a> {
             library_root: library,
             ledger,
             holds,
+            recheck: None,
         }
     }
 
     /// The planned moves of `run` that are no longer safe by the dispositions derived now (ADR-0096), with why:
     /// a keeper change, an exclusion or a lost library copy since planning makes a stored plan stale, and the
     /// run must not trust it. Library copies are checked by size here (re-hashed by the run itself).
-    fn holds(
+    fn holds<'m>(
         &self,
         run: &CleanupRunRecord,
-        moves: &[CleanupMove],
+        moves: impl Iterator<Item = &'m CleanupMove>,
         library: &Path,
     ) -> Result<HashMap<FileId, SkipReason>> {
         let (files, dispositions, _) = self.svc.exports().dispositions(library, false)?;
@@ -598,7 +627,7 @@ impl<'a> Cleanups<'a> {
             .map(|(f, d)| (f.file, (f, d)))
             .collect();
         let mut out = HashMap::new();
-        for m in moves.iter().filter(|m| m.state == MoveState::Planned) {
+        for m in moves.filter(|m| m.state == MoveState::Planned) {
             let why = match now.get(&m.file) {
                 Some((f, d)) if f.source == run.source && f.rel_path == m.rel_path => {
                     quarantine::unsafe_now(f, d, Some(&m.covering_library_path))
@@ -768,7 +797,14 @@ impl<'a> Cleanups<'a> {
             return Err(CleanupError::LibraryOffline(library));
         }
         let ledger = r.ledger(run.library_id)?;
-        let holds = self.holds(&run, &moves, &library)?;
+        // Read before the holds are derived: a change committed meanwhile makes the run derive them again.
+        let generation = self.catalog().writer().constraints_generation();
+        let holds = self.holds(&run, moves.iter(), &library)?;
+        let recheck = RunRecheck {
+            cleanups: self,
+            run: &run,
+            library: &library,
+        };
         self.catalog()
             .writer()
             .cleanup_set_run_state(id, CleanupRunState::Running)?;
@@ -776,14 +812,11 @@ impl<'a> Cleanups<'a> {
             catalog: self.catalog().clone(),
             run: id,
         };
-        let result = quarantine::run(
-            &Self::config(&run, &root, &library, &ledger, &holds),
-            &moves,
-            &mut journal,
-            hooks,
-            cancel,
-            progress,
-        );
+        let cfg = RunConfig {
+            recheck: Some((&recheck, generation)),
+            ..Self::config(&run, &root, &library, &ledger, &holds)
+        };
+        let result = quarantine::run(&cfg, &moves, &mut journal, hooks, cancel, progress);
         let state = match &result {
             Ok(rep) if rep.cancelled => CleanupRunState::Planned,
             _ => CleanupRunState::Completed,

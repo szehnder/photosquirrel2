@@ -147,6 +147,7 @@ impl Fixture {
             library_root: &self.lib,
             ledger: &self.ledger,
             holds: &self.holds,
+            recheck: None,
         }
     }
 
@@ -768,4 +769,86 @@ fn unselected_moves_are_never_run_and_reconcile_like_planned() {
     let u = f.undo(&mut j, &|_| true);
     assert_eq!(u.restored, 2, "{:?}", u.conflicts);
     assert_eq!(snapshot_outside_quarantine(&f.root), before);
+}
+
+/// A constraints generation that moves on after the first rename, and holds that then name the file given.
+struct EditAfterFirstMove {
+    generation: std::sync::atomic::AtomicU64,
+    hold: FileId,
+    asked: std::sync::Mutex<Vec<Vec<FileId>>>,
+    fail: bool,
+}
+
+impl quarantine::Recheck for EditAfterFirstMove {
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    fn holds(
+        &self,
+        planned: &[&CleanupMove],
+    ) -> io::Result<std::collections::HashMap<FileId, SkipReason>> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push(planned.iter().map(|m| m.file).collect());
+        if self.fail {
+            return Err(io::Error::other("catalog closed"));
+        }
+        Ok([(self.hold, SkipReason::NoLongerSafe("separated".into()))].into())
+    }
+}
+
+impl QuarantineHooks for EditAfterFirstMove {
+    fn after_rename(&self, _m: &CleanupMove) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A change of the constraints generation mid-run re-derives the holds of the files still to move, once per
+/// change; a failed re-derivation leaves the file in place (ADR-0099).
+#[test]
+fn a_constraints_change_mid_run_rederives_the_remaining_holds() {
+    for fail in [false, true] {
+        let f = Fixture::new("q-recheck", THREE);
+        let rc = EditAfterFirstMove {
+            generation: 5.into(),
+            hold: FileId(2),
+            asked: Default::default(),
+            fail,
+        };
+        let mut cfg = f.cfg();
+        cfg.recheck = Some((&rc, 5));
+        let mut j = MemJournal::default();
+        let moves = j.apply(&f.moves);
+        let r = quarantine::run(
+            &cfg,
+            &moves,
+            &mut j,
+            &rc,
+            &AtomicBool::new(false),
+            &RunProgress::default(),
+        )
+        .unwrap();
+        let asked = rc.asked.lock().unwrap().clone();
+        if fail {
+            // The first move bumps the generation; every later file asks again (the failure is not taken
+            // as fresh holds) and stays in place.
+            assert_eq!(r.moved, 1, "{r:?}");
+            assert_eq!(asked.len(), 2, "{asked:?}");
+            assert!(
+                r.skipped
+                    .iter()
+                    .all(|s| s.text.contains("could not be checked again"))
+            );
+        } else {
+            // Re-derived once, for the two files after the first; the second is then held.
+            assert_eq!(asked, vec![vec![FileId(2), FileId(3)]]);
+            assert_eq!(r.moved, 2, "{r:?}");
+            assert_eq!(r.skipped.len(), 1);
+            assert_eq!(r.skipped[0].file, FileId(2));
+        }
+        assert!(f.src(&f.moves[1]).exists(), "the held file is in place");
+        assert_eq!(j.of(FileId(2)), MoveState::Skipped);
+    }
 }

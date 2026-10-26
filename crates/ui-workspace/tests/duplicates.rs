@@ -918,3 +918,50 @@ fn why_compare_line_falls_back_for_rows_without_a_runner_up(cx: &mut TestAppCont
     assert!(line.ends_with(&rest), "{line}");
     assert!(!line.contains("Next best"), "{line}");
 }
+
+/// While a cleanup run holds the operation slot, the Duplicates view offers no keeper, separate or merge edit,
+/// says why, and refuses the keyboard shortcuts; the edits come back when the run ends (ADR-0099). The run is
+/// stood in for by taking its slot through the service.
+#[gpui_kit::test]
+fn scenario_cleanup_app_refuses_edits_during_a_cleanup_run(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_group(&view, &backend, &mut cx, |d| {
+        d.members().len() >= 2 && !d.is_pair() && !d.members()[1].in_keeper_set
+    });
+    let keeper = d.group.keeper;
+    assert!(present("duplicates-keep-2", &mut cx));
+    assert!(exists("duplicates-merge", &mut cx));
+    let scan = backend.scan().unwrap();
+    let slot = scan
+        .begin(ps_service::ops::Operation::CleanupRun(42))
+        .unwrap();
+    assert!(view.read_with(&cx, |v, _| v.edits_blocked()));
+    assert!(exists("duplicates-cleanup-running", &mut cx));
+    assert!(!present("duplicates-keep-2", &mut cx), "no keeper edit");
+    assert!(!present("duplicates-separate-2", &mut cx), "no separate");
+    assert!(!exists("duplicates-merge", &mut cx), "no merge");
+    // The shortcut is refused with the reason; nothing changed.
+    cx.simulate_keystrokes("2");
+    settle(&view, &mut cx);
+    assert_eq!(detail(&view, &mut cx).group.keeper, keeper);
+    assert_eq!(
+        view.read_with(&cx, |v, _| v.error().map(str::to_owned)),
+        Some(duplicates::CLEANUP_RUNNING.to_owned())
+    );
+    assert!(exists("duplicates-cleanup-running", &mut cx));
+    // The service refuses the same edit from anywhere else.
+    let err = scan.groups().set_keeper(d.group.id, d.members()[1].file);
+    assert!(
+        err.unwrap_err()
+            .to_string()
+            .contains("a cleanup is running"),
+        "the service refuses it too"
+    );
+    drop(slot);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(600));
+    cx.run_until_parked();
+    assert!(!exists("duplicates-cleanup-running", &mut cx));
+    assert!(present("duplicates-keep-2", &mut cx), "the edits are back");
+}

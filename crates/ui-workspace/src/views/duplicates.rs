@@ -243,7 +243,13 @@ pub struct DuplicatesView {
     busy: bool,
     /// Bumped per list request; stale answers are dropped.
     generation: u64,
+    /// Re-renders while a cleanup run is moving files, so the edits come back when it ends.
+    cleanup_poll: Option<Task<()>>,
 }
+
+/// Shown while a cleanup run is moving files: the edits are not offered (ADR-0099).
+pub const CLEANUP_RUNNING: &str = "A cleanup is running: keeper, “Not the same photo” and merge changes wait \
+     until it ends, so nothing it checked changes under it.";
 
 impl DuplicatesView {
     pub fn new(
@@ -274,6 +280,7 @@ impl DuplicatesView {
             error: None,
             busy: false,
             generation: 0,
+            cleanup_poll: None,
         };
         if std::env::var("PHOTOSQUIRREL_REVIEW_TAB").as_deref() == Ok("suggestions") {
             // Dev-only: scripted screenshots of the suggestions panel (KDE gives agents one frame).
@@ -390,8 +397,59 @@ impl DuplicatesView {
         self.notice.as_deref()
     }
 
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
     pub fn is_busy(&self) -> bool {
         self.busy
+    }
+
+    /// A cleanup run is moving files: keeper, separate and merge edits are not offered (ADR-0099).
+    pub fn edits_blocked(&self) -> bool {
+        self.source.as_ref().is_some_and(|s| s.cleanup_running())
+    }
+
+    /// Refuse an edit while a cleanup runs (with the reason in the banner); `true` when it may go ahead.
+    fn may_edit(&mut self, cx: &mut Context<'_, Self>) -> bool {
+        if self.edits_blocked() {
+            self.pending = None;
+            self.error = Some(CLEANUP_RUNNING.to_owned());
+            self.watch_cleanup(cx);
+            cx.notify();
+            return false;
+        }
+        true
+    }
+
+    /// While a cleanup runs, re-render every half second until it ends (the edits then come back).
+    fn watch_cleanup(&mut self, cx: &mut Context<'_, Self>) {
+        if self.cleanup_poll.is_some() {
+            return;
+        }
+        self.cleanup_poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let running = this
+                    .update(cx, |this, cx| {
+                        let running = this.edits_blocked();
+                        if !running {
+                            this.cleanup_poll = None;
+                            if this.error.as_deref() == Some(CLEANUP_RUNNING) {
+                                this.error = None;
+                            }
+                        }
+                        cx.notify();
+                        running
+                    })
+                    .unwrap_or(false);
+                if !running {
+                    break;
+                }
+            }
+        }));
     }
 
     pub fn explanation(&self) -> Option<&[String]> {
@@ -620,6 +678,9 @@ impl DuplicatesView {
             return;
         }
         let (group, file) = (d.group.id, m.file);
+        if !self.may_edit(cx) {
+            return;
+        }
         self.run(
             cx,
             move |s| s.set_keeper(group, file),
@@ -634,6 +695,9 @@ impl DuplicatesView {
 
     /// Ask to separate the focused copy (confirmation first).
     pub fn ask_separate(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
         let Some(d) = &self.detail else { return };
         if let Some(m) = d.members().get(self.focused) {
             self.pending = Some(Pending::Separate(m.file));
@@ -642,6 +706,9 @@ impl DuplicatesView {
     }
 
     pub fn ask_separate_file(&mut self, file: FileId, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
         if let Some(ix) = self
             .detail
             .as_ref()
@@ -654,6 +721,9 @@ impl DuplicatesView {
     }
 
     pub fn confirm(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
         let Some(Pending::Separate(file)) = self.pending.take() else {
             return;
         };
@@ -687,6 +757,9 @@ impl DuplicatesView {
     }
 
     pub fn merge_with(&mut self, other: FileId, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
         let Some(d) = &self.detail else { return };
         let group = d.group.id;
         self.run(
@@ -707,6 +780,9 @@ impl DuplicatesView {
 
     /// Undo the user merges of the open group (back to automatic matching).
     pub fn undo_merge(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
         let Some(d) = &self.detail else { return };
         let group = d.group.id;
         self.run(
@@ -1460,7 +1536,7 @@ impl DuplicatesView {
             )
         });
         let mut actions = h_flex().gap(Tokens::space(1.5)).flex_wrap();
-        if !m.keeper {
+        if !m.keeper && !self.edits_blocked() {
             actions = actions
                 .child(action_button(
                     format!("duplicates-keep-{n}"),
@@ -1852,6 +1928,10 @@ impl DuplicatesView {
         nearest.sort_by_key(|o| o.2);
         nearest.truncate(8);
         let merged_by_you = d.members().iter().any(|m| m.edge == MemberEdge::UserMerge);
+        let edits_blocked = self.edits_blocked();
+        if edits_blocked {
+            self.watch_cleanup(cx);
+        }
         let weak = cx.weak_entity();
         let merge = Button::new("duplicates-merge")
             .label("Merge with…")
@@ -1931,7 +2011,7 @@ impl DuplicatesView {
                             )),
                     ),
             )
-            .child(merge)
+            .when(!edits_blocked, |h| h.child(merge))
             .child(action_button(
                 "duplicates-compare",
                 "Compare",
@@ -2055,7 +2135,15 @@ impl DuplicatesView {
     fn render_banner(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
         let colors = *ui_theme::colors(cx);
         let (text, tone, id) = match (&self.error, &self.notice) {
+            (Some(e), _) if e == CLEANUP_RUNNING => {
+                (e.clone(), colors.warning, "duplicates-cleanup-running")
+            }
             (Some(e), _) => (e.clone(), colors.danger, "duplicates-error"),
+            (None, _) if self.edits_blocked() => (
+                CLEANUP_RUNNING.to_owned(),
+                colors.warning,
+                "duplicates-cleanup-running",
+            ),
             (None, Some(n)) => (n.clone(), colors.success, "duplicates-notice"),
             _ => return None,
         };

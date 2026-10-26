@@ -29,6 +29,11 @@ pub trait ReviewSource: Send + Sync + 'static {
     /// Undo the user merges inside `group` (back to automatic matching).
     fn undo_merges(&self, group: FileId) -> anyhow::Result<ReviewDetail>;
     fn set_reviewed(&self, group: FileId, reviewed: bool) -> anyhow::Result<bool>;
+    /// A cleanup run is moving files: keeper, group and exclusion edits are refused until it ends (ADR-0099).
+    /// Never blocks (called while rendering).
+    fn cleanup_running(&self) -> bool {
+        false
+    }
     fn suggestions(&self, limit: u64) -> anyhow::Result<Vec<SuggestionCard>>;
     fn dismiss(&self, a: FileId, b: FileId) -> anyhow::Result<()>;
     fn explain(&self, a: FileId, b: FileId) -> anyhow::Result<Vec<String>>;
@@ -120,6 +125,9 @@ impl ReviewSource for CatalogReview {
         let d = scan.groups().undo_merges(group)?;
         Ok(ps_service::review::show(scan, self.store()?, d.id)?)
     }
+    fn cleanup_running(&self) -> bool {
+        self.backend.cleanup_running()
+    }
     fn set_reviewed(&self, group: FileId, reviewed: bool) -> anyhow::Result<bool> {
         Ok(ps_service::review::set_reviewed(
             self.backend.scan()?,
@@ -177,6 +185,7 @@ impl ReviewSource for CatalogReview {
         )?)
     }
     fn ai_decide(&self, content: &str, accept: bool) -> anyhow::Result<usize> {
+        let _edit = self.backend.edit()?;
         Ok(ps_service::insights::decide(
             self.backend.catalog()?,
             self.istore()?,
@@ -185,6 +194,7 @@ impl ReviewSource for CatalogReview {
         )?)
     }
     fn ai_undo_decision(&self, content: &str) -> anyhow::Result<usize> {
+        let _edit = self.backend.edit()?;
         Ok(ps_service::insights::undo(
             self.backend.catalog()?,
             self.istore()?,

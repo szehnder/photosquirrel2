@@ -102,3 +102,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0096](0096-cleanup-keeps-copies-better-than-a-chosen-keeper-and-rechecks-plans.md) | Cleanup keeps copies better than a keeper you chose, and re-checks a stored plan when it runs (amends 0093, 0024) |
 | [0097](0097-avif-decodes-hold-their-budget-and-stop-on-cancel.md) | AVIF decodes stop waiting on cancel and hold their memory until their thread ends; the decode budget is FIFO (amends 0094, 0095) |
 | [0098](0098-decode-failures-are-retried-when-transient-or-after-a-decoder-change.md) | HEIC and AVIF decode failures are retried when transient or after a decoder change (migration 20; amends 0091, 0095) |
+| [0099](0099-cleanup-runs-recheck-when-the-catalog-changes-and-edits-wait.md) | A cleanup run re-checks its files when the catalog changes under it; keeper, group and exclusion edits wait while it runs (amends 0096, 0065) |

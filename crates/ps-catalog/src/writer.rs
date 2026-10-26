@@ -161,8 +161,9 @@ type ExecFn = Box<dyn FnOnce(&Connection) -> rusqlite::Result<()> + Send>;
 
 enum Msg {
     Cmd(Command),
-    /// Run atomically (inside a savepoint) and commit; reply when committed.
-    Exec(ExecFn, Sender<Result<()>>),
+    /// Run atomically (inside a savepoint) and commit; reply when committed. The flag: the write changes what
+    /// decides cleanup safety ([`Writer::constraints_generation`]).
+    Exec(ExecFn, Sender<Result<()>>, bool),
     /// [`Msg::Exec`] committed with `synchronous = FULL` (the cleanup journal, ADR-0064).
     ExecDurable(ExecFn, Sender<Result<()>>),
     Flush(Sender<WriteErrors>),
@@ -178,6 +179,9 @@ struct Stats {
     rows_committed: AtomicU64,
     errors: AtomicU64,
     durable_commits: AtomicU64,
+    /// Bumped after every commit that changed groups, keepers, separations, merges, user decisions, the export
+    /// ledger or file rows ([`Writer::constraints_generation`], ADR-0099).
+    constraints: AtomicU64,
 }
 
 /// A snapshot of the writer's counters.
@@ -244,6 +248,7 @@ impl Writer {
                     batch_start: Instant::now(),
                     errors: WriteErrors::default(),
                     stats: thread_stats,
+                    constraints_dirty: false,
                 };
                 w.run(rx);
             })
@@ -330,6 +335,23 @@ impl Writer {
         &self,
         f: impl FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> Result<T> {
+        self.exec_flagged(f, false)
+    }
+
+    /// [`Writer::exec`] for a write that changes what decides cleanup safety: the constraints generation is
+    /// bumped once it is committed (ADR-0099).
+    pub(crate) fn exec_constraints<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
+    ) -> Result<T> {
+        self.exec_flagged(f, true)
+    }
+
+    fn exec_flagged<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
+        constraints: bool,
+    ) -> Result<T> {
         let (reply, rx) = bounded(1);
         let (out_tx, out_rx) = bounded(1);
         self.send(Msg::Exec(
@@ -339,9 +361,19 @@ impl Writer {
                 Ok(())
             }),
             reply,
+            constraints,
         ))?;
         rx.recv().map_err(|_| CatalogError::WriterClosed)??;
         out_rx.recv().map_err(|_| CatalogError::WriterClosed)
+    }
+
+    /// A counter bumped after every committed write that can change what makes a file safe to clean up: group
+    /// and keeper edits, separations and merges, regroups, user include/exclude decisions, export-ledger rows
+    /// and scan writes of file rows (every [`Command`]). Cleanup runs compare it before each move and re-derive
+    /// the dispositions of their remaining files when it changed (ADR-0099). Not persisted: the catalog has one
+    /// writer process (ADR-0005), so every such write goes through this handle.
+    pub fn constraints_generation(&self) -> u64 {
+        self.shared.stats.constraints.load(Ordering::SeqCst)
     }
 
     /// [`Writer::exec`] whose commit is durable when it returns: the batch in progress is committed first,
@@ -433,6 +465,8 @@ struct WriterThread {
     batch_start: Instant,
     errors: WriteErrors,
     stats: Arc<Stats>,
+    /// The open batch holds a write that changes what decides cleanup safety.
+    constraints_dirty: bool,
 }
 
 impl WriterThread {
@@ -454,12 +488,16 @@ impl WriterThread {
                 }
             };
             match msg {
-                Msg::Cmd(cmd) => self.apply(cmd),
+                Msg::Cmd(cmd) => {
+                    self.constraints_dirty = true;
+                    self.apply(cmd);
+                }
                 Msg::Flush(ack) => {
                     self.commit_batch();
                     let _ = ack.send(std::mem::take(&mut self.errors));
                 }
-                Msg::Exec(f, reply) => {
+                Msg::Exec(f, reply, constraints) => {
+                    self.constraints_dirty |= constraints;
                     let r = self.exec(f);
                     let _ = reply.send(r);
                 }
@@ -512,6 +550,7 @@ impl WriterThread {
         }
         self.in_tx = false;
         let rows = std::mem::take(&mut self.rows);
+        let constraints = std::mem::take(&mut self.constraints_dirty);
         if self.conn.is_autocommit() {
             return Err(self.error_msg(
                 "commit",
@@ -524,6 +563,10 @@ impl WriterThread {
                 self.stats
                     .rows_committed
                     .fetch_add(rows as u64, Ordering::Relaxed);
+                if constraints {
+                    // After the commit: a reader that sees the new value also sees the write.
+                    self.stats.constraints.fetch_add(1, Ordering::SeqCst);
+                }
                 Ok(())
             }
             Err(e) => {
@@ -629,6 +672,8 @@ impl WriterThread {
     ) {
         // A failed BEGIN is recorded; the row then runs (and commits) on its own, as before.
         let _ = self.begin();
+        // Every command row is a file-row or user-decision write (a batch may commit part-way through one).
+        self.constraints_dirty = true;
         if let Err(e) = f(&self.conn) {
             self.error(command, file, &e);
         }

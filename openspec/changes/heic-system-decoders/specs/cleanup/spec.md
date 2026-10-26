@@ -22,7 +22,7 @@ Only exported or covered files SHALL be eligible for cleanup; pending, supersede
 - **THEN** the HEIC counts as accounted for but is not in the plan, which lists it as kept, "better than the keeper you chose"
 
 ### Requirement: Re-verification before each move
-When a run starts, the dispositions of its planned files SHALL be derived again and every file no longer eligible, or no longer made safe by the library copy it was planned with, SHALL be skipped as "no longer safe" (ADR-0096). Immediately before moving a file, its content hash SHALL be recomputed and compared with the catalog, and its library copy confirmed with a matching hash; on any mismatch the file SHALL be skipped and reported.
+When a run starts, and whenever the catalog's constraints generation changes during it, the dispositions of its remaining planned files SHALL be derived again and each file no longer eligible or no longer made safe by its planned library copy SHALL be skipped as "no longer safe" (ADR-0096, ADR-0099). Immediately before a move, the file's hash SHALL be recomputed and compared with the catalog, and its library copy confirmed by hash; on any mismatch the file SHALL be skipped and reported.
 
 #### Scenario: Changed source skipped
 - **WHEN** a planned file's bytes are changed after planning and the cleanup runs
@@ -35,6 +35,10 @@ When a run starts, the dispositions of its planned files SHALL be derived again 
 #### Scenario: Cleanup run skips a file that became unsafe after planning
 - **WHEN** a stored plan names a HEIC original as covered by an exported JPEG, the plan is narrowed and widened again with `select`, the keeper override that made the JPEG the keeper is cleared, and the run starts
 - **THEN** the HEIC is skipped with a "no longer safe" reason in the run report and its JSON, stays at its path, and the other planned file moves
+
+#### Scenario: Group edit during a cleanup run is respected
+- **WHEN** a cleanup run has moved its first file and a covered resize it still plans is then separated from its group, with no copy of it in the library
+- **THEN** the service refused the edit with "a cleanup is running", and the same edit written to the catalog directly makes the run check its remaining files again and skip the resize as no longer safe, leaving it at its path
 
 ### Requirement: Selection in the app
 The Cleanup panel SHALL show a plan's folders as a tree the user can tick, expand to files and untick before confirming, SHALL show the narrowed file count and bytes in the confirmation, SHALL list the files a run left in place with why, and SHALL let the user undo a run whole or by chosen folders and files.
@@ -50,3 +54,12 @@ The Cleanup panel SHALL show a plan's folders as a tree the user can tick, expan
 #### Scenario: App run skips a file that became unsafe after planning
 - **WHEN** the user plans a cleanup in the Cleanup panel, makes one planned covered copy its group's keeper before confirming, and confirms the run
 - **THEN** that copy stays at its path, the run summary lists it with a "no longer safe" reason, and every other planned file is quarantined
+
+## ADDED Requirements
+
+### Requirement: Edits wait during a cleanup run
+While a cleanup run is moving files, the service SHALL refuse keeper, group, merge, include/exclude and AI suggestion decisions with a message saying a cleanup is running, and the app SHALL not offer those edits until the run ends (ADR-0099).
+
+#### Scenario: App refuses edits during a cleanup run
+- **WHEN** a cleanup run holds the operation slot while the Duplicates view shows a group
+- **THEN** the keeper, separate and merge actions are not offered, a note says a cleanup is running, the keeper shortcut changes nothing, the service refuses the same edit, and the actions return when the run ends

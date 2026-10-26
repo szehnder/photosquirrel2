@@ -27,6 +27,9 @@ use crate::widgets::{ValueStyle, eyebrow};
 /// Shown for a field the file does not carry.
 pub const ABSENT: &str = "—";
 
+/// Shown instead of the include and exclude actions while a cleanup run is moving files (ADR-0099).
+pub const DECISIONS_WAIT: &str = "A cleanup is running: include and exclude wait until it ends, so nothing it checked changes under it.";
+
 // ---- revealing files ----------------------------------------------------------------------------------
 
 /// Asks the platform file manager to show a file (never opens or changes it).
@@ -381,6 +384,11 @@ impl GalleryInspector {
         let Some(d) = self.detail() else {
             return;
         };
+        if self.source.cleanup_running() {
+            self.last_error = Some(DECISIONS_WAIT.to_owned());
+            cx.notify();
+            return;
+        }
         let id = d.id;
         let reason = self.reason.read(cx).value().trim().to_owned();
         let reason = (!reason.is_empty() && decision == Some(Decision::Exclude)).then_some(reason);
@@ -1250,7 +1258,17 @@ impl Render for GalleryInspector {
                     .px(Tokens::space(1.0))
                     .pt(Tokens::space(2.0))
                     .gap(Tokens::space(2.0));
-                if shown_in_library {
+                if self.source.cleanup_running() {
+                    // ADR-0099: no decision changes under a running cleanup.
+                    decide = decide.child(
+                        div()
+                            .id("inspector-cleanup-running")
+                            .test_support()
+                            .text_size(Tokens::text_xs())
+                            .text_color(colors.warning)
+                            .child(DECISIONS_WAIT),
+                    );
+                } else if shown_in_library {
                     decide = decide
                         .child(Input::new(&self.reason).small())
                         .child(action_chip(
@@ -1271,7 +1289,7 @@ impl Render for GalleryInspector {
                         |this, cx| this.decide(Some(Decision::Include), cx),
                     ));
                 }
-                if d.decision.is_some() {
+                if d.decision.is_some() && !self.source.cleanup_running() {
                     decide = decide.child(action_chip(
                         "inspector-undecide",
                         "Use the classifier's verdict",

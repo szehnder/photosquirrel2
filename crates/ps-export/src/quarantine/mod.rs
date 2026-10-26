@@ -62,6 +62,20 @@ pub trait CleanupJournal {
     fn record(&mut self, file: FileId, state: MoveState, note: Option<String>) -> io::Result<()>;
 }
 
+/// What decides whether a planned file is still safe to move can change while a run is going (a group edit, an
+/// exclusion, a regroup): [`run`] compares [`Recheck::generation`] before every move and, when it changed, asks
+/// [`Recheck::holds`] again for the files still to move (ADR-0099). Implemented over the catalog in `ps-service`.
+pub trait Recheck {
+    /// A counter that changes after every committed write that can change a file's safety.
+    fn generation(&self) -> u64;
+    /// The files of `planned` that are not safe to move by the dispositions of now, with why
+    /// ([`unsafe_now`]). An error leaves the file being checked in place (skipped, never moved).
+    fn holds(
+        &self,
+        planned: &[&CleanupMove],
+    ) -> io::Result<std::collections::HashMap<FileId, SkipReason>>;
+}
+
 /// Fault injection and platform seams. Production uses [`NoQuarantineHooks`].
 pub trait QuarantineHooks: Sync {
     /// The volume `path` lives on ([`fsops::device_of`]).
