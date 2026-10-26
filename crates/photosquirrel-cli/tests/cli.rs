@@ -854,8 +854,8 @@ fn scenario_export_manual_keeper_change_after_export_copies_nothing() {
 fn scenario_completion_report_reports_name_better_copies_not_in_the_library() {
     let (data, lib, _) = exported_then_keeper_changed();
     let l = lib.to_str().unwrap();
-    let text = String::from_utf8_lossy(&ok(data.path(), &["report", "--library", l]).stdout)
-        .into_owned();
+    let text =
+        String::from_utf8_lossy(&ok(data.path(), &["report", "--library", l]).stdout).into_owned();
     assert!(
         text.contains("1 better copy not in the library yet: NOT accounted for")
             && text.contains("export run --upgrade")

@@ -687,7 +687,9 @@ mod tests {
         release_tx.send(()).unwrap();
         // The abandoned thread ends and is no longer counted.
         let t = std::time::Instant::now();
-        while ABANDONED.load(Ordering::Acquire) > 0 && t.elapsed() < std::time::Duration::from_secs(5) {
+        while ABANDONED.load(Ordering::Acquire) > 0
+            && t.elapsed() < std::time::Duration::from_secs(5)
+        {
             std::thread::yield_now();
         }
         assert_eq!(ABANDONED.load(Ordering::Acquire), 0);

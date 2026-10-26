@@ -797,10 +797,7 @@ fn path_row(
     cx: &mut Context<'_, GalleryInspector>,
 ) -> AnyElement {
     let shown = path.as_deref().map(|p| {
-        crate::views::kit::path_ellipsis(
-            &crate::views::kit::display_path(Path::new(p)),
-            PATH_CHARS,
-        )
+        crate::views::kit::path_ellipsis(&crate::views::kit::display_path(Path::new(p)), PATH_CHARS)
     });
     row_copying(id, label, shown, path, ValueStyle::Text, cx)
 }

@@ -261,7 +261,11 @@ pub fn check_needed(program: &str, needed: &[String]) -> Result<()> {
     let bad: Vec<&String> = needed
         .iter()
         .filter(|n| {
-            let file = n.rsplit(['/', '\\']).next().unwrap_or(n).to_ascii_lowercase();
+            let file = n
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(n)
+                .to_ascii_lowercase();
             NEEDED_DENY.iter().any(|d| file.contains(d))
         })
         .collect();
@@ -1131,7 +1135,9 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
                 .arg("-L")
                 .arg(&path)
                 .output()
-                .context("otool (Xcode command line tools) is needed to check the macOS programs")?;
+                .context(
+                    "otool (Xcode command line tools) is needed to check the macOS programs",
+                )?;
             if !out.status.success() {
                 bail!(
                     "otool -L {}: {}",
@@ -2095,7 +2101,13 @@ mod tests {
             "{err}"
         );
         // Names containing a deny word anywhere, not only at the start (gate review fix 10).
-        for name in ["rust-ffmpeg-sys", "my-hevc-decoder", "x265-rs", "rs-libde265", "safe-heif-sys"] {
+        for name in [
+            "rust-ffmpeg-sys",
+            "my-hevc-decoder",
+            "x265-rs",
+            "rs-libde265",
+            "safe-heif-sys",
+        ] {
             assert!(
                 check_hevc_free(&format!("{name} v1.0.0\n")).is_err(),
                 "{name}"
@@ -2119,15 +2131,34 @@ mod tests {
         // macOS `otool -L` and Windows imports go through the same check.
         let otool = "/x/photosquirrel-cli:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n\t/opt/homebrew/lib/libheif.1.dylib (compatibility version 1.0.0)\n";
         let libs = otool_libs(otool);
-        assert_eq!(libs, ["/usr/lib/libSystem.B.dylib", "/opt/homebrew/lib/libheif.1.dylib"]);
+        assert_eq!(
+            libs,
+            [
+                "/usr/lib/libSystem.B.dylib",
+                "/opt/homebrew/lib/libheif.1.dylib"
+            ]
+        );
         assert!(check_needed("photosquirrel-cli", &libs).is_err());
-        assert!(check_needed("photosquirrel.exe", &["KERNEL32.dll".into(), "avcodec-61.dll".into()]).is_err());
+        assert!(
+            check_needed(
+                "photosquirrel.exe",
+                &["KERNEL32.dll".into(), "avcodec-61.dll".into()]
+            )
+            .is_err()
+        );
         assert!(check_needed("photosquirrel.exe", &["libde265.dll".into()]).is_err());
-        assert!(check_needed("photosquirrel.exe", &["KERNEL32.dll".into(), "ole32.dll".into()]).is_ok());
+        assert!(
+            check_needed(
+                "photosquirrel.exe",
+                &["KERNEL32.dll".into(), "ole32.dll".into()]
+            )
+            .is_ok()
+        );
         // The graph of the current release is free of HEVC decoders, by name and by `links`.
         let tree = shipped_tree(&root()).expect("cargo tree");
         check_hevc_free(&tree).expect("no HEVC decoder");
-        check_hevc_links(&tree, &cargo_metadata(&root()).expect("metadata")).expect("no HEVC links");
+        check_hevc_links(&tree, &cargo_metadata(&root()).expect("metadata"))
+            .expect("no HEVC links");
         // And a program of this build needs no HEIF library (this test binary links what the programs link
         // from the workspace's C code: libc and friends only).
         #[cfg(target_os = "linux")]
@@ -2174,7 +2205,8 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 10, "{checked} manifests");
-        let decoders = fs::read_to_string(root().join("crates/ps-media/src/decoders.rs")).expect("src");
+        let decoders =
+            fs::read_to_string(root().join("crates/ps-media/src/decoders.rs")).expect("src");
         assert!(decoders.contains(
             "#[cfg(any(test, feature = \"test-support\", debug_assertions))]\npub mod fake {"
         ));

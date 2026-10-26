@@ -312,7 +312,9 @@ impl HeifLib for SystemLibheif {
             // The area cap, from the primary image's declared size, before anything is decoded.
             let (w, h) = ((self.handle_width)(handle), (self.handle_height)(handle));
             if w <= 0 || h <= 0 || (w as u64) * (h as u64) > MAX_PIXELS {
-                return Err(format!("unsupported image size {w}x{h} (over the decode cap)"));
+                return Err(format!(
+                    "unsupported image size {w}x{h} (over the decode cap)"
+                ));
             }
             let mut img = std::ptr::null_mut();
             (self.decode_image)(

@@ -132,7 +132,9 @@ fn scenario_cleanup_cleanup_never_moves_a_better_copy_that_is_not_in_the_library
         plan.moves.iter().map(|m| m.file).collect::<Vec<_>>(),
         vec![heic]
     );
-    svc.cleanups().discard(plan.summary.unwrap().run.id).unwrap();
+    svc.cleanups()
+        .discard(plan.summary.unwrap().run.id)
+        .unwrap();
     let plan = svc.cleanups().plan(SourceId(1), None, None).unwrap();
     assert_eq!(
         plan.moves.iter().map(|m| m.file).collect::<Vec<_>>(),
@@ -147,16 +149,18 @@ fn scenario_cleanup_cleanup_never_moves_a_better_copy_that_is_not_in_the_library
 /// The inspector's words for a superseded HEIC: never "its best copy" for the lesser JPEG.
 #[test]
 fn scenario_photo_inspector_better_copy_not_in_the_library_is_explained() {
-    let why = ps_service::library::disposition_reason(
-        Disposition::Superseded,
-        None,
-        None,
-        None,
+    let why = ps_service::library::disposition_reason(Disposition::Superseded, None, None, None);
+    assert!(!why.contains("best copy"), "{why}");
+    assert!(
+        why.contains("not in the library yet") && why.contains("--upgrade"),
+        "{why}"
     );
-    assert!(!why.contains("best copy"), "{why}");
-    assert!(why.contains("not in the library yet") && why.contains("--upgrade"), "{why}");
     let p = ps_model::RelPath::from_bytes(b"2019/IMG_0001.jpg".to_vec()).unwrap();
-    let why = ps_service::library::disposition_reason(Disposition::Superseded, None, Some(&p), None);
+    let why =
+        ps_service::library::disposition_reason(Disposition::Superseded, None, Some(&p), None);
     assert!(!why.contains("best copy"), "{why}");
-    assert!(why.contains("2019/IMG_0001.jpg") && why.contains("lesser copy"), "{why}");
+    assert!(
+        why.contains("2019/IMG_0001.jpg") && why.contains("lesser copy"),
+        "{why}"
+    );
 }

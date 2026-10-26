@@ -202,7 +202,10 @@ fn export_truncated_heic(decoders: Decoders) -> u64 {
     // The copy is the truncated file, byte for byte.
     let copied: Vec<_> = walk(&library)
         .into_iter()
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("heic")))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("heic"))
+        })
         .collect();
     assert_eq!(copied.len() as u64, r.copied, "{copied:?}");
     for p in &copied {

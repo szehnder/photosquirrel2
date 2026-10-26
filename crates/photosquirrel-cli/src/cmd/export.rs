@@ -490,7 +490,7 @@ fn print_report(o: &ReportOut) {
         let f = &s.counts.files;
         println!(
             "source {} {}: {}  exported {}, covered {}, excluded {}, pending {}, unreadable {}, missing {}, \
-             quarantined {}",
+             quarantined {}, superseded {}",
             s.source,
             s.root.display(),
             s.badge,
@@ -500,7 +500,8 @@ fn print_report(o: &ReportOut) {
             f["pending"],
             f["unreadable"],
             f["missing"],
-            f["quarantined"]
+            f["quarantined"],
+            f["superseded"]
         );
         if f["superseded"] > 0 {
             println!(

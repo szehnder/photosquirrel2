@@ -271,7 +271,10 @@ fn debian_family_has_hevc_plugin(os: &OsInfo, f: &Finding) -> bool {
 /// `1.12.0` -> (1, 12).
 fn parse_version(v: &str) -> Option<(u32, u32)> {
     let mut it = v.split('.');
-    Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+    Some((
+        it.next()?.trim().parse().ok()?,
+        it.next()?.trim().parse().ok()?,
+    ))
 }
 
 /// Linux and other Unix systems: the distribution's libheif with an HEVC decoder.

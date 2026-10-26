@@ -237,7 +237,9 @@ fn stacked(c: &CompletionCounts, colors: &Colors) -> Div {
                     .when(
                         matches!(
                             d,
-                            Disposition::Pending | Disposition::Unreadable | Disposition::Superseded
+                            Disposition::Pending
+                                | Disposition::Unreadable
+                                | Disposition::Superseded
                         ),
                         |seg| seg.min_w(Tokens::size(10.0)),
                     )

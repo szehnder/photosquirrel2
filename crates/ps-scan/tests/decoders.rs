@@ -401,7 +401,11 @@ fn scenario_decoder_support_corrupt_heic_or_avif_keeps_a_placeholder() {
         let t = env.s().thumbs().get(&r.identity.unwrap()).unwrap().unwrap();
         assert_eq!(t.kind, ThumbKind::Placeholder, "{rel}");
         assert!(
-            t.placeholder.as_ref().unwrap().note.contains("could not be decoded"),
+            t.placeholder
+                .as_ref()
+                .unwrap()
+                .note
+                .contains("could not be decoded"),
             "{rel}: {:?}",
             t.placeholder
         );
@@ -434,7 +438,11 @@ impl ps_media::StillDecoder for Counting {
         "counting"
     }
 
-    fn decode(&self, _: &[u8], _: u32) -> Result<ps_media::RgbImage, ps_media::decode::DecodeError> {
+    fn decode(
+        &self,
+        _: &[u8],
+        _: u32,
+    ) -> Result<ps_media::RgbImage, ps_media::decode::DecodeError> {
         use std::sync::atomic::Ordering;
         let n = self.now.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(n, Ordering::SeqCst);
@@ -523,13 +531,19 @@ fn scenario_incremental_rescan_content_changed_under_an_unchanged_fingerprint_is
     let st = std::fs::metadata(&path).unwrap();
     ps_fixtures::writer::rewrite_keeping_stat(&path, &other).unwrap();
     let st2 = std::fs::metadata(&path).unwrap();
-    assert_eq!(ps_scan::fs::fingerprint(&st), ps_scan::fs::fingerprint(&st2));
+    assert_eq!(
+        ps_scan::fs::fingerprint(&st),
+        ps_scan::fs::fingerprint(&st2)
+    );
     let fake = FakeHeif::new();
     env.reopen(with(fake));
     let s = env.scan(&[id]);
     completed(&s);
     let after = env.files(id)["DCIM/IMG_0001.HEIC"].clone();
-    assert_ne!(after.identity, before.identity, "the new content's identity");
+    assert_ne!(
+        after.identity, before.identity,
+        "the new content's identity"
+    );
     assert_eq!(
         after.identity,
         Some(ps_hash::identity_from_buffer(&other)),
@@ -539,6 +553,11 @@ fn scenario_incremental_rescan_content_changed_under_an_unchanged_fingerprint_is
     assert!(after.hashes.is_some(), "decoded as the changed file");
     assert_eq!(after.stage, Stage::Thumbed);
     // Its thumbnail is stored under the new identity.
-    let t = env.s().thumbs().get(&after.identity.unwrap()).unwrap().unwrap();
+    let t = env
+        .s()
+        .thumbs()
+        .get(&after.identity.unwrap())
+        .unwrap()
+        .unwrap();
     assert_eq!(t.kind, ThumbKind::Image);
 }

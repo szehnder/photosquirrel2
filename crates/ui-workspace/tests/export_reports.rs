@@ -547,7 +547,8 @@ fn reports_view_lists_better_copies_not_in_the_library(cx: &mut TestAppContext) 
                 let d = svc.groups().show(g.id).ok()?;
                 // Another content than the exported keeper: a derivative (an exact copy is in the library).
                 let m = d.members.iter().find(|m| {
-                    !d.keeper_set.contains(&m.file) && m.edge == ps_service::groups::MemberEdge::Derivative
+                    !d.keeper_set.contains(&m.file)
+                        && m.edge == ps_service::groups::MemberEdge::Derivative
                 })?;
                 Some((d.id, m.file))
             })

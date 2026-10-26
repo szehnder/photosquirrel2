@@ -435,7 +435,13 @@ fn scenario_export_live_photo_upgrade_keeps_the_pair() {
 #[test]
 fn scenario_export_live_photo_video_joins_its_covered_still() {
     let mut s = Sources::new("live-covered", 1);
-    let mut jpg = s.add(0, "Web/IMG_1 copy.JPG", &bytes(70, 2000), 0, day(2020, 1, 1));
+    let mut jpg = s.add(
+        0,
+        "Web/IMG_1 copy.JPG",
+        &bytes(70, 2000),
+        0,
+        day(2020, 1, 1),
+    );
     jpg.content_identifier = Some("CID-LIVE-2".into());
     let mov = live_file(&mut s, 0, "DCIM/IMG_1.MOV", 71, 7000);
     let mut heic = live_file(&mut s, 0, "DCIM/IMG_1.HEIC", 72, 5000);
@@ -569,7 +575,10 @@ fn scenario_completion_report_better_copy_not_in_the_library_is_not_accounted_fo
     assert_eq!(by[&u.jpg.file].disposition, Disposition::Exported);
     assert_eq!(by[&u.jpg.file].library_path, jpg_path);
     assert_eq!(by[&u.heic.file].disposition, Disposition::Superseded);
-    assert_eq!(by[&u.heic.file].library_path, jpg_path, "names the lesser copy");
+    assert_eq!(
+        by[&u.heic.file].library_path, jpg_path,
+        "names the lesser copy"
+    );
     assert!(!Disposition::Superseded.is_accounted_safe());
     assert_eq!(by[&other.file].disposition, Disposition::Covered);
     assert_eq!(by[&other.file].library_path, jpg_path);
@@ -580,7 +589,10 @@ fn scenario_completion_report_better_copy_not_in_the_library_is_not_accounted_fo
         .map(|s| s.counts.files_of(Disposition::Superseded))
         .sum();
     assert_eq!(total, 1);
-    let heic_source = s.iter().find(|s| s.source == u.heic.source).expect("source");
+    let heic_source = s
+        .iter()
+        .find(|s| s.source == u.heic.source)
+        .expect("source");
     assert_eq!(
         heic_source.badge,
         ps_export::Badge::Outstanding {

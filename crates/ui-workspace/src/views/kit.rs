@@ -518,14 +518,23 @@ mod tests {
             path_ellipsis("~/heic/iPhone/DCIM/h01_8bit.heic", 24),
             "~/…/DCIM/h01_8bit.heic"
         );
-        assert_eq!(path_ellipsis("~/heic/h01_8bit.heic", 24), "~/heic/h01_8bit.heic");
+        assert_eq!(
+            path_ellipsis("~/heic/h01_8bit.heic", 24),
+            "~/heic/h01_8bit.heic"
+        );
         assert_eq!(
             path_ellipsis("/media/backup/Family Photos/2019/Holiday/IMG_0001.HEIC", 32),
             "/…/2019/Holiday/IMG_0001.HEIC"
         );
         let long = path_ellipsis("~/a/b/an extremely long file name of a photo.heic", 24);
-        assert!(long.starts_with("…/") && long.chars().count() <= 24, "{long}");
-        assert_eq!(path_ellipsis("C:\\Users\\me\\Pictures\\2019\\IMG_1.JPG", 20), "C:\\…\\2019\\IMG_1.JPG");
+        assert!(
+            long.starts_with("…/") && long.chars().count() <= 24,
+            "{long}"
+        );
+        assert_eq!(
+            path_ellipsis("C:\\Users\\me\\Pictures\\2019\\IMG_1.JPG", 20),
+            "C:\\…\\2019\\IMG_1.JPG"
+        );
         let m = middle_ellipsis("Family/Photos/2019/2019-08 Holiday in Portugal", 24);
         assert_eq!(m.chars().count(), 24);
         assert!(m.contains('…'));

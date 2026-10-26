@@ -519,9 +519,13 @@ fn skips_are_visible_in_a_passing_run() {
     assert!(out.status.success(), "{out:?}");
     let err = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(err.contains("SKIPPED: skip_probe_child: probe reason"), "{err}");
     assert!(
-        stdout.contains("::warning title=real-decoder test skipped::skip_probe_child: probe reason"),
+        err.contains("SKIPPED: skip_probe_child: probe reason"),
+        "{err}"
+    );
+    assert!(
+        stdout
+            .contains("::warning title=real-decoder test skipped::skip_probe_child: probe reason"),
         "{stdout}"
     );
     // With the require flag the skip is a failure.
@@ -762,11 +766,22 @@ fn scenario_decoder_support_oldest_supported_library_decodes() {
     assert!(rot.height > rot.width, "{}x{}", rot.width, rot.height);
     let look = dec.decode(ps_sysdecode::LOOK_HEIC, 640).unwrap();
     let h = ps_hash::perceptual_hash(
-        &ps_hash::ImageView::new(look.width, look.height, ps_hash::PixelLayout::Rgb8, &look.data)
-            .unwrap(),
+        &ps_hash::ImageView::new(
+            look.width,
+            look.height,
+            ps_hash::PixelLayout::Rgb8,
+            &look.data,
+        )
+        .unwrap(),
     );
-    assert!((h.phash ^ ps_sysdecode::LOOK_PHASH).count_ones() <= 4, "{h:?}");
-    assert!((h.dhash ^ ps_sysdecode::LOOK_DHASH).count_ones() <= 4, "{h:?}");
+    assert!(
+        (h.phash ^ ps_sysdecode::LOOK_PHASH).count_ones() <= 4,
+        "{h:?}"
+    );
+    assert!(
+        (h.dhash ^ ps_sysdecode::LOOK_DHASH).count_ones() <= 4,
+        "{h:?}"
+    );
 }
 
 /// libheif's size limit by version (gate review fix 9): up to 1.17 the limit is per side, so it gets the area cap
@@ -791,13 +806,19 @@ fn scenario_decoder_support_panoramas_pass_the_heif_library_size_limit() {
     if let Err(e) = dec.decode(&pano, 512) {
         let m = e.to_string();
         assert!(
-            !m.contains("Security limit") && !m.contains("exceeds the maximum") && !m.contains("decode cap"),
+            !m.contains("Security limit")
+                && !m.contains("exceeds the maximum")
+                && !m.contains("decode cap"),
             "{m}"
         );
     }
     // Over the area cap: refused by our check before decoding.
-    let huge = ps_fixtures::heif::heif_with_size(ps_sysdecode::SELFTEST_HEIC, 20_000, 20_000).unwrap();
-    let e = dec.decode(&huge, 512).expect_err("over the cap").to_string();
+    let huge =
+        ps_fixtures::heif::heif_with_size(ps_sysdecode::SELFTEST_HEIC, 20_000, 20_000).unwrap();
+    let e = dec
+        .decode(&huge, 512)
+        .expect_err("over the cap")
+        .to_string();
     assert!(e.contains("decode cap") || e.contains("limit"), "{e}");
 }
 
@@ -832,7 +853,8 @@ fn scenario_decoder_support_ubuntu_derivatives_follow_their_base_release() {
     );
     assert_eq!(commands(&guidance(&lmde, &Finding::NoLibrary)), built_in);
     // Ubuntu's own release by codename too.
-    let noble = OsInfo::linux("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\nVERSION_CODENAME=noble\n");
+    let noble =
+        OsInfo::linux("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\nVERSION_CODENAME=noble\n");
     assert_eq!(noble.ubuntu_codename.as_deref(), Some("noble"));
     assert_eq!(commands(&guidance(&noble, &Finding::NoLibrary)), plugin);
     // A loaded libheif without HEVC: its version decides (1.12 has the decoder built in, 1.17 a plugin).
