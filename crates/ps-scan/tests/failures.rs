@@ -11,8 +11,7 @@ use ps_model::{ProgressSnapshot, SourceId, Stage, StageCounts};
 fn chmod(p: &Path, mode: u32) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        ps_fixtures::scratch::set_mode(p, mode).expect("chmod");
     }
     #[cfg(not(unix))]
     let _ = (p, mode);
@@ -173,10 +172,11 @@ fn scenario_scanning_recent_lists_bounded() {
             80,
             &ps_fixtures::media::ExifSpec::canon_5d(),
         );
-        std::fs::write(root.join(format!("photos/p{i:03}.jpg")), &jpeg).expect("write");
+        ps_fixtures::scratch::write(root.join(format!("photos/p{i:03}.jpg")), &jpeg)
+            .expect("write");
         if i < 100 {
             let p = root.join(format!("locked/l{i:03}.jpg"));
-            std::fs::write(&p, &jpeg).expect("write");
+            ps_fixtures::scratch::write(&p, &jpeg).expect("write");
             chmod(&p, 0o000);
         }
     }
@@ -220,15 +220,15 @@ fn truncated_and_corrupt_jpegs_are_failed_not_hashed() {
     let root = tmp.path().join("card");
     std::fs::create_dir_all(&root).expect("mkdir");
     let full = fx::jpeg(2400, 1800, 21, 90);
-    std::fs::write(root.join("intact.jpg"), &full).expect("write");
-    std::fs::write(
+    ps_fixtures::scratch::write(root.join("intact.jpg"), &full).expect("write");
+    ps_fixtures::scratch::write(
         root.join("truncated.jpg"),
         fx::truncate(&full, full.len() * 99 / 100),
     )
     .expect("write");
     // Small originals (old cameras, web exports) decode through zune-jpeg at full size: the same rule applies.
     let small = fx::jpeg(800, 600, 22, 90);
-    std::fs::write(
+    ps_fixtures::scratch::write(
         root.join("small-truncated.jpg"),
         fx::truncate(&small, small.len() * 99 / 100),
     )
@@ -239,7 +239,7 @@ fn truncated_and_corrupt_jpegs_are_failed_not_hashed() {
         .expect("SOS");
     let mut garbage = full[..sos + 14].to_vec();
     garbage.extend_from_slice(&fx::random_bytes(5 * 1024, 4));
-    std::fs::write(root.join("garbage.jpg"), garbage).expect("write");
+    ps_fixtures::scratch::write(root.join("garbage.jpg"), garbage).expect("write");
     let e = env();
     let id = e.add(&root);
     completed(&e.scan(&[id]));

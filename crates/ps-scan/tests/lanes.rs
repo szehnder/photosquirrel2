@@ -127,13 +127,8 @@ fn padded_jpegs(dir: &Path, n: usize, size: u64, seed: u64) {
             &ps_fixtures::media::ExifSpec::canon_5d(),
         );
         let p = dir.join(format!("p{i:03}.jpg"));
-        std::fs::write(&p, &jpeg).expect("write");
-        std::fs::File::options()
-            .write(true)
-            .open(&p)
-            .expect("open")
-            .set_len(size)
-            .expect("pad");
+        ps_fixtures::scratch::write(&p, &jpeg).expect("write");
+        ps_fixtures::scratch::pad(&p, size).expect("pad");
     }
 }
 

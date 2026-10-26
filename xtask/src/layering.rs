@@ -94,7 +94,9 @@ pub fn check(root: &Path) -> Result<()> {
         .map(|id| (names[id].clone(), id.to_string()))
         .collect();
 
+    // The scanner's sources and its tests (which arrange temp corpora through `ps_fixtures::scratch`).
     let mut violations = read_only_violations(&root.join("crates/ps-scan/src"))?;
+    violations.extend(read_only_violations(&root.join("crates/ps-scan/tests"))?);
     violations.extend(move_violations(root)?);
     for (name, id) in &members {
         if UI.contains(&name.as_str()) {
@@ -402,6 +404,12 @@ pub const MOVE_ALLOWED: &[(&str, &[&str], &str)] = &[
         "crates/ps-export/src/quarantine/",
         &["move_no_replace"],
         "cleanup and undo call the quarantine move primitive",
+    ),
+    (
+        "crates/ps-fixtures/src/scratch.rs",
+        &["fs::rename", "remove_file", "hard_link", "fs::copy"],
+        "test corpora in temporary folders only (`ps-scan`'s tests arrange them here so the scanner's read-only \
+         check covers its tests too)",
     ),
     (
         "crates/photosquirrel-cli/src/control.rs",
@@ -1137,5 +1145,26 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/ps-scan/src");
         let v = read_only_violations(&root).expect("scan");
         assert!(v.is_empty(), "{v:#?}");
+    }
+}
+
+#[cfg(test)]
+mod scan_tests_read_only {
+    use super::*;
+
+    /// The read-only rule holds in `ps-scan`'s tests too (re-review fix 11): their temp corpora are arranged
+    /// through `ps_fixtures::scratch`, and the check rejects a direct write there.
+    #[test]
+    fn ps_scan_tests_pass_the_read_only_check() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/ps-scan/tests");
+        let v = read_only_violations(&root).expect("scan");
+        assert!(v.is_empty(), "{v:#?}");
+        let bad = "fn f(p: &Path) {\n    std::fs::File::options()\n        .write(true)\n        .open(p)\n        .unwrap()\n        .set_len(9)\n        .unwrap();\n}\n";
+        let v = forbidden_calls("crates/ps-scan/tests/lanes.rs", bad);
+        assert!(
+            v.iter().any(|x| x.contains("set_len("))
+                && v.iter().any(|x| x.contains(".write(true)")),
+            "{v:?}"
+        );
     }
 }

@@ -27,11 +27,7 @@ fn utc_opts() -> ScanOptions {
 }
 
 fn set_mtime(path: &Path, t: SystemTime) {
-    let f = std::fs::File::options()
-        .write(true)
-        .open(path)
-        .expect("open for mtime");
-    f.set_modified(t).expect("set mtime");
+    ps_fixtures::scratch::set_mtime(path, t).expect("set mtime");
 }
 
 fn at(y: i32, m: u8, d: u8) -> SystemTime {
@@ -54,7 +50,8 @@ fn write_dated_source(root: &Path) {
     for (i, rel) in DATED.iter().chain([&UNDATED]).enumerate() {
         let p = rel.split('/').fold(root.to_path_buf(), |p, c| p.join(c));
         std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
-        std::fs::write(&p, ps_fixtures::media::jpeg(640, 480, 300 + i as u64, 85)).expect("write");
+        ps_fixtures::scratch::write(&p, ps_fixtures::media::jpeg(640, 480, 300 + i as u64, 85))
+            .expect("write");
         set_mtime(&p, at(2024, 3, 1));
     }
     let spec = ps_fixtures::media::ExifSpec {
@@ -62,7 +59,7 @@ fn write_dated_source(root: &Path) {
         ..ps_fixtures::media::ExifSpec::canon_5d()
     };
     let p = root.join("2019-07-04 Beach").join("IMG_0007.JPG");
-    std::fs::write(
+    ps_fixtures::scratch::write(
         &p,
         ps_fixtures::media::jpeg_with_exif(640, 480, 399, 85, &spec),
     )
@@ -300,7 +297,7 @@ fn corpus_with_stripped_in(dst: &Path, sub: &str) -> Vec<(String, String)> {
         let from_abs = dst.join(&f.path);
         let to_abs = dst.join(&to);
         std::fs::create_dir_all(to_abs.parent().expect("parent")).expect("mkdir");
-        std::fs::rename(&from_abs, &to_abs).expect("move inside the test copy");
+        ps_fixtures::scratch::rename(&from_abs, &to_abs).expect("move inside the test copy");
         moved.push((f.path.clone(), to));
     }
     moved
@@ -409,7 +406,7 @@ fn write_old_rows_source(root: &Path) -> Vec<(String, u32)> {
             20..40 => (format!("narrow_{i:02}.jpg"), 150, 1000),
             _ => (format!("icon_{i:02}.jpg"), 64, 64),
         };
-        std::fs::write(
+        ps_fixtures::scratch::write(
             root.join(&name),
             ps_fixtures::media::jpeg(w, h, 500 + i, 97),
         )
@@ -669,7 +666,7 @@ fn date_facts_rebuild_the_same_inputs_as_the_full_metadata() {
         offset_time_original: Some("+09:00".into()),
         ..ps_fixtures::media::ExifSpec::canon_5d()
     };
-    std::fs::write(
+    ps_fixtures::scratch::write(
         root.join("Misc").join("offset.jpg"),
         ps_fixtures::media::jpeg_with_exif(640, 480, 401, 85, &spec),
     )
@@ -679,7 +676,7 @@ fn date_facts_rebuild_the_same_inputs_as_the_full_metadata() {
             keyed_offset_min: keyed,
             ..ps_fixtures::media::MovieSpec::iphone()
         };
-        std::fs::write(
+        ps_fixtures::scratch::write(
             root.join("Misc").join(name),
             ps_fixtures::media::movie(&spec),
         )

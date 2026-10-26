@@ -67,7 +67,7 @@ fn scenario_sources_adding_writes_nothing_to_source() {
     assert_eq!(snapshot_tree(&root), before, "adding and fingerprinting");
     // Re-linking and removing read only as well.
     let moved = tmp.path().join("drive-moved");
-    std::fs::rename(&root, &moved).expect("move drive");
+    ps_fixtures::scratch::rename(&root, &moved).expect("move drive");
     e.s().refresh_sources().expect("refresh");
     let before_moved = snapshot_tree(&moved);
     e.s().relink_source(id, &moved).expect("relink");
@@ -94,7 +94,7 @@ fn scenario_sources_paths_are_relative() {
         90,
         &ps_fixtures::media::ExifSpec::canon_5d(),
     );
-    std::fs::write(root.join("2010/a.jpg"), &jpeg).expect("write");
+    ps_fixtures::scratch::write(root.join("2010/a.jpg"), &jpeg).expect("write");
     let e = env();
     let id = e.add(&root);
     completed(&e.scan(&[id]));
@@ -116,7 +116,8 @@ fn scenario_sources_remounted_drive_relinked() {
     completed(&e.scan(&[id]));
     let before = e.files(id);
     // The drive comes back at another mount point.
-    std::fs::rename(tmp.path().join("usb1"), tmp.path().join("usb2")).expect("remount");
+    ps_fixtures::scratch::rename(tmp.path().join("usb1"), tmp.path().join("usb2"))
+        .expect("remount");
     let list = e.s().refresh_sources().expect("refresh");
     assert_eq!(list[0].status, SourceStatus::Offline);
     let new_root = tmp.path().join("usb2/Photos");
@@ -148,7 +149,7 @@ fn scenario_sources_wrong_drive_rejected() {
     let e = env();
     let id = e.add(&root);
     completed(&e.scan(&[id]));
-    std::fs::rename(&root, tmp.path().join("unplugged")).expect("unplug");
+    ps_fixtures::scratch::rename(&root, tmp.path().join("unplugged")).expect("unplug");
     e.s().refresh_sources().expect("refresh");
     // Another drive entirely.
     let other = corpus().root.join("drive-c");
@@ -181,7 +182,7 @@ fn scenario_sources_unplugged_source_is_offline() {
     let id = e.add(&root);
     completed(&e.scan(&[id]));
     let before = e.files(id);
-    std::fs::rename(&root, tmp.path().join("elsewhere")).expect("unplug");
+    ps_fixtures::scratch::rename(&root, tmp.path().join("elsewhere")).expect("unplug");
     let list = e.s().refresh_sources().expect("refresh");
     assert_eq!(list[0].status, SourceStatus::Offline);
     let after = e.files(id);

@@ -196,7 +196,6 @@ fn scenario_scanning_read_only_tree_scans_fully() {
 fn set_tree_readonly(root: &std::path::Path, ro: bool) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         let mut dirs = vec![root.to_path_buf()];
         let mut all_dirs = Vec::new();
         while let Some(d) = dirs.pop() {
@@ -206,8 +205,7 @@ fn set_tree_readonly(root: &std::path::Path, ro: bool) {
                     dirs.push(p);
                 } else {
                     let mode = if ro { 0o444 } else { 0o644 };
-                    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode))
-                        .expect("chmod file");
+                    ps_fixtures::scratch::set_mode(&p, mode).expect("chmod file");
                 }
             }
             all_dirs.push(d);
@@ -215,7 +213,7 @@ fn set_tree_readonly(root: &std::path::Path, ro: bool) {
         // Folders last (children first when making them writable again does not matter for chmod).
         for d in all_dirs {
             let mode = if ro { 0o555 } else { 0o755 };
-            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).expect("chmod dir");
+            ps_fixtures::scratch::set_mode(&d, mode).expect("chmod dir");
         }
     }
     #[cfg(not(unix))]

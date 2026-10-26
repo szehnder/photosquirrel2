@@ -75,13 +75,9 @@ pub fn copy_tree(src: &Path, dst: &Path) {
         if ft.is_dir() {
             copy_tree(&e.path(), &to);
         } else if ft.is_file() {
-            std::fs::copy(e.path(), &to).expect("copy");
+            ps_fixtures::scratch::copy(e.path(), &to).expect("copy");
             let m = e.metadata().expect("meta").modified().expect("mtime");
-            let f = std::fs::File::options()
-                .write(true)
-                .open(&to)
-                .expect("open copy");
-            f.set_modified(m).expect("set mtime");
+            ps_fixtures::scratch::set_mtime(&to, m).expect("set mtime");
         }
     }
 }

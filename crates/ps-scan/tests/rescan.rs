@@ -55,7 +55,7 @@ fn new_jpeg(seed: u64) -> Vec<u8> {
 }
 
 fn write(path: &Path, bytes: &[u8]) {
-    std::fs::write(path, bytes).expect("write");
+    ps_fixtures::scratch::write(path, bytes).expect("write");
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn scenario_incremental_rescan_diff_counts_before_analysis() {
     for (i, rel) in p.iter().take(2).enumerate() {
         write(&f.root.join(rel), &new_jpeg(2000 + i as u64));
     }
-    std::fs::remove_file(f.root.join(&p[2])).expect("delete");
+    ps_fixtures::scratch::remove(f.root.join(&p[2])).expect("delete");
 
     // Slow readers so the diff is observable before any file is opened.
     let mut env = f.env;
@@ -163,7 +163,7 @@ fn scenario_incremental_rescan_missing_file_kept_in_history() {
     let f = scanned(ScanOptions::default());
     let rel = photos(&f).into_iter().next().expect("a photo");
     let rec = f.env.files(f.id)[&rel].clone();
-    std::fs::remove_file(f.root.join(&rel)).expect("delete");
+    ps_fixtures::scratch::remove(f.root.join(&rel)).expect("delete");
     let summary = f.env.scan(&[f.id]);
     completed(&summary);
     assert_eq!(summary.diff.missing, 1);
@@ -201,11 +201,11 @@ fn scenario_incremental_rescan_returning_file_restored() {
     let rec = f.env.files(f.id)[&rel].clone();
     let path = f.root.join(&rel);
     let saved = f.root.parent().expect("parent").join("saved.jpg");
-    std::fs::rename(&path, &saved).expect("take away");
+    ps_fixtures::scratch::rename(&path, &saved).expect("take away");
     completed(&f.env.scan(&[f.id]));
     assert!(f.env.files(f.id)[&rel].missing_since_ms.is_some());
     // Restored with its original size and modification time.
-    std::fs::rename(&saved, &path).expect("restore");
+    ps_fixtures::scratch::rename(&saved, &path).expect("restore");
     f.env.instr.reset();
     let summary = f.env.scan(&[f.id]);
     completed(&summary);
@@ -225,7 +225,7 @@ fn scenario_incremental_rescan_moved_file_keeps_history() {
     let rec = f.env.files(f.id)[&rel].clone();
     std::fs::create_dir_all(f.root.join("Moved Here")).expect("mkdir");
     let to = "Moved Here/renamed.jpg";
-    std::fs::rename(f.root.join(&rel), f.root.join(to)).expect("move");
+    ps_fixtures::scratch::rename(f.root.join(&rel), f.root.join(to)).expect("move");
     let summary = f.env.scan(&[f.id]);
     completed(&summary);
     assert_eq!(summary.diff.moved, 1, "{:?}", summary.diff);
@@ -269,7 +269,7 @@ fn scenario_incremental_rescan_hash_version_bump_uses_thumbnails() {
         .collect();
     assert!(!before.is_empty());
     // The source goes offline; the upgrade must not need it.
-    std::fs::rename(&f.root, f.root.with_file_name("offline")).expect("unplug");
+    ps_fixtures::scratch::rename(&f.root, f.root.with_file_name("offline")).expect("unplug");
     f.env.s().refresh_sources().expect("refresh");
     f.env.instr.reset();
     let next = ps_hash::PERCEPTUAL_HASH_VERSION + 1;

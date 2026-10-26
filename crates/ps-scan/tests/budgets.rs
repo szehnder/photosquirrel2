@@ -75,7 +75,7 @@ fn scenario_scanning_analysis_throughput_within_budget() {
                 90,
                 &ps_fixtures::media::ExifSpec::canon_5d(),
             );
-            std::fs::write(d.join(format!("d{i:02}.jpg")), &jpeg).expect("write");
+            ps_fixtures::scratch::write(d.join(format!("d{i:02}.jpg")), &jpeg).expect("write");
         }
     });
     let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).expect("tmp");
@@ -83,7 +83,7 @@ fn scenario_scanning_analysis_throughput_within_budget() {
     for i in 0..files {
         let dir = root.join(format!("{:02}", i / 100));
         std::fs::create_dir_all(&dir).expect("mkdir");
-        std::fs::hard_link(
+        ps_fixtures::scratch::hard_link(
             distinct.join(format!("d{:02}.jpg", i % 50)),
             dir.join(format!("IMG_{i:05}.JPG")),
         )
@@ -123,7 +123,8 @@ fn scenario_incremental_rescan_no_change_rescan_under_4_s() {
             if i % 100 == 0 {
                 std::fs::create_dir_all(&dir).expect("mkdir");
             }
-            std::fs::write(dir.join(format!("f{i:06}.txt")), format!("file {i}\n")).expect("write");
+            ps_fixtures::scratch::write(dir.join(format!("f{i:06}.txt")), format!("file {i}\n"))
+                .expect("write");
         }
     });
     let e = env();

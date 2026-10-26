@@ -51,13 +51,14 @@ fn store_oriented(rgb: &[u8], dw: u32, dh: u32, o: u16) -> (Vec<u8>, u32, u32) {
 fn write_files(dir: &Path) {
     let pic = picture();
     let small = resize_rgb(&pic, 2400, 1600, 800, 533);
-    std::fs::write(dir.join("small.jpg"), encode_jpeg(&small, 800, 533, 85)).expect("jpg");
+    ps_fixtures::scratch::write(dir.join("small.jpg"), encode_jpeg(&small, 800, 533, 85))
+        .expect("jpg");
     let end = TiffSpec {
         pixels: Some(pic.clone()),
         sample: Sample::U16,
         ..TiffSpec::new(2400, 1600, 0)
     };
-    std::fs::write(dir.join("end_dir.tif"), tiff_image(&end)).expect("end_dir");
+    ps_fixtures::scratch::write(dir.join("end_dir.tif"), tiff_image(&end)).expect("end_dir");
     let lzw = TiffSpec {
         pixels: Some(pic.clone()),
         sample: Sample::U16,
@@ -65,7 +66,7 @@ fn write_files(dir: &Path) {
         predictor: true,
         ..TiffSpec::new(2400, 1600, 0)
     };
-    std::fs::write(dir.join("lzw16.tif"), tiff_image(&lzw)).expect("lzw");
+    ps_fixtures::scratch::write(dir.join("lzw16.tif"), tiff_image(&lzw)).expect("lzw");
     let pyramid = TiffSpec {
         pixels: Some(pic.clone()),
         colour: Colour::YCbCrJpeg,
@@ -73,7 +74,7 @@ fn write_files(dir: &Path) {
         levels: vec![(1200, 800), (600, 400)],
         ..TiffSpec::new(2400, 1600, 0)
     };
-    std::fs::write(dir.join("pyramid.tif"), tiff_image(&pyramid)).expect("pyramid");
+    ps_fixtures::scratch::write(dir.join("pyramid.tif"), tiff_image(&pyramid)).expect("pyramid");
     // Above 64 MB: 4200x2800 16-bit, stored rotated with orientation 8, camera EXIF, directories at the end.
     let big = resize_rgb(&pic, 2400, 1600, 4200, 2800);
     let (stored, sw, sh) = store_oriented(&big, 4200, 2800, 8);
@@ -88,14 +89,15 @@ fn write_files(dir: &Path) {
         }),
         ..TiffSpec::new(sw, sh, 0)
     };
-    std::fs::write(dir.join("large.tif"), tiff_image(&large)).expect("large");
+    ps_fixtures::scratch::write(dir.join("large.tif"), tiff_image(&large)).expect("large");
     // Above 64 MB in one 69 MB strip: refused by the bounded decoder.
     let oversized = TiffSpec {
         pixels: Some(vec![90; 4800 * 4800 * 3]),
         layout: Layout::Strips { rows: 4800 },
         ..TiffSpec::new(4800, 4800, 0)
     };
-    std::fs::write(dir.join("oversized.tif"), tiff_image(&oversized)).expect("oversized");
+    ps_fixtures::scratch::write(dir.join("oversized.tif"), tiff_image(&oversized))
+        .expect("oversized");
 }
 
 struct Scanned {
@@ -282,7 +284,7 @@ fn scenario_scanning_tiff_catalogued_without_dimensions_analysed_again() {
     let t = tiff_image(&TiffSpec::new(1600, 1200, 5));
     let size = t.len() as u64;
     assert!(size > PROBE_LIMIT);
-    std::fs::write(dir.join("scan.tif"), &t).expect("write");
+    ps_fixtures::scratch::write(dir.join("scan.tif"), &t).expect("write");
     let data = tmp.path().join("data");
     std::fs::create_dir(&data).expect("data");
     let id;
@@ -368,7 +370,7 @@ fn scenario_scanning_tiff_with_unusual_dimension_types_analysed_once() {
     std::fs::create_dir(&dir).expect("dir");
     let t = with_long8_dimensions(tiff_image(&TiffSpec::new(1600, 1200, 5)));
     assert!(t.len() as u64 > PROBE_LIMIT);
-    std::fs::write(dir.join("long8.tif"), &t).expect("write");
+    ps_fixtures::scratch::write(dir.join("long8.tif"), &t).expect("write");
     let data = tmp.path().join("data");
     std::fs::create_dir(&data).expect("data");
     let id;
