@@ -469,6 +469,32 @@ groups and does not work headless; ignoring better copies silently hides that th
    plain web URL (`https://apps.microsoft.com/detail/<id>`) is always shown next to it, in the app, the CLI and
    doctor, so a user without the Store app (or on another machine) can follow it.
 
+### D13. Re-review fixes (ADR-0096, ADR-0097, ADR-0098)
+
+The second gate review found the decisions above incomplete in four places; the owner-safe decisions are:
+
+- **Cleanup and a keeper you chose (ADR-0096, amends 0093 and 0024).** A user-chosen keeper is respected for export
+  and accounting (its group's other members are covered by it), but a member whose automatic rank (the ADR-0014
+  ranking without the override, recomputed from catalogued grouping inputs for overridden groups only) is above
+  the chosen keeper carries `better_than_keeper` and is never cleanup-eligible; plans list it as kept ("better than
+  the keeper you chose") and the inspector names the chosen keeper's copy instead of calling it "its best copy".
+- **Stored plans are re-checked (ADR-0096).** `Cleanups::run` derives the dispositions again before moving
+  anything and skips every planned file that is no longer eligible or no longer covered by the library copy it was
+  planned with (`SkipReason::NoLongerSafe`, `BetterThanKeeper`), in the CLI, `--json`, `cleanup show` and the
+  app's run summary.
+- **AVIF watchdog and decode budget (ADR-0097, amends 0094 and 0095).** The caller polls the scan's stop check
+  every 50 ms (pause time not counted) and returns `Cancelled` at once; admission is one compare-exchange on a
+  packed in-flight/abandoned counter; the budget permit moves into the decode thread and is released when it ends
+  (abandoned bytes stay counted as orphaned); the AVIF estimate includes the file copy; the budget is FIFO.
+- **Decode failures are retried (ADR-0098, catalog migration 20 `file.decode_failure`, amends 0091 and 0095).**
+  Transient failures (`DecodeError::Interrupted`) are retried up to 3 attempts; any failure is retried once after
+  the decoder backend changes; permanent ones are not read again otherwise. Compatible with
+  `preview-placeholders`' decoder generations (D1 there), which now takes migration 22 (`excluded-view-filters`
+  21).
+- Smaller: Debian-family guidance by the distributions' packaging (`libheif-plugin-libde265` exists from 1.16:
+  not in bookworm or Ubuntu 23.04), superseded alerts and subtitle in Reports, single-write skip lines, and the
+  read-only check over `crates/ps-scan/tests` (their writes go through `ps_fixtures::scratch`).
+
 ## Risks / Trade-offs
 
 - [A system decoder crashes on a hostile file (C code in-process)] -> same exposure as libheif-rs today, now with
@@ -507,7 +533,7 @@ groups and does not work headless; ignoring better copies silently hides that th
 
 ## Migration Plan
 
-Migration 19 (next free after `0018_run_refresh.sql`) is additive (one nullable column, one partial index, one
+Migration 19 (next free after `0018_run_refresh.sql`) and migration 20 (`file.decode_failure`, D13) are additive (one nullable column, one partial index, one
 back-fill UPDATE). Downgrade is not supported (ADR-0005). The better-copy rule needs no migration: it reads the
 existing ledger and group membership; the manifest's `better_copy_of` field is optional. After upgrading, the first rescan of each source re-decodes its marked AVIF rows (bundled decoder) and,
 where the system decoder is present, its marked HEIC rows; elsewhere they are counted as awaiting a decoder.
