@@ -126,7 +126,8 @@ Built first: it is general export behaviour, and HEIC decoding (sections 3-7) tr
 - [x] 10.6 GitHub CI green on Linux (real libheif tests pass), macOS (ImageIO tests pass) and Windows (real tests skip with the printed reason, or pass if the runner has the extensions); link the run here
   - Correction (gate review, 11.3): on windows-2022 the WIC scenarios passed by skipping their decode half (no extensions on the runner); "the harness keeps a skip reason only on failure" meant the skip was invisible. WIC decoding has not run anywhere yet; see 5.8 and 11.3.
   - https://github.com/szehnder/photosquirrel2/actions/runs/40233228464 (fbb3627): Linux (full CI, `PHOTOSQUIRREL_REQUIRE_SYSTEM_HEIF=1`, the system libheif scenario and the reference-look check passed, then the no-libheif doctor step), macos-14 (ImageIO decode and look scenarios passed with the require flag), windows-2022 (the WIC scenarios passed; the harness keeps a skip reason only on failure) and the performance budgets job: all success. The previous commit 81d0d30 (run 40231524588) was green on all four as well.
-- [ ] 10.7 Milestone-style review by a fresh agent that did not write the code: the scenarios above, the screenshots, the better-copy gate (10.1), and a check that no shipped binary contains an HEVC decoder
+- [x] 10.7 Milestone-style review by a fresh agent that did not write the code: the scenarios above, the screenshots, the better-copy gate (10.1), and a check that no shipped binary contains an HEVC decoder
+  - Three reviews: FAIL (fixed in section 11), FAIL (section 12), PASS-WITH-FIXES (section 13). GitHub run 40300837565 green on 026698f.
 
 ## 11. Gate review fixes
 

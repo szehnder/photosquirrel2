@@ -86,7 +86,7 @@ or when a better copy turns up on a new drive. The owner wants this fixed before
   operating system's decoder (supersedes 0059, amends 0017 and 0030); AVIF decoded by a bundled rav1d (amends
   0017); rows remember a missing decoder and rescans re-decode them (catalog migration 19, amends 0007); a group
   already in the library is not copied again when its keeper changes, better copies are offered (amends 0023 and
-  0071).
+  0071). These became ADR-0089 to ADR-0092. The gate reviews added ADR-0093 to ADR-0101 (see design.md and the ADR index).
 - Crates: `ps-model` (decoder keys, counts, placeholder reason), `ps-media` (decoder registry, AVIF container and
   YUV conversion, `rav1d` dependency, `heic` feature and `libheif-rs` removed), new `ps-sysdecode` (core: ImageIO,
   WIC, libheif loader, self-test, install guidance), `ps-catalog` (migration 19, re-decode command, aggregate
