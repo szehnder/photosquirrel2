@@ -52,12 +52,12 @@ impl FrameId {
         format!("{:03}-{:04}", n / 10_000, n % 10_000)
     }
 
-    /// The first part both record with different values, as display labels (`(a, b)`), or `None`.
+    /// The part both record with different values, as display labels (`(a, b)`), or `None`. The camera's file
+    /// number decides when both record it: two DNGs of one frame whose RAW was renamed before one conversion keep
+    /// the same file number, so their RAW names are not compared.
     pub fn differs(&self, other: &FrameId) -> Option<(String, String)> {
-        if let (Some(a), Some(b)) = (self.file_number, other.file_number)
-            && a != b
-        {
-            return Some((Self::file_number_label(a), Self::file_number_label(b)));
+        if let (Some(a), Some(b)) = (self.file_number, other.file_number) {
+            return (a != b).then(|| (Self::file_number_label(a), Self::file_number_label(b)));
         }
         if let (Some(a), Some(b)) = (&self.raw_name, &other.raw_name)
             && a != b
@@ -133,6 +133,9 @@ mod tests {
         // Different kinds never compare.
         assert_eq!(b.differs(&c), None);
         assert_eq!(a.differs(&a.clone()), None);
+        // Equal file numbers decide: a renamed RAW's DNG is the same frame.
+        let renamed = FrameId::new(Some("2020-04-20_0001".into()), Some(1_010_034)).expect("r");
+        assert_eq!(a.differs(&renamed), None);
         assert_eq!(FrameId::new(None, None), None);
         assert_eq!(a.storage(), "raw:IMG_0034 num:101-0034");
         assert_eq!(a.label(), "101-0034 (IMG_0034)");

@@ -97,6 +97,9 @@ corpus would have caught the bug).
 
 - **A frame identity holds both kinds.** `FrameId` has two optional parts, the `OriginalRawFileName` stem and the
   Canon file number, because a converted DNG records both; each kind compares only with the same kind.
+- **The file number decides when both files record it.** Two DNGs of one frame keep its file number even when the
+  RAW was renamed before one of the conversions; their `OriginalRawFileName` stems are compared only when a file
+  number is missing.
 - **Canon file numbers also come from `CameraInfo`.** The owner's EOS 70D (like every current Canon DSLR) writes no
   tag 0x0008; its file number is `FileIndex` + 1 and `DirectoryIndex` - 1 at model-specific offsets of `CameraInfo`
   (0x000D). A table of the models with known offsets is read; out-of-range values are ignored.

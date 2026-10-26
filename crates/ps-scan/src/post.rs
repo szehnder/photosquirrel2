@@ -342,21 +342,29 @@ fn groups_split(catalog: &Catalog, changes: &GroupChanges, live: &LiveGrouping) 
         .collect();
     touched.sort();
     touched.dedup();
-    let mut split = 0;
-    for id in touched {
-        let Some(old) = catalog.read().group(id)? else {
-            continue;
-        };
-        let places: std::collections::HashSet<FileId> = old
-            .members
-            .iter()
-            .filter_map(|m| live.group_of(m.file).map(|g| g.members[0].file))
+    let split = |members: &mut dyn Iterator<Item = FileId>| {
+        let places: std::collections::HashSet<FileId> = members
+            .filter_map(|f| live.group_of(f).map(|g| g.members[0].file))
             .collect();
-        if places.len() > 1 {
-            split += 1;
+        u64::from(places.len() > 1)
+    };
+    // A few groups one by one; many (a full regroup that rewrote them) in one pass over the memberships.
+    let mut n = 0;
+    if touched.len() <= 256 {
+        for id in touched {
+            if let Some(old) = catalog.read().group(id)? {
+                n += split(&mut old.members.iter().map(|m| m.file));
+            }
+        }
+    } else {
+        let touched: std::collections::HashSet<FileId> = touched.into_iter().collect();
+        for (id, members, _) in catalog.read().group_memberships()? {
+            if touched.contains(&id) {
+                n += split(&mut members.into_iter());
+            }
         }
     }
-    Ok(split)
+    Ok(n)
 }
 
 /// The changes that make the stored groups equal `grouping`, writing only what differs.
