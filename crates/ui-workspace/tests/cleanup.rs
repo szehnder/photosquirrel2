@@ -245,6 +245,15 @@ struct App {
 }
 
 fn app(cx: &mut TestAppContext, tag: &str) -> (App, VisualTestContext) {
+    app_with(cx, tag, |_| None)
+}
+
+/// [`app`], with `prepare` run on the scanned catalog before the export; it may name the source to plan.
+fn app_with(
+    cx: &mut TestAppContext,
+    tag: &str,
+    prepare: impl FnOnce(&ps_service::scan::ScanService) -> Option<ps_model::SourceId>,
+) -> (App, VisualTestContext) {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
     std::fs::create_dir_all(base).unwrap();
     let tmp = tempfile::Builder::new()
@@ -266,6 +275,7 @@ fn app(cx: &mut TestAppContext, tag: &str) -> (App, VisualTestContext) {
     let scan = backend.scan().unwrap();
     scan.start(&[]).unwrap();
     scan.wait().unwrap();
+    let chosen = prepare(scan);
     let out = backend
         .export_run(
             &tmp.path().join("library"),
@@ -275,7 +285,8 @@ fn app(cx: &mut TestAppContext, tag: &str) -> (App, VisualTestContext) {
         )
         .unwrap();
     assert!(out.copied > 0 && out.failed.is_empty(), "{out:?}");
-    let source = backend.report(None, false).unwrap().unwrap().sources[0].id;
+    let source =
+        chosen.unwrap_or_else(|| backend.report(None, false).unwrap().unwrap().sources[0].id);
     let drive = backend
         .sources()
         .unwrap()
@@ -678,7 +689,7 @@ fn scan_backend_cleanup_tree_totals_match_the_plan() {
         )
         .unwrap();
     let source = backend.report(None, false).unwrap().unwrap().sources[0].id;
-    let review = backend.cleanup_plan(source).unwrap().unwrap();
+    let review = backend.cleanup_plan(source).unwrap().review.unwrap();
     let run = review.run.id;
     let moves = scan.cleanups().run_detail(run).unwrap().1;
     let totals = ps_service::cleanup::totals_of(&moves);
@@ -773,4 +784,62 @@ fn scenario_cleanup_app_run_skips_a_file_that_became_unsafe_after_planning(
         .find(|m| m.file == flipped.file)
         .unwrap();
     assert_eq!(m.state, ps_model::MoveState::Skipped);
+}
+
+/// A plan's kept-back files are listed in a "Kept" disclosure (ADR-0096): before the export the user makes a
+/// lesser copy of a group its keeper; the better original is then accounted for by that choice but never planned,
+/// and the Cleanup panel of its source says so, closed until clicked, with the reason per file.
+#[gpui_kit::test]
+fn scenario_cleanup_app_plan_lists_kept_copies(cx: &mut TestAppContext) {
+    let original = std::sync::Mutex::new(None);
+    let (app, mut cx) = app_with(cx, "kept", |scan| {
+        let groups = scan.groups();
+        for (g, _, _) in scan.engine().catalog().read().group_memberships().unwrap() {
+            let d = groups.show(g).unwrap();
+            let keeper = d.member(d.keeper).unwrap().clone();
+            let lesser = d.members.iter().find(|m| {
+                !m.in_keeper_set
+                    && m.edge == ps_service::groups::MemberEdge::Derivative
+                    && m.source != keeper.source
+            });
+            if let Some(l) = lesser {
+                groups.set_keeper(g, l.file).unwrap();
+                *original.lock().unwrap() = Some(keeper.clone());
+                return Some(keeper.source);
+            }
+        }
+        panic!("a group with a lesser copy on another drive");
+    });
+    let original = original.into_inner().unwrap().unwrap();
+    click(&format!("report-cleanup-{}", app.source.0), &mut cx);
+    wait(&mut cx, "the plan or its note", |cx| {
+        exists("cleanup-kept", cx)
+    });
+    let summary = label("cleanup-kept-toggle", &mut cx).unwrap();
+    assert!(
+        summary.starts_with("Kept: ") && summary.contains("better than the keeper you chose"),
+        "{summary}"
+    );
+    assert!(!exists("cleanup-kept-row-0", &mut cx), "closed at first");
+    click("cleanup-kept-toggle", &mut cx);
+    cx.run_until_parked();
+    let rows: Vec<String> = (0..)
+        .map_while(|i| label(&format!("cleanup-kept-row-{i}"), &mut cx))
+        .collect();
+    let rel = original
+        .path
+        .strip_prefix(&app.drive)
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/");
+    assert!(
+        rows.iter()
+            .any(|r| r.starts_with(&rel) && r.contains("better than the keeper you chose")),
+        "{rel} in {rows:?}"
+    );
+    // Never planned.
+    if let Some(run) = app.backend.cleanup_runs().unwrap().first() {
+        assert!(app.moves(run.id).iter().all(|m| m.file != original.file));
+    }
+    assert!(original.path.exists());
 }

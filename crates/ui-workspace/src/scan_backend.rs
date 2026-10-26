@@ -276,7 +276,7 @@ pub trait ScanBackend: Send + Sync + 'static {
     }
     /// Plan a cleanup of a whole source and store it; `None` when nothing there is exported or covered.
     /// Moves nothing.
-    fn cleanup_plan(&self, source: SourceId) -> anyhow::Result<Option<CleanupReview>> {
+    fn cleanup_plan(&self, source: SourceId) -> anyhow::Result<CleanupPlanned> {
         anyhow::bail!("source {source}: cleanup is not available here")
     }
     /// Run a confirmed plan (each file re-verified, then renamed into the quarantine folder).
@@ -439,6 +439,16 @@ pub struct CleanupRunRow {
     pub quarantine_dir: PathBuf,
     /// The source is a network share (running needs an extra confirmation).
     pub network: bool,
+}
+
+/// What planning a source gave: the stored plan (none when nothing is eligible) and the files kept back from it
+/// with why (copies better than a keeper you chose, ADR-0096), at most [`CLEANUP_ROWS_LIMIT`].
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CleanupPlanned {
+    pub review: Option<CleanupReview>,
+    /// (path relative to the source root, why), and how many there are in all.
+    pub kept: Vec<(String, String)>,
+    pub kept_total: usize,
 }
 
 /// Files listed by a cleanup review (the rest is counted).
@@ -906,12 +916,22 @@ impl ScanBackend for CatalogBackend {
         self.cleanup_review_now(run)
     }
 
-    fn cleanup_plan(&self, source: SourceId) -> anyhow::Result<Option<CleanupReview>> {
+    fn cleanup_plan(&self, source: SourceId) -> anyhow::Result<CleanupPlanned> {
         let plan = self.scan()?.cleanups().plan(source, None, None)?;
-        match plan.summary {
-            Some(s) => Ok(Some(self.cleanup_review_now(s.run.id)?)),
-            None => Ok(None),
-        }
+        let kept = plan
+            .held
+            .iter()
+            .take(CLEANUP_ROWS_LIMIT)
+            .map(|h| (h.rel_path.display().into_owned(), h.text.clone()))
+            .collect();
+        Ok(CleanupPlanned {
+            review: match plan.summary {
+                Some(s) => Some(self.cleanup_review_now(s.run.id)?),
+                None => None,
+            },
+            kept,
+            kept_total: plan.held.len(),
+        })
     }
 
     fn cleanup_run(

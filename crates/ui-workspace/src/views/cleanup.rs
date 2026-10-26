@@ -69,6 +69,15 @@ impl TreeOf {
 #[derive(Clone, Debug)]
 pub struct CleanupChanged;
 
+/// Files a plan kept back from the moves, with why (ADR-0096).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Kept {
+    pub source: SourceId,
+    /// (path relative to the source root, why).
+    pub rows: Vec<(String, String)>,
+    pub total: usize,
+}
+
 /// Where the panel stands.
 #[derive(Clone)]
 pub enum CleanupPhase {
@@ -105,6 +114,11 @@ pub struct CleanupView {
     pub last_undo: Option<Result<UndoOutcome, String>>,
     /// Nothing to clean up on the source last planned.
     pub nothing_on: Option<SourceId>,
+    /// Files the last plan kept back, with why (ADR-0096: better than the keeper you chose): the source planned,
+    /// up to [`crate::scan_backend::CLEANUP_ROWS_LIMIT`] rows, and how many in all. Shown in a "Kept" disclosure.
+    pub kept: Option<Kept>,
+    /// The "Kept" disclosure is open.
+    pub kept_open: bool,
     /// The reviewed plan's folders with check boxes (loaded in the background).
     pub plan_tree: Option<SelectionTree>,
     plan_scroll: UniformListScrollHandle,
@@ -136,6 +150,8 @@ impl CleanupView {
             undoing: None,
             last_undo: None,
             nothing_on: None,
+            kept: None,
+            kept_open: false,
             plan_tree: None,
             plan_scroll: UniformListScrollHandle::new(),
             undo_tree: None,
@@ -391,6 +407,8 @@ impl CleanupView {
         }
         self.phase = CleanupPhase::Planning(source);
         self.nothing_on = None;
+        self.kept = None;
+        self.kept_open = false;
         self.network_ack = false;
         self.note = None;
         self.discard_confirm = None;
@@ -400,14 +418,23 @@ impl CleanupView {
             let r = reply.await;
             let _ = this.update(cx, |this, cx| {
                 match r {
-                    Ok(Some(review)) => {
-                        this.set_review(Some(review), cx);
-                        this.phase = CleanupPhase::Review;
-                    }
-                    Ok(None) => {
-                        this.set_review(None, cx);
-                        this.nothing_on = Some(source);
-                        this.phase = CleanupPhase::Idle;
+                    Ok(planned) => {
+                        this.kept = (planned.kept_total > 0).then(|| Kept {
+                            source,
+                            rows: planned.kept,
+                            total: planned.kept_total,
+                        });
+                        match planned.review {
+                            Some(review) => {
+                                this.set_review(Some(review), cx);
+                                this.phase = CleanupPhase::Review;
+                            }
+                            None => {
+                                this.set_review(None, cx);
+                                this.nothing_on = Some(source);
+                                this.phase = CleanupPhase::Idle;
+                            }
+                        }
                     }
                     Err(e) => this.phase = CleanupPhase::Failed(format!("{e:#}")),
                 }
@@ -487,6 +514,91 @@ impl CleanupView {
                 cx.notify();
             });
         }));
+    }
+
+    /// Open or close the "Kept" disclosure.
+    pub fn toggle_kept(&mut self, cx: &mut Context<'_, Self>) {
+        self.kept_open = !self.kept_open;
+        cx.notify();
+    }
+
+    /// The "Kept" disclosure of the last plan of `source`: the files it kept back and why (ADR-0096).
+    fn kept_box(&self, source: SourceId, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
+        let kept = self.kept.as_ref().filter(|k| k.source == source)?;
+        let colors = *ui_theme::colors(cx);
+        let open = self.kept_open;
+        let summary = format!(
+            "Kept: {} {} stay where {} (better than the keeper you chose)",
+            format_count(kept.total as u64),
+            if kept.total == 1 { "file" } else { "files" },
+            if kept.total == 1 { "it is" } else { "they are" },
+        );
+        let mut card = kit::card(cx).id("cleanup-kept").test_support().child(
+            h_flex()
+                .id("cleanup-kept-toggle")
+                .test_support()
+                .role(Role::Button)
+                .aria_label(SharedString::from(summary.clone()))
+                .aria_expanded(open)
+                .w_full()
+                .gap(Tokens::space(2.0))
+                .items_center()
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_kept(cx)))
+                .child(
+                    Icon::new(if open {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .size(Tokens::icon_sm())
+                    .text_color(colors.text_faint),
+                )
+                .child(
+                    Icon::new(IconName::ShieldCheck)
+                        .size(Tokens::icon_sm())
+                        .text_color(colors.success),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(Tokens::text_sm())
+                        .text_color(colors.text)
+                        .child(summary),
+                ),
+        );
+        if open {
+            for (i, (path, why)) in kept.rows.iter().enumerate() {
+                card = card.child(
+                    h_flex()
+                        .id(SharedString::from(format!("cleanup-kept-row-{i}")))
+                        .test_support()
+                        .aria_label(SharedString::from(format!("{path} — {why}")))
+                        .w_full()
+                        .gap(Tokens::space(3.0))
+                        .child(mono(kit::middle_ellipsis(path, 70), colors.text))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(Tokens::text_sm())
+                                .text_color(colors.text_muted)
+                                .child(why.clone()),
+                        ),
+                );
+            }
+            if kept.total > kept.rows.len() {
+                card = card.child(
+                    div()
+                        .text_size(Tokens::text_xs())
+                        .text_color(colors.text_faint)
+                        .child(format!(
+                            "and {} more",
+                            format_count((kept.total - kept.rows.len()) as u64)
+                        )),
+                );
+            }
+        }
+        Some(card.into_any_element())
     }
 
     /// Back from the confirmation, or close the plan.
@@ -1674,6 +1786,7 @@ impl Render for CleanupView {
             CleanupPhase::Review | CleanupPhase::Confirming | CleanupPhase::Selecting => {
                 if let Some(review) = self.review.clone() {
                     root = root.child(self.review_card(&review, cx));
+                    root = root.children(self.kept_box(review.run.source, cx));
                 }
             }
             CleanupPhase::Running { progress, .. } => {
@@ -1818,6 +1931,7 @@ impl Render for CleanupView {
                 )
                 .test_support(),
             );
+            root = root.children(self.kept_box(sid, cx));
         }
         match &self.last_undo {
             Some(Ok(u)) => {

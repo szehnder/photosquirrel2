@@ -21,6 +21,10 @@ Only exported or covered files SHALL be eligible for cleanup; pending, supersede
 - **WHEN** a resized JPEG from one source was exported, its 3000x2000 HEIC original on a second source is the group's automatic keeper, the user makes the JPEG the keeper, and a cleanup plan is made for the second source
 - **THEN** the HEIC counts as accounted for but is not in the plan, which lists it as kept, "better than the keeper you chose"
 
+#### Scenario: App plan lists kept copies
+- **WHEN** the user made a lesser copy of a group its keeper before exporting and plans a cleanup of the better original's source in the Cleanup panel
+- **THEN** a closed "Kept" disclosure says how many files stay and why, and opening it lists the original with "better than the keeper you chose"; the original is not planned
+
 ### Requirement: Re-verification before each move
 When a run starts, and whenever the catalog's constraints generation changes during it, the dispositions of its remaining planned files SHALL be derived again and each file no longer eligible or no longer made safe by its planned library copy SHALL be skipped as "no longer safe" (ADR-0096, ADR-0099). Immediately before a move, the file's hash SHALL be recomputed and compared with the catalog, and its library copy confirmed by hash; on any mismatch the file SHALL be skipped and reported.
 
