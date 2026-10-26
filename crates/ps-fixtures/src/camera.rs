@@ -376,6 +376,9 @@ pub struct ExifSpec<'a> {
     pub thumbnail: Option<Vec<u8>>,
     /// Write SubSecTimeOriginal (if the camera does).
     pub subsec: bool,
+    /// Canon file number (`directory * 10000 + index`, tag 0x0008): the maker note is then a well-formed
+    /// Canon IFD recording it (converted RAW bursts, ADR-0105) instead of the opaque blob.
+    pub file_number: Option<u32>,
 }
 
 /// The opaque MakerNote blob: vendor header, body-constant block, per-shot block.
@@ -399,6 +402,51 @@ pub fn maker_note(body: &Body, shot_seed: u64) -> Vec<u8> {
         out.extend_from_slice(&s.to_le_bytes());
     }
     out
+}
+
+/// A well-formed Canon maker note: an IFD whose values are all inline (so it reads the same wherever it is
+/// placed, also inside `DNGPrivateData`) recording `FileNumber` (0x0008), the body's serial (0x000C) and a
+/// per-shot word, followed by opaque per-shot bytes.
+pub fn canon_maker_note(body: &Body, shot_seed: u64, file_number: u32) -> Vec<u8> {
+    let e = body.model.endian;
+    let u16b = |v: u16| match e {
+        Endian::Little => v.to_le_bytes(),
+        Endian::Big => v.to_be_bytes(),
+    };
+    let u32b = |v: u32| match e {
+        Endian::Little => v.to_le_bytes(),
+        Endian::Big => v.to_be_bytes(),
+    };
+    let serial = body.serial.parse::<u64>().unwrap_or(0) as u32;
+    let entries: [(u16, u16, u32, u32); 3] = [
+        (0x0008, 4, 1, file_number),
+        (0x000C, 4, 1, serial),
+        (0x0013, 4, 1, (mix64(shot_seed) & 0xFFFF_FFFF) as u32),
+    ];
+    let mut out = Vec::new();
+    out.extend_from_slice(&u16b(entries.len() as u16));
+    for (tag, typ, count, value) in entries {
+        out.extend_from_slice(&u16b(tag));
+        out.extend_from_slice(&u16b(typ));
+        out.extend_from_slice(&u32b(count));
+        out.extend_from_slice(&u32b(value));
+    }
+    out.extend_from_slice(&u32b(0));
+    let mut s = shot_seed ^ body.maker_seed;
+    for _ in 0..32 {
+        s = mix64(s);
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+/// The maker note `spec` asks for, if any.
+pub fn spec_maker_note(spec: &ExifSpec<'_>) -> Option<Vec<u8>> {
+    let seed = spec.maker_note?;
+    Some(match spec.file_number {
+        Some(n) => canon_maker_note(spec.body, seed, n),
+        None => maker_note(spec.body, seed),
+    })
 }
 
 fn dms(e6: i64) -> Value {
@@ -443,8 +491,8 @@ pub fn exif_ifds(spec: &ExifSpec<'_>) -> (Ifd, Option<Ifd>) {
         };
         ex.ascii(0x9291, s.clone()).ascii(0x9292, s);
     }
-    if let Some(seed) = spec.maker_note {
-        ex.set(0x927C, Value::Undefined(maker_note(spec.body, seed)));
+    if let Some(note) = spec_maker_note(spec) {
+        ex.set(0x927C, Value::Undefined(note));
     }
     if !spec.body.serial.is_empty() {
         ex.ascii(0xA431, spec.body.serial.clone());

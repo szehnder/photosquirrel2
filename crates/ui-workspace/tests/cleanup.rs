@@ -54,6 +54,7 @@ fn tiny() -> ps_fixtures::Params {
         standalone: 12,
         sets_per_kind: 2,
         burst_sets: 3,
+        converted_raw_bursts: 0,
         videos: 2,
         scans: 2,
         icons: 3,

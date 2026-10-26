@@ -212,6 +212,7 @@ fn dashboard_controls_on_the_real_engine(cx: &mut TestAppContext) {
             standalone: 40,
             sets_per_kind: 3,
             burst_sets: 3,
+            converted_raw_bursts: 0,
             videos: 2,
             scans: 2,
             icons: 3,

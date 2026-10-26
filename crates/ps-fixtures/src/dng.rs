@@ -8,6 +8,70 @@ use crate::tiff::{Endian, Ifd, Value, write_tiff};
 
 /// Build a DNG for a shot whose camera JPEG (without APP1) is `preview_jpeg` at `width x height`.
 pub fn dng(spec: &ExifSpec<'_>, preview_jpeg: &[u8], width: u32, height: u32) -> Vec<u8> {
+    raw_tiff(spec, preview_jpeg, width, height, &Flavour::Dng)
+}
+
+/// A camera RAW in the CR2 manner for the converted-burst sets (ADR-0105): the same layout as [`dng`] without the
+/// DNG tags, so the probe takes it for a Canon CR2 by its make; camera firmware as software, the maker note in the
+/// Exif IFD. Stored dimensions are the Exif pixel dimensions (`width x height`).
+pub fn cr2_like(spec: &ExifSpec<'_>, preview_jpeg: &[u8], width: u32, height: u32) -> Vec<u8> {
+    raw_tiff(spec, preview_jpeg, width, height, &Flavour::Cr2Like)
+}
+
+/// A DNG as Adobe's converter writes it from a camera RAW (ADR-0105): `OriginalRawFileName` (0xC68B), the
+/// camera's maker note moved into `DNGPrivateData` (0xC634, `Adobe\0MakN`, rebased on `original_offset`), none in
+/// the Exif IFD (pass `spec.maker_note: None`), and a raw SubIFD of `sensor` dimensions (larger than the camera's
+/// JPEG, as 5568x3708 is for a 5472x3648 CR2). The strip itself stays tiny: it is never decoded.
+pub fn converted_dng(
+    spec: &ExifSpec<'_>,
+    preview_jpeg: &[u8],
+    width: u32,
+    height: u32,
+    original_name: &str,
+    maker_note: &[u8],
+    sensor: (u32, u32),
+) -> Vec<u8> {
+    raw_tiff(
+        spec,
+        preview_jpeg,
+        width,
+        height,
+        &Flavour::Converted {
+            original_name,
+            maker_note,
+            sensor,
+        },
+    )
+}
+
+/// `DNGPrivateData` holding a maker note the way Adobe writes it: `Adobe\0`, `MakN`, a big-endian length, the
+/// note's byte order, its offset in the original file (big-endian), then the note.
+pub fn dng_private_maker_note(note: &[u8], little_endian: bool, original_offset: u32) -> Vec<u8> {
+    let mut v = b"Adobe\0MakN".to_vec();
+    v.extend_from_slice(&((note.len() + 6) as u32).to_be_bytes());
+    v.extend_from_slice(if little_endian { b"II" } else { b"MM" });
+    v.extend_from_slice(&original_offset.to_be_bytes());
+    v.extend_from_slice(note);
+    v
+}
+
+enum Flavour<'a> {
+    Dng,
+    Cr2Like,
+    Converted {
+        original_name: &'a str,
+        maker_note: &'a [u8],
+        sensor: (u32, u32),
+    },
+}
+
+fn raw_tiff(
+    spec: &ExifSpec<'_>,
+    preview_jpeg: &[u8],
+    width: u32,
+    height: u32,
+    flavour: &Flavour<'_>,
+) -> Vec<u8> {
     let m = spec.body.model;
     let mut raw = Ifd::new();
     let (rw, rh) = ((width / 16).max(2) & !1, (height / 16).max(2) & !1);
@@ -21,9 +85,13 @@ pub fn dng(spec: &ExifSpec<'_>, preview_jpeg: &[u8], width: u32, height: u32) ->
             Endian::Big => v.to_be_bytes(),
         });
     }
+    let (sw, sh) = match flavour {
+        Flavour::Converted { sensor, .. } => *sensor,
+        _ => (rw, rh),
+    };
     raw.long(0x00FE, 0)
-        .long(0x0100, rw)
-        .long(0x0101, rh)
+        .long(0x0100, sw)
+        .long(0x0101, sh)
         .short(0x0102, 16)
         .short(0x0103, 1)
         .short(0x0106, 32803)
@@ -55,12 +123,36 @@ pub fn dng(spec: &ExifSpec<'_>, preview_jpeg: &[u8], width: u32, height: u32) ->
         .short(0x0112, spec.orientation)
         .short(0x0115, 3)
         .long(0x0116, height)
-        .ascii(0x0131, "Adobe DNG Converter 12.0")
-        .ascii(0x0132, spec.capture.exif())
-        .set(0xC612, Value::Byte(vec![1, 4, 0, 0]))
-        .set(0xC613, Value::Byte(vec![1, 1, 0, 0]))
-        .ascii(0xC614, m.model)
-        .blob(0x0111, 0x0117, preview_jpeg.to_vec())
+        .ascii(
+            0x0131,
+            match flavour {
+                Flavour::Cr2Like => m.firmware,
+                _ => "Adobe DNG Converter 12.0",
+            },
+        )
+        .ascii(0x0132, spec.capture.exif());
+    if !matches!(flavour, Flavour::Cr2Like) {
+        ifd0.set(0xC612, Value::Byte(vec![1, 4, 0, 0]))
+            .set(0xC613, Value::Byte(vec![1, 1, 0, 0]))
+            .ascii(0xC614, m.model);
+    }
+    if let Flavour::Converted {
+        original_name,
+        maker_note,
+        ..
+    } = flavour
+    {
+        ifd0.set(
+            0xC634,
+            Value::Byte(dng_private_maker_note(
+                maker_note,
+                m.endian == Endian::Little,
+                0x0360,
+            )),
+        )
+        .ascii(0xC68B, *original_name);
+    }
+    ifd0.blob(0x0111, 0x0117, preview_jpeg.to_vec())
         .child(0x014A, raw);
 
     let (ex, gps) = exif_ifds(spec);

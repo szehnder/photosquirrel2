@@ -309,6 +309,7 @@ fn tiny() -> Params {
         standalone: 10,
         sets_per_kind: 2,
         burst_sets: 2,
+        converted_raw_bursts: 0,
         videos: 1,
         scans: 1,
         icons: 2,

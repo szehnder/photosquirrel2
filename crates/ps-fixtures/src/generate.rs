@@ -336,7 +336,7 @@ fn choose_keepers(recs: &mut [Rec]) {
             continue;
         };
         recs[best].file.keeper = true;
-        if recs[best].file.format == "raw:dng" {
+        if recs[best].file.format.starts_with("raw:") {
             let raw_path = recs[best].file.path.clone();
             let stem = raw_path
                 .rsplit_once('.')
@@ -372,6 +372,102 @@ const EDITORS: &[&str] = &[
     "Apple Photos 6.0",
 ];
 
+/// The converted-burst files of one frame (ADR-0105): the CR2-like original next to the camera JPEG, the
+/// converted DNG (rendered again by the "converter", without sub-second `00` and with the maker note in
+/// `DNGPrivateData`) and a copy of the camera JPEG next to it.
+fn render_converted(
+    s: &Shot,
+    c: &crate::plan::ConvertedFrame,
+    spec: &ExifSpec<'_>,
+    encoded: &[u8],
+    original: &[u8],
+    completeness: u8,
+    out: &mut Out<'_>,
+) -> Result<(), GenerateError> {
+    let (dw, dh) = s.display;
+    let group = s.group.as_str();
+    let raw_meta = |cat, format, w, h, from| Meta {
+        category: cat,
+        group,
+        format,
+        width: w,
+        height: h,
+        camera_exif: true,
+        palette_or_alpha: false,
+        video: None,
+        tier: 0,
+        completeness,
+        quality: 100,
+        derived_from: from,
+    };
+    let preview = strip_segments(encoded, &[0xE0]);
+    let stored = (spec.width, spec.height);
+    let cr2 = crate::dng::cr2_like(spec, &preview, stored.0, stored.1);
+    out.put(
+        &c.raw_path,
+        &cr2,
+        s.mtime,
+        raw_meta(Category::RawOriginal, "raw:cr2", dw, dh, None),
+    )?;
+    // The converter's own rendering of the frame, and a sensor a little larger than the JPEG.
+    let rendered = render(&s.scene, &c.render, dw, dh).to_stored(s.orientation);
+    let dng_preview = strip_segments(&encode_jpeg(&rendered, 90), &[0xE0]);
+    let sensor = (
+        (stored.0 + stored.0 / 64) & !1,
+        (stored.1 + stored.1 / 64) & !1,
+    );
+    let raw_name = c
+        .raw_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&c.raw_path)
+        .to_string();
+    let note = crate::camera::spec_maker_note(spec).unwrap_or_default();
+    // Adobe drops a sub-second of `00` (two digits); other sub-seconds stay.
+    let dng_spec = ExifSpec {
+        maker_note: None,
+        subsec: s.capture.millis / 10 != 0,
+        thumbnail: None,
+        ..spec.clone()
+    };
+    let dng = crate::dng::converted_dng(
+        &dng_spec,
+        &dng_preview,
+        rendered.width,
+        rendered.height,
+        &raw_name,
+        &note,
+        sensor,
+    );
+    let (sw, sh) = if s.orientation >= 5 {
+        (sensor.1, sensor.0)
+    } else {
+        sensor
+    };
+    out.put(
+        &c.dng_path,
+        &dng,
+        c.dng_mtime,
+        raw_meta(
+            Category::ConvertedRaw,
+            "raw:dng",
+            sw,
+            sh,
+            Some(c.raw_path.as_str()),
+        ),
+    )?;
+    let mut copy = raw_meta(
+        Category::ExactCopy,
+        "jpeg",
+        dw,
+        dh,
+        Some(s.path.as_str()),
+    );
+    copy.tier = 1;
+    copy.quality = s.quality;
+    out.put(&c.jpeg_copy_path, original, c.dng_mtime, copy)
+}
+
 fn render_shot(s: &Shot, body: &Body, out: &mut Out<'_>) -> Result<(), GenerateError> {
     let (dw, dh) = s.display;
     let display = render(&s.scene, &s.perturb, dw, dh);
@@ -390,6 +486,7 @@ fn render_shot(s: &Shot, body: &Body, out: &mut Out<'_>) -> Result<(), GenerateE
         software: None,
         thumbnail: Some(thumb),
         subsec: true,
+        file_number: s.converted.as_ref().map(|c| c.file_number),
     };
     let encoded = encode_jpeg(&stored, s.quality);
     let original = camera_jpeg(&encoded, &app1_exif(&exif_tiff(&spec)));
@@ -436,6 +533,10 @@ fn render_shot(s: &Shot, body: &Body, out: &mut Out<'_>) -> Result<(), GenerateE
     };
     if let Some((rp, bytes)) = &dng {
         out.put(rp, bytes, s.mtime, raw_meta(Category::RawOriginal, None))?;
+    }
+
+    if let Some(c) = &s.converted {
+        render_converted(s, c, &spec, &encoded, &original, completeness, out)?;
     }
 
     // Editor-style EXIF (no maker note, orientation baked, new dimensions).

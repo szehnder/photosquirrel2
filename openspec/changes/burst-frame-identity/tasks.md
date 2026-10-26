@@ -9,7 +9,7 @@ migration 24).
 
 ## 2. Corpus first
 
-- [ ] 2.1 `ps-fixtures`: converted RAW burst sets (D6): CR2-style original, camera JPEG and converted DNG per frame (`OriginalRawFileName`, a Canon maker note with the file number inside `DNGPrivateData`, the first frame's sub-second dropped). Truth groups and must-not-merge sets. Verify: `scenario_test_corpus_converted_bursts_in_the_medium_preset`, and the generator stays deterministic for a seed.
+- [x] 2.1 `ps-fixtures`: converted RAW burst sets (D6): CR2-style original, camera JPEG and converted DNG per frame (`OriginalRawFileName`, a Canon maker note with the file number inside `DNGPrivateData`, the first frame's sub-second dropped). Truth groups and must-not-merge sets. Verify: `scenario_test_corpus_converted_bursts_in_the_medium_preset`, and the generator stays deterministic for a seed.
 - [ ] 2.2 Show the bug: with the new sets and today's grouping, `eval-corpus` reports must-not-merge violations. Verify: `scenario_test_corpus_the_corpus_catches_a_merged_converted_burst` (test hook that turns frame identity off), and record the violation count in design.md.
 
 ## 3. Metadata

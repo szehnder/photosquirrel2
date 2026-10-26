@@ -97,6 +97,25 @@ pub struct Shot {
     pub maker_seed: u64,
     pub derivs: Vec<Deriv>,
     pub crops: Vec<CropPlan>,
+    /// A frame of a converted RAW burst (ADR-0105): its CR2-like original next to the camera JPEG (`path`), and
+    /// the converted DNG with a copy of the JPEG in another folder.
+    pub converted: Option<ConvertedFrame>,
+}
+
+/// The extra files of one converted-burst frame.
+#[derive(Clone, Debug)]
+pub struct ConvertedFrame {
+    /// `IMG_0034.CR2` next to `IMG_0034.JPG` (the shot's path).
+    pub raw_path: String,
+    /// `IMG_0034.DNG` in the converted folder; its `OriginalRawFileName` is the CR2's name.
+    pub dng_path: String,
+    /// The camera JPEG copied next to the DNG (same stem).
+    pub jpeg_copy_path: String,
+    pub dng_mtime: i64,
+    /// Canon file number (`directory * 10000 + index`) in the maker notes of all three.
+    pub file_number: u32,
+    /// The converter's rendering of the RAW (the DNG preview): the frame seen through another pipeline.
+    pub render: Perturb,
 }
 
 #[derive(Clone, Debug)]
@@ -777,6 +796,7 @@ impl Planner {
             maker_seed: self.rng.random(),
             derivs: Vec::new(),
             crops: Vec::new(),
+            converted: None,
         }
     }
 
@@ -1219,6 +1239,109 @@ impl Planner {
         for i in 0..p.tiny_web {
             self.add_junk(JunkKind::TinyWeb, i);
         }
+        // Last, so that every earlier file, path and random draw stays as it was (ADR-0105).
+        for i in 0..p.converted_raw_bursts {
+            self.add_converted_burst(i);
+        }
+    }
+
+    /// A burst of 2 or 3 frames in one second from a Canon RAW camera, as the owner's SD card had them
+    /// (ADR-0105): per frame a CR2-like original and the camera JPEG on the card, and an Adobe-converted DNG with
+    /// a copy of the JPEG in a dated folder. The first frame's sub-second is `00`, which the converter drops, so
+    /// its DNG has no sub-second time. Every frame's files are one truth group; the frames are a must-not-merge
+    /// set.
+    fn add_converted_burst(&mut self, set: usize) {
+        let candidates: Vec<usize> = (0..self.bodies.len())
+            .filter(|&b| {
+                let m = self.bodies[b].model;
+                m.make == "Canon" && m.can_raw && m.subsec_digits == 2
+            })
+            .collect();
+        let body = candidates[self.rng.random_range(0..candidates.len())];
+        let ev = self.event_for(body);
+        let frames = self.rng.random_range(2..=3usize);
+        let mut first = self.next_capture(ev, (60_000, 900_000));
+        // Sub-second `00`: below 10 ms.
+        first.millis = self.rng.random_range(0..10);
+        let scene = Scene::random(&mut self.rng);
+        let orientation = 1;
+        let gps = self.gps(body, ev);
+        let model = self.bodies[body].model;
+        let (y, mo, d) = first.ymd();
+        let card = format!(
+            "drive-b/Camera Cards/{} card {}/DCIM/{}",
+            model.model,
+            set + 1,
+            model.dcim
+        );
+        let converted = format!(
+            "drive-c/Photos/Converted/{y:04}/{y:04}-{mo:02}-{d:02} burst {}",
+            set + 1
+        );
+        let directory: u32 = model
+            .dcim
+            .get(..3)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let mut groups = Vec::new();
+        let mut originals = Vec::new();
+        let mut cap = first;
+        for f in 0..frames {
+            if f > 0 {
+                let next = cap.plus_millis(self.rng.random_range(110..260));
+                cap = if next.local == first.local {
+                    next
+                } else {
+                    cap.plus_millis(10)
+                };
+            }
+            let perturb = Perturb::near(&mut self.rng, 1.0);
+            let mut shot =
+                self.make_shot(ev, body, cap, scene.clone(), perturb, orientation, gps, false);
+            let (stem, _) = Self::file_name(&shot.path);
+            let stem = stem.to_string();
+            // The card's own folder, not the event's: the JPEG and its CR2 are camera files.
+            shot.path = self.paths.claim(&card, &format!("{stem}.JPG"));
+            let raw_path = self.paths.claim(&card, &format!("{stem}.CR2"));
+            let dng_path = self.paths.claim(&converted, &format!("{stem}.DNG"));
+            let jpeg_copy_path = self.paths.claim(&converted, &format!("{stem}.JPG"));
+            shot.mtime = first.utc() + 1;
+            let index: u32 = stem
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+                .unwrap_or(1);
+            let render = Perturb {
+                dx: shot.perturb.dx + self.rng.random_range(-0.006..0.006),
+                dy: shot.perturb.dy + self.rng.random_range(-0.004..0.004),
+                zoom: shot.perturb.zoom * (1.0 + self.rng.random_range(-0.005..0.005)),
+                light: shot.perturb.light * (1.0 + self.rng.random_range(0.01..0.04)),
+                jitter: 0.0,
+                jitter_seed: shot.perturb.jitter_seed,
+                grain: self.rng.random_range(2.0..4.0),
+                grain_seed: self.rng.random(),
+            };
+            shot.converted = Some(ConvertedFrame {
+                raw_path,
+                dng_path,
+                jpeg_copy_path,
+                dng_mtime: shot.mtime + self.rng.random_range(86_400..86_400 * 300),
+                file_number: directory * 10_000 + index,
+                render,
+            });
+            groups.push(shot.group.clone());
+            originals.push(shot.path.clone());
+            self.push_shot(shot);
+        }
+        let ev_cursor = &mut self.events[ev].cursor_ms;
+        *ev_cursor = (*ev_cursor).max(cap.local * 1000 + i64::from(cap.millis));
+        let id = self.mnm_id();
+        self.mnm.push(MustNotMerge {
+            id,
+            kind: MustNotMergeKind::Burst,
+            variant: Some(BurstVariant::ConvertedRaw),
+            groups,
+            originals,
+        });
     }
 
     fn add_crop(&mut self, shot: &mut Shot, ev: usize) {
@@ -1271,6 +1394,7 @@ impl Planner {
             BurstVariant::Spaced => (false, false),
             BurstVariant::SameSecondSubsec => (false, true),
             BurstVariant::SameSecondNoSubsec => (true, false),
+            BurstVariant::ConvertedRaw => (false, true),
         };
         let candidates: Vec<usize> = (0..self.bodies.len())
             .filter(|&b| self.body_ok_for(b, need_no, need_sub))

@@ -58,6 +58,7 @@ fn tiny_params() -> Params {
         standalone: 4,
         sets_per_kind: 1,
         burst_sets: 3,
+        converted_raw_bursts: 0,
         videos: 1,
         scans: 1,
         icons: 1,
@@ -430,7 +431,7 @@ fn scenario_test_corpus_must_not_merge_sets_recorded() {
             .map(|o| t.file(o).map(|f| (f.width, f.height)).unwrap_or_default())
             .collect();
         match v {
-            BurstVariant::SameSecondSubsec => {
+            BurstVariant::SameSecondSubsec | BurstVariant::ConvertedRaw => {
                 assert!(dto.iter().all(|d| d == &dto[0]), "{dto:?}");
                 let subs: BTreeSet<_> = sub.iter().map(|s| s.clone().expect("subsec")).collect();
                 assert_eq!(subs.len(), sub.len(), "distinct subsec {sub:?}");
@@ -451,7 +452,7 @@ fn scenario_test_corpus_must_not_merge_sets_recorded() {
             }
         }
     }
-    assert_eq!(seen.len(), 3, "{seen:?}");
+    assert_eq!(seen.len(), 4, "{seen:?}");
 }
 
 #[test]

@@ -12,8 +12,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::{DirWriter, Preset};
 
-/// The completion marker's content: the version of the crate that built the folder.
-const MARKER: &[u8] = concat!("ps-fixtures ", env!("CARGO_PKG_VERSION")).as_bytes();
+/// The completion marker's content: the version of the crate that built the folder and the generator revision
+/// ([`CORPUS_REVISION`]), so a folder built by an older generator of the same version is built again.
+const MARKER: &[u8] = concat!(
+    "ps-fixtures ",
+    env!("CARGO_PKG_VERSION"),
+    " corpus revision 2"
+)
+.as_bytes();
+
+/// Bumped whenever the generator's output changes within a crate version (2: converted RAW bursts, ADR-0105).
+/// Keep it equal to the number in [`MARKER`].
+pub const CORPUS_REVISION: u32 = 2;
 
 fn thread_lock(root: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();

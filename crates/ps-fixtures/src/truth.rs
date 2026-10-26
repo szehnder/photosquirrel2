@@ -15,8 +15,10 @@ pub const TRUTH_FILE: &str = "truth.json";
 pub enum Category {
     /// Camera JPEG straight from the camera (includes burst frames, look-alikes, same-scene shots).
     Original,
-    /// The DNG half of a RAW+JPEG pair.
+    /// The DNG half of a RAW+JPEG pair, or the CR2-like original of a converted burst frame.
     RawOriginal,
+    /// A DNG converted from a camera RAW (`OriginalRawFileName`, maker notes in `DNGPrivateData`; ADR-0105).
+    ConvertedRaw,
     /// An edited crop of an original (its own group; must not merge with the original).
     Crop,
     /// A scanned print (no camera EXIF).
@@ -71,6 +73,7 @@ impl Category {
         match self {
             Category::Original => "original",
             Category::RawOriginal => "raw_original",
+            Category::ConvertedRaw => "converted_raw",
             Category::Crop => "crop",
             Category::Scan => "scan",
             Category::Video => "video",
@@ -161,6 +164,9 @@ pub enum BurstVariant {
     SameSecondSubsec,
     /// Same capture second, no sub-seconds, maker notes present, equal dimensions.
     SameSecondNoSubsec,
+    /// Same capture second, each frame as a CR2-like original, a camera JPEG and an Adobe-converted DNG; the
+    /// first frame's DNG lost its `00` sub-second (ADR-0105).
+    ConvertedRaw,
 }
 
 /// Distinct shots whose groups must stay apart.

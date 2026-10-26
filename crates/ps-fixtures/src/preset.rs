@@ -34,6 +34,7 @@ impl Preset {
                 standalone: 40,
                 sets_per_kind: 10,
                 burst_sets: 12,
+                converted_raw_bursts: 2,
                 videos: 6,
                 scans: 5,
                 icons: 10,
@@ -49,6 +50,7 @@ impl Preset {
                 standalone: 780,
                 sets_per_kind: 120,
                 burst_sets: 144,
+                converted_raw_bursts: 24,
                 videos: 90,
                 scans: 60,
                 icons: 160,
@@ -64,6 +66,7 @@ impl Preset {
                 standalone: 8000,
                 sets_per_kind: 700,
                 burst_sets: 840,
+                converted_raw_bursts: 140,
                 videos: 600,
                 scans: 400,
                 icons: 1500,
@@ -94,6 +97,8 @@ pub struct Params {
     pub sets_per_kind: usize,
     /// Burst sets (split evenly over the three ADR-0035 variants).
     pub burst_sets: usize,
+    /// Converted RAW burst sets (ADR-0105): CR2-like original, camera JPEG and converted DNG per frame.
+    pub converted_raw_bursts: usize,
     pub videos: usize,
     pub scans: usize,
     pub icons: usize,

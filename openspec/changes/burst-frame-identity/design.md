@@ -111,3 +111,14 @@ corpus would have caught the bug).
 - **One test hook.** `ps_model::frame::set_frame_identity_enabled(false)` turns off reading frame identities and
   `DNGPrivateData` maker notes (ps-media) and the frame and RAW-original rules (ps-dedup), so a test can group a
   corpus the way the build before this change did. It is only called by tests.
+
+## Evidence: the corpus catches the bug (task 2.2)
+
+The medium preset (seed 42) with the 24 converted-burst sets (60 frames, 240 files), scanned from drive-a/b/c by
+the release CLI built from the code **before** this change's fix (fixtures only, commit after ADR-0105):
+10,173 files in 17.6 s, 0 errors; `eval-corpus`: precision 0.9988, recall 0.9991, keeper accuracy 0.9968
+(1,897 of 1,903), **6 must-not-merge violations**, all converted bursts (`m0506`, `m0508`, `m0511`, `m0516`,
+`m0525`, `m0526`: each a result group holding two frames of one set); 19,741 true pairs, 19,747 result pairs,
+19,723 correct. `groups list --json`: 1,903 groups, 8,834 grouped files, 4,162,408,110 reclaimable bytes, 6,254
+suggestions. Gate: FAIL. The same merge as on the SD card: the first frame's DNG (no sub-second, maker notes only in
+`DNGPrivateData`) joined the next frame's group.
