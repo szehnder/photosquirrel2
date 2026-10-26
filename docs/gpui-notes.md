@@ -473,3 +473,8 @@ window size) when the delay is long; focus can still move.
   HEIC previews" open in frame one) and `PHOTOSQUIRREL_BETTER_COPIES=open` (the Export view's better-copies list
   open). `PHOTOSQUIRREL_HEIF_DECODER=none` or `PHOTOSQUIRREL_LIBHEIF=/nonexistent/libheif.so.1` make the app
   behave as if no HEIC decoder were installed.
+
+- **`#[test]` inside a view module of `ui-workspace`:** a `mod tests { use super::*; ... }` imports the view's
+  `gpui_kit` glob (`use gpui_kit::*` brings in `gpui_kit::test`), so plain `#[test]` expands to the gpui test macro
+  and fails with "recursion limit reached while expanding `#[test]`". Import the items the test needs by name
+  instead of `super::*` (as `views/reports.rs`'s `alert_tests` does), or use `#[gpui_kit::test]` deliberately.

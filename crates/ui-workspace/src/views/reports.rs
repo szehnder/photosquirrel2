@@ -23,6 +23,20 @@ use crate::views::scan::ScanHub;
 /// Rows listed by a drill-down.
 pub const DRILL_LIMIT: usize = 2_000;
 
+/// The Reports view's subtitle: every disposition a file can have, better copies not in the library yet included
+/// (ADR-0093).
+pub const REPORTS_SUBTITLE: &str = "Every file on every source, accounted for: exported, covered by an exported \
+     copy, excluded, a better copy not in the library yet, or still pending.";
+
+/// Whether a non-zero count of `d` in the per-folder table is shown in the alert (warning) colour: what is not
+/// accounted for (pending, unreadable, and better copies not in the library yet).
+pub fn folder_cell_alerts(d: Disposition) -> bool {
+    matches!(
+        d,
+        Disposition::Pending | Disposition::Unreadable | Disposition::Superseded
+    )
+}
+
 /// "100% accounted for" or what is outstanding (ADR-0023, same rule as `ps_export::Badge`).
 pub fn badge_label(c: &CompletionCounts) -> String {
     let pending = c.files_of(Disposition::Pending);
@@ -321,11 +335,11 @@ impl Render for ReportsView {
         let page = kit::page("view-reports", cx)
             .track_scroll(&self.scroll)
             .child(kit::header(
-            "Reports",
-            "Every file on every source, accounted for: exported, covered by an exported copy, excluded, or still pending.",
-            vec![verify, refresh],
-            cx,
-        ));
+                "Reports",
+                REPORTS_SUBTITLE,
+                vec![verify, refresh],
+                cx,
+            ));
         let data = match self.data.clone() {
             Loadable::Loading => {
                 return page
@@ -925,7 +939,7 @@ fn folder_table(
                 folder: Some(folder.clone()),
                 disposition: d,
             };
-            let alert = n > 0 && matches!(d, Disposition::Pending | Disposition::Unreadable);
+            let alert = n > 0 && folder_cell_alerts(d);
             row = row.child(
                 div()
                     .id(SharedString::from(format!(
@@ -978,4 +992,29 @@ fn folder_table(
         table = table.child(row);
     }
     table.into_any_element()
+}
+
+#[cfg(test)]
+mod alert_tests {
+    use super::{REPORTS_SUBTITLE, folder_cell_alerts};
+    use ps_model::Disposition;
+
+    /// Superseded cells are alerts like pending and unreadable ones; the subtitle names better copies (re-review
+    /// fix 10).
+    #[test]
+    fn superseded_cells_alert_and_the_subtitle_names_them() {
+        let alerts: Vec<Disposition> = Disposition::ALL
+            .into_iter()
+            .filter(|d| folder_cell_alerts(*d))
+            .collect();
+        assert_eq!(
+            alerts,
+            vec![
+                Disposition::Pending,
+                Disposition::Unreadable,
+                Disposition::Superseded
+            ]
+        );
+        assert!(REPORTS_SUBTITLE.contains("better copy not in the library yet"));
+    }
 }

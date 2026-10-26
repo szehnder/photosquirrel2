@@ -237,23 +237,30 @@ fn windows(os: &OsInfo, f: &Finding) -> Fix {
     }
 }
 
-/// Ubuntu releases whose libheif predates plugins (1.14): the HEVC decoder is built into `libheif1`.
-const UBUNTU_BUILT_IN_HEVC: &[&str] = &["bionic", "focal", "jammy", "kinetic"];
-/// The same for Debian.
+/// The first libheif version Debian and Ubuntu package with its decoders split into plugins
+/// (`libheif-plugin-libde265`). Upstream has plugins from 1.14, but the distributions split them only with 1.16:
+/// Debian bookworm (1.15.1) and Ubuntu 23.04 lunar (1.14.2) ship `libheif1` with libde265 built in and have no
+/// plugin package; Ubuntu 23.10 mantic (1.16.2), 24.04 noble (1.17.6), 24.10 oracular (1.18.1), Debian trixie
+/// (1.19.8) and bookworm-backports (1.19.7) package the plugin (packages.debian.org and Launchpad, checked
+/// 2026-10-25; re-review fix 9).
+const DEBIAN_PLUGIN_SINCE: (u32, u32) = (1, 16);
+/// Ubuntu releases whose libheif has the HEVC decoder built into `libheif1` (no plugin package).
+const UBUNTU_BUILT_IN_HEVC: &[&str] = &["bionic", "focal", "jammy", "kinetic", "lunar"];
+/// The same for Debian (bookworm without backports).
 const DEBIAN_BUILT_IN_HEVC: &[&str] = &["buster", "bullseye", "bookworm"];
 
-/// Whether this Debian-family system packages libheif's HEVC decoder as `libheif-plugin-libde265` (gate review
-/// fix 5). In order: the libheif version detection found (plugins exist from 1.14); the Ubuntu base release a
-/// derivative names (`UBUNTU_CODENAME`: Linux Mint 21 and Pop!_OS 22.04 are jammy); the Debian base release
-/// (`DEBIAN_CODENAME`, Debian's `VERSION_CODENAME`); Ubuntu's and Debian's own version numbers. Unknown: the
-/// plugin (every current release).
+/// Whether this Debian-family system packages libheif's HEVC decoder as `libheif-plugin-libde265`. In order: the
+/// libheif version detection found (the plugin package exists from [`DEBIAN_PLUGIN_SINCE`], so a bookworm with
+/// backports' 1.19 needs it); the Ubuntu base release a derivative names (`UBUNTU_CODENAME`: Linux Mint 21 and
+/// Pop!_OS 22.04 are jammy); the Debian base release (`DEBIAN_CODENAME`, Debian's `VERSION_CODENAME`); Ubuntu's
+/// (23.10 and later) and Debian's (13 and later) own version numbers. Unknown: the plugin (every current release).
 fn debian_family_has_hevc_plugin(os: &OsInfo, f: &Finding) -> bool {
     let detected = match f {
         Finding::NoHevc { version } | Finding::TooOld { version } => parse_version(version),
         _ => None,
     };
     if let Some(v) = detected {
-        return v >= (1, 14);
+        return v >= DEBIAN_PLUGIN_SINCE;
     }
     if let Some(c) = os.ubuntu_codename.as_deref() {
         return !UBUNTU_BUILT_IN_HEVC.contains(&c);
@@ -261,8 +268,9 @@ fn debian_family_has_hevc_plugin(os: &OsInfo, f: &Finding) -> bool {
     if let Some(c) = os.debian_codename.as_deref() {
         return !DEBIAN_BUILT_IN_HEVC.contains(&c);
     }
+    let version = os.version_id.as_deref().and_then(parse_version);
     match os.id.as_deref() {
-        Some("ubuntu") => os.major().is_none_or(|m| m >= 23),
+        Some("ubuntu") => version.is_none_or(|v| v >= (23, 10)),
         Some("debian") => os.major().is_none_or(|m| m >= 13),
         _ => true,
     }
@@ -352,8 +360,8 @@ fn unix(os: &OsInfo, f: &Finding) -> Fix {
             "sudo zypper install --from packman --allow-vendor-change libheif1 libheif-ffmpeg",
         ));
     } else if os.is_like(&["debian", "ubuntu"]) {
-        // Ubuntu 22.04 and Debian 12 (and their derivatives) ship libheif with libde265 built in; later releases
-        // package the HEVC decoder as a plugin, `libheif-plugin-libde265`, which does not exist before.
+        // Ubuntu 22.04 and 23.04 and Debian 12 (and their derivatives) ship libheif with libde265 built in; later
+        // releases package the HEVC decoder as a plugin, `libheif-plugin-libde265`, which does not exist before.
         if debian_family_has_hevc_plugin(os, f) {
             summary = "Install libheif1 and its HEVC plugin".to_owned();
             steps.push(cmd(

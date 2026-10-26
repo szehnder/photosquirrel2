@@ -32,18 +32,38 @@ with both installed. It takes about five minutes and touches nothing but a tempo
    Record the HEIC line and the `os` entry. If HEIC is unavailable, the reason must name the missing extension and
    the fix must list its Store link; that is a finding to report, not a pass.
 
-3. A real scan. Copy two or three HEIC photos from a phone into `$d\photos` (copies, never originals), then:
+3. A real scan on the fresh data folder. Copy two or three HEIC photos from a phone into `$d\photos` (copies, never
+   originals). For each one, also save a smaller JPEG copy beside it: open the HEIC in the Photos app, choose
+   "..." > "Resize image", pick the smallest size, save it as JPEG into `$d\photos` (any name). Then scan once,
+   keeping the JSON summary of that first scan (a second scan would re-analyse nothing and report 0 errors
+   whatever happened):
 
    ```powershell
    photosquirrel-cli --data-dir "$d\data" sources add "$d\photos"
-   photosquirrel-cli --data-dir "$d\data" scan
-   photosquirrel-cli --data-dir "$d\data" --json scan
+   $lines = photosquirrel-cli --data-dir "$d\data" --json scan | ForEach-Object { $_ | ConvertFrom-Json }
+   $summary = $lines[-1].data
+   "errors: $($summary.errors)   undecoded: $(($summary.undecoded | Measure-Object).Count)"
+   $lines | ForEach-Object { $_.data.recent_errors } | Where-Object { $_ } |
+       ForEach-Object { "$($_.path): $($_.message)" } | Sort-Object -Unique
    ```
 
-   Expect no "HEIC photos have no preview" line, `undecoded` empty in the JSON, and 0 errors. Open the app with the
-   same data folder (`photosquirrel.exe --data-dir "$d\data"`) and check that each HEIC shows a real, upright
-   thumbnail and large preview (portrait photos must be portrait: this is where a backend that applies or ignores the
-   container rotation would show).
+   `--json scan` prints a progress line now and then and the run's summary last. Expect `errors: 0   undecoded: 0`
+   and no error lines below it; any error is a finding: record its line.
+
+   Then check that every HEIC really decoded: only a HEIC with pixels has perceptual hashes, and only those make
+   it a duplicate group with its resized JPEG.
+
+   ```powershell
+   photosquirrel-cli --data-dir "$d\data" groups list
+   $groups = (photosquirrel-cli --data-dir "$d\data" --json groups list | ConvertFrom-Json).data.groups
+   foreach ($g in $groups) { photosquirrel-cli --data-dir "$d\data" groups show $g.id }
+   ```
+
+   Expect one group per HEIC, each with 2 members: the HEIC as keeper ("more pixels") and its JPEG copy, joined as
+   a derivative with a pHash distance. A HEIC without a group (or a group without its HEIC) did not decode: a
+   finding. Open the app with the same data folder (`photosquirrel.exe --data-dir "$d\data"`) and check that each
+   HEIC shows a real, upright thumbnail and large preview (portrait photos must be portrait: this is where a
+   backend that applies or ignores the container rotation would show).
 
 4. Optional, the real-decoder tests with the require flag (a skip becomes a failure):
 
@@ -61,4 +81,5 @@ with both installed. It takes about five minutes and touches nothing but a tempo
 ## Record
 
 Add a line to the change's `tasks.md` (or the release notes' verification list) with the Windows edition and build
-(`winver`), the extension versions (Settings > Apps), the doctor HEIC line, and the outcome of steps 3 and 4.
+(`winver`), the extension versions (Settings > Apps), the doctor HEIC line, the errors and group counts of step 3,
+and the outcome of step 4.

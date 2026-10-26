@@ -867,3 +867,71 @@ fn scenario_decoder_support_ubuntu_derivatives_follow_their_base_release() {
     };
     assert_eq!(commands(&guidance(&mint21, &new)), plugin);
 }
+
+/// The apt command per Debian and Ubuntu release, from the distributions' packages (re-review fix 9): the plugin
+/// package `libheif-plugin-libde265` exists from libheif 1.16 (Ubuntu 23.10, 24.04, 24.10, Debian 13 trixie,
+/// bookworm-backports), not in Debian 12 bookworm (1.15.1) or Ubuntu 23.04 (1.14.2), whose `libheif1` has the
+/// decoder built in.
+#[test]
+fn debian_and_ubuntu_releases_get_their_packages_command() {
+    let plugin = vec!["sudo apt install libheif1 libheif-plugin-libde265"];
+    let built_in = vec!["sudo apt install libheif1"];
+    let ubuntu = |v: &str, c: &str| {
+        OsInfo::linux(&format!(
+            "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"{v}\"\nVERSION_CODENAME={c}\n"
+        ))
+    };
+    let debian = |v: &str, c: &str| {
+        OsInfo::linux(&format!(
+            "ID=debian\nVERSION_ID=\"{v}\"\nVERSION_CODENAME={c}\n"
+        ))
+    };
+    for (os, want) in [
+        (ubuntu("22.04", "jammy"), &built_in),
+        (ubuntu("23.04", "lunar"), &built_in),
+        (ubuntu("23.10", "mantic"), &plugin),
+        (ubuntu("24.04", "noble"), &plugin),
+        (ubuntu("24.10", "oracular"), &plugin),
+        (debian("12", "bookworm"), &built_in),
+        (debian("13", "trixie"), &plugin),
+    ] {
+        assert_eq!(
+            &commands(&guidance(&os, &Finding::NoLibrary)),
+            want,
+            "{os:?}"
+        );
+    }
+    // Without codenames, Ubuntu's version number decides at 23.10.
+    let bare = |v: &str| OsInfo::linux(&format!("ID=ubuntu\nVERSION_ID=\"{v}\"\n"));
+    assert_eq!(
+        commands(&guidance(&bare("23.04"), &Finding::NoLibrary)),
+        built_in
+    );
+    assert_eq!(
+        commands(&guidance(&bare("23.10"), &Finding::NoLibrary)),
+        plugin
+    );
+    // A detected libheif decides first: bookworm's own 1.15.1 has the decoder built in, bookworm-backports' 1.19.7
+    // needs the plugin, lunar's 1.14.2 has it built in.
+    let found = |v: &str| Finding::NoHevc { version: v.into() };
+    let bookworm = debian("12", "bookworm");
+    assert_eq!(commands(&guidance(&bookworm, &found("1.15.1"))), built_in);
+    assert_eq!(commands(&guidance(&bookworm, &found("1.19.7"))), plugin);
+    assert_eq!(
+        commands(&guidance(&ubuntu("23.04", "lunar"), &found("1.14.2"))),
+        built_in
+    );
+    assert_eq!(
+        commands(&guidance(&ubuntu("23.10", "mantic"), &found("1.16.2"))),
+        plugin
+    );
+}
+
+/// A skip line is one complete line, written in one call (re-review fix 10): no embedded line break that another
+/// thread's output could split.
+#[test]
+fn a_skip_line_is_one_line() {
+    let l = ps_sysdecode::skip_line("t::x", "no HEVC\ndecoder");
+    assert_eq!(l, "SKIPPED: t::x: no HEVC decoder\n");
+    assert_eq!(l.matches('\n').count(), 1);
+}

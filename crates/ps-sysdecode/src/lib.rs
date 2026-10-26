@@ -79,12 +79,14 @@ pub fn skip_note(why: &str) {
         .name()
         .unwrap_or("a real-decoder test")
         .to_owned();
-    let _ = writeln!(std::io::stderr(), "SKIPPED: {test}: {why}");
+    // Each line in one write call, so parallel tests' output and the harness's cannot interleave inside it.
+    let _ = std::io::stderr()
+        .lock()
+        .write_all(skip_line(&test, why).as_bytes());
     if std::env::var_os("GITHUB_ACTIONS").is_some() {
         let one_line = why.replace(['\n', '\r'], " ");
-        let _ = writeln!(
-            std::io::stdout(),
-            "::warning title=real-decoder test skipped::{test}: {one_line}"
+        let _ = std::io::stdout().lock().write_all(
+            format!("::warning title=real-decoder test skipped::{test}: {one_line}\n").as_bytes(),
         );
         if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
             // The runner's own summary file, outside every user folder.
@@ -93,6 +95,12 @@ pub fn skip_note(why: &str) {
             }
         }
     }
+}
+
+/// The `SKIPPED: <test>: <why>` line of [`skip_note`], newline included, as one string (written in one call).
+#[doc(hidden)]
+pub fn skip_line(test: &str, why: &str) -> String {
+    format!("SKIPPED: {test}: {}\n", why.replace(['\n', '\r'], " "))
 }
 
 /// How `PHOTOSQUIRREL_HEIF_DECODER` chooses the HEIC entry.
