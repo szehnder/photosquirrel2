@@ -98,6 +98,7 @@ pub fn check(root: &Path) -> Result<()> {
     let mut violations = read_only_violations(&root.join("crates/ps-scan/src"))?;
     violations.extend(read_only_violations(&root.join("crates/ps-scan/tests"))?);
     violations.extend(move_violations(root)?);
+    violations.extend(scratch_violations(root)?);
     for (name, id) in &members {
         if UI.contains(&name.as_str()) {
             let direct: Vec<&str> = deps
@@ -791,6 +792,52 @@ fn move_checked_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(out)
 }
 
+/// Uses of `ps_fixtures::scratch` (test-corpus writes, renames and removals; ADR-0101) in one source file
+/// (path relative to the workspace root, `/`-separated), as `file:line: ...` strings. Allowed only in
+/// integration tests (`crates/*/tests/`), benches and `ps-fixtures` itself; matched on code tokens, so a comment
+/// or a string naming it is not a use.
+pub fn scratch_calls(file: &str, text: &str) -> Vec<String> {
+    if file.starts_with("crates/ps-fixtures/")
+        || file.contains("/tests/")
+        || file.contains("/benches/")
+    {
+        return Vec::new();
+    }
+    let lines = match code_by_line(text) {
+        Ok(l) => l,
+        Err(e) => {
+            return vec![format!(
+                "{file}: cannot be lexed for the scratch check: {e}"
+            )];
+        }
+    };
+    lines
+        .into_iter()
+        .filter(|(_, code)| {
+            code.contains("scratch::") || (code.contains("ps_fixtures::") && code.contains("scratch"))
+        })
+        .map(|(line, _)| {
+            format!(
+                "{file}:{line}: `ps_fixtures::scratch` is for tests only (ADR-0101: it writes, renames and \
+                 removes files)"
+            )
+        })
+        .collect()
+}
+
+fn scratch_violations(root: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for p in move_checked_files(root)? {
+        let rel = p
+            .strip_prefix(root)
+            .unwrap_or(&p)
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.extend(scratch_calls(&rel, &std::fs::read_to_string(&p)?));
+    }
+    Ok(out)
+}
+
 fn move_violations(root: &Path) -> Result<Vec<String>> {
     let mut out: Vec<String> = MOVE_ALLOWED
         .iter()
@@ -813,6 +860,38 @@ fn move_violations(root: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scratch_outside_tests_is_rejected() {
+        let prod = "use ps_fixtures::scratch;\nfn f(p: &std::path::Path) {\n    ps_fixtures::scratch::remove(p).ok();\n}\n";
+        let v = scratch_calls("crates/ps-service/src/cleanup.rs", prod);
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert!(
+            v[0].contains("cleanup.rs:1") && v[1].contains("cleanup.rs:3"),
+            "{v:?}"
+        );
+        let grouped = "use ps_fixtures::{media, scratch};\n";
+        assert_eq!(
+            scratch_calls("crates/photosquirrel-cli/src/main.rs", grouped).len(),
+            1
+        );
+        // Tests, benches and ps-fixtures itself may use it; comments and strings are not uses.
+        for ok in [
+            "crates/ps-scan/tests/rescan.rs",
+            "crates/ps-scan/tests/common/mod.rs",
+            "crates/ps-hash/benches/hashing.rs",
+            "crates/ps-fixtures/src/scratch.rs",
+        ] {
+            assert!(scratch_calls(ok, prod).is_empty(), "{ok}");
+        }
+        assert!(
+            scratch_calls(
+                "crates/ps-service/src/a.rs",
+                "// ps_fixtures::scratch::write\nconst S: &str = \"scratch::\";\n"
+            )
+            .is_empty()
+        );
+    }
 
     #[test]
     fn file_create_in_scan_sources_is_rejected() {

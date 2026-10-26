@@ -15,6 +15,8 @@ pub mod junk;
 pub mod plan;
 pub mod preset;
 pub mod rng;
+/// Test-only (feature `scratch`, enabled from dev-dependencies only, ADR-0101).
+#[cfg(feature = "scratch")]
 pub mod scratch;
 pub mod shared;
 pub mod sparse;

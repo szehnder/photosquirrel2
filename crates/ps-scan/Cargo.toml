@@ -23,7 +23,8 @@ log.workspace = true
 blake3.workspace = true
 
 [dev-dependencies]
-ps-fixtures.workspace = true
+# `scratch`: the tests arrange temp corpora through `ps_fixtures::scratch` (ADR-0101).
+ps-fixtures = { workspace = true, features = ["scratch"] }
 # `FakeHeif`, the deterministic HEIC test decoder (ADR-0089).
 ps-media = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

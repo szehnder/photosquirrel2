@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# `scratch`: file writes, renames and removals on temporary test corpora. Enabled only from `[dev-dependencies]`
+# (ps-scan's tests), never in a shipped binary; `cargo xtask layering` rejects `scratch::` outside tests (ADR-0101).
+scratch = []
+
 [dependencies]
 ps-model.workspace = true
 image = { workspace = true, features = ["jpeg", "gif"] }
