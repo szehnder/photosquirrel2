@@ -153,6 +153,7 @@ photosquirrel-cli export run --library ~/Pictures/Library --yes   # copy, verify
 photosquirrel-cli export run --library ~/Pictures/Library --upgrade --yes  # also copy better copies beside
                                                       # the library copies (listed by every plan)
 photosquirrel-cli report                              # what happened to every file found
+photosquirrel-cli report excluded                     # excluded files by category (see the Excluded view)
 photosquirrel-cli cleanup plan --source 1             # what a cleanup would move into quarantine; moves nothing
 photosquirrel-cli cleanup select 3 --except-folder "Backup 2012"  # narrow the plan; moves nothing
 photosquirrel-cli cleanup run 3 --yes                 # re-verify each file, then move it; never deletes
@@ -175,6 +176,32 @@ command runs; it has no effect (and says so) when `scan resume` only resumes a s
 terminal. `PHOTOSQUIRREL_POWER_SUPPLY_DIR` points the power check at a folder laid out like Linux's
 `/sys/class/power_supply` instead of the system's own (on any platform; for testing and support; a warning says
 it is in use, and `doctor` shows it).
+
+## The Excluded view
+
+Everything PhotoSquirrel keeps out of the library is listed under **Excluded**, each file once, under the first of
+these categories that fits: excluded by you, an AI suggestion you accepted (screenshots, documents, graphics, not a
+photo), thumbnail caches, graphics, too small (icons, tiny images, very short videos), could not be read (a photo or
+video format whose file could not be read here, such as a damaged TIFF) and **Not a supported file** (anything that is
+not a photo or video format at all). Every file still lists all of its reasons.
+
+- **Filter by category.** Each chip shows its count and turns its files on or off; the AI chip has one entry per kind
+  of suggestion. "Not a supported file" is off at first, and the view says how many files the filters hide (**Show
+  all** turns every chip on). A search box matches names and folders, and the list sorts by name, folder, size or
+  category. Your choices are remembered for each catalog.
+- **List or Grid.** The list shows a thumbnail, the file and its folder, its category and its reasons; the grid is
+  the Library's grid limited to the files shown. Selecting a file shows it in the inspector.
+- **Put back in Library.** Put back the selected files, or every file the filters show (after a confirmation with
+  the count). They are included by you from then on, rescans keep that, and excluding them again undoes it. Putting
+  back a file an AI suggestion excluded also rejects that suggestion, so the next AI run does not suggest it again.
+  No file is touched: this only records your decision.
+
+![The Excluded view: category chips with counts, unsupported files hidden](docs/screenshots/gallery-excluded-dark.png)
+
+```sh
+photosquirrel-cli report excluded                       # files per category and AI kind
+photosquirrel-cli report excluded --category ai:document --category unsupported   # and those files with reasons
+```
 
 ## Capture dates
 

@@ -54,6 +54,10 @@ to their resized or re-exported JPEG copies.
   (a HEIC decoded at last, another keeper you chose, a better copy on a new drive), the export copies nothing for it
   and lists it as a better copy; `export run --upgrade` (or the option in the Export view) copies it beside the
   library copy, which is never removed or replaced.
+- **The Excluded view has filters:** every excluded file has one category (yours, an accepted AI suggestion by kind,
+  thumbnail caches, graphics, too small, could not be read, not a supported file) with a chip and a count; files
+  that are not photos at all are hidden until you ask. Search, sort, List and Grid modes with thumbnails, and put
+  back the selection or everything shown in one step (`report excluded` on the command line).
 
 ### LGPL components
 
