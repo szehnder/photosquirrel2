@@ -526,3 +526,75 @@ fn cleanup_cli_run_skips_a_file_that_became_unsafe_after_planning() {
     );
     assert!(p.drive("drive-a").join("Web/IMG_0001.jpg").exists());
 }
+
+/// Every `--json` document prints paths as strings (final gate review fix 4), not as the byte arrays the
+/// engine's types hold: a scan's `recent_errors[].path` (unix: an unreadable file), a plan's folders, a run's
+/// root and `cleanup run`'s `skipped[].rel_path`.
+#[test]
+fn scenario_cli_json_prints_paths_as_strings() {
+    let p = Pair::new("json-paths");
+    #[cfg(unix)]
+    let locked = {
+        use std::os::unix::fs::PermissionsExt as _;
+        let f = p.drive("drive-a").join("Web/locked.jpg");
+        fs::copy(p.drive("drive-a").join("Web/IMG_0001.jpg"), &f).unwrap();
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads it anyway: then there is no error to look at.
+        fs::File::open(&f).is_err().then_some(f)
+    };
+    ok(
+        &p.data(),
+        &["sources", "add", p.drive("drive-a").to_str().unwrap()],
+    );
+    let o = ok(&p.data(), &["--json", "scan"]);
+    let lines: Vec<Value> = String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let errors: Vec<&Value> = lines
+        .iter()
+        .filter_map(|l| l["data"]["recent_errors"].as_array())
+        .flatten()
+        .collect();
+    for e in &errors {
+        assert!(e["path"].is_string(), "{e}");
+    }
+    #[cfg(unix)]
+    if let Some(f) = &locked {
+        assert!(
+            errors
+                .iter()
+                .any(|e| e["path"].as_str().unwrap().ends_with("Web/locked.jpg")),
+            "{lines:?}"
+        );
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(f, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    p.add_and_scan("drive-b");
+    p.export();
+    let plan = json(&ok(
+        &p.data(),
+        &["--json", "cleanup", "plan", "--source", "1"],
+    ));
+    let folder = &plan["data"]["totals"]["folders"][0]["folder"];
+    assert_eq!(folder, "Web", "{plan}");
+    let run = plan["data"]["run"].as_i64().unwrap();
+    let list = json(&ok(&p.data(), &["--json", "cleanup", "list"]));
+    let root = list["data"][0]["run"]["root"].as_str().expect("a string");
+    assert!(root.ends_with("drive-a"), "{root}");
+    let (g, web) = p.group_and_file("Web/IMG_0001.jpg");
+    ok(
+        &p.data(),
+        &["groups", "set-keeper", &g.to_string(), &web.to_string()],
+    );
+    let r = json(&ok(
+        &p.data(),
+        &["--json", "cleanup", "run", &run.to_string(), "--yes"],
+    ));
+    assert_eq!(
+        r["data"]["skipped"][0]["rel_path"], "Web/IMG_0001.jpg",
+        "{r}"
+    );
+    assert!(r["data"]["skipped"][0].get("rel_path_raw").is_none());
+}

@@ -333,6 +333,9 @@ fn foreground(
                     eprintln!("{}", progress_line(&snap, on_battery));
                     last_out = Some(Instant::now());
                 }
+            } else if ctx.json {
+                // The run's last snapshot, so its `recent_errors` are never missed between samples.
+                line("scan", "snapshot", &snap)?;
             }
         }
         if finished {

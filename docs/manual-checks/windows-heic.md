@@ -47,8 +47,10 @@ with both installed. It takes about five minutes and touches nothing but a tempo
        ForEach-Object { "$($_.path): $($_.message)" } | Sort-Object -Unique
    ```
 
-   `--json scan` prints a progress line now and then and the run's summary last. Expect `errors: 0   undecoded: 0`
-   and no error lines below it; any error is a finding: record its line.
+   `--json scan` prints a progress line now and then, the run's last snapshot (with its `recent_errors`) and the
+   run's summary last. Paths in the JSON are strings (a path that is not valid UTF-8 also has its exact bytes in
+   `path_raw`). Expect `errors: 0   undecoded: 0` and no error lines below it; any error is a finding: record its
+   line.
 
    Then check that every HEIC really decoded: only a HEIC with pixels has perceptual hashes, and only those make
    it a duplicate group with its resized JPEG.
@@ -75,6 +77,10 @@ with both installed. It takes about five minutes and touches nothing but a tempo
    `scenario_decoder_support_windows_decodes_heic_when_the_extensions_are_installed` and
    `scenario_decoder_support_system_decoders_agree_with_the_reference_look` must pass; the second prints the WIC
    hashes, which must be within 4 bits of the reference.
+
+   Only the reference hashes (with that test's full-size 640x480 decode) catch a WIC decode that returns just the
+   HEIC's embedded thumbnail instead of the full image: the group check of step 3 does not, because a thumbnail
+   still has perceptual hashes close to the resized JPEG's and forms the same group.
 
 5. Clean up: `Remove-Item -Recurse -Force $d`.
 

@@ -9,6 +9,17 @@ The doctor command SHALL report the application version, data directory, catalog
 - **WHEN** doctor is run with `--json` with the HEIC decoder forced unavailable
 - **THEN** the output reports HEIC unavailable with a reason, fix steps for the detected system and the override in force, AVIF available, the data directory and the catalog schema version, and no network connection is opened
 
+### Requirement: JSON output
+Every subcommand SHALL accept `--json` and then print only a single JSON document with a `schema_version` field to standard output, sending logs to standard error. Every path in it SHALL be a string (UTF-8, lossy), with the exact bytes in a `<field>_raw` field only when they are not valid UTF-8.
+
+#### Scenario: JSON output parses
+- **WHEN** sources list, status, groups list, groups show and doctor are run with `--json` on a scanned small corpus
+- **THEN** each standard output parses as one JSON document containing `schema_version`
+
+#### Scenario: JSON prints paths as strings
+- **WHEN** a folder with an unreadable file is scanned with `--json`, then planned and run for cleanup with `--json` after a planned file became unsafe
+- **THEN** the scan's `recent_errors[].path`, the plan's folders, the run's root and the run's `skipped[].rel_path` are strings
+
 ## ADDED Requirements
 
 ### Requirement: Scan summary names undecodable photos
