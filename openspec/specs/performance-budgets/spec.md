@@ -77,3 +77,10 @@ The TIFF analysis decode SHALL have two budgets: the median analysis decode plus
 #### Scenario: Streamed TIFF decode memory within budget
 - **WHEN** a 24 MP 16-bit TIFF is decoded through a reader
 - **THEN** the decoder's working memory is reported as a budget measurement and is within its budget
+
+### Requirement: Excluded view budget
+The Excluded view SHALL have a budget, `excluded-view-open`: the time from the request for the first page and every chip count to both being available, on a catalog of 1M files with 200,000 excluded.
+
+#### Scenario: Excluded view open within budget
+- **WHEN** the Excluded view benchmark opens a generated 1M-file catalog with 200,000 excluded files
+- **THEN** the time to the first page and all chip counts is reported as a budget measurement and is within its budget

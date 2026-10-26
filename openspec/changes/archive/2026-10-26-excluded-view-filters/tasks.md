@@ -40,7 +40,8 @@
 - [x] 7.2 Corpus gate unchanged: precision, recall and keeper accuracy 1.0000; 0 must-not-merge violations; 19,381 pairs, 1,843 groups, 8,594 files; 4,048,886,433 reclaimable bytes; 5,570 suggestions.
 - [x] 7.3 Screenshot review of the Excluded view in List and Grid modes, light and dark, with chips and a hidden count.
 - [x] 7.4 Pushed; GitHub CI green on all four jobs.
-- [ ] 7.5 Gate review by a fresh agent that did not write the code: every scenario, the budget, the screenshots and the put-back safety.
+- [x] 7.5 Gate review by a fresh agent that did not write the code: every scenario, the budget, the screenshots and the put-back safety.
+  - PASS-WITH-FIXES: no blocker; 4 MEDIUM and the LOW findings fixed in section 8. GitHub run 40374525419 green on 08a81c4.
 
 ## 8. Gate review fixes
 
