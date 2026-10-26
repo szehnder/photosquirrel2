@@ -991,6 +991,6 @@ fn search_matches_the_displayed_root_and_any_script() {
     );
     assert_eq!(names("ÜBER UNS"), ["a.dat"], "Unicode case folding");
     assert_eq!(names("ärger"), ["b.png"]);
-    assert_eq!(names("/MEDIA/usb"), ["c.png"]);
+    assert_eq!(names("MEDIA"), ["c.png"], "the other source's root");
     assert!(names("nowhere").is_empty());
 }

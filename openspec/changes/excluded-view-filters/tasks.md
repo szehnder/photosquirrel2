@@ -57,4 +57,4 @@
 - [x] 8.11 A failed AI rejection after the decisions commit is reported as put back with a warning. Verify: `put_back_reports_an_ai_rejection_that_could_not_be_saved`, `put_back_warns_when_the_ai_rejection_is_not_saved`.
 - [x] 8.12 No AI decision without its kind: migration 22 repairs, triggers refuse, readers file any as yours. Verify: `ai_decision_without_a_kind_is_refused_and_repaired`.
 - [x] 8.13 Screenshot polish: the AI chip's outlined style, the put back row, the inspector loaded before capture; List and Grid captured dark and light, `docs/screenshots/gallery-excluded-dark.png` refreshed. Verify: the PNGs looked at.
-- [ ] 8.14 `cargo xtask ci` green in a clean worktree, the corpus gate unchanged, GitHub CI green.
+- [x] 8.14 `cargo xtask ci` green in a clean worktree, the corpus gate unchanged, GitHub CI green.
