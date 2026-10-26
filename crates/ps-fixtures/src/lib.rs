@@ -15,6 +15,7 @@ pub mod junk;
 pub mod plan;
 pub mod preset;
 pub mod rng;
+pub mod scratch;
 pub mod shared;
 pub mod sparse;
 pub mod synth;

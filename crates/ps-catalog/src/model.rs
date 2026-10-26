@@ -113,6 +113,9 @@ pub struct AnalysisResult {
     pub metadata: Metadata,
     /// The decode lacked this decoder (`file.decoder_missing`, ADR-0091); `None` clears the marker.
     pub decoder_missing: Option<ps_model::DecoderKey>,
+    /// A HEIC or AVIF decode that failed with its decoder present (`file.decode_failure`, ADR-0098); `None`
+    /// clears it.
+    pub decode_failure: Option<ps_model::DecodeFailure>,
 }
 
 impl AnalysisResult {
@@ -210,6 +213,8 @@ pub struct FileRecord {
     pub classifier_hash: Option<u64>,
     /// The decoder this file's format needs and the analysis lacked (catalog migration 19, ADR-0091).
     pub decoder_missing: Option<ps_model::DecoderKey>,
+    /// How its HEIC or AVIF decode failed with the decoder present (catalog migration 20, ADR-0098).
+    pub decode_failure: Option<ps_model::DecodeFailure>,
 }
 
 /// One recorded failure of a file (`file_error` row).

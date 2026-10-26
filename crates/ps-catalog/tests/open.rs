@@ -187,15 +187,21 @@ fn scenario_catalog_old_catalog_upgraded() {
     // ones are NULL for old rows, except migration 17's two columns with defaults (the last two: capture
     // precision 0 = second, date version 1 = the rules before ADR-0069/0070; none of these rows has an EXIF
     // provenance, so none is marked current), then migration 19's `decoder_missing` (NULL: none is a HEIC or
-    // AVIF waiting for a decoder).
+    // AVIF waiting for a decoder) and migration 20's `decode_failure` (NULL: no failure recorded).
     let width = before[0].len();
     let after = snapshot(&path);
     assert!(
         after.iter().all(|r| {
             let added = &r[width..];
-            let (nullable, rest) = added.split_at(added.len() - 3);
+            let (nullable, rest) = added.split_at(added.len() - 4);
             nullable.iter().all(|v| *v == Value::Null)
-                && rest == [Value::Integer(0), Value::Integer(1), Value::Null]
+                && rest
+                    == [
+                        Value::Integer(0),
+                        Value::Integer(1),
+                        Value::Null,
+                        Value::Null,
+                    ]
         }),
         "added columns are empty (or at their defaults) for old rows"
     );

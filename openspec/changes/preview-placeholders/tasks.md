@@ -4,7 +4,7 @@ Starts after `heic-system-decoders` and `excluded-view-filters` are archived. Th
 
 ## 1. Decisions
 
-- [ ] 1.1 Number the ADR "Placeholders carry a reason and a decoder generation" (D1) from the next free number. Add it to `docs/adr/` as accepted, with an index row. Confirm that migration 21 is free. Verify: the index lists it, and `ls crates/ps-catalog/migrations` has no 0021.
+- [ ] 1.1 Number the ADR "Placeholders carry a reason and a decoder generation" (D1) from the next free number. Add it to `docs/adr/` as accepted, with an index row. Confirm that migration 22 is free (`heic-system-decoders` took 20 for `file.decode_failure`, ADR-0098). Verify: the index lists it, and `ls crates/ps-catalog/migrations` has no 0022.
 
 ## 2. Model and media
 
@@ -13,7 +13,7 @@ Starts after `heic-system-decoders` and `excluded-view-filters` are archived. Th
 
 ## 3. Catalog
 
-- [ ] 3.1 Migration 21: `file.preview_gen` and `preview_reason`, the partial index, and the backfill rule from D1 (record the exact rule in the ADR). Verify: a migration test on a catalog fixture written by migration 20 that has placeholder rows.
+- [ ] 3.1 Migration 22: `file.preview_gen` and `preview_reason`, the partial index, and the backfill rule from D1 (record the exact rule in the ADR). Verify: a migration test on a catalog fixture written by migration 21 that has placeholder rows.
 - [ ] 3.2 Write and clear both columns in the analysis statement. Add the `fillable(registry, generations)` predicate and the counts by format and reason. Verify: unit tests for each row of the waiting rule, including that current-generation `unreadable` rows are not fillable.
 
 ## 4. Fill in job

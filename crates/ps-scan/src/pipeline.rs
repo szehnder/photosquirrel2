@@ -81,7 +81,7 @@ pub(crate) struct RunCtx {
     /// Estimated working memory of HEIC and AVIF decodes in flight (ADR-0095). Separate from `budget`: a
     /// decode waits only for other decodes, which never wait for anything, so it cannot deadlock with the
     /// readers' file buffers.
-    pub decode_budget: Arc<ByteBudget>,
+    pub decode_budget: Arc<crate::memory::DecodeBudget>,
     pub sources: Vec<RunSource>,
     pub changed_during_scan: AtomicU64,
     pub retries_exhausted: AtomicU64,
@@ -445,6 +445,8 @@ struct CpuJob {
     mtime: Option<SystemTime>,
     /// A re-decode of an unchanged file that waited for a decoder (ADR-0091); its identity was checked.
     redecode: bool,
+    /// A re-decode after a failed decode (ADR-0098): that failure.
+    prior_failure: Option<ps_model::DecodeFailure>,
     _permit: BufferPermit,
 }
 
@@ -480,8 +482,9 @@ enum Redecode {
     },
     /// The decoder is missing again: the file keeps waiting.
     StillMissing,
-    /// The decoder rejected the data: the file keeps its exact-copy analysis and stops waiting.
-    Undecodable(String),
+    /// The decoder rejected the data or did not complete: the file keeps its exact-copy analysis, with the failure
+    /// recorded for the next rescan's retry rule (ADR-0098).
+    Undecodable(String, Option<ps_model::DecodeFailure>),
 }
 
 fn run_pipeline(ctx: &Arc<RunCtx>, diffs: Vec<Option<DiffOutput>>) {
@@ -951,6 +954,7 @@ fn process_file(
                 content: Content::Buffer(buf),
                 mtime,
                 redecode: true,
+                prior_failure: t.prior_failure.clone(),
                 _permit: permit,
             };
             ctx.progress.set_dir(idx, reader, None);
@@ -1143,6 +1147,7 @@ fn process_file(
         content,
         mtime,
         redecode: false,
+        prior_failure: None,
         _permit: permit,
     };
     ctx.progress.set_dir(idx, reader, None);
@@ -1262,10 +1267,19 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
         content,
         mtime,
         redecode,
+        prior_failure,
         _permit,
     } = job;
     if redecode {
-        return analyze_redecode(ctx, idx, path, &probe, content, busy);
+        return analyze_redecode(
+            ctx,
+            idx,
+            path,
+            &probe,
+            content,
+            prior_failure.as_ref(),
+            busy,
+        );
     }
     let (identity, bytes, full, metadata_block, decoded, tiff_dims) = match content {
         Content::Buffer(b) => (ps_hash::identity_from_buffer(&b), b, true, None, None, None),
@@ -1301,8 +1315,9 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
     }
     let capture = metadata.capture_date.map(|d| d.value);
     let stop = || busy.checkpoint().is_err();
-    // The decoder this format needs and this machine lacks (ADR-0091).
+    // The decoder this format needs and this machine lacks (ADR-0091), or how its decode failed (ADR-0098).
     let mut decoder_missing = None;
+    let mut decode_failure = None;
     let (hashes, thumb) = if probe.kind() == Some(MediaKind::Video) {
         (
             None,
@@ -1345,10 +1360,11 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
             ps_media::thumb::placeholder(&probe, capture, "preview unavailable (file too large)"),
         )
     } else {
-        let Ok(_decode) = decode_permit(ctx, &probe, busy) else {
+        let Ok(permit) = decode_permit(ctx, &probe, busy) else {
             return None;
         };
-        match ps_media::analyze_still_with(&bytes, &probe, &ctx.opts.decoders, &stop) {
+        match ps_media::analyze_still_held(&bytes, &probe, &ctx.opts.decoders, &stop, hold(permit))
+        {
             Ok((decoded, thumb, _)) => (still_hashes(&decoded.image), thumb),
             Err(DecodeError::Cancelled) => return None,
             Err(e @ (DecodeError::DecoderMissing(_) | DecodeError::Sequence)) => {
@@ -1372,6 +1388,7 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
             // identity and metadata with a placeholder, as without a decoder: catalogued, de-duplicated by exact
             // content and exported (ADR-0095, as a re-decode does, ADR-0091). Reported, never `unreadable`.
             Err(e) if is_system_or_av1_still(&probe) => {
+                decode_failure = failure_record(ctx, &probe, &e, None);
                 ctx.progress.error(RecentError {
                     source: ctx.sources[idx].id,
                     path: path.clone(),
@@ -1407,6 +1424,7 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
         analysis: Box::new(AnalysisResult {
             identity,
             decoder_missing,
+            decode_failure,
             hashes,
             metadata,
         }),
@@ -1421,15 +1439,41 @@ fn decode_permit(
     ctx: &RunCtx,
     probe: &ProbeRecord,
     busy: &Busy<'_>,
-) -> Result<Option<BufferPermit>, Cancelled> {
+) -> Result<Option<crate::memory::DecodePermit>, Cancelled> {
     let Some(bytes) = ps_media::decode::decode_working_bytes(probe) else {
         return Ok(None);
     };
-    // One slot key per CPU worker: a worker decodes one file at a time.
-    let worker = rayon::current_thread_index().unwrap_or(usize::MAX);
     ctx.decode_budget
-        .acquire(bytes, (usize::MAX, worker), &|| busy.checkpoint())
+        .acquire(bytes, &|| busy.checkpoint())
         .map(Some)
+}
+
+/// A decode permit as the hold of an AVIF decode thread, which keeps it until it really ends (ADR-0097); for
+/// other formats the analysis drops it when it returns.
+fn hold(permit: Option<crate::memory::DecodePermit>) -> Option<Arc<dyn ps_media::av1::DecodeHold>> {
+    permit.map(|p| Arc::new(p) as Arc<dyn ps_media::av1::DecodeHold>)
+}
+
+/// The failure record of a HEIC or AVIF decode that failed with its decoder present (ADR-0098): transient for
+/// [`DecodeError::Interrupted`], attempts counted on from `prior`. `None` when no backend decodes the format.
+fn failure_record(
+    ctx: &RunCtx,
+    probe: &ProbeRecord,
+    e: &DecodeError,
+    prior: Option<&ps_model::DecodeFailure>,
+) -> Option<ps_model::DecodeFailure> {
+    let key = match probe.format? {
+        ps_model::Format::Heic => ps_model::DecoderKey::Heif,
+        ps_model::Format::Avif => ps_model::DecoderKey::Avif,
+        _ => return None,
+    };
+    let backend = ctx.opts.decoders.backend(key)?;
+    Some(ps_model::DecodeFailure::next(
+        prior,
+        key,
+        &backend,
+        matches!(e, DecodeError::Interrupted(_)),
+    ))
 }
 
 /// HEIC and AVIF: formats whose decode failure keeps a placeholder instead of failing the file (ADR-0095).
@@ -1449,6 +1493,7 @@ fn analyze_redecode(
     path: RelPath,
     probe: &ProbeRecord,
     content: Content,
+    prior: Option<&ps_model::DecodeFailure>,
     busy: &Busy<'_>,
 ) -> Option<Persist> {
     let Content::Buffer(bytes) = content else {
@@ -1456,17 +1501,23 @@ fn analyze_redecode(
     };
     let identity = ps_hash::identity_from_buffer(&bytes);
     let stop = || busy.checkpoint().is_err();
-    let Ok(_decode) = decode_permit(ctx, probe, busy) else {
+    let Ok(permit) = decode_permit(ctx, probe, busy) else {
         return None;
     };
-    let outcome = match ps_media::analyze_still_with(&bytes, probe, &ctx.opts.decoders, &stop) {
+    let outcome = match ps_media::analyze_still_held(
+        &bytes,
+        probe,
+        &ctx.opts.decoders,
+        &stop,
+        hold(permit),
+    ) {
         Ok((decoded, thumb, _)) => Redecode::Filled {
             hashes: still_hashes(&decoded.image),
             thumb,
         },
         Err(DecodeError::Cancelled) => return None,
         Err(DecodeError::DecoderMissing(_)) => Redecode::StillMissing,
-        Err(e) => Redecode::Undecodable(e.to_string()),
+        Err(e) => Redecode::Undecodable(e.to_string(), failure_record(ctx, probe, &e, prior)),
     };
     Some(Persist::Redecoded {
         idx,
@@ -1635,8 +1686,11 @@ fn persist_redecode(
             ctx.progress.redecoded(idx);
         }
         Redecode::StillMissing => {}
-        Redecode::Undecodable(why) => {
-            ctx.submit(Command::ClearDecoderMissing(vec![key]));
+        Redecode::Undecodable(why, failure) => {
+            ctx.submit(match failure {
+                Some(f) => Command::DecodeFailed(vec![(key, f)]),
+                None => Command::ClearDecoderMissing(vec![key]),
+            });
             ctx.progress.error(RecentError {
                 source: src.id,
                 path,

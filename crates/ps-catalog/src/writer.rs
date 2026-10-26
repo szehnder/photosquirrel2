@@ -117,6 +117,9 @@ pub enum Command {
     /// Clear `decoder_missing` without hashes (the decoder rejected the data; the file keeps its exact-copy
     /// analysis and is not read again, ADR-0091).
     ClearDecoderMissing(Vec<FileKey>),
+    /// A re-decode failed with the decoder present (ADR-0098): `decoder_missing` cleared and the failure recorded,
+    /// so the next rescan retries it only while the failure is transient or after a decoder upgrade.
+    DecodeFailed(Vec<(FileKey, ps_model::DecodeFailure)>),
     /// The user's include/exclude decision about a file (`None` clears it). Needs catalog migration 7
     /// (`user_inclusion`, [`crate::db::GALLERY_MIGRATION`]); without it the command reports an error.
     SetUserDecision {
@@ -147,6 +150,7 @@ impl Command {
             Command::SetHashes(_) => "set_hashes",
             Command::Redecoded(_) => "redecoded",
             Command::ClearDecoderMissing(_) => "clear_decoder_missing",
+            Command::DecodeFailed(_) => "decode_failed",
             Command::SetUserDecision { .. } => "set_user_decision",
         }
     }
@@ -789,8 +793,9 @@ impl WriterThread {
                         let n = c
                             .prepare_cached(
                                 "UPDATE file SET phash = ?3, dhash = ?4, hash_version = ?5,
-                                     decoder_missing = NULL
-                                 WHERE source_id = ?1 AND rel_path = ?2 AND decoder_missing IS NOT NULL",
+                                     decoder_missing = NULL, decode_failure = NULL
+                                 WHERE source_id = ?1 AND rel_path = ?2
+                                   AND (decoder_missing IS NOT NULL OR decode_failure IS NOT NULL)",
                             )?
                             .execute(params![
                                 k.source.0,
@@ -799,7 +804,19 @@ impl WriterThread {
                                 h.dhash as i64,
                                 i64::from(h.version)
                             ])?;
-                        expect_one(n, "unknown file or not waiting for a decoder")
+                        expect_one(n, "unknown file or not waiting for a decode")
+                    });
+                }
+            }
+            Command::DecodeFailed(rows) => {
+                for (k, f) in &rows {
+                    self.row(name, Some(k), |c| {
+                        c.prepare_cached(
+                            "UPDATE file SET decoder_missing = NULL, decode_failure = ?3
+                             WHERE source_id = ?1 AND rel_path = ?2",
+                        )?
+                        .execute(params![k.source.0, k.path.as_bytes(), f.to_storage()])?;
+                        Ok(())
                     });
                 }
             }
@@ -807,7 +824,8 @@ impl WriterThread {
                 for k in &files {
                     self.row(name, Some(k), |c| {
                         c.prepare_cached(
-                            "UPDATE file SET decoder_missing = NULL WHERE source_id = ?1 AND rel_path = ?2",
+                            "UPDATE file SET decoder_missing = NULL, decode_failure = NULL
+                             WHERE source_id = ?1 AND rel_path = ?2",
                         )?
                         .execute(params![k.source.0, k.path.as_bytes()])?;
                         Ok(())
@@ -859,6 +877,7 @@ const ANALYSIS_COLUMNS: &[(&str, &str)] = &[
     ("has_gps", "0"),
     ("metadata", "NULL"),
     ("decoder_missing", "NULL"),
+    ("decode_failure", "NULL"),
 ];
 const PROBE_COLUMNS: &[(&str, &str)] = &[
     ("class", "NULL"),
@@ -917,7 +936,7 @@ const ANALYZED_SQL: &str = "UPDATE file SET stage = 2,
         capture_ts = ?8, capture_offset_min = ?9, capture_provenance = ?10, capture_undated = ?11,
         camera_model = ?12, has_gps = ?13, metadata = ?14,
         width = coalesce(?15, width), height = coalesce(?16, height),
-        capture_precision = ?17, date_version = ?18, decoder_missing = ?19
+        capture_precision = ?17, date_version = ?18, decoder_missing = ?19, decode_failure = ?20
     WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
 
 /// All columns at once, for rows that arrive with results and are new (the common synthetic/import case).
@@ -925,9 +944,9 @@ const INSERT_FULL_SQL: &str = "INSERT INTO file (source_id, rel_path, name, size
         stage, class, reasons, format, media_kind, width, height,
         content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_offset_min,
         capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen,
-        class_facts, classifier_hash, capture_precision, date_version, decoder_missing)
+        class_facts, classifier_hash, capture_precision, date_version, decoder_missing, decode_failure)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31)
+            ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31, ?32)
     ON CONFLICT (source_id, rel_path) DO NOTHING";
 
 fn upsert_file(c: &Connection, r: &FileRow) -> rusqlite::Result<()> {
@@ -1043,6 +1062,9 @@ fn insert_full(
         x.precision,
         i64::from(ps_model::DATE_LOGIC_VERSION),
         a.decoder_missing.map(ps_model::DecoderKey::as_str),
+        a.decode_failure
+            .as_ref()
+            .map(ps_model::DecodeFailure::to_storage),
     ])
 }
 
@@ -1130,6 +1152,9 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
         x.precision,
         i64::from(ps_model::DATE_LOGIC_VERSION),
         a.decoder_missing.map(ps_model::DecoderKey::as_str),
+        a.decode_failure
+            .as_ref()
+            .map(ps_model::DecodeFailure::to_storage),
     ])
 }
 

@@ -341,6 +341,8 @@ fn scenario_incremental_rescan_old_catalog_marks_undecoded_heic_and_avif() {
              UPDATE file SET phash = 7, dhash = 7, hash_version = 1 WHERE rel_path = CAST('DCIM/IMG_0002.HEIC' AS BLOB);
              DROP INDEX file_decoder_missing;
              ALTER TABLE file DROP COLUMN decoder_missing;
+             DROP INDEX file_decode_failure;
+             ALTER TABLE file DROP COLUMN decode_failure;
              PRAGMA user_version = 18;",
         )
         .unwrap();
@@ -560,4 +562,112 @@ fn scenario_incremental_rescan_content_changed_under_an_unchanged_fingerprint_is
         .unwrap()
         .unwrap();
     assert_eq!(t.kind, ThumbKind::Image);
+}
+
+/// Wait (bounded) until no AVIF decode thread is alive.
+fn settle_avif() {
+    let t = std::time::Instant::now();
+    while ps_media::av1::live_decodes() != (0, 0)
+        && t.elapsed() < std::time::Duration::from_secs(10)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(ps_media::av1::live_decodes(), (0, 0));
+}
+
+/// A decode that did not complete is transient (ADR-0098): an AVIF whose decode hangs (test hook) is abandoned
+/// by the watchdog and keeps a placeholder with a transient failure record; the next rescan decodes it again
+/// (attempt 2, still hanging), and once the decoder completes, a further rescan fills in its preview and hashes and
+/// clears the record.
+#[test]
+fn scenario_incremental_rescan_timed_out_avif_is_retried_on_rescan() {
+    let _g = exclusive();
+    let src = source(&[("DCIM/IMG_0001.avif".into(), AVIF.to_vec())]);
+    let env = env();
+    let id = env.add(&src.root);
+    ps_media::av1::hooks::set_timeout(Some(std::time::Duration::from_millis(100)));
+    ps_media::av1::hooks::hang();
+    let row = |env: &Env| env.files(id)["DCIM/IMG_0001.avif"].clone();
+    completed(&env.scan(&[id]));
+    let r = row(&env);
+    assert_eq!(r.stage, Stage::Thumbed, "catalogued with a placeholder");
+    assert!(r.hashes.is_none());
+    let f = r.decode_failure.clone().expect("a failure record");
+    assert_eq!(
+        (f.key, f.transient, f.attempts, f.backend.as_str()),
+        (DecoderKey::Avif, true, 1, ps_media::av1::BACKEND)
+    );
+    // Still hanging: retried, a second attempt.
+    env.instr.reset();
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!((s.diff.redecode, s.diff.decode_retries), (1, 1));
+    assert_eq!(env.instr.total_bytes(), r.stat.size, "read once in full");
+    assert_eq!(row(&env).decode_failure.unwrap().attempts, 2);
+    ps_media::av1::hooks::release();
+    ps_media::av1::hooks::set_timeout(None);
+    settle_avif();
+    // The decoder completes now: filled in, the record cleared.
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!((s.diff.decode_retries, s.diff.redecoded), (1, 1));
+    let r = row(&env);
+    assert!(r.hashes.is_some(), "perceptual hashes");
+    assert_eq!(r.decode_failure, None);
+    let t = env.s().thumbs().get(&r.identity.unwrap()).unwrap().unwrap();
+    assert_eq!(t.kind, ThumbKind::Image);
+    // Nothing more to do.
+    env.instr.reset();
+    let s = env.scan(&[id]);
+    assert_eq!(s.diff.decode_retries, 0);
+    assert_eq!(env.instr.total_bytes(), 0);
+}
+
+/// A permanent decode failure (the data) is not re-read on an unchanged rescan with the same decoder, but a new
+/// decoder backend (a libheif upgrade; here the fake decoder under a new name) decodes it again once (ADR-0098).
+#[test]
+fn scenario_incremental_rescan_corrupt_heic_is_not_re_read_on_an_unchanged_rescan() {
+    let _g = shared();
+    let src = source(&[("DCIM/IMG_0001.HEIC".into(), HEIC.to_vec())]);
+    let mut env = env_with(with(FakeHeif::failing("corrupt HEVC data")));
+    let id = env.add(&src.root);
+    completed(&env.scan(&[id]));
+    let r = env.files(id)["DCIM/IMG_0001.HEIC"].clone();
+    let f = r.decode_failure.clone().expect("a failure record");
+    assert_eq!(
+        (f.key, f.transient, f.attempts, f.backend.as_str()),
+        (DecoderKey::Heif, false, 1, "fake HEIC decoder")
+    );
+    for _ in 0..2 {
+        env.instr.reset();
+        let s = env.scan(&[id]);
+        completed(&s);
+        assert_eq!(s.diff.decode_retries, 0);
+        assert_eq!(env.instr.total_bytes(), 0, "not read again");
+    }
+    // An upgraded decoder that still fails: tried once, then not again.
+    env.reopen(with(
+        FakeHeif::failing("corrupt HEVC data").named("fake HEIC decoder 2"),
+    ));
+    env.instr.reset();
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!(s.diff.decode_retries, 1);
+    assert_eq!(env.instr.total_bytes(), r.stat.size);
+    let f = env.files(id)["DCIM/IMG_0001.HEIC"]
+        .decode_failure
+        .clone()
+        .unwrap();
+    assert_eq!((f.backend.as_str(), f.attempts), ("fake HEIC decoder 2", 1));
+    env.instr.reset();
+    completed(&env.scan(&[id]));
+    assert_eq!(env.instr.total_bytes(), 0);
+    // An upgrade that decodes it: filled in.
+    env.reopen(with(FakeHeif::new().named("fake HEIC decoder 3")));
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!(s.diff.redecoded, 1);
+    let r = &env.files(id)["DCIM/IMG_0001.HEIC"];
+    assert!(r.hashes.is_some());
+    assert_eq!(r.decode_failure, None);
 }

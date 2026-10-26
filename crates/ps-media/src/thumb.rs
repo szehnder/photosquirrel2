@@ -260,8 +260,26 @@ pub fn analyze_still_with(
     decoders: &Decoders,
     stop: &dyn Fn() -> bool,
 ) -> Result<(Decoded, ThumbnailRecord, ThumbOrigin), DecodeError> {
-    let analysis =
-        decode::decode_scaled_with(bytes, probe, decode::ANALYSIS_MIN_LONG_EDGE, decoders, stop)?;
+    analyze_still_held(bytes, probe, decoders, stop, None)
+}
+
+/// [`analyze_still_with`] whose AVIF decode thread keeps `hold` (the scanner's decode-budget permit) until it ends
+/// and checks `stop` while it waits (ADR-0097).
+pub fn analyze_still_held(
+    bytes: &[u8],
+    probe: &ProbeRecord,
+    decoders: &Decoders,
+    stop: &dyn Fn() -> bool,
+    hold: Option<std::sync::Arc<dyn crate::av1::DecodeHold>>,
+) -> Result<(Decoded, ThumbnailRecord, ThumbOrigin), DecodeError> {
+    let analysis = decode::decode_scaled_held(
+        bytes,
+        probe,
+        decode::ANALYSIS_MIN_LONG_EDGE,
+        decoders,
+        stop,
+        hold,
+    )?;
     if usable_preview(probe)
         && probe.format != Some(Format::Heic)
         && let Some(p) = decode::decode_preview(bytes, probe, THUMB_LONG_EDGE, decoders)

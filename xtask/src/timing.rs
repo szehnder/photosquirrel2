@@ -66,6 +66,11 @@ pub const TESTS: &[TimingTest] = &[
         name: "cancel_reaches_a_long_tiff_decode_within_250_ms",
     },
     TimingTest {
+        package: "ps-scan",
+        target: "control",
+        name: "cancel_reaches_a_hung_avif_decode_within_250_ms",
+    },
+    TimingTest {
         package: "photosquirrel-cli",
         target: "interrupt",
         name: "scenario_cli_ctrl_c_cancels_scan",

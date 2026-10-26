@@ -89,6 +89,27 @@ impl Decoders {
         &mut self.report
     }
 
+    /// The backend that decodes `key` on this machine, as a decode-failure record names it ("libheif 1.23.3",
+    /// "ImageIO", "rav1d 1.1"); `None` when there is none (ADR-0098).
+    pub fn backend(&self, key: DecoderKey) -> Option<String> {
+        match key {
+            // The backend's name, with the version detection found when the name does not carry it (an
+            // ImageIO or WIC update is a new backend too).
+            DecoderKey::Heif => self.heif.as_ref().map(|d| {
+                let name = d.name();
+                match self
+                    .report
+                    .entry(DecoderFormat::Heic)
+                    .and_then(|e| e.version.as_deref())
+                {
+                    Some(v) if !name.contains(v) => format!("{name} {v}"),
+                    _ => name.to_owned(),
+                }
+            }),
+            DecoderKey::Avif => Some(crate::av1::BACKEND.to_owned()),
+        }
+    }
+
     /// Files waiting for `key` can be decoded now.
     pub fn can_decode(&self, key: DecoderKey) -> bool {
         match key {
@@ -140,6 +161,8 @@ pub mod fake {
         pub transforms: bool,
         /// Size of the derived image (long edge).
         pub size: u32,
+        /// The backend name it reports (a decoder upgrade is a new name, ADR-0098).
+        pub name: String,
     }
 
     impl Default for FakeHeif {
@@ -149,6 +172,7 @@ pub mod fake {
                 fail: None,
                 transforms: true,
                 size: 640,
+                name: "fake HEIC decoder".into(),
             }
         }
     }
@@ -172,6 +196,14 @@ pub mod fake {
             FakeHeif {
                 fail: Some(msg.into()),
                 ..Self::default()
+            }
+        }
+
+        /// This decoder under another backend name (a decoder upgrade, ADR-0098).
+        pub fn named(self, name: &str) -> Self {
+            FakeHeif {
+                name: name.into(),
+                ..self
             }
         }
 
@@ -225,7 +257,7 @@ pub mod fake {
 
     impl StillDecoder for FakeHeif {
         fn name(&self) -> &str {
-            "fake HEIC decoder"
+            &self.name
         }
 
         fn decode(&self, bytes: &[u8], _min_long: u32) -> Result<RgbImage, DecodeError> {

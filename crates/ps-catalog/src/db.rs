@@ -48,6 +48,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     CAPTURE_DATES_MIGRATION,
     RUN_REFRESH_MIGRATION,
     DECODER_MISSING_MIGRATION,
+    DECODE_FAILURE_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -164,6 +165,13 @@ pub const DECODER_MISSING_MIGRATION: Migration = Migration {
     version: 19,
     name: "decoder_missing",
     sql: include_str!("../migrations/0019_decoder_missing.sql"),
+};
+/// Migration 20 (ADR-0098: `file.decode_failure` and its partial index; HEIC and AVIF decode failures retried on
+/// rescans while transient or after a decoder upgrade).
+pub const DECODE_FAILURE_MIGRATION: Migration = Migration {
+    version: 20,
+    name: "decode_failure",
+    sql: include_str!("../migrations/0020_decode_failure.sql"),
 };
 /// `thumbs.db` migrations.
 pub const THUMB_MIGRATIONS: &[Migration] = &[Migration {

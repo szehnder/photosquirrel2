@@ -109,6 +109,10 @@ pub enum DecodeError {
     TooLarge(String),
     #[error("decode failed: {0}")]
     Failed(String),
+    /// The decode did not complete for a reason other than the file's data (a watchdog timeout, AV1 decoding
+    /// paused while abandoned decodes run, a thread that could not start): retried on a later scan (ADR-0097).
+    #[error("decode did not complete: {0}")]
+    Interrupted(String),
     /// The caller's stop check asked the decode to end (a scan paused into a cancel, ADR-0008).
     #[error("decode cancelled")]
     Cancelled,
@@ -494,6 +498,19 @@ pub fn decode_scaled_with(
     decoders: &Decoders,
     stop: &dyn Fn() -> bool,
 ) -> Result<Decoded, DecodeError> {
+    decode_scaled_held(bytes, probe, min_long, decoders, stop, None)
+}
+
+/// [`decode_scaled_with`] whose AVIF decode thread keeps `hold` until it ends and polls `stop` while it is waited
+/// for (ADR-0097); other formats ignore `hold` (the caller keeps it).
+pub fn decode_scaled_held(
+    bytes: &[u8],
+    probe: &ProbeRecord,
+    min_long: u32,
+    decoders: &Decoders,
+    stop: &dyn Fn() -> bool,
+    hold: Option<std::sync::Arc<dyn crate::av1::DecodeHold>>,
+) -> Result<Decoded, DecodeError> {
     let format = probe
         .format
         .ok_or_else(|| DecodeError::Unsupported("unknown format".into()))?;
@@ -526,7 +543,12 @@ pub fn decode_scaled_with(
                 !decoders.heif_applies_transforms(),
             )
         }
-        Format::Avif => (crate::av1::decode(bytes)?, 1, DecodeSource::Main, true),
+        Format::Avif => (
+            crate::av1::decode_waiting(bytes, crate::av1::Wait { stop, hold })?,
+            1,
+            DecodeSource::Main,
+            true,
+        ),
         other => {
             return Err(DecodeError::Unsupported(format!(
                 "{} stills are not decoded",
@@ -605,7 +627,8 @@ pub fn decode_working_bytes(probe: &ProbeRecord) -> Option<u64> {
     let px = u64::from(d.width) * u64::from(d.height);
     match probe.format? {
         ps_model::Format::Heic => Some(px * 6),
-        ps_model::Format::Avif => Some(px * 9),
+        // rav1d's picture and the RGB output, plus the copy of the file the decode thread works on (ADR-0097).
+        ps_model::Format::Avif => Some(px * 9 + probe.file_size),
         _ => None,
     }
 }

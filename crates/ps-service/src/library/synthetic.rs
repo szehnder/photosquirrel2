@@ -77,6 +77,7 @@ fn row(source: ps_model::SourceId, i: u64) -> Option<FileRow> {
             Box::new(AnalysisResult {
                 identity: ContentId::full(digest(i)),
                 decoder_missing: None,
+                decode_failure: None,
                 hashes: Some(PerceptualHash {
                     phash: mix(i ^ 1),
                     dhash: mix(i ^ 2),

@@ -110,6 +110,7 @@ fn row(source: ps_model::SourceId, i: u64) -> FileRow {
             Box::new(AnalysisResult {
                 identity: ContentId::full(digest),
                 decoder_missing: None,
+                decode_failure: None,
                 hashes: None,
                 metadata: Metadata {
                     fields: MediaMetadata {

@@ -5,6 +5,11 @@
 //! sequence header's, else BT.601; bilinear chroma; 4:0:0 as grey; the identity matrix passed through).
 //! Orientation (`irot`/`imir`) is applied by the caller from the probe, once.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use ps_model::{DecoderEntry, DecoderFormat};
 
 use crate::bmff::{self, HeifInfo, HeifItem};
@@ -16,6 +21,10 @@ pub const MAX_PIXELS: u64 = 768 * 1024 * 1024 / 3;
 const MAX_ITEM_BYTES: u64 = 512 * 1024 * 1024;
 /// Most tiles of a grid.
 const MAX_TILES: usize = 1024;
+
+/// The AVIF backend as decode-failure records name it (ADR-0098): a new rav1d or wrapper behaviour gets a new
+/// name, so files that failed with the old one are decoded again.
+pub const BACKEND: &str = "rav1d 1.1 (wrapper 2)";
 
 /// Built with rav1d's assembly (`avif-asm`, x86_64 only: rav1d 1.1's published aarch64 assembly does not build).
 pub const ASSEMBLY: bool = cfg!(all(feature = "avif-asm", target_arch = "x86_64"));
@@ -52,77 +61,221 @@ pub fn report_entry_for(assembly: bool) -> DecoderEntry {
 
 /// The longest one AVIF decode may take before it is abandoned (ADR-0094). A 12 MP AVIF decodes in about half
 /// a second on the reference machine; the largest allowed (268 MP) in well under this.
-pub const DECODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-/// Abandoned decodes still running (their threads cannot be stopped); at [`MAX_ABANDONED`] AVIF decoding is
-/// refused until one finishes, so a run of hanging files cannot pile up threads and memory.
-static ABANDONED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-pub const MAX_ABANDONED: usize = 2;
+pub const DECODE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often the caller of a decode checks its stop function while it waits (ADR-0097).
+pub const POLL: Duration = Duration::from_millis(50);
+/// Abandoned decodes still running (their threads cannot be stopped): while [`MAX_ABANDONED`] are alive, AVIF
+/// decoding is refused until one finishes, so a run of hanging files cannot pile up threads and memory.
+pub const MAX_ABANDONED: u64 = 2;
+/// Most AVIF decode threads alive at once, in flight and abandoned together (ADR-0097).
+pub const MAX_LIVE: u64 = 64;
+
+/// AVIF decode threads alive: in flight in the low 32 bits, abandoned in the high 32. Admission tests and counts in
+/// one compare-exchange ([`admit`]), so concurrent callers cannot all pass a check made before any of them counted.
+static DECODES: AtomicU64 = AtomicU64::new(0);
+const ONE_ABANDONED: u64 = 1 << 32;
+
+/// AVIF decode threads alive now: (in flight, abandoned).
+pub fn live_decodes() -> (u64, u64) {
+    let v = DECODES.load(Ordering::Acquire);
+    (v & 0xffff_ffff, v >> 32)
+}
+
+/// Count a new decode thread in, or refuse it: while [`MAX_ABANDONED`] abandoned decodes are alive, or
+/// [`MAX_LIVE`] threads are. A refusal is transient ([`DecodeError::Interrupted`]): the file is retried on a later
+/// scan.
+fn admit() -> Result<(), DecodeError> {
+    let mut cur = DECODES.load(Ordering::Acquire);
+    loop {
+        let (in_flight, abandoned) = (cur & 0xffff_ffff, cur >> 32);
+        if abandoned >= MAX_ABANDONED {
+            return Err(DecodeError::Interrupted(
+                "AV1 decoding is paused: earlier AVIF decodes did not finish".into(),
+            ));
+        }
+        if in_flight + abandoned >= MAX_LIVE {
+            return Err(DecodeError::Interrupted(
+                "too many AV1 decodes at once".into(),
+            ));
+        }
+        match DECODES.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Ok(()),
+            Err(now) => cur = now,
+        }
+    }
+}
+
+/// Something a decode keeps until its decode thread really ends (ADR-0097): the scanner's decode-budget permit,
+/// so the memory of an abandoned decode stays reserved while its thread runs.
+pub trait DecodeHold: Send + Sync {
+    /// The caller stopped waiting (timeout or cancel); the thread still runs and keeps this hold until it ends.
+    fn abandoned(&self) {}
+}
+
+/// How the caller waits for a decode running on its own thread.
+#[derive(Clone)]
+pub struct Wait<'a> {
+    /// Polled every [`POLL`] while waiting; `true` abandons the decode and returns [`DecodeError::Cancelled`].
+    /// Time spent inside it (a paused scan parks there) does not count towards the timeout.
+    pub stop: &'a dyn Fn() -> bool,
+    /// Moved into the decode thread and dropped when it ends.
+    pub hold: Option<Arc<dyn DecodeHold>>,
+}
+
+impl Wait<'_> {
+    /// Never stops, holds nothing.
+    pub fn none() -> Wait<'static> {
+        Wait {
+            stop: &|| false,
+            hold: None,
+        }
+    }
+}
 
 /// Decode an AVIF still (the whole file in `bytes`) to RGB, unoriented. Runs on its own thread under a watchdog
 /// ([`DECODE_TIMEOUT`]): rav1d's frame threads wait on each other, and a decode that never returns must not
 /// stall a scan worker forever (ADR-0094).
 pub fn decode(bytes: &[u8]) -> Result<RgbImage, DecodeError> {
+    decode_waiting(bytes, Wait::none())
+}
+
+/// [`decode`] with the caller's stop check and hold (ADR-0097).
+pub fn decode_waiting(bytes: &[u8], wait: Wait<'_>) -> Result<RgbImage, DecodeError> {
+    // Copied for the decode thread, which may outlive the caller's buffer; the scanner's estimate counts it.
     let owned = bytes.to_vec();
-    with_watchdog(DECODE_TIMEOUT, move || {
+    with_watchdog(hooks::timeout(), wait, move || {
+        hooks::wait_while_hung();
         crate::util::contain(|| decode_inner(&owned))
             .unwrap_or_else(|| Err(DecodeError::Failed("AV1 decoder failure".into())))
     })
 }
 
-/// Run `f` on a new thread and wait for it at most `timeout`. A decode that does not finish in time is
-/// abandoned (its thread keeps running detached, counted in [`ABANDONED`] until it ends) and reported as a
-/// decode failure.
+/// Run `f` on a new thread and wait for it at most `timeout` of waiting time, checking `wait.stop` every [`POLL`].
+/// A decode that does not finish in time, or whose caller is stopped, is abandoned: its thread keeps running
+/// detached with `wait.hold`, counted as abandoned until it ends, and the caller gets a transient failure
+/// ([`DecodeError::Interrupted`]) or [`DecodeError::Cancelled`].
 pub fn with_watchdog(
-    timeout: std::time::Duration,
+    timeout: Duration,
+    wait: Wait<'_>,
     f: impl FnOnce() -> Result<RgbImage, DecodeError> + Send + 'static,
 ) -> Result<RgbImage, DecodeError> {
-    use std::sync::atomic::Ordering;
-    if ABANDONED.load(Ordering::Relaxed) >= MAX_ABANDONED {
-        return Err(failed(
-            "AV1 decoding is paused: earlier AVIF decodes did not finish",
-        ));
-    }
+    admit()?;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    // false: waited for; true: abandoned by the caller. Set under the lock so the thread and the caller agree on
-    // who accounts for an abandoned decode.
-    let state = std::sync::Arc::new(std::sync::Mutex::new((false, false)));
+    // (abandoned by the caller, done). Set under the lock so the thread and the caller agree on who accounts for
+    // an abandoned decode.
+    let state = Arc::new(Mutex::new((false, false)));
     let st = state.clone();
+    let hold = wait.hold.clone();
     let spawned = std::thread::Builder::new()
         .name("ps-av1-decode".into())
         .spawn(move || {
             let r = f();
             let mut g = st.lock().unwrap_or_else(|e| e.into_inner());
-            // (abandoned, done)
             g.1 = true;
             if g.0 {
-                ABANDONED.fetch_sub(1, Ordering::AcqRel);
+                DECODES.fetch_sub(ONE_ABANDONED, Ordering::AcqRel);
             } else {
+                DECODES.fetch_sub(1, Ordering::AcqRel);
                 let _ = tx.send(r);
             }
+            drop(g);
+            // Released only now that the decode's memory is gone.
+            drop(hold);
         });
     if let Err(e) = spawned {
-        return Err(failed(format!("AV1 decoder thread could not start ({e})")));
+        DECODES.fetch_sub(1, Ordering::AcqRel);
+        return Err(DecodeError::Interrupted(format!(
+            "AV1 decoder thread could not start ({e})"
+        )));
     }
-    match rx.recv_timeout(timeout) {
-        Ok(r) => r,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
-            if g.1 {
-                // Finished just now: its result is in the channel.
-                drop(g);
-                return rx
-                    .recv()
-                    .unwrap_or_else(|_| Err(failed("AV1 decoder thread ended without a result")));
+    let mut waited = Duration::ZERO;
+    loop {
+        let slice = POLL
+            .min(timeout.saturating_sub(waited))
+            .max(Duration::from_millis(1));
+        let t = Instant::now();
+        match rx.recv_timeout(slice) {
+            Ok(r) => return r,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(failed("AV1 decoder thread ended without a result"));
             }
-            g.0 = true;
-            ABANDONED.fetch_add(1, Ordering::AcqRel);
-            Err(failed(format!(
+            Err(RecvTimeoutError::Timeout) => waited += t.elapsed(),
+        }
+        let stopped = (wait.stop)();
+        if !stopped && waited < timeout {
+            continue;
+        }
+        let mut g = state.lock().unwrap_or_else(|e| e.into_inner());
+        if g.1 {
+            // Finished just now: its result is in the channel.
+            drop(g);
+            return rx
+                .recv()
+                .unwrap_or_else(|_| Err(failed("AV1 decoder thread ended without a result")));
+        }
+        g.0 = true;
+        // In flight -> abandoned (in flight is at least this decode's 1).
+        DECODES.fetch_add(ONE_ABANDONED - 1, Ordering::AcqRel);
+        drop(g);
+        if let Some(h) = &wait.hold {
+            h.abandoned();
+        }
+        return Err(if stopped {
+            DecodeError::Cancelled
+        } else {
+            DecodeError::Interrupted(format!(
                 "AV1 decoder did not finish within {} s; abandoned",
                 timeout.as_secs()
-            )))
+            ))
+        });
+    }
+}
+
+/// Test-only hooks (`test-support`, dev-dependencies only): make AVIF decodes hang until released, to test the
+/// watchdog, cancellation and the abandoned-decode limit with real files (ADR-0097).
+pub mod hooks {
+    #[cfg(any(test, feature = "test-support"))]
+    static HANG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Every AVIF decode started from now on waits (before decoding) until [`release`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hang() {
+        HANG.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Hanging decodes continue.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn release() {
+        HANG.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    static TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// Abandon AVIF decodes after `t` instead of [`super::DECODE_TIMEOUT`] (`None`: the default again).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_timeout(t: Option<std::time::Duration>) {
+        TIMEOUT_MS.store(
+            t.map_or(0, |t| t.as_millis().max(1) as u64),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    pub(super) fn timeout() -> std::time::Duration {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let ms = TIMEOUT_MS.load(std::sync::atomic::Ordering::SeqCst);
+            if ms > 0 {
+                return std::time::Duration::from_millis(ms);
+            }
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Err(failed("AV1 decoder thread ended without a result"))
+        super::DECODE_TIMEOUT
+    }
+
+    pub(super) fn wait_while_hung() {
+        #[cfg(any(test, feature = "test-support"))]
+        while HANG.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
 }
@@ -663,46 +816,216 @@ fn rav1d_decode(obus: &[u8], nclx: Option<bmff::Nclx>) -> Result<RgbImage, Decod
 mod tests {
     use super::*;
 
-    /// A decode that does not return is abandoned after the timeout and reported, and its thread is counted
-    /// until it ends (ADR-0094).
+    /// The watchdog tests share the process-wide decode counts: one at a time.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn img(w: u32) -> RgbImage {
+        RgbImage {
+            width: w,
+            height: 1,
+            data: vec![0; 3 * w as usize],
+        }
+    }
+
+    /// Wait (bounded) until no decode thread is alive.
+    fn settle() {
+        let t = Instant::now();
+        while live_decodes() != (0, 0) && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(live_decodes(), (0, 0));
+    }
+
+    /// A decode that blocks until `rx` receives (or its sender is dropped).
+    fn blocked(
+        rx: std::sync::mpsc::Receiver<()>,
+    ) -> impl FnOnce() -> Result<RgbImage, DecodeError> {
+        move || {
+            let _ = rx.recv();
+            Ok(img(1))
+        }
+    }
+
+    /// A hold that records its drop and its abandonment.
+    struct Probe {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+        abandoned: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl DecodeHold for Probe {
+        fn abandoned(&self) {
+            self.abandoned.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A decode that does not return is abandoned after the timeout and reported as a transient failure, and its
+    /// thread is counted until it ends (ADR-0094, ADR-0097).
     #[test]
     fn scenario_decoder_support_hanging_avif_decode_is_abandoned() {
-        use std::sync::atomic::Ordering;
+        let _s = serial();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let t = std::time::Instant::now();
-        let r = with_watchdog(std::time::Duration::from_millis(100), move || {
-            let _ = release_rx.recv();
-            Ok(RgbImage {
-                width: 1,
-                height: 1,
-                data: vec![0; 3],
-            })
-        });
-        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        let t = Instant::now();
+        let r = with_watchdog(
+            Duration::from_millis(100),
+            Wait::none(),
+            blocked(release_rx),
+        );
+        assert!(t.elapsed() < Duration::from_secs(5));
         match r {
-            Err(DecodeError::Failed(m)) => assert!(m.contains("did not finish"), "{m}"),
+            Err(DecodeError::Interrupted(m)) => assert!(m.contains("did not finish"), "{m}"),
             other => panic!("{other:?}"),
         }
-        assert!(ABANDONED.load(Ordering::Acquire) >= 1);
+        assert_eq!(live_decodes(), (0, 1));
         release_tx.send(()).unwrap();
         // The abandoned thread ends and is no longer counted.
-        let t = std::time::Instant::now();
-        while ABANDONED.load(Ordering::Acquire) > 0
-            && t.elapsed() < std::time::Duration::from_secs(5)
-        {
-            std::thread::yield_now();
-        }
-        assert_eq!(ABANDONED.load(Ordering::Acquire), 0);
+        settle();
         // A decode that finishes in time returns its result.
-        let ok = with_watchdog(std::time::Duration::from_secs(5), || {
-            Ok(RgbImage {
-                width: 2,
-                height: 1,
-                data: vec![0; 6],
-            })
-        })
-        .unwrap();
+        let ok = with_watchdog(Duration::from_secs(5), Wait::none(), || Ok(img(2))).unwrap();
         assert_eq!(ok.width, 2);
+        assert_eq!(live_decodes(), (0, 0));
+    }
+
+    /// At [`MAX_ABANDONED`] abandoned decodes alive, further AVIF decodes are refused (transiently, so the file is
+    /// retried later) and nothing is started; once one ends, decoding resumes (ADR-0094, ADR-0097).
+    #[test]
+    fn scenario_decoder_support_abandoned_avif_decodes_are_capped() {
+        let _s = serial();
+        let mut releases = Vec::new();
+        for i in 0..MAX_ABANDONED {
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            releases.push(tx);
+            let r = with_watchdog(Duration::from_millis(20), Wait::none(), blocked(rx));
+            assert!(matches!(r, Err(DecodeError::Interrupted(_))), "{r:?}");
+            assert_eq!(live_decodes(), (0, i + 1));
+        }
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran2 = ran.clone();
+        let r = with_watchdog(Duration::from_secs(5), Wait::none(), move || {
+            ran2.store(true, Ordering::SeqCst);
+            Ok(img(1))
+        });
+        match r {
+            Err(DecodeError::Interrupted(m)) => assert!(m.contains("paused"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a refused decode does not start"
+        );
+        assert_eq!(live_decodes(), (0, MAX_ABANDONED));
+        // Many callers at once while the limit holds: every one refused, none counted.
+        let refused: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    with_watchdog(Duration::from_secs(5), Wait::none(), || Ok(img(1)))
+                })
+            })
+            .collect();
+        for t in refused {
+            assert!(matches!(
+                t.join().unwrap(),
+                Err(DecodeError::Interrupted(_))
+            ));
+        }
+        assert_eq!(live_decodes(), (0, MAX_ABANDONED));
+        releases.pop().unwrap().send(()).unwrap();
+        let t = Instant::now();
+        while live_decodes().1 >= MAX_ABANDONED && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            with_watchdog(Duration::from_secs(5), Wait::none(), || Ok(img(3)))
+                .unwrap()
+                .width,
+            3
+        );
+        drop(releases);
+        settle();
+    }
+
+    /// A stop request reaches a hanging decode within a poll slice: the caller gets `Cancelled` at once, the thread
+    /// is abandoned, and the hold (the decode budget permit) is released only when the thread really ends
+    /// (ADR-0097).
+    #[test]
+    fn scenario_decoder_support_cancel_stops_waiting_for_a_hung_avif_decode() {
+        let _s = serial();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hold: Arc<dyn DecodeHold> = Arc::new(Probe {
+            dropped: dropped.clone(),
+            abandoned: abandoned.clone(),
+        });
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let st = stop.clone();
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            st.store(true, Ordering::SeqCst);
+            Instant::now()
+        });
+        let check = || stop.load(Ordering::SeqCst);
+        let r = with_watchdog(
+            DECODE_TIMEOUT,
+            Wait {
+                stop: &check,
+                hold: Some(hold),
+            },
+            blocked(rx),
+        );
+        let latency = setter.join().unwrap().elapsed();
+        assert!(matches!(r, Err(DecodeError::Cancelled)), "{r:?}");
+        assert!(latency < Duration::from_secs(2), "{latency:?}");
+        assert!(abandoned.load(Ordering::SeqCst));
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "held while the thread runs"
+        );
+        assert_eq!(live_decodes(), (0, 1));
+        tx.send(()).unwrap();
+        settle();
+        let t = Instant::now();
+        while !dropped.load(Ordering::SeqCst) && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    /// Time the caller spends inside its stop check (a paused scan parks there) does not count towards the
+    /// timeout: a decode finishing after a long pause still returns its result.
+    #[test]
+    fn a_pause_does_not_count_towards_the_timeout() {
+        let _s = serial();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let paused_once = std::sync::atomic::AtomicBool::new(false);
+        let tx = std::sync::Mutex::new(Some(tx));
+        let check = || {
+            if !paused_once.swap(true, Ordering::SeqCst) {
+                // Parked for longer than the timeout; the decode finishes meanwhile.
+                std::thread::sleep(Duration::from_millis(400));
+                drop(tx.lock().unwrap().take());
+            }
+            false
+        };
+        let r = with_watchdog(
+            Duration::from_millis(300),
+            Wait {
+                stop: &check,
+                hold: None,
+            },
+            blocked(rx),
+        );
+        assert_eq!(r.unwrap().width, 1);
+        settle();
     }
 
     /// A sequence header whose size fields are coded with more bits than its maximum frame size needs (any

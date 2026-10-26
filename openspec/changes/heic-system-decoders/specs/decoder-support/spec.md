@@ -35,6 +35,10 @@ A HEIC or AVIF whose data the decoder rejects (truncated, corrupt) or whose decl
 - **WHEN** four HEICs declaring 12000x12000 (an estimated 864 MB of decode memory each) are scanned with four CPU workers, and then four HEICs of 640x480
 - **THEN** the huge ones are decoded one at a time, and the small ones in parallel
 
+#### Scenario: A large decode is not starved by small ones
+- **WHEN** a decode reserving the whole decode budget waits while smaller decodes keep arriving and holding parts of it
+- **THEN** it is granted within 2 seconds (requests are served in arrival order) and holds the budget alone
+
 ### Requirement: Supported HEIF library versions
 On Linux and other Unix systems, the system HEIF library SHALL be used only when it is version 1.12 or newer and has an HEVC decoder; otherwise HEIC SHALL be reported unavailable with the version found and the missing part. The library's own size limit SHALL be set by its version so that no image within the decode cap is refused, and the cap SHALL be enforced from the primary image's declared size before decoding.
 
@@ -140,3 +144,11 @@ AVIF stills SHALL be decoded by a decoder bundled with PhotoSquirrel on every pl
 #### Scenario: Hanging AVIF decode is abandoned
 - **WHEN** an AVIF decode does not return within its time limit
 - **THEN** the caller gets a decode error saying it did not finish, the decode thread is counted as abandoned until it ends, and a decode that finishes in time returns its image
+
+#### Scenario: Abandoned AVIF decodes are capped
+- **WHEN** two AVIF decodes have been abandoned and are still running, and more AVIF decodes are requested, also many at once
+- **THEN** each is refused as a transient failure without starting a thread, and once an abandoned decode ends, decoding resumes
+
+#### Scenario: Cancel stops waiting for a hung AVIF decode
+- **WHEN** the scan is stopped while an AVIF decode hangs
+- **THEN** the caller returns cancelled within one poll slice, the decode thread is counted as abandoned, and its decode-memory reservation is released only when that thread ends

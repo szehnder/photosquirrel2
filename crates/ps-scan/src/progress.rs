@@ -75,6 +75,7 @@ struct Diff {
     awaiting_decoder: AtomicU64,
     redecode: AtomicU64,
     redecoded: AtomicU64,
+    decode_retries: AtomicU64,
 }
 
 impl Diff {
@@ -95,6 +96,7 @@ impl Diff {
             awaiting_decoder: self.awaiting_decoder.load(Ordering::Relaxed),
             redecode: self.redecode.load(Ordering::Relaxed),
             redecoded: self.redecoded.load(Ordering::Relaxed),
+            decode_retries: self.decode_retries.load(Ordering::Relaxed),
         }
     }
 
@@ -113,6 +115,8 @@ impl Diff {
         self.awaiting_decoder
             .store(d.awaiting_decoder, Ordering::Relaxed);
         self.redecode.store(d.redecode, Ordering::Relaxed);
+        self.decode_retries
+            .store(d.decode_retries, Ordering::Relaxed);
         // `refreshed` and `redecoded` count during the run (Progress::refreshed, Progress::redecoded), after the
         // diff.
     }

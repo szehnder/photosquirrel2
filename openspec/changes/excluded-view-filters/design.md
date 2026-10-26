@@ -47,7 +47,7 @@ placeholder art for files with no preview (that is `preview-placeholders`).
 - Every reason stays in `file.reasons`. The category is only a filing key.
 - `unreadable` is listed separately from `unsupported` on purpose. A TIFF or HEIC that could not be read is a photo
   the user may care about, so it is shown by default. `preview-placeholders` explains it.
-- **Storage (migration 20, `0020_exclusion_category.sql`):**
+- **Storage (migration 21, `0021_exclusion_category.sql`):**
   - `ALTER TABLE file ADD COLUMN exclusion TEXT` holds the classifier's category (`cache`, `graphic`, `small`,
     `unreadable`, `unsupported`, or NULL). It is written in the same statement as `class` and `reasons`: on
     analysis, on re-classification (ADR-0051), and on refresh.

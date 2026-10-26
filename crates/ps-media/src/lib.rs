@@ -37,7 +37,7 @@ pub use probe::{
     PROBE_LIMIT, needs_directory_reads, probe_buffer, probe_bytes, probe_path, probe_reader,
     probe_seekable, probe_with_directory_reads, sniff, tiff_metadata_block,
 };
-pub use thumb::{analyze_still, analyze_still_with, make_thumbnail};
+pub use thumb::{analyze_still, analyze_still_held, analyze_still_with, make_thumbnail};
 
 /// The decoder report of this machine with the poster-frame entry for `poster_tool` (the configured ffmpeg
 /// path; callers wanting the PATH default resolve it with [`poster::ffmpeg_on_path`] first), for `doctor`, the

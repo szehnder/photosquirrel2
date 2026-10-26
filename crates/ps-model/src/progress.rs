@@ -164,6 +164,10 @@ pub struct DiffCounts {
     pub redecode: u64,
     #[serde(default)]
     pub redecoded: u64,
+    /// Of `redecode`, unchanged HEIC or AVIF files whose earlier decode failed with the decoder present, retried
+    /// because the failure was transient or the decoder backend changed (ADR-0098).
+    #[serde(default)]
+    pub decode_retries: u64,
 }
 
 impl DiffCounts {
@@ -183,6 +187,7 @@ impl DiffCounts {
         self.awaiting_decoder += o.awaiting_decoder;
         self.redecode += o.redecode;
         self.redecoded += o.redecoded;
+        self.decode_retries += o.decode_retries;
     }
 
     /// Unchanged files that still keep a class decided before facts were stored, after this run.

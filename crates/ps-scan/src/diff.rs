@@ -59,6 +59,9 @@ pub struct Todo {
     /// A re-decode once the missing decoder is available (ADR-0091): the catalogued identity, checked against
     /// the bytes read. Only the preview, the perceptual hashes and the marker change.
     pub redecode: Option<ContentId>,
+    /// A re-decode of a file whose decode failed with the decoder present (ADR-0098): that failure, so a new one
+    /// counts its attempts on.
+    pub prior_failure: Option<ps_model::DecodeFailure>,
 }
 
 /// The diff of one source.
@@ -180,6 +183,7 @@ pub fn diff(
                     is_new,
                     refresh: false,
                     redecode: None,
+                    prior_failure: None,
                 };
                 match rec {
                     None => {
@@ -228,6 +232,23 @@ pub fn diff(
                         } else if matches!(r.stage, Stage::Thumbed | Stage::Skipped) {
                             // Waiting for a decoder (ADR-0091): re-decoded when this run has it.
                             let mut redecoding = false;
+                            // A decode that failed with the decoder present (ADR-0098): retried while the
+                            // failure is transient (bounded attempts) or once the decoder backend changed.
+                            if let Some(f) = r.decode_failure.as_ref().filter(|_| {
+                                r.stage == Stage::Thumbed && r.decoder_missing.is_none()
+                            }) && let Some(id) = r.identity
+                                && f.retry(decoders.backend(f.key).as_deref())
+                            {
+                                out.counts.redecode += 1;
+                                out.counts.decode_retries += 1;
+                                out.todo.push(Todo {
+                                    redecode: Some(id),
+                                    prior_failure: Some(f.clone()),
+                                    ..todo(r.stage, false)
+                                });
+                                out.bytes_to_process += w.stat.size;
+                                redecoding = true;
+                            }
                             if let Some(k) = r.decoder_missing.filter(|_| r.stage == Stage::Thumbed)
                             {
                                 match r.identity {

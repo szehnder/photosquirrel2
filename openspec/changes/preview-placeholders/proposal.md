@@ -66,11 +66,11 @@ a placeholder that looks deliberate, an explanation one click away, and a target
 ## Impact
 
 - `ps-model` (placeholder reasons, decoder generations), `ps-media` (generation constants for each decoder, and the
-  reason classification of decode failures), `ps-catalog` (migration 21 `file.preview_gen`, preview-status queries),
+  reason classification of decode failures), `ps-catalog` (migration 22 `file.preview_gen`, preview-status queries),
   `ps-scan` and `ps-service` (fill-in job on the scan lanes and their stop checks), `ui-gallery` (placeholder paint
   and info hit target), `ui-workspace` (dialog, filter, notice, dashboard row), and `photosquirrel-cli`. There is
   one new ADR.
 - **Depends on `heic-system-decoders`** (decoder registry and report, `decoder_missing`, migration 19) and comes
-  after `excluded-view-filters` (migration 20; the Excluded grid and list draw the same placeholder).
+  after `excluded-view-filters` (migration 21; the Excluded grid and list draw the same placeholder).
 - Read-only on user files as always. The job only reads sources.
 - **Release:** ships in 0.3.0 together with `tiff-support` and `heic-system-decoders` (owner decision, 2026-10-25). "What's new in 0.3.0" in `packaging/release-notes.md` gains this change's user-facing line; the version bump and tag happen after all four are archived, with the owner's go-ahead.

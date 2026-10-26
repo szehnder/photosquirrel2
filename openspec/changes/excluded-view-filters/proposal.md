@@ -41,7 +41,7 @@ excluded, that is slow and uses a lot of memory.
 
 ## Impact
 
-- `ps-model` (`ExclusionCategory`), `ps-catalog` (migration 20, category maintenance, paged excluded queries and
+- `ps-model` (`ExclusionCategory`), `ps-catalog` (migration 21, category maintenance, paged excluded queries and
   counts), `ps-service` (`library.rs` excluded API, put back, AI accept), `ui-gallery` (filter in the grid source),
   `ui-workspace` (`views/library.rs` Excluded view, persisted view state), `photosquirrel-cli` (`report excluded`
   with `--category`), `perf-budgets.toml`, and a new ADR.

@@ -232,7 +232,7 @@ fn cancel_reaches_a_long_tiff_decode_within_250_ms() {
     let tmp = tempfile::tempdir().expect("tmp");
     let root = tmp.path().join("scans");
     std::fs::create_dir(&root).expect("mkdir");
-    std::fs::write(root.join("slow.tif"), slow_tiff()).expect("write");
+    ps_fixtures::scratch::write(root.join("slow.tif"), slow_tiff()).expect("write");
     let e = env();
     let id = e.add(&root);
     e.s().start_scan(&[id]).expect("start");
@@ -259,6 +259,64 @@ fn cancel_reaches_a_long_tiff_decode_within_250_ms() {
     );
 }
 
+#[test]
+// A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`; ADR-0076).
+#[ignore = "timing"]
+fn cancel_reaches_a_hung_avif_decode_within_250_ms() {
+    let _cores = exclusive();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tmp.path().join("avif");
+    std::fs::create_dir(&root).expect("mkdir");
+    ps_fixtures::scratch::write(
+        root.join("photo.avif"),
+        include_bytes!("../../ps-media/tests/data/photo.avif"),
+    )
+    .expect("write");
+    // Every AVIF decode hangs (test-only hook) until released: a decode that never returns.
+    ps_media::av1::hooks::hang();
+    let e = env();
+    let id = e.add(&root);
+    e.s().start_scan(&[id]).expect("start");
+    let t = Instant::now();
+    while ps_media::av1::live_decodes().0 == 0 {
+        assert!(
+            t.elapsed() < Duration::from_secs(60),
+            "the decode never started"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let t = Instant::now();
+    e.s().cancel().expect("cancel");
+    let summary = e.s().wait().expect("summary");
+    let latency = t.elapsed();
+    println!("cancel latency during a hung AVIF decode: {latency:?}");
+    // The decode thread is abandoned (still counted), not waited for.
+    let (in_flight, abandoned) = ps_media::av1::live_decodes();
+    ps_media::av1::hooks::release();
+    assert!(
+        latency <= ps_fixtures::ci_slack(Duration::from_millis(250)),
+        "stopped after {latency:?}"
+    );
+    assert_eq!(summary.status, RunStatus::Cancelled);
+    assert_eq!((in_flight, abandoned), (0, 1));
+    let f = &e.files(id)["photo.avif"];
+    assert_eq!(
+        f.stage,
+        Stage::Probed,
+        "the cancelled decode left no result"
+    );
+    let t = Instant::now();
+    while ps_media::av1::live_decodes() != (0, 0) && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        ps_media::av1::live_decodes(),
+        (0, 0),
+        "the released thread ended"
+    );
+}
+
 /// Candidate-sized files that take long to read: a camera JPEG padded (sparsely) to `size` bytes.
 fn big_files(dir: &Path, n: usize, size: u64) {
     std::fs::create_dir_all(dir).expect("mkdir");
@@ -271,9 +329,8 @@ fn big_files(dir: &Path, n: usize, size: u64) {
             &ps_fixtures::media::ExifSpec::canon_5d(),
         );
         let p = dir.join(format!("big-{i:03}.jpg"));
-        std::fs::write(&p, &jpeg).expect("write");
-        let f = std::fs::File::options().write(true).open(&p).expect("open");
-        f.set_len(size).expect("pad");
+        ps_fixtures::scratch::write(&p, &jpeg).expect("write");
+        ps_fixtures::scratch::pad(&p, size).expect("pad");
     }
 }
 
@@ -461,7 +518,7 @@ fn kill_child() {
 fn unplug(from: &Path, to: &Path) {
     let t = Instant::now();
     loop {
-        match std::fs::rename(from, to) {
+        match ps_fixtures::scratch::rename(from, to) {
             Ok(()) => return,
             Err(e)
                 if e.kind() == std::io::ErrorKind::PermissionDenied

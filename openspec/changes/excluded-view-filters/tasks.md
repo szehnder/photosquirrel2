@@ -2,12 +2,12 @@
 
 ## 1. Decisions
 
-- [ ] 1.1 Number the two ADRs in design.md ("Exclusion categories", D1; "Excluded view budget", D6) from the next free number after `heic-system-decoders`. Add them to `docs/adr/` as accepted, with index rows. Confirm that migration 20 is free. Verify: `docs/adr/README.md` lists both, and `ls crates/ps-catalog/migrations` has no 0020.
+- [ ] 1.1 Number the two ADRs in design.md ("Exclusion categories", D1; "Excluded view budget", D6) from the next free number after `heic-system-decoders`. Add them to `docs/adr/` as accepted, with index rows. Confirm that migration 21 is free (`heic-system-decoders` took 20, ADR-0098). Verify: `docs/adr/README.md` lists both, and `ls crates/ps-catalog/migrations` has no 0021.
 
 ## 2. Model and catalog
 
 - [ ] 2.1 `ps-model::ExclusionCategory` and `AiKind`: storage keys, labels, priority order, and `of(class, reasons, format)`. Verify: unit tests for each row of the D1 table, including a recognised format with `ProbeFailed` mapping to `unreadable`.
-- [ ] 2.2 Migration 20: `file.exclusion`, `user_inclusion.origin` and `ai_kind`, the partial index, and the SQL backfill. Verify: `scenario_catalog_old_catalog_gets_categories` (a fixture catalog written by migration 19, with a byte-counting file layer that reads 0 bytes), and the migration round-trip tests still pass.
+- [ ] 2.2 Migration 21: `file.exclusion`, `user_inclusion.origin` and `ai_kind`, the partial index, and the SQL backfill. Verify: `scenario_catalog_old_catalog_gets_categories` (a fixture catalog written by migration 20, with a byte-counting file layer that reads 0 bytes), and the migration round-trip tests still pass.
 - [ ] 2.3 Write `file.exclusion` in the statements that write `class` and `reasons` (analysis, re-classification, refresh). Verify: `scenario_catalog_category_follows_re_classification`, `scenario_catalog_recognised_format_that_cannot_be_read_is_not_unsupported`, and the property test that re-derives the category of every row of the scanned small corpus after scan, re-classify and refresh.
 - [ ] 2.4 `Filter::exclusion` (categories, AI kinds, text), sorts by name, folder, size and category, and `exclusion_counts`. Verify: `scenario_gallery_each_excluded_file_has_one_category`, and filter and count agreement tests (the count for each chip equals the length of `id_list` with that chip alone).
 

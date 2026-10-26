@@ -189,3 +189,64 @@ fn redecode_writes_hashes_and_clears_the_marker_only() {
     let r = cat.read().file(&key(src, 5000)).unwrap().unwrap();
     assert_eq!((r.decoder_missing, r.hashes), (None, None));
 }
+
+/// Migration 20 (ADR-0098): a decode failure is stored with the analysis, replaced by a failed re-decode, and
+/// cleared by a re-decode that fills the row in.
+#[test]
+fn decode_failures_are_stored_replaced_and_cleared() {
+    use ps_model::DecodeFailure;
+    let tmp = tempfile::tempdir().unwrap();
+    let cat = Catalog::open(tmp.path()).unwrap();
+    let src = add_source(&cat, "/mnt/a");
+    let failure = |transient, attempts, backend: &str| DecodeFailure {
+        key: DecoderKey::Heif,
+        backend: backend.into(),
+        transient,
+        attempts,
+    };
+    let mut a = analysis_of(7);
+    a.hashes = None;
+    a.decode_failure = Some(failure(true, 1, "libheif 1.23.3"));
+    let mut p = probe_of(7);
+    p.skip = false;
+    p.format = Some(ps_model::Format::Heic);
+    cat.writer()
+        .upsert_files(vec![FileRow {
+            key: key(src, 7),
+            stat: stat_of(7),
+            results: Results::Analyzed(p, Box::new(a)),
+        }])
+        .unwrap();
+    cat.writer().flush().unwrap();
+    let r = cat.read().file(&key(src, 7)).unwrap().unwrap();
+    assert_eq!(r.decode_failure, Some(failure(true, 1, "libheif 1.23.3")));
+    cat.writer()
+        .submit(Command::DecodeFailed(vec![(
+            key(src, 7),
+            failure(true, 2, "libheif 1.23.3"),
+        )]))
+        .unwrap();
+    cat.writer().flush().unwrap();
+    let r = cat.read().file(&key(src, 7)).unwrap().unwrap();
+    assert_eq!(r.decode_failure.unwrap().attempts, 2);
+    // A failure record alone lets a re-decode write its hashes.
+    cat.writer()
+        .submit(Command::Redecoded(vec![(
+            key(src, 7),
+            PerceptualHash {
+                phash: 1,
+                dhash: 2,
+                version: 1,
+            },
+        )]))
+        .unwrap();
+    cat.writer().flush().unwrap();
+    let r = cat.read().file(&key(src, 7)).unwrap().unwrap();
+    assert_eq!(r.decode_failure, None);
+    assert!(r.hashes.is_some());
+    // The stored text form, and a backend name containing the separator.
+    let f = failure(false, 1, "WIC | HEVC 2.1");
+    assert_eq!(f.to_storage(), "heif|p|1|WIC | HEVC 2.1");
+    assert_eq!(DecodeFailure::from_storage(&f.to_storage()), Some(f));
+    assert_eq!(DecodeFailure::from_storage("heif|x|1|b"), None);
+}

@@ -38,6 +38,82 @@ impl DecoderKey {
     }
 }
 
+/// Decodes of a file that failed for a transient reason (a watchdog timeout, AV1 decoding paused, a thread that
+/// could not start) after which rescans stop retrying it with the same decoder (ADR-0098).
+pub const MAX_DECODE_ATTEMPTS: u8 = 3;
+
+/// A HEIC or AVIF decode that failed during analysis while its decoder was present (`file.decode_failure`, catalog
+/// migration 20, ADR-0098): the file keeps a placeholder (ADR-0095) and this record says whether and when a
+/// rescan decodes it again. Retried when the decoder backend changed (`backend`: "libheif 1.23.3", "ImageIO",
+/// "rav1d 1.1"), or while a transient failure has fewer than [`MAX_DECODE_ATTEMPTS`] attempts. A permanent failure
+/// (the data) waits for the file to change or the backend to change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecodeFailure {
+    pub key: DecoderKey,
+    pub backend: String,
+    pub transient: bool,
+    pub attempts: u8,
+}
+
+impl DecodeFailure {
+    /// The record after one more failed decode: attempts counted on from `prior` only while the decoder, its
+    /// backend and the transience are the same.
+    pub fn next(
+        prior: Option<&DecodeFailure>,
+        key: DecoderKey,
+        backend: &str,
+        transient: bool,
+    ) -> DecodeFailure {
+        let attempts = prior
+            .filter(|p| p.key == key && p.backend == backend && p.transient && transient)
+            .map_or(1, |p| p.attempts.saturating_add(1));
+        DecodeFailure {
+            key,
+            backend: backend.to_owned(),
+            transient,
+            attempts,
+        }
+    }
+
+    /// Whether a rescan whose decoder for this key is `backend_now` (`None`: none available) decodes the
+    /// unchanged file again.
+    pub fn retry(&self, backend_now: Option<&str>) -> bool {
+        match backend_now {
+            None => false,
+            Some(b) => b != self.backend || (self.transient && self.attempts < MAX_DECODE_ATTEMPTS),
+        }
+    }
+
+    /// The stored form: `<key>|<t or p>|<attempts>|<backend>` ("heif|p|1|libheif 1.23.3").
+    pub fn to_storage(&self) -> String {
+        format!(
+            "{}|{}|{}|{}",
+            self.key.as_str(),
+            if self.transient { "t" } else { "p" },
+            self.attempts,
+            self.backend
+        )
+    }
+
+    pub fn from_storage(s: &str) -> Option<DecodeFailure> {
+        let mut it = s.splitn(4, '|');
+        let key = DecoderKey::from_storage(it.next()?)?;
+        let transient = match it.next()? {
+            "t" => true,
+            "p" => false,
+            _ => return None,
+        };
+        let attempts = it.next()?.parse().ok()?;
+        let backend = it.next()?.to_owned();
+        Some(DecodeFailure {
+            key,
+            backend,
+            transient,
+            attempts,
+        })
+    }
+}
+
 /// Why a placeholder stands in for pixels (stored with the placeholder; absent in rows written before it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -211,6 +287,33 @@ pub struct Undecoded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Retry rule of decode failures (ADR-0098): transient failures up to [`MAX_DECODE_ATTEMPTS`] with the same
+    /// backend, permanent ones never with it, either once more after a backend change; attempts count on only
+    /// for the same backend and transient failures.
+    #[test]
+    fn decode_failures_retry_while_transient_or_after_a_backend_change() {
+        let t1 = DecodeFailure::next(None, DecoderKey::Avif, "rav1d 1.1", true);
+        assert_eq!(t1.attempts, 1);
+        assert!(t1.retry(Some("rav1d 1.1")));
+        let t2 = DecodeFailure::next(Some(&t1), DecoderKey::Avif, "rav1d 1.1", true);
+        let t3 = DecodeFailure::next(Some(&t2), DecoderKey::Avif, "rav1d 1.1", true);
+        assert_eq!((t2.attempts, t3.attempts), (2, 3));
+        assert!(t2.retry(Some("rav1d 1.1")));
+        assert!(!t3.retry(Some("rav1d 1.1")), "attempts exhausted");
+        assert!(t3.retry(Some("rav1d 1.2")), "a new backend tries again");
+        let p = DecodeFailure::next(None, DecoderKey::Heif, "libheif 1.17.6", false);
+        assert!(!p.retry(Some("libheif 1.17.6")), "the data does not change");
+        assert!(p.retry(Some("libheif 1.18.2")), "an upgrade tries again");
+        assert!(!p.retry(None), "no decoder now");
+        // A new backend or a permanent failure starts the count again.
+        let after = DecodeFailure::next(Some(&t3), DecoderKey::Avif, "rav1d 1.2", true);
+        assert_eq!(after.attempts, 1);
+        assert_eq!(
+            DecodeFailure::next(Some(&t2), DecoderKey::Avif, "rav1d 1.1", false).attempts,
+            1
+        );
+    }
 
     #[test]
     fn decoder_keys_round_trip_through_storage() {
