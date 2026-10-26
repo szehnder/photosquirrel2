@@ -21,10 +21,14 @@ pub enum Disposition {
     /// the move is kept beside it (`prior`) and comes back with undo. A quarantined file whose library copy is
     /// gone is `Pending` (with its quarantine path), not accounted for (ADR-0066).
     Quarantined,
+    /// A group member that is better than every copy of its group in the library (the keeper above all), in a
+    /// group the library holds only through a lesser member's earlier copy (ADR-0092): its quality is not in the
+    /// library yet. Not accounted for and never cleanup-eligible; `export run --upgrade` copies it (ADR-0093).
+    Superseded,
 }
 
 impl Disposition {
-    pub const ALL: [Disposition; 7] = [
+    pub const ALL: [Disposition; 8] = [
         Disposition::Exported,
         Disposition::Covered,
         Disposition::Excluded,
@@ -32,6 +36,7 @@ impl Disposition {
         Disposition::Unreadable,
         Disposition::Missing,
         Disposition::Quarantined,
+        Disposition::Superseded,
     ];
 
     /// Safe to quarantine during cleanup (ADR-0024).
@@ -48,6 +53,7 @@ impl Disposition {
             Disposition::Unreadable => "unreadable",
             Disposition::Missing => "missing",
             Disposition::Quarantined => "quarantined",
+            Disposition::Superseded => "superseded",
         }
     }
 }
@@ -68,8 +74,8 @@ pub enum GroupEdge {
 /// Counts and bytes per disposition for a source or folder (ADR-0023).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletionCounts {
-    pub files: [u64; 7],
-    pub bytes: [u64; 7],
+    pub files: [u64; Disposition::ALL.len()],
+    pub bytes: [u64; Disposition::ALL.len()],
     /// Of the pending files, those whose only copy is in a quarantine folder: a cleanup moved them while
     /// their library copy existed, and that copy is gone or differs now (ADR-0066). Export copies them from
     /// the quarantine folder again; undo puts them back.
@@ -106,10 +112,13 @@ impl CompletionCounts {
         self.files.iter().sum()
     }
 
-    /// Nothing pending or unreadable: every file is exported, covered, excluded, missing or quarantined (with
-    /// a valid library copy; a quarantined file without one is pending).
+    /// Nothing pending, superseded or unreadable: every file is exported, covered, excluded, missing or
+    /// quarantined (with a valid library copy; a quarantined file without one is pending). A superseded file's
+    /// quality is not in the library yet (ADR-0093).
     pub fn fully_accounted(&self) -> bool {
-        self.files_of(Disposition::Pending) == 0 && self.files_of(Disposition::Unreadable) == 0
+        self.files_of(Disposition::Pending) == 0
+            && self.files_of(Disposition::Unreadable) == 0
+            && self.files_of(Disposition::Superseded) == 0
     }
 }
 
@@ -127,5 +136,9 @@ mod tests {
         assert!(!c.fully_accounted());
         assert_eq!(c.total_files(), 3);
         assert_eq!(c.bytes[Disposition::Exported as usize], 10);
+        let mut s = CompletionCounts::default();
+        s.add(Disposition::Superseded, 1);
+        assert!(!s.fully_accounted(), "a better copy not in the library");
+        assert!(!Disposition::Superseded.is_accounted_safe());
     }
 }

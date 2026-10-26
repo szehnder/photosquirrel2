@@ -19,6 +19,8 @@ and copies those best copies into one clean library folder ready for Apple Photo
   copies nothing for it and lists it as a "better copy available". Only if you ask (`export run --upgrade`, or
   "Also copy the better copies" in the Export view, for that export only) is the better copy copied beside the
   library copy, in the same folder under its own name; the library copy is never removed, replaced or renamed.
+  Until then Reports lists that better copy as "better copy not in the library yet": it does not count as
+  accounted for, and cleanup never moves it.
 - **Nothing of yours is deleted.** PhotoSquirrel never deletes or moves your source files or the finished copies
   in your library. The only files it ever removes are ones it made itself: unfinished `.partial` export copies,
   preview-cache entries and its own temporary and control files.
@@ -216,7 +218,8 @@ photosquirrel-cli --json export dry-run --library ~/Pictures/Library   # each fi
 In Reports, **Free up space** appears on every drive that has files whose best copy is already in your library
 (exported, or a duplicate of an exported photo); the drive does not have to be fully accounted for. It plans a
 cleanup of exactly those files, shown as a tree of folders with the space you can free. Pending, excluded,
-unreadable and missing files are never included. Nothing moves until you confirm the plan. A move stays on the
+unreadable and missing files are never included, nor a better copy of a photo whose library holds only a lesser
+copy (copy it with `export run --upgrade` first). Nothing moves until you confirm the plan. A move stays on the
 same drive, so the space is only freed once you delete the quarantine folder yourself (see below).
 
 - **Narrow the plan before you confirm it.** Every folder has a check box; expand a folder to tick or untick single

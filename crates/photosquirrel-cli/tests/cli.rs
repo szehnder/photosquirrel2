@@ -847,6 +847,50 @@ fn scenario_export_manual_keeper_change_after_export_copies_nothing() {
     assert_eq!(v["data"]["totals"]["files"], 0);
 }
 
+/// After a keeper change, the new keeper is better than the group's library copy as far as the catalog knows:
+/// the report lists it as a better copy not in the library, not as accounted for (ADR-0093), in text and JSON,
+/// and `--upgrade` turns it into an exported file.
+#[test]
+fn scenario_completion_report_reports_name_better_copies_not_in_the_library() {
+    let (data, lib, _) = exported_then_keeper_changed();
+    let l = lib.to_str().unwrap();
+    let text = String::from_utf8_lossy(&ok(data.path(), &["report", "--library", l]).stdout)
+        .into_owned();
+    assert!(
+        text.contains("1 better copy not in the library yet: NOT accounted for")
+            && text.contains("export run --upgrade")
+            && text.contains("Cleanup never moves them"),
+        "{text}"
+    );
+    let v = json(&ok(data.path(), &["--json", "report", "--library", l]));
+    let superseded = |v: &Value| {
+        v["data"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["counts"]["files"]["superseded"].as_u64().unwrap())
+            .sum::<u64>()
+    };
+    assert_eq!(superseded(&v), 1, "{v}");
+    assert_eq!(v["data"]["totals"]["files"]["superseded"], 1);
+    assert_eq!(v["data"]["totals"]["fully_accounted"], false);
+    ok(
+        data.path(),
+        &[
+            "export",
+            "run",
+            "--library",
+            l,
+            "--profile",
+            "lightroom",
+            "--upgrade",
+            "--yes",
+        ],
+    );
+    let v = json(&ok(data.path(), &["--json", "report", "--library", l]));
+    assert_eq!(superseded(&v), 0, "{v}");
+}
+
 /// A folder of three different HEIC photos (the sample re-boxed with different rotations).
 fn heic_folder() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();

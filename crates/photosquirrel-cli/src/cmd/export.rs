@@ -502,6 +502,13 @@ fn print_report(o: &ReportOut) {
             f["missing"],
             f["quarantined"]
         );
+        if f["superseded"] > 0 {
+            println!(
+                "    {}: NOT accounted for; {}",
+                ps_export::superseded_label(f["superseded"]),
+                ps_export::SUPERSEDED_HINT
+            );
+        }
         if s.counts.pending_in_quarantine > 0 {
             println!(
                 "    {} files are only in the quarantine folder and their library copy is gone: NOT accounted \

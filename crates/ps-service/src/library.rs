@@ -17,6 +17,8 @@
 
 pub mod synthetic;
 
+/// Better copies not in the library (ADR-0093): the report's words, shared with the app.
+pub use ps_export::{SUPERSEDED_HINT, superseded_label};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -101,6 +103,17 @@ pub fn disposition_reason(
         (Disposition::Excluded, Some(r), _) => format!("excluded: {}", reason_label(r)),
         (Disposition::Exported, _, Some(p)) => format!("copied to {p}"),
         (Disposition::Covered, _, Some(p)) => format!("its best copy is {p}"),
+        (Disposition::Superseded, _, Some(p)) => format!(
+            "better than its library copy {p}, which is a lesser copy: this photo's quality is not in the \
+             library yet. `export run --upgrade` (or the export panel's \"Also copy the better copies\") copies \
+             it beside that copy; cleanup never moves it"
+        ),
+        (Disposition::Superseded, _, None) => {
+            "better than its group's copy in the library, which is a lesser copy: this photo's quality is not in \
+             the library yet. `export run --upgrade` (or the export panel's \"Also copy the better copies\") copies \
+             it; cleanup never moves it"
+                .into()
+        }
         (Disposition::Exported, _, None) => "copied to the library and verified".into(),
         (Disposition::Covered, _, None) => "a better copy is in the library".into(),
         (Disposition::Pending, _, _) => "not in the library yet".into(),

@@ -788,8 +788,8 @@ fn row(
 /// Characters of a path the inspector's value column shows before shortening it in the middle.
 const PATH_CHARS: usize = 24;
 
-/// A path row: shown with the home folder as `~` and shortened in the middle (the file name stays readable, as
-/// in Excluded), copied (and named for assistive technology) in full.
+/// A path row: shown with the home folder as `~` and shortened at folder boundaries (the file name stays
+/// readable, no folder name is cut), copied (and named for assistive technology) in full.
 fn path_row(
     id: impl Into<SharedString>,
     label: &'static str,
@@ -797,7 +797,7 @@ fn path_row(
     cx: &mut Context<'_, GalleryInspector>,
 ) -> AnyElement {
     let shown = path.as_deref().map(|p| {
-        crate::views::kit::middle_ellipsis(
+        crate::views::kit::path_ellipsis(
             &crate::views::kit::display_path(Path::new(p)),
             PATH_CHARS,
         )
@@ -1226,7 +1226,12 @@ impl Render for GalleryInspector {
                         ))
                         .child(path_row(
                             "inspector-library-path",
-                            "Library copy",
+                            // A superseded file's library path is its group's lesser copy (ADR-0093).
+                            if x.disposition == ps_model::Disposition::Superseded {
+                                "Lesser copy in library"
+                            } else {
+                                "Library copy"
+                            },
                             x.library_path.clone(),
                             cx,
                         ));

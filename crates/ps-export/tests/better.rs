@@ -429,6 +429,53 @@ fn scenario_export_live_photo_upgrade_keeps_the_pair() {
     }
 }
 
+/// A Live Photo whose still group is in the library through an earlier copy (a renamed JPEG, filed under
+/// another date) and whose video was never exported: the video is copied beside the library still under its
+/// stem, so the pair stays together; the still is not copied, the earlier copy untouched.
+#[test]
+fn scenario_export_live_photo_video_joins_its_covered_still() {
+    let mut s = Sources::new("live-covered", 1);
+    let mut jpg = s.add(0, "Web/IMG_1 copy.JPG", &bytes(70, 2000), 0, day(2020, 1, 1));
+    jpg.content_identifier = Some("CID-LIVE-2".into());
+    let mov = live_file(&mut s, 0, "DCIM/IMG_1.MOV", 71, 7000);
+    let mut heic = live_file(&mut s, 0, "DCIM/IMG_1.HEIC", 72, 5000);
+    heic.content_identifier = Some("CID-LIVE-2".into());
+    let mut mov = mov;
+    mov.content_identifier = Some("CID-LIVE-2".into());
+    let lib = s.library();
+    let mut ledger = MemoryLedger::new();
+    // Only the still was exported (the video was not catalogued yet).
+    let (p, _) = run(
+        &s.input(vec![group_unit(1, vec![jpg.clone()], &[])]),
+        &lib,
+        &mut ledger,
+        apple(),
+    );
+    let still = p.files().next().expect("still").target.clone();
+    let tree = snapshot(&lib, &[&lib.join(".photosquirrel")]);
+    let after = s.input(vec![
+        group_unit(1, vec![heic.clone()], &[&jpg]),
+        group_unit(2, vec![mov.clone()], &[]),
+    ]);
+    let (p, r) = run(&after, &lib, &mut ledger, apple());
+    let targets: Vec<_> = p.files().map(|f| (f.file, f.target.clone())).collect();
+    let folder = still.parent().expect("folder").display().into_owned();
+    assert_eq!(
+        targets,
+        vec![(mov.file, rel(&format!("{folder}/IMG_1 copy.MOV")))],
+        "the video beside the library still, with its stem"
+    );
+    assert_eq!(r.copied, 1);
+    assert_eq!(p.totals.better_copies, 1, "the HEIC is still offered");
+    assert!(p.bundles.iter().all(|b| b.better_copy_of.is_empty()));
+    let now = snapshot(&lib, &[&lib.join(".photosquirrel")]);
+    for (k, v) in &tree {
+        assert_eq!(now.get(k), Some(v), "{}", k.display());
+    }
+    // Nothing left to copy.
+    assert_eq!(plan_only(&after, &lib, &ledger, apple()).totals.files, 0);
+}
+
 #[test]
 fn scenario_export_raw_jpeg_keeper_set_upgrade_keeps_stems() {
     let mut s = Sources::new("better-rawjpeg", 2);
@@ -485,11 +532,14 @@ fn facts_of(f: &KeeperFile) -> FileFacts {
     }
 }
 
+/// The keeper changed after a lesser member was exported (ADR-0092): the lesser copy is exported, what ranks
+/// below it is covered by it, and the new keeper is superseded: its quality is not in the library, so it is
+/// not accounted for (ADR-0093). Once `--upgrade` copied it, it is exported and the rest covered as usual.
 #[test]
-fn scenario_completion_report_group_covered_by_an_earlier_copy_is_accounted_for() {
-    let u = jpeg_then_heic("report-covered", google());
+fn scenario_completion_report_better_copy_not_in_the_library_is_not_accounted_for() {
+    let mut u = jpeg_then_heic("report-superseded", google());
     let lib = u.s.library();
-    // A third member: an exact copy of nothing in the library.
+    // A third member ranked below the JPEG: a smaller copy of nothing in the library.
     let other = KeeperFile {
         file: FileId(99),
         content: ContentId::full([9; 32]),
@@ -501,29 +551,62 @@ fn scenario_completion_report_group_covered_by_an_earlier_copy_is_accounted_for(
         members: vec![u.heic.file, u.jpg.file, other.file],
         keeper_set: vec![u.heic.file],
     }];
-    let rows = u.ledger.entries().expect("rows");
-    let checks = check_library(&lib, &rows, false);
-    let d = derive_dispositions(&DispositionFacts {
-        files: &files,
-        groups: &groups,
-        ledger: &rows,
-        checks: &checks,
-    });
+    let derive = |ledger: &MemoryLedger| {
+        let rows = ledger.entries().expect("rows");
+        let checks = check_library(&lib, &rows, false);
+        let d = derive_dispositions(&DispositionFacts {
+            files: &files,
+            groups: &groups,
+            ledger: &rows,
+            checks: &checks,
+        });
+        let rep = report(&files, &d, &checks);
+        (d, rep)
+    };
+    let (d, rep) = derive(&u.ledger);
     let jpg_path = Some(rel("2019/2019-07-04/IMG_1234.JPG"));
     let by: HashMap<FileId, _> = d.iter().map(|x| (x.file, x)).collect();
     assert_eq!(by[&u.jpg.file].disposition, Disposition::Exported);
     assert_eq!(by[&u.jpg.file].library_path, jpg_path);
-    for f in [u.heic.file, other.file] {
-        assert_eq!(by[&f].disposition, Disposition::Covered);
-        assert_eq!(by[&f].library_path, jpg_path);
-    }
-    let rep = report(&files, &d, &checks);
+    assert_eq!(by[&u.heic.file].disposition, Disposition::Superseded);
+    assert_eq!(by[&u.heic.file].library_path, jpg_path, "names the lesser copy");
+    assert!(!Disposition::Superseded.is_accounted_safe());
+    assert_eq!(by[&other.file].disposition, Disposition::Covered);
+    assert_eq!(by[&other.file].library_path, jpg_path);
+    let s = &rep.sources;
+    assert!(s.iter().any(|s| !s.counts.fully_accounted()), "{s:?}");
+    let total: u64 = s
+        .iter()
+        .map(|s| s.counts.files_of(Disposition::Superseded))
+        .sum();
+    assert_eq!(total, 1);
+    let heic_source = s.iter().find(|s| s.source == u.heic.source).expect("source");
+    assert_eq!(
+        heic_source.badge,
+        ps_export::Badge::Outstanding {
+            pending: 0,
+            unreadable: 0,
+            in_quarantine: 0,
+            superseded: 1,
+        }
+    );
+    assert_eq!(
+        heic_source.badge.label(),
+        "1 better copy not in the library yet"
+    );
+    // After `--upgrade` copied the HEIC: exported; the JPEG and the small copy are covered by it.
+    let (_, r) = run(&u.after, &lib, &mut u.ledger, google().with_upgrade(true));
+    assert_eq!(r.copied, 1, "{r:?}");
+    let (d, rep) = derive(&u.ledger);
+    let by: HashMap<FileId, _> = d.iter().map(|x| (x.file, x)).collect();
+    assert_eq!(by[&u.heic.file].disposition, Disposition::Exported);
+    assert_eq!(by[&u.jpg.file].disposition, Disposition::Covered);
+    assert_eq!(by[&other.file].disposition, Disposition::Covered);
     assert!(
         rep.sources
             .iter()
             .all(|s| s.badge == ps_export::Badge::FullyAccounted)
     );
-    assert!(d.iter().all(|x| x.disposition != Disposition::Pending));
 }
 
 #[test]

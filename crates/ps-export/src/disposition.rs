@@ -10,9 +10,11 @@
 //! - in a group whose whole keeper set has a valid library copy: keeper-set files are `exported`, the other
 //!   members `covered` (with the keeper's library path);
 //! - in a group none of whose keeper-set files has a valid library copy but another member does (the keeper
-//!   changed after that member was exported, ADR-0092): the members with a valid copy are `exported`, every
-//!   other member, the keeper included, `covered` with that copy's path (a keeper set with only some files in
-//!   the library is not covered: pending, the plan completes it);
+//!   changed after that member was exported, ADR-0092): the members with a valid copy are `exported`; the
+//!   keeper set and every member ranked above the best-ranked exported member are `superseded` (better than
+//!   anything of the group in the library: not accounted for, never cleanup-eligible, ADR-0093), with that
+//!   copy's path; the members ranked below it are `covered` by it (a keeper set with only some files in the
+//!   library is not covered: pending, the plan completes it);
 //! - not in a group and its content has a valid library copy: `exported`;
 //! - moved by a cleanup run (ADR-0034): `quarantined`, with the disposition the rules below give it as if it
 //!   were still at its path (`prior`) - checked first, since the scanner sees it as gone. Only while that
@@ -63,6 +65,8 @@ pub struct GroupFacts {
     pub members: Vec<FileId>,
     /// The keeper first, then its RAW+JPEG companion (ranking order).
     pub keeper_set: Vec<FileId>,
+    // `members` are in ranking order (best first): a member before the best-ranked exported member is better
+    // than every copy of the group in the library (ADR-0093).
 }
 
 /// State of a ledger row's library copy.
@@ -158,6 +162,8 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
     let mut keeper_path: Vec<Option<RelPath>> = Vec::with_capacity(facts.groups.len());
     // Whether a group's path is its keeper set's (`false`: an earlier member's copy covers it).
     let mut by_keeper: Vec<bool> = Vec::with_capacity(facts.groups.len());
+    // Groups covered by an earlier copy: the rank (index in `members`) of the best-ranked exported member.
+    let mut covering_rank: Vec<usize> = Vec::with_capacity(facts.groups.len());
     let excluded_keeper: Vec<bool> = facts
         .groups
         .iter()
@@ -176,11 +182,15 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
         let kp = paths.filter(|p| !p.is_empty()).map(|mut p| p.remove(0));
         by_keeper.push(kp.is_some());
         let covering = if kp.is_none() && g.keeper_set.iter().all(|k| exported_path(*k).is_none()) {
-            g.members.iter().find_map(|m| exported_path(*m))
+            g.members
+                .iter()
+                .enumerate()
+                .find_map(|(i, m)| exported_path(*m).map(|p| (i, p)))
         } else {
             None
         };
-        keeper_path.push(kp.or(covering));
+        covering_rank.push(covering.as_ref().map_or(0, |(i, _)| *i));
+        keeper_path.push(kp.or(covering.map(|(_, p)| p)));
     }
 
     let d = |f: &FileFacts, disposition, reason, library_path| FileDisposition {
@@ -195,9 +205,18 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
         if let Some(&gi) = group_of.get(&f.file) {
             if let Some(kp) = &keeper_path[gi] {
                 if !by_keeper[gi] {
-                    // Covered by an earlier member's copy (ADR-0092).
+                    // In the library through an earlier member's copy (ADR-0092): what ranks below that copy is
+                    // covered by it; the keeper set and what ranks above it are better than anything of the
+                    // group in the library, so superseded, never covered (ADR-0093).
+                    let g = &facts.groups[gi];
+                    let better = g.keeper_set.contains(&f.file)
+                        || g.members
+                            .iter()
+                            .position(|m| *m == f.file)
+                            .is_some_and(|r| r < covering_rank[gi]);
                     return match exported_path(f.file) {
                         Some(own) => d(f, Disposition::Exported, None, Some(own)),
+                        None if better => d(f, Disposition::Superseded, None, Some(kp.clone())),
                         None => d(f, Disposition::Covered, None, Some(kp.clone())),
                     };
                 }
@@ -252,7 +271,14 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
                 // Accounted for only while a valid library copy covers it, whatever its exclusion state
                 // (ADR-0067): an excluded file in quarantine whose library copy is gone has its only copy
                 // there, so it is pending like any other.
-                if prior.disposition.is_accounted_safe() {
+                if prior.disposition == Disposition::Superseded {
+                    // Better than the group's library copy and only in the quarantine folder (moved before
+                    // ADR-0093): superseded, with where it is; `export run --upgrade` copies it from there.
+                    FileDisposition {
+                        quarantine_path: Some(q.clone()),
+                        ..prior
+                    }
+                } else if prior.disposition.is_accounted_safe() {
                     FileDisposition {
                         disposition: Disposition::Quarantined,
                         prior: Some(prior.disposition),
@@ -286,6 +312,9 @@ pub enum Badge {
         /// Of `pending`, the files whose only copy is in a quarantine folder.
         #[serde(default)]
         in_quarantine: u64,
+        /// Better copies not in the library yet (ADR-0093).
+        #[serde(default)]
+        superseded: u64,
     },
 }
 
@@ -298,6 +327,7 @@ impl Badge {
                 pending: c.files_of(Disposition::Pending),
                 unreadable: c.files_of(Disposition::Unreadable),
                 in_quarantine: c.pending_in_quarantine,
+                superseded: c.files_of(Disposition::Superseded),
             }
         }
     }
@@ -309,13 +339,22 @@ impl Badge {
                 pending,
                 unreadable,
                 in_quarantine,
+                superseded,
             } => {
-                let mut s = format!("{pending} pending");
-                if in_quarantine > 0 {
-                    s.push_str(&format!(
-                        " ({in_quarantine} only in the quarantine folder, library copy gone)"
-                    ));
+                let mut parts = Vec::new();
+                if pending > 0 || superseded == 0 {
+                    let mut s = format!("{pending} pending");
+                    if in_quarantine > 0 {
+                        s.push_str(&format!(
+                            " ({in_quarantine} only in the quarantine folder, library copy gone)"
+                        ));
+                    }
+                    parts.push(s);
                 }
+                if superseded > 0 {
+                    parts.push(superseded_label(superseded));
+                }
+                let mut s = parts.join(", ");
                 if unreadable > 0 {
                     s.push_str(&format!(", {unreadable} unreadable"));
                 }
@@ -324,6 +363,19 @@ impl Badge {
         }
     }
 }
+
+/// "N better copies not in the library yet", the superseded files of a report (ADR-0093).
+pub fn superseded_label(n: u64) -> String {
+    if n == 1 {
+        "1 better copy not in the library yet".into()
+    } else {
+        format!("{n} better copies not in the library yet")
+    }
+}
+
+/// What to do about superseded files, for reports.
+pub const SUPERSEDED_HINT: &str = "the library holds only a lesser copy of these photos; `export run --upgrade` \
+     (or the export panel's \"Also copy the better copies\") copies them beside it. Cleanup never moves them.";
 
 /// Excluded files and bytes per reason.
 pub type ExcludedBreakdown = BTreeMap<ExclusionReason, (u64, u64)>;

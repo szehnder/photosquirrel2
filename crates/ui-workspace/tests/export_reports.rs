@@ -527,3 +527,47 @@ fn scenario_export_export_panel_offers_better_copies(cx: &mut TestAppContext) {
         "the defaults are unchanged"
     );
 }
+
+/// The Reports view names better copies not in the library (ADR-0093): after the keeper of an exported group is
+/// changed to another member, the badge says "1 better copy not in the library yet", the legend lists it and a
+/// note points to `export run --upgrade`.
+#[gpui_kit::test]
+fn reports_view_lists_better_copies_not_in_the_library(cx: &mut TestAppContext) {
+    let e = exported_corpus();
+    let backend = Arc::new(CatalogBackend::open(&e.data).unwrap());
+    {
+        let svc = backend.scan().unwrap();
+        let groups = svc
+            .groups()
+            .list(ps_service::groups::GroupOrder::Reclaimable, 0, 100)
+            .unwrap();
+        let (gid, other) = groups
+            .iter()
+            .find_map(|g| {
+                let d = svc.groups().show(g.id).ok()?;
+                // Another content than the exported keeper: a derivative (an exact copy is in the library).
+                let m = d.members.iter().find(|m| {
+                    !d.keeper_set.contains(&m.file) && m.edge == ps_service::groups::MemberEdge::Derivative
+                })?;
+                Some((d.id, m.file))
+            })
+            .expect("a group with a derivative member");
+        svc.groups().set_keeper(gid, other).unwrap();
+    }
+    let report = backend.report(None, false).unwrap().unwrap();
+    let src = report
+        .sources
+        .iter()
+        .find(|s| s.counts.files_of(Disposition::Superseded) > 0)
+        .expect("a source with a better copy not in the library");
+    init_app(cx, backend.clone(), None);
+    let (shell, mut cx) = open(cx);
+    wait_loaded(&shell, &mut cx);
+    show(&shell, ViewId::Reports, &mut cx);
+    let badge = format!("report-badge-{}", src.id.0);
+    wait(&mut cx, "the report", |cx| exists(&badge, cx));
+    let l = label(&badge, &mut cx).unwrap();
+    assert!(l.contains("1 better copy not in the library yet"), "{l}");
+    assert!(exists("report-total-superseded", &mut cx));
+    assert!(exists("report-superseded-note", &mut cx));
+}

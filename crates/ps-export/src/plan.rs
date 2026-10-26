@@ -563,6 +563,9 @@ pub fn plan(
         // (ADR-0092). Checked before the offline check: nothing needs reading for a covered group.
         let mut upgrading: Vec<(usize, Vec<AlreadyExported>)> = Vec::new();
         let mut covered_units = Vec::new();
+        // Valid earlier copies of covered units that are not upgraded now (a Live Photo's video goes beside).
+        let mut covering: Vec<AlreadyExported> = Vec::new();
+        let was_pair = units.len() > 1;
         for &u in &units {
             let Some(cover) = covered_by_member(input, u, &done, probe, settings.verify_library)?
             else {
@@ -650,6 +653,12 @@ pub fn plan(
                 } else {
                     upgrading.push((u, earlier));
                 }
+            } else {
+                covering.extend(earlier.into_iter().filter(|a| {
+                    cover
+                        .iter()
+                        .any(|(f, _, c)| *f == a.file && *c == CopyCheck::Ok)
+                }));
             }
         }
         // Covered units are not copied, unless they are upgraded (copied beside their earlier copies).
@@ -691,6 +700,12 @@ pub fn plan(
             .iter()
             .flat_map(|(_, earlier)| earlier.iter().cloned())
             .collect();
+        // A Live Photo whose still group is covered by an earlier copy (not upgraded now) and whose video is
+        // not in the library: the video is copied beside that library still under its stem, so the pair stays
+        // together (gate review of `heic-system-decoders`). Kept last in `already`, which shares its sidecar.
+        let still_copy = (was_pair && upgrading.is_empty())
+            .then(|| covering.first().cloned())
+            .flatten();
         for (u, f) in &all {
             if is_upgrading(*u) {
                 // No keeper-set file of an upgraded unit has a copy (else it would not be covered).
@@ -740,6 +755,9 @@ pub fn plan(
                 }
                 None => todo.push((*u, *f)),
             }
+        }
+        if let Some(c) = &still_copy {
+            already.push(c.clone());
         }
         // Copies exported under earlier date rules stay where they are (ADR-0071); count them.
         let today = folder_of(all[0].1);
@@ -817,6 +835,7 @@ pub fn plan(
             .cloned();
         let folder = live_video
             .as_ref()
+            .or(still_copy.as_ref())
             .or(already.first())
             .and_then(|a| a.library_rel_path.parent())
             .map_or(today, |p| p.display().into_owned());
@@ -836,8 +855,10 @@ pub fn plan(
             let mut keys = HashSet::new();
             let mut slots = Vec::with_capacity(todo.len());
             // First choice of a Live Photo upgrade: the still beside the library video with its stem.
+            // A video whose still is covered: beside the library still with the still's stem.
             let video_stem = live_video
                 .as_ref()
+                .or(still_copy.as_ref())
                 .filter(|_| n == 1)
                 .map(|v| split_name(v.library_rel_path.file_name()).0.to_vec());
             let files_n: Vec<(usize, &KeeperFile)> = if n > 1 {
@@ -930,11 +951,16 @@ pub fn plan(
             p.reserved.insert(collision_key(s));
             out.totals.sidecars += 1;
         }
-        let better_copy_of = already
-            .iter()
-            .filter(|a| a.covers_group)
-            .map(|a| a.library_rel_path.clone())
-            .collect();
+        // Only an upgrade is a better copy of its earlier copies (a video beside a covered still is not).
+        let better_copy_of = if upgrading.is_empty() {
+            Vec::new()
+        } else {
+            already
+                .iter()
+                .filter(|a| a.covers_group)
+                .map(|a| a.library_rel_path.clone())
+                .collect()
+        };
         out.bundles.push(PlannedBundle {
             units,
             kind,

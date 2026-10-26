@@ -241,6 +241,8 @@ pub fn disposition_color(d: Disposition, colors: &Colors) -> Hsla {
         Disposition::Unreadable => colors.danger,
         Disposition::Missing => colors.border_strong,
         Disposition::Quarantined => colors.accent_text,
+        // Not accounted for, like pending (ADR-0093).
+        Disposition::Superseded => colors.warning,
     }
 }
 
@@ -253,6 +255,7 @@ pub fn disposition_label(d: Disposition) -> &'static str {
         Disposition::Unreadable => "Unreadable",
         Disposition::Missing => "Missing",
         Disposition::Quarantined => "Quarantined",
+        Disposition::Superseded => "Better copy not in library",
     }
 }
 
@@ -346,6 +349,52 @@ pub fn middle_ellipsis(s: &str, max: usize) -> String {
     out.push('…');
     out.extend(&chars[chars.len() - tail..]);
     out
+}
+
+/// Shorten a path to at most `max` characters at folder boundaries: the first component and the file name
+/// stay, whole folders nearest the file name are kept while they fit, and the dropped ones become `…`
+/// ("~/heic/…/DCIM/IMG_0001.HEIC"), never a cut inside a folder name. A file name too long by itself is shortened
+/// in its middle.
+pub fn path_ellipsis(s: &str, max: usize) -> String {
+    let len = |x: &str| x.chars().count();
+    if len(s) <= max {
+        return s.to_owned();
+    }
+    let sep = if s.contains('/') { '/' } else { '\\' };
+    let parts: Vec<&str> = s.split(sep).collect();
+    if parts.len() < 3 {
+        return middle_ellipsis(s, max);
+    }
+    let first = parts[0];
+    let last = parts[parts.len() - 1];
+    let join = |kept: &[&str]| {
+        let mut out = String::from(first);
+        out.push(sep);
+        out.push('…');
+        for k in kept {
+            out.push(sep);
+            out.push_str(k);
+        }
+        out
+    };
+    let mut kept: Vec<&str> = vec![last];
+    if len(&join(&kept)) > max {
+        let mut out = String::from('…');
+        out.push(sep);
+        let room = max.saturating_sub(2);
+        out.push_str(&middle_ellipsis(last, room));
+        return out;
+    }
+    // Folders nearest the file name, while they fit (the first stays).
+    for p in parts[1..parts.len() - 1].iter().rev() {
+        let mut more = vec![*p];
+        more.extend(kept.iter().copied());
+        if len(&join(&more)) > max {
+            break;
+        }
+        kept = more;
+    }
+    join(&kept)
 }
 
 /// A small pill ("SSD · 8 readers", "Offline").
@@ -464,6 +513,19 @@ mod tests {
         assert_eq!(format_clock(3_849_000), "1:04:09");
         assert_eq!(format_duration(724_000), "12 min 4 s");
         assert_eq!(format_duration(400), "under 1 s");
+        // Folder boundaries only (the screenshot review's "~/heic/...IM/h01_8bit.heic").
+        assert_eq!(
+            path_ellipsis("~/heic/iPhone/DCIM/h01_8bit.heic", 24),
+            "~/…/DCIM/h01_8bit.heic"
+        );
+        assert_eq!(path_ellipsis("~/heic/h01_8bit.heic", 24), "~/heic/h01_8bit.heic");
+        assert_eq!(
+            path_ellipsis("/media/backup/Family Photos/2019/Holiday/IMG_0001.HEIC", 32),
+            "/…/2019/Holiday/IMG_0001.HEIC"
+        );
+        let long = path_ellipsis("~/a/b/an extremely long file name of a photo.heic", 24);
+        assert!(long.starts_with("…/") && long.chars().count() <= 24, "{long}");
+        assert_eq!(path_ellipsis("C:\\Users\\me\\Pictures\\2019\\IMG_1.JPG", 20), "C:\\…\\2019\\IMG_1.JPG");
         let m = middle_ellipsis("Family/Photos/2019/2019-08 Holiday in Portugal", 24);
         assert_eq!(m.chars().count(), 24);
         assert!(m.contains('…'));

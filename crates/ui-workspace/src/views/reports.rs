@@ -27,16 +27,25 @@ pub const DRILL_LIMIT: usize = 2_000;
 pub fn badge_label(c: &CompletionCounts) -> String {
     let pending = c.files_of(Disposition::Pending);
     let unreadable = c.files_of(Disposition::Unreadable);
-    let mut s = match (pending, unreadable) {
-        (0, 0) => return "100% accounted for".into(),
-        (p, _) => format!("{} pending", format_count(p)),
-    };
-    if c.pending_in_quarantine > 0 {
-        s.push_str(&format!(
-            " ({} only in quarantine, library copy gone)",
-            format_count(c.pending_in_quarantine)
-        ));
+    let superseded = c.files_of(Disposition::Superseded);
+    if c.fully_accounted() {
+        return "100% accounted for".into();
     }
+    let mut parts = Vec::new();
+    if pending > 0 || superseded == 0 {
+        let mut p = format!("{} pending", format_count(pending));
+        if c.pending_in_quarantine > 0 {
+            p.push_str(&format!(
+                " ({} only in quarantine, library copy gone)",
+                format_count(c.pending_in_quarantine)
+            ));
+        }
+        parts.push(p);
+    }
+    if superseded > 0 {
+        parts.push(ps_service::library::superseded_label(superseded));
+    }
+    let mut s = parts.join(", ");
     if unreadable > 0 {
         s.push_str(&format!(", {} unreadable", format_count(unreadable)));
     }
@@ -226,7 +235,10 @@ fn stacked(c: &CompletionCounts, colors: &Colors) -> Div {
                     .flex_grow(n as f32 / total)
                     // What is still to do never disappears into a hairline next to thousands of exports.
                     .when(
-                        matches!(d, Disposition::Pending | Disposition::Unreadable),
+                        matches!(
+                            d,
+                            Disposition::Pending | Disposition::Unreadable | Disposition::Superseded
+                        ),
                         |seg| seg.min_w(Tokens::size(10.0)),
                     )
                     .rounded(Tokens::RADIUS_SM)
@@ -358,9 +370,10 @@ impl Render for ReportsView {
             Loadable::Ready(Some(d)) => d,
         };
 
-        // Quarantined only appears once a cleanup has moved something.
+        // Quarantined only appears once a cleanup has moved something, superseded once a group's better copy
+        // is missing from the library (ADR-0093).
         let shown = |d: Disposition, c: &CompletionCounts| {
-            d != Disposition::Quarantined || c.files_of(d) > 0
+            !matches!(d, Disposition::Quarantined | Disposition::Superseded) || c.files_of(d) > 0
         };
         let legend = h_flex().flex_wrap().gap(Tokens::space(4.0)).children(
             Disposition::ALL
@@ -409,6 +422,22 @@ impl Render for ReportsView {
             )
             .child(stacked(&data.totals, &colors))
             .child(legend)
+            .when(data.totals.files_of(Disposition::Superseded) > 0, |c| {
+                c.child(
+                    div()
+                        .id("report-superseded-note")
+                        .test_support()
+                        .text_size(Tokens::text_sm())
+                        .text_color(colors.warning)
+                        .child(format!(
+                            "{}: not accounted for; {}",
+                            ps_service::library::superseded_label(
+                                data.totals.files_of(Disposition::Superseded)
+                            ),
+                            ps_service::library::SUPERSEDED_HINT
+                        )),
+                )
+            })
             .child(
                 div()
                     .id("report-excluded-note")
