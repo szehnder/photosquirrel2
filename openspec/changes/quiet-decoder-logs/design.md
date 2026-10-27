@@ -56,3 +56,27 @@ or the constant is re-exported from `ps-service`. Check this when building.
 - [A real rawler problem is hidden] -> its effect (no metadata, no preview) is reported by our own path; `RUST_LOG`
   shows the detail. README says how.
 - [A future rawler moves its messages to other targets] -> the `rawler` prefix covers every module of the crate.
+
+## Deviations (as built)
+
+- **D3, CLI test fixture:** the existing `ps_fixtures::dng::cr2_like` writer does not reach rawler's lens lookup.
+  nom-exif reads it, so `metadata::raw_fallback` never calls rawler, and its maker note has no `CameraSettings`
+  (rawler would only warn "Camera settings in makernote not found"). Instead of the `log::warn!` stand-in, a new
+  writer, `ps_fixtures::dng::cr2_unknown_lens`, builds a small Canon CR2 that a real CLI scan takes through rawler:
+  a maker note with `CameraSettings` (40 SHORTs, lens id 4242 at index 22, file-absolute offset placed in a
+  second pass) and an IFD0 private tag (0xC5D8) whose count runs past the end of the file. nom-exif rejects the
+  container for that tag ("parse ifd entry header failed: Incomplete"), rawler skips it with a warning, and
+  `raw_metadata` logs "No lens definition found in database". Why the owner's real CR2s fall back to rawler was not
+  investigated; the fixture only needs the same path.
+- **D1, the damaged file's reason:** a truncated CR2 becomes a placeholder with reason `unsupported_variant` ("RAW
+  files without an embedded preview", the table's "not supported yet"), not `unreadable`, and the run's `errors`
+  stays 0: `decode_raw_preview` returns `DecodeError::NoRawPreview` for any rawler failure, and
+  `thumb::reason_for_error` maps that to `UnsupportedVariant`. This change does not alter it (no decode code
+  changes); the scenario test pins the reason the run reports today and that it is the same with `RUST_LOG` set.
+  Telling a damaged RAW from one without a preview would be its own change.
+- **D3, filter test:** uses `env_logger::Builder::parse_filters(..).build()` and `Log::enabled` rather than
+  `env_logger::filter::Builder`, which the workspace's `env_logger` (default features off) does not export. Same
+  parser, no new dependency.
+- **The test lives in two places:** the filter scenario is a `ps-media` integration test (`tests/log_filter.rs`),
+  the CLI and scan-progress scenarios are in `photosquirrel-cli/tests/decoder_logs.rs`.
+- **Release notes:** a "What's new since 0.3.0" section above "What's new in 0.3.0", for the 0.3.x changes.
