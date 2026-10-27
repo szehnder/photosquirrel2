@@ -1,6 +1,6 @@
 # Tasks
 
-Ships in 0.3.x (ROADMAP row 30), after `stable-ids-on-fat`. Takes **ADR-0113** and **catalog migration 26**.
+Ships in 0.3.x (ROADMAP row 31), after `stable-ids-on-fat`. Takes **ADR-0113** and **catalog migration 26**.
 
 ## 1. Decision
 

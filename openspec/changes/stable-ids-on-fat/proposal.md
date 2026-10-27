@@ -8,7 +8,7 @@ again.
 
 The stat fingerprint of ADR-0007 is size + modification time + inode. On FAT and exFAT the inode is not stored on
 disk: Linux's `vfat` and `exfat` drivers invent one when they first load each file, so the numbers depend on the
-order of access and change across mounts. About half happened to come out the same. ROADMAP row 31 and the README's
+order of access and change across mounts. About half happened to come out the same. ROADMAP row 30 and the README's
 "Known limitations" describe the problem. Priority 2 (efficient rescans) says it must not cost a full read.
 
 ## What Changes

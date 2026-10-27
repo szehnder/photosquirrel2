@@ -7,7 +7,7 @@ loupe next to the same shots' `IMG_` files. The camera recorded them in Adobe RG
 way: EXIF `ColorSpace` = 0xFFFF ("uncalibrated"), the Interop IFD's `InteropIndex` = `R03`, and a file name that
 starts with `_`. There is usually no embedded ICC profile. PhotoSquirrel decodes the pixels and shows them as if
 they were sRGB, so the wider-gamut primaries are squeezed toward grey. The README lists this under "Known
-limitations", and ROADMAP row 30 asks for the fix.
+limitations", and ROADMAP row 31 asks for the fix.
 
 The files themselves are fine: export copies them byte for byte, and Lightroom or Apple Photos show them correctly.
 Only our previews are wrong.

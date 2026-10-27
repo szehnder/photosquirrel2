@@ -1,6 +1,6 @@
 # Tasks
 
-Ships in 0.3.x (ROADMAP row 31), after `quiet-decoder-logs`. Takes **ADR-0112**. **No migration** (D2, D5); migration
+Ships in 0.3.x (ROADMAP row 30), after `quiet-decoder-logs`. Takes **ADR-0112**. **No migration** (D2, D5); migration
 26 goes to `adobe-rgb-color`.
 
 ## 1. Decision
