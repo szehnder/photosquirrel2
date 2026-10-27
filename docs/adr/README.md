@@ -110,3 +110,5 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0104](0104-damaged-photos-are-unreadable-and-the-excluded-budget-covers-the-service.md) | Damaged photos are "could not be read"; the Excluded view's search and budget follow what it shows (migration 22; amends 0102, 0103) |
 | [0105](0105-recorded-frame-identities-keep-frames-apart.md) | Recorded frame identities keep frames apart; RAW files are camera originals; RAW rows re-read once (migration 23; amends 0035, 0039, 0007) |
 | [0106](0106-frame-identity-re-read-covers-same-second-canon-files-and-quarantine.md) | The frame-identity re-read also covers same-second Canon files and files in quarantine (amends 0105) |
+| [0107](0107-files-that-record-the-same-frame-are-one-shot.md) | Files that record the same frame at the same time are not "two camera originals" (amends 0105, 0035) |
+| [0108](0108-cleanup-and-the-report-wait-for-the-frame-identity-re-read.md) | Cleanup and the report wait for the frame-identity re-read; the re-read is complete or not stamped (amends 0105, 0106, 0024) |

@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Metadata re-read for frame identity
-On the first rescan after frame identity was added, unchanged analysed RAW-format files, and Canon camera files of the same capture second, whose metadata predates it SHALL have it re-read from the probe's header bytes only, read-only, without decoding or hashing, also in a quarantine folder, and SHALL be regrouped. Other files SHALL NOT be read for it. The scan summary SHALL report the files re-read and the groups split.
+On the first rescan after frame identity was added, unchanged analysed RAW-format files and same-second Canon camera files whose metadata predates it SHALL have it re-read from the header and bounded reads of frame values past it, read-only, without decoding or hashing, also in a quarantine folder, and SHALL be regrouped; an incomplete re-read SHALL leave the file for later. Other files SHALL NOT be read for it. The scan summary SHALL report the files re-read and the groups split.
 
 #### Scenario: Old catalog splits merged burst frames on rescan
 - **WHEN** a catalog written before frame identity holds a merged group of two converted burst frames and the unchanged source is rescanned with a byte-counting file layer

@@ -14,8 +14,12 @@ Two files that both record a frame identity of the same kind, with no differing 
 - **THEN** the copy joins the camera JPEG's group
 
 ### Requirement: RAW files are camera originals
-For the rule that two camera originals with the same model and pixel dimensions but different content are two shots, a RAW-format file, DNG included, SHALL count as a camera original whether or not maker notes were parsed.
+For the rule that two camera originals with the same model and pixel dimensions but different content are two shots, a RAW-format file, DNG included, SHALL count as a camera original whether or not maker notes were parsed. The rule SHALL NOT apply to two files that both record the same frame (equal file numbers, or equal OriginalRawFileName stems when neither has a file number) and the same capture time.
 
 #### Scenario: Two converted DNGs of two frames not merged
 - **WHEN** two converted DNGs of the same model and dimensions, with different content and no frame identity, are near-identical
 - **THEN** they are in different groups and recorded as a similar-shot suggestion
+
+#### Scenario: Re-saved DNG of one frame still joins
+- **WHEN** a converted DNG and the same DNG with XMP metadata written into it (same dimensions, different bytes) both record file number 101-0034 and the same capture time
+- **THEN** they are in one group
