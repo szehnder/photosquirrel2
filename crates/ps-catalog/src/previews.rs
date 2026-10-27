@@ -54,8 +54,8 @@ impl WaitingRule {
         format!(
             "(stage = 3 AND missing_since IS NULL AND ({missing}
               OR (decoder_missing IS NULL AND decode_failure IS NULL AND preview_gen IS NOT NULL
-                  AND preview_gen < {gen_case}
-                  AND NOT (preview_reason = 'no_poster_tool' AND {}))))",
+                  AND preview_reason IS NOT NULL AND preview_gen < {gen_case}
+                  AND NOT (coalesce(preview_reason, '') = 'no_poster_tool' AND {}))))",
             if self.poster_tool { "0" } else { "1" }
         )
     }
@@ -100,7 +100,45 @@ fn sources_sql(sources: &[SourceId], sql: &mut String) {
     }
 }
 
+/// Migration 25's one-time task (ADR-0111): stamp video placeholder rows of older catalogs with the reason their
+/// stored thumbnail records.
+pub const VIDEO_PLACEHOLDER_TASK: &str = "video_placeholder_reasons";
+
 impl Readers {
+    /// Whether the one-time catalog task `name` is still to do (`catalog_task`, migration 25). `false` on older
+    /// catalogs (opened read-only).
+    pub fn catalog_task_pending(&self, name: &str) -> Result<bool> {
+        if self.schema_version()? < crate::db::VIDEO_PLACEHOLDER_MIGRATION.version {
+            return Ok(false);
+        }
+        self.with(|c| {
+            Ok(
+                c.prepare_cached("SELECT EXISTS (SELECT 1 FROM catalog_task WHERE name = ?1)")?
+                    .query_row([name], |r| r.get::<_, bool>(0))?,
+            )
+        })
+    }
+
+    /// Thumbed video rows without a placeholder reason (the work list of [`VIDEO_PLACEHOLDER_TASK`]): those with a
+    /// poster frame and those catalogued with a placeholder before migration 24.
+    pub fn unmarked_video_rows(&self) -> Result<Vec<FileRecord>> {
+        if self.schema_version()? < crate::db::PREVIEW_GEN_MIGRATION.version {
+            return Ok(Vec::new());
+        }
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(&format!(
+                "SELECT {FILE_COLUMNS} FROM file
+                 WHERE stage = 3 AND media_kind = 1 AND preview_reason IS NULL AND content_id IS NOT NULL"
+            ))?;
+            let mut rows = stmt.query([])?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                out.push(file_record(r)?);
+            }
+            Ok(out)
+        })
+    }
+
     /// Placeholders of present files by format and reason, with how many can be filled in now (`previews
     /// status`, the Library notice): one aggregate over the partial index `file_preview`. `sources` empty: every
     /// source. Empty on a catalog older than migration 24 (opened read-only).

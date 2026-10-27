@@ -129,6 +129,46 @@ impl std::fmt::Debug for Scanner {
     }
 }
 
+/// Migration 25's one-time task (ADR-0111): videos catalogued with a placeholder before migration 24 (a version
+/// without a poster-frame tool) get the placeholder reason and generation their stored thumbnail records, or "no
+/// poster-frame tool" when it records none (0.2.0), so their tiles say why and the No preview filter and counts
+/// list them. Videos with a poster frame are left as they are; only the placeholders' records are read in full.
+fn mark_video_placeholders(catalog: &Catalog, thumbs: &ThumbStore) -> ps_catalog::Result<()> {
+    let task = ps_catalog::previews::VIDEO_PLACEHOLDER_TASK;
+    let r = catalog.read();
+    if !r.catalog_task_pending(task)? {
+        return Ok(());
+    }
+    let mut stamps = Vec::new();
+    for f in r.unmarked_video_rows()? {
+        let Some(id) = f.identity else { continue };
+        if thumbs.stored_kind(&id)? != Some(ps_model::ThumbKind::Placeholder) {
+            continue;
+        }
+        let info = thumbs.get(&id)?.and_then(|t| t.placeholder);
+        stamps.push((
+            f.key,
+            Some(ps_model::PreviewStamp {
+                generation: info.as_ref().map_or(0, |p| p.generation),
+                reason: info
+                    .as_ref()
+                    .and_then(|p| p.reason.as_ref())
+                    .map_or(ps_model::PreviewReason::NoPosterTool, |x| x.kind()),
+            }),
+        ));
+    }
+    let n = stamps.len();
+    if n > 0 {
+        catalog.writer().submit(Command::SetPreview(stamps))?;
+    }
+    catalog
+        .writer()
+        .submit(Command::FinishCatalogTask(task.to_owned()))?;
+    catalog.writer().flush()?;
+    log::info!("video placeholder reasons: {n} videos marked");
+    Ok(())
+}
+
 impl Scanner {
     /// Open the catalog and thumbnail store in `data_dir` and recover from a crash: runs left `running`
     /// become `interrupted` (ADR-0008).
@@ -173,6 +213,12 @@ impl Scanner {
         if !before.is_empty() {
             catalog.writer().submit(Command::InterruptRunning)?;
             catalog.writer().flush()?;
+        }
+        if !catalog.is_observer()
+            && let Err(e) = mark_video_placeholders(&catalog, &thumbs)
+        {
+            // Retried at the next open; meanwhile those videos draw as plain tiles, as before.
+            log::warn!("video placeholder reasons: {e}");
         }
         let decode_budget = crate::memory::DecodeBudget::new(opts.decode_memory_cap);
         Ok(Scanner {

@@ -122,7 +122,17 @@ fn migration_24_marks_placeholder_stills_of_older_catalogs_at_generation_0() {
     let v: u32 = c
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 24);
+    assert_eq!(v, db::CATALOG_MIGRATIONS.last().unwrap().version);
+    // The thumbed video without hashes is left to migration 25's one-time task (ADR-0111), done at open by the
+    // engine, which can read thumbs.db.
+    let tasks: Vec<String> = c
+        .prepare("SELECT name FROM catalog_task")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(tasks, ["video_placeholder_reasons"]);
     let kinds: Vec<String> = c
         .prepare("SELECT kind FROM scan_run")
         .unwrap()
@@ -166,7 +176,7 @@ fn the_waiting_rule_row_by_row() {
         Option<&str>,
         bool,
         bool,
-    ); 10] = [
+    ); 11] = [
         // An old TIFF placeholder: generation 0 below TIFF 1.
         (
             "old.tif",
@@ -275,6 +285,19 @@ fn the_waiting_rule_row_by_row() {
         ),
         // A real thumbnail.
         ("ok.tif", "tiff", 0, None, None, None, None, false, false),
+        // A generation without a reason (never written; the row reads as having a preview): not fillable, and
+        // the SQL rule is never NULL for it.
+        (
+            "odd.tif",
+            "tiff",
+            0,
+            Some(0),
+            None,
+            None,
+            None,
+            false,
+            false,
+        ),
     ];
     for (i, (name, format, kind, g, r, dm, df, missing, _)) in rows.iter().enumerate() {
         c.execute(
@@ -389,4 +412,18 @@ fn the_waiting_rule_row_by_row() {
             .len(),
         0
     );
+}
+
+/// Migration 25 records its task only when the catalog has a thumbed video without a placeholder reason.
+#[test]
+fn migration_25_records_the_video_task_only_when_needed() {
+    let rows: [Row; 1] = [("IMG_1.JPG", Some("jpeg"), 0, 3, Some(7), 0, None, None)];
+    let (_dir, path) = catalog_at_23(&rows);
+    let cat = Catalog::open_file(&path, Default::default()).unwrap();
+    assert!(
+        !cat.read()
+            .catalog_task_pending(ps_catalog::previews::VIDEO_PLACEHOLDER_TASK)
+            .unwrap()
+    );
+    assert!(cat.read().unmarked_video_rows().unwrap().is_empty());
 }

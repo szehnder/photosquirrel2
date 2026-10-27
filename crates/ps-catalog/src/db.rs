@@ -53,6 +53,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     EXCLUSION_CATEGORY_FIX_MIGRATION,
     FRAME_IDENTITY_MIGRATION,
     PREVIEW_GEN_MIGRATION,
+    VIDEO_PLACEHOLDER_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -204,6 +205,13 @@ pub const PREVIEW_GEN_MIGRATION: Migration = Migration {
     version: 24,
     name: "preview_gen",
     sql: include_str!("../migrations/0024_preview_gen.sql"),
+};
+/// Migration 25 (ADR-0111: `catalog_task`, and the one-time task that stamps video placeholder rows of older
+/// catalogs with the reason their stored thumbnail records, done by the engine at open).
+pub const VIDEO_PLACEHOLDER_MIGRATION: Migration = Migration {
+    version: 25,
+    name: "video_placeholders",
+    sql: include_str!("../migrations/0025_video_placeholders.sql"),
 };
 /// SQL that puts a catalog back where migration 23 leaves one written before frame identity (ADR-0105): no frame
 /// ids, every row current except those the migration keeps for the re-read. It reuses the migration's own

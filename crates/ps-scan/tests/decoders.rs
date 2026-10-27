@@ -356,6 +356,7 @@ fn scenario_incremental_rescan_old_catalog_marks_undecoded_heic_and_avif() {
              ALTER TABLE file DROP COLUMN preview_reason;
              ALTER TABLE scan_run DROP COLUMN kind;
              ALTER TABLE scan_run DROP COLUMN fill_scope;
+             DROP TABLE catalog_task;
              PRAGMA user_version = 18;",
         )
         .unwrap();

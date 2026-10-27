@@ -2026,11 +2026,18 @@ fn persist_redecode(
         Redecode::Undecodable(why, failure, placeholder) => {
             ctx.fill_failed.fetch_add(1, Ordering::Relaxed);
             // The placeholder now says why, at this run's generation: not read again until the file or the
-            // generation changes (ADR-0109).
-            if let Some((t, p)) = placeholder
-                && ctx.thumbs.put_many([(&identity, &t)]).is_ok()
-            {
-                ctx.submit(Command::SetPreview(vec![(key.clone(), Some(p))]));
+            // generation changes (ADR-0109). Stored pixels (another copy of the same content decoded) are never
+            // replaced by a placeholder, as in `persist_batch`: the row then shows them.
+            if let Some((t, p)) = placeholder {
+                match ctx.thumbs.stored_kind(&identity) {
+                    Ok(None | Some(ps_model::ThumbKind::Placeholder)) => {
+                        if ctx.thumbs.put_many([(&identity, &t)]).is_ok() {
+                            ctx.submit(Command::SetPreview(vec![(key.clone(), Some(p))]));
+                        }
+                    }
+                    Ok(Some(_)) => ctx.submit(Command::SetPreview(vec![(key.clone(), None)])),
+                    Err(_) => {}
+                }
             }
             ctx.submit(match failure {
                 Some(f) => Command::DecodeFailed(vec![(key, f)]),

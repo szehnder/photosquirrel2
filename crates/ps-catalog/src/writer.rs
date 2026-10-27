@@ -129,6 +129,8 @@ pub enum Command {
     /// is not filled in again until the file or the generation changes), `None` clears them (a preview now). Only
     /// thumbed rows are written.
     SetPreview(Vec<(FileKey, Option<ps_model::PreviewStamp>)>),
+    /// A one-time catalog task is done (`catalog_task`, migration 25, ADR-0111): its row is removed.
+    FinishCatalogTask(String),
     /// The user's include/exclude decision about a file (`None` clears it). Needs catalog migration 7
     /// (`user_inclusion`, [`crate::db::GALLERY_MIGRATION`]); without it the command reports an error.
     ///
@@ -165,6 +167,7 @@ impl Command {
             Command::Redecoded(_) => "redecoded",
             Command::ClearDecoderMissing(_) => "clear_decoder_missing",
             Command::SetPreview(_) => "set_preview",
+            Command::FinishCatalogTask(_) => "finish_catalog_task",
             Command::DecodeFailed(_) => "decode_failed",
             Command::SetUserDecision { .. } => "set_user_decision",
         }
@@ -921,6 +924,11 @@ impl WriterThread {
                     });
                 }
             }
+            Command::FinishCatalogTask(task) => self.row(name, None, |c| {
+                c.prepare_cached("DELETE FROM catalog_task WHERE name = ?1")?
+                    .execute([task.as_str()])?;
+                Ok(())
+            }),
             Command::SetHashes(rows) => {
                 for (id, h) in &rows {
                     self.row(name, None, |c| {

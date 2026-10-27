@@ -114,3 +114,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0108](0108-cleanup-and-the-report-wait-for-the-frame-identity-re-read.md) | Cleanup and the report wait for the frame-identity re-read; the re-read is complete or not stamped (amends 0105, 0106, 0024) |
 | [0109](0109-placeholders-carry-a-reason-and-a-decoder-generation.md) | Placeholders carry a reason and a decoder generation; damaged stills are catalogued; Fill in previews (migration 24; amends 0055, 0091, 0007, 0016) |
 | [0110](0110-gallery-scroll-budget-includes-placeholder-tiles.md) | The gallery scroll budget is measured with 30% placeholder tiles (amends 0026) |
+| [0111](0111-video-placeholder-rows-are-marked-from-the-thumbnail-store.md) | Video placeholder rows of older catalogs are marked from the thumbnail store at open (migration 25, `catalog_task`; amends 0109) |

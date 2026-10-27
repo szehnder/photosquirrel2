@@ -396,3 +396,46 @@ fn scenario_incremental_rescan_current_generation_failures_are_not_retried() {
     completed(&env.scan(&[id]));
     assert_eq!(env.instr.total_bytes(), 0, "not read again");
 }
+
+/// A re-decode that still cannot decode a file never replaces stored pixels with its placeholder (the same guard
+/// as a full analysis): when another copy of the content already has a preview, the row shows it.
+#[test]
+fn redecode_failure_keeps_stored_pixels() {
+    let _g = shared();
+    let src = source(
+        "scans",
+        &[
+            (
+                "big/scan.tif".into(),
+                ps_fixtures::tiff_image::bigtiff_rgb(640, 480, 5),
+            ),
+            ("ok/scan.tif".into(), tiff(6)),
+        ],
+    );
+    let mut env = env_with(ScanOptions::default());
+    let id = env.add(&src.root);
+    completed(&env.scan(&[id]));
+    let files = env.files(id);
+    let big = files["big/scan.tif"].identity.unwrap();
+    let ok = files["ok/scan.tif"].identity.unwrap();
+    // Pixels stored for the BigTIFF's content (as if another copy had been decoded).
+    let pixels = env.s().thumbs().get(&ok).unwrap().unwrap();
+    assert_eq!(pixels.kind, ThumbKind::Image);
+    env.s().thumbs().put(&big, &pixels).unwrap();
+    // A newer TIFF generation re-decodes the BigTIFF; it is still not supported.
+    let newer = ps_media::decoders::GENERATIONS.with(DecodeFamily::Tiff, 2);
+    env.reopen(ScanOptions {
+        generations: newer,
+        ..ScanOptions::default()
+    });
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!(s.diff.outdated_previews, 1);
+    let t = env.s().thumbs().get(&big).unwrap().unwrap();
+    assert_eq!(t.kind, ThumbKind::Image, "the stored pixels are kept");
+    assert_eq!(
+        env.files(id)["big/scan.tif"].preview,
+        None,
+        "the row shows the stored preview"
+    );
+}
