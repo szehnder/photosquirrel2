@@ -211,9 +211,8 @@ ADR-0109 records the decisions of architectural weight; these are the difference
   format; the notice keeps its install steps, and the Library notice offers Fill in previews.
 - **The render bench** gets `--bench-placeholders`, and `gallery-scroll-p95` is measured with 30% placeholder tiles
   (ADR-0110, a budget definition change); the headless proxy has the same case.
-- **ADR-0110's "the baseline is re-recorded with placeholders" is still to do.** ADR-0110 is accepted and is not
-  edited: the windowed `gallery-scroll-p95` measurement with `--bench-placeholders 30` (task 7.1) needs an unlocked
-  desktop session and is pending the owner; until then only the headless proxy (`render_cost`) has the 30% case.
+- **ADR-0110's re-recorded baseline:** the windowed `gallery-scroll-p95` with `--bench-placeholders 30` was measured
+  from an unlocked desktop session on 2026-10-27: 7.77 ms against 8.3 ms, written to `perf-baseline.json`.
 
 ### Gate-review fixes
 

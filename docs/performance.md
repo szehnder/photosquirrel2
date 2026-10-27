@@ -116,7 +116,7 @@ the test now asserts 800 ms, and an xtask unit test keeps every `budget(...)` bo
 | `rescan-nochange-100k` | median <= 4 s | yes | scanning | 0.408 s |
 | `control-latency-p95` | p95 <= 250 ms | yes | scanning | 106.92 ms |
 | `dedup-regroup-1k-of-1m` | max <= 250 ms | component | duplicate-groups | 27.884 ms |
-| `gallery-scroll-p95` | p95 <= 8.3 ms | yes | gallery | 7.85 ms |
+| `gallery-scroll-p95` | p95 <= 8.3 ms | yes | gallery | 7.77 ms |
 | `first-gallery-frame` | median <= 600 ms | yes | gallery | 568 ms |
 | `export-replan-50k` | median <= 800 ms | component | export | 547.045 ms |
 | `tiff-analysis-decode` | median <= 1000 ms | component | tiff-support | 319.56 ms |
@@ -167,5 +167,5 @@ migration 13 reads up to 256 KB per row: minutes on an SSD, hours for 1M rows on
 
 `gallery-scroll-p95` needs a visible window: Wayland sends no frames to the render bench while the desktop
 session is locked (it reports "frames stalled" and prints no measurement, which fails the check). It was
-recorded separately from an unlocked session on 2026-10-21 with
-`cargo xtask bench --check --update-baseline --only gallery-scroll-p95` (7.85 ms against 8.3 ms).
+recorded separately from an unlocked session on 2026-10-27, with 30% placeholder tiles (ADR-0110), with
+`cargo xtask bench --check --update-baseline --only gallery-scroll-p95` (7.77 ms against 8.3 ms).
