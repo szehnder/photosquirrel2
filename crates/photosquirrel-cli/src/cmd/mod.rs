@@ -8,6 +8,7 @@ pub mod doctor;
 pub mod export;
 pub mod fixtures;
 pub mod groups;
+pub mod previews;
 pub mod scan;
 pub mod sources;
 

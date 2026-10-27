@@ -23,7 +23,7 @@ Starts after `heic-system-decoders`, `excluded-view-filters` and `burst-frame-id
 
 ## 5. CLI
 
-- [ ] 5.1 `previews status` and `previews fill`, with `--json` and Ctrl-C exit 130. Verify: `scenario_cli_status_counts_by_reason` and `scenario_cli_fill_one_format`.
+- [x] 5.1 `previews status` and `previews fill`, with `--json` and Ctrl-C exit 130. Verify: `scenario_cli_status_counts_by_reason` and `scenario_cli_fill_one_format`. Done: `cmd/previews.rs` (`--format`, `--reason`, `--source`), the job runs in the scan's foreground loop (same Ctrl-C, control requests and pause on battery; NDJSON `previews fill` snapshot and summary lines); tests in `photosquirrel-cli/tests/previews.rs`.
 
 ## 6. UI
 

@@ -65,6 +65,12 @@ enum Command {
         #[command(subcommand)]
         command: CleanupCommand,
     },
+    /// Photos without a preview (placeholders) by format and reason, and Fill in previews: re-decode the ones that
+    /// can get a preview now, after installing a decoder or updating PhotoSquirrel. Reads only those files.
+    Previews {
+        #[command(subcommand)]
+        command: PreviewsCommand,
+    },
     /// Optional AI insights (advisory only; nothing is sent before `ai start`).
     Ai {
         #[command(subcommand)]
@@ -364,6 +370,29 @@ enum CleanupCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum PreviewsCommand {
+    /// Placeholders by format and reason, with how many can be filled in now.
+    Status,
+    /// Fill in previews in the foreground: re-decode the placeholders that can become previews now, reading each
+    /// such file once and walking no folder. Files on offline sources are skipped and counted. Ctrl-C cancels
+    /// (exit 130); the rest stays waiting for the next run.
+    Fill {
+        /// Only this format (heic, tiff, jpeg, avif, raw:cr2, ...).
+        #[arg(long)]
+        format: Option<String>,
+        /// Only this reason (decoder_missing, unsupported_variant, unreadable, no_poster_tool, sequence).
+        #[arg(long)]
+        reason: Option<String>,
+        /// Only these sources (repeatable; default all).
+        #[arg(long = "source")]
+        sources: Vec<i64>,
+        /// Do not pause on battery power, although `general.pause_on_battery` is on.
+        #[arg(long)]
+        ignore_battery: bool,
+    },
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ProfileArg {
     Apple,
@@ -570,6 +599,21 @@ fn run(cli: Cli) -> Result<()> {
                     except_files: &except_files,
                 },
                 yes,
+            ),
+        },
+        Command::Previews { command } => match command {
+            PreviewsCommand::Status => cmd::previews::status(&ctx),
+            PreviewsCommand::Fill {
+                format,
+                reason,
+                sources,
+                ignore_battery,
+            } => cmd::previews::fill(
+                &ctx,
+                format.as_deref(),
+                reason.as_deref(),
+                &sources,
+                ignore_battery,
             ),
         },
         Command::Ai { command } => match command {

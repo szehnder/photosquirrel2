@@ -164,7 +164,12 @@ pub fn progress_line(s: &ProgressSnapshot, on_battery: bool) -> String {
         .eta_ms
         .map_or_else(String::new, |e| format!("  ETA {}", duration_ms(e)));
     format!(
-        "run {} [{}{}] {}/{} files  {}/s  {:.0} files/s  {} read{}  errors {}",
+        "{} {} [{}{}] {}/{} files  {}/s  {:.0} files/s  {} read{}  errors {}",
+        if s.fill {
+            "filling in previews, run"
+        } else {
+            "run"
+        },
         s.run,
         phase(s.phase),
         match (s.status, on_battery) {
@@ -253,7 +258,29 @@ fn foreground(
     ctx: &Ctx,
     svc: &ScanService,
     run: ScanRunId,
+    power: Option<PowerGuard>,
+) -> Result<()> {
+    foreground_as(ctx, svc, run, power, "scan")
+}
+
+/// A Fill in previews job in the foreground (`previews fill`, ADR-0109): the scan's progress lines, control
+/// requests, pause on battery and Ctrl-C handling, then the job's summary.
+pub fn foreground_fill(
+    ctx: &Ctx,
+    svc: &ScanService,
+    run: ScanRunId,
+    ignore_battery: bool,
+) -> Result<()> {
+    let power = PowerGuard::new(ctx.settings()?.general.pause_on_battery, ignore_battery);
+    foreground_as(ctx, svc, run, power, "previews fill")
+}
+
+fn foreground_as(
+    ctx: &Ctx,
+    svc: &ScanService,
+    run: ScanRunId,
     mut power: Option<PowerGuard>,
+    command: &str,
 ) -> Result<()> {
     let data = ctx.data_dir()?;
     let tty = std::io::stderr().is_terminal();
@@ -323,7 +350,7 @@ fn foreground(
                 let paused = snap.status == RunStatus::Paused;
                 if ctx.json {
                     if due(last_out, if paused { PAUSED_EVERY } else { JSON_EVERY }) {
-                        line("scan", "snapshot", &snap)?;
+                        line(command, "snapshot", &snap)?;
                         last_out = Some(Instant::now());
                     }
                 } else if tty {
@@ -335,7 +362,7 @@ fn foreground(
                 }
             } else if ctx.json {
                 // The run's last snapshot, so its `recent_errors` are never missed between samples.
-                line("scan", "snapshot", &snap)?;
+                line(command, "snapshot", &snap)?;
             }
         }
         if finished {
@@ -349,8 +376,14 @@ fn foreground(
         eprintln!();
     }
     let summary = summary.context("the scan ended without a summary")?;
-    if ctx.json {
-        line("scan", "summary", &summary)?;
+    if let Some(fill) = &summary.fill {
+        if ctx.json {
+            line(command, "summary", fill)?;
+        } else {
+            super::previews::print_fill_summary(run, &summary, fill);
+        }
+    } else if ctx.json {
+        line(command, "summary", &summary)?;
     } else {
         // A refresh run: this process asked for one, or the resumed run recorded it (ADR-0082).
         let refresh = svc.engine().options().refresh_analysis
