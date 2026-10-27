@@ -36,6 +36,7 @@ A milestone gate must pass before the next milestone starts. Gates are checked b
 | 28 | M9 | `preview-placeholders` | thumbnails, gallery, photo-inspector, incremental-rescan, cli | **corpus gate unchanged**; no blank tiles: every placeholder drawn with format, reason mark and info button at every tile size, gallery-scroll p95 unchanged; the "Why no preview?" dialog right for each reason; Fill in previews reads only waiting files once (no walk), groups filled-in HEIC with JPEG copies, skips offline sources; a 0.2.0 catalog of TIFF variants offers and completes Fill in previews; screenshot review |
 | 29 | 0.3.x | `quiet-decoder-logs` | cli, scan-progress | a scan of a Canon card prints no rawler lens-database warnings by default (`RUST_LOG` still shows them); errors still reach the summary |
 | 30 | 0.3.x | `adobe-rgb-color` | thumbnails, photo-inspector | Adobe RGB JPEGs and RAW previews (Canon `_MG_` files, EXIF InteropIndex R03 or an embedded profile) are converted to sRGB for thumbnails and the loupe; sRGB files unchanged; gallery-scroll p95 and thumbnail budgets unchanged |
+| 31 | 0.3.x | `stable-ids-on-fat` | incremental-rescan, sources | after unmounting and remounting an exFAT/FAT card or drive, a rescan of unchanged files re-reads none of them (inode numbers are not stable there, ADR-0007); a renamed or replaced file is still detected |
 
 ## Later (not v1; propose when needed)
 `similar-shots` (burst suggestions UI), `justified-layout`, `video-perceptual-dedup`, `face-clusters`,

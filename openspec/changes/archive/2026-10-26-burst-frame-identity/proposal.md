@@ -56,7 +56,7 @@ This ships in 0.3.0, before `preview-placeholders`, because it can keep a photo 
   `file.frame_id` and a metadata version for the re-read), `ps-scan` (the re-read on rescan), `ps-fixtures` (the
   converted-burst sets), `ps-service`/CLI (the restore hint in the report).
 - ADRs relied on: 0013, 0035, 0039, 0007, 0024, 0025, 0096, 0099. New ADR (next free number): "Recorded frame
-  identities keep frames apart" (amends 0035).
+  identities keep frames apart" (amends 0035). Built as ADR-0105, amended by ADR-0106 (wider re-read), ADR-0107 (files recording the same frame are one shot) and ADR-0108 (cleanup waits for the re-read).
 - Migration 23. `preview-placeholders` moves to migration 24.
 
 ## Out of scope

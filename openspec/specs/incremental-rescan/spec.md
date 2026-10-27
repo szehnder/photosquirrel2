@@ -133,3 +133,14 @@ A HEIC or AVIF whose decode failed with its decoder present SHALL record the fai
 #### Scenario: Corrupt HEIC is not re-read on an unchanged rescan
 - **WHEN** a HEIC the decoder rejects is scanned and the folder is rescanned unchanged twice, then once with a newer decoder backend
 - **THEN** the unchanged rescans read none of its bytes, and the rescan with the newer backend reads it once and records the new backend
+
+### Requirement: Metadata re-read for frame identity
+On the first rescan after frame identity was added, unchanged analysed RAW-format files and same-second Canon camera files whose metadata predates it SHALL have it re-read from the header and bounded reads of frame values past it, read-only, without decoding or hashing, also in a quarantine folder, and SHALL be regrouped; an incomplete re-read SHALL leave the file for later. Other files SHALL NOT be read for it. The scan summary SHALL report the files re-read and the groups split.
+
+#### Scenario: Old catalog splits merged burst frames on rescan
+- **WHEN** a catalog written before frame identity holds a merged group of two converted burst frames and the unchanged source is rescanned with a byte-counting file layer
+- **THEN** only the RAW, DNG and same-second Canon JPEG files are read, each at most its header bytes, the two frames are in separate groups, and the summary reports 1 group split
+
+#### Scenario: The re-read happens once
+- **WHEN** the same source is rescanned a second time
+- **THEN** no file is read for frame identity
