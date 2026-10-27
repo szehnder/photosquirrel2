@@ -422,7 +422,11 @@ fn render_converted(
         .next()
         .unwrap_or(&c.raw_path)
         .to_string();
-    let note = crate::camera::spec_maker_note(spec).unwrap_or_default();
+    let note = crate::camera::spec_maker_note(&ExifSpec {
+        note_base: crate::dng::PRIVATE_NOTE_ORIGINAL_OFFSET,
+        ..spec.clone()
+    })
+    .unwrap_or_default();
     // Adobe drops a sub-second of `00` (two digits); other sub-seconds stay.
     let dng_spec = ExifSpec {
         maker_note: None,
@@ -481,6 +485,8 @@ fn render_shot(s: &Shot, body: &Body, out: &mut Out<'_>) -> Result<(), GenerateE
         thumbnail: Some(thumb),
         subsec: true,
         file_number: s.converted.as_ref().map(|c| c.file_number),
+        camera_info: s.converted.as_ref().is_some_and(|c| c.camera_info),
+        note_base: 0,
     };
     let encoded = encode_jpeg(&stored, s.quality);
     let original = camera_jpeg(&encoded, &app1_exif(&exif_tiff(&spec)));

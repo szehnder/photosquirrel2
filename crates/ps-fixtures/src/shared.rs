@@ -17,13 +17,14 @@ use crate::{DirWriter, Preset};
 const MARKER: &[u8] = concat!(
     "ps-fixtures ",
     env!("CARGO_PKG_VERSION"),
-    " corpus revision 2"
+    " corpus revision 3"
 )
 .as_bytes();
 
-/// Bumped whenever the generator's output changes within a crate version (2: converted RAW bursts, ADR-0105).
+/// Bumped whenever the generator's output changes within a crate version (2: converted RAW bursts, ADR-0105; 3:
+/// one converted-burst set records its file number in `CameraInfo`).
 /// Keep it equal to the number in [`MARKER`].
-pub const CORPUS_REVISION: u32 = 2;
+pub const CORPUS_REVISION: u32 = 3;
 
 fn thread_lock(root: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();

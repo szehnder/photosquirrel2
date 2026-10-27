@@ -55,6 +55,10 @@ pub fn dng_private_maker_note(note: &[u8], little_endian: bool, original_offset:
     v
 }
 
+/// The original offset a converted DNG's `DNGPrivateData` records for the camera's maker note: a note whose offsets
+/// point into itself (`CameraInfo`) is built for this base (`ExifSpec::note_base`).
+pub const PRIVATE_NOTE_ORIGINAL_OFFSET: u32 = 0x0360;
+
 enum Flavour<'a> {
     Dng,
     Cr2Like,
@@ -66,6 +70,18 @@ enum Flavour<'a> {
 }
 
 fn raw_tiff(
+    spec: &ExifSpec<'_>,
+    preview_jpeg: &[u8],
+    width: u32,
+    height: u32,
+    flavour: &Flavour<'_>,
+) -> Vec<u8> {
+    crate::camera::place_maker_note(spec, |s| {
+        raw_tiff_at(s, preview_jpeg, width, height, flavour)
+    })
+}
+
+fn raw_tiff_at(
     spec: &ExifSpec<'_>,
     preview_jpeg: &[u8],
     width: u32,
@@ -147,7 +163,7 @@ fn raw_tiff(
             Value::Byte(dng_private_maker_note(
                 maker_note,
                 m.endian == Endian::Little,
-                0x0360,
+                PRIVATE_NOTE_ORIGINAL_OFFSET,
             )),
         )
         .ascii(0xC68B, *original_name);
@@ -196,6 +212,28 @@ pub fn converted_burst_frame_with(
     long: u32,
     rendered_as: u32,
 ) -> BurstFrameFiles {
+    burst_frame(seed, frame, millis, long, rendered_as, false)
+}
+
+/// [`converted_burst_frame`] whose three files record the file number in `CameraInfo` instead of tag 0x0008, as
+/// current Canon DSLRs (the owner's EOS 70D) write it.
+pub fn converted_burst_frame_camera_info(
+    seed: u64,
+    frame: u32,
+    millis: u16,
+    long: u32,
+) -> BurstFrameFiles {
+    burst_frame(seed, frame, millis, long, frame, true)
+}
+
+fn burst_frame(
+    seed: u64,
+    frame: u32,
+    millis: u16,
+    long: u32,
+    rendered_as: u32,
+    camera_info: bool,
+) -> BurstFrameFiles {
     use crate::camera::{Body, Capture, Exposure, MODELS, spec_maker_note};
     use crate::jpeg::{app1_exif, camera_jpeg, encode_jpeg, strip_segments};
     use crate::synth::{Perturb, Scene, render};
@@ -226,6 +264,8 @@ pub fn converted_burst_frame_with(
         thumbnail: None,
         subsec: true,
         file_number: Some(file_number),
+        camera_info,
+        note_base: 0,
     };
     let img = render(&scene, &perturb, w, h);
     let encoded = encode_jpeg(&img, 92);
@@ -243,7 +283,11 @@ pub fn converted_burst_frame_with(
     render_p.light *= 1.02;
     render_p.grain_seed ^= 0x5eed;
     let dng_preview = strip_segments(&encode_jpeg(&render(&scene, &render_p, w, h), 90), &[0xE0]);
-    let note = spec_maker_note(&spec).unwrap_or_default();
+    let note = spec_maker_note(&ExifSpec {
+        note_base: PRIVATE_NOTE_ORIGINAL_OFFSET,
+        ..spec.clone()
+    })
+    .unwrap_or_default();
     let dng_spec = ExifSpec {
         maker_note: None,
         subsec: millis / 10 != 0,

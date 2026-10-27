@@ -379,6 +379,12 @@ pub struct ExifSpec<'a> {
     /// Canon file number (`directory * 10000 + index`, tag 0x0008): the maker note is then a well-formed
     /// Canon IFD recording it (converted RAW bursts, ADR-0105) instead of the opaque blob.
     pub file_number: Option<u32>,
+    /// Record `file_number` in `CameraInfo` (0x000D) at the body's offsets, as current Canon DSLRs such as the
+    /// EOS 70D do, instead of tag 0x0008 (ADR-0105). Bodies without known offsets keep tag 0x0008.
+    pub camera_info: bool,
+    /// Offset of the maker note in the file its offsets refer to (a `CameraInfo` note points into itself). Set by
+    /// [`place_maker_note`]; 0 otherwise.
+    pub note_base: u32,
 }
 
 /// The opaque MakerNote blob: vendor header, body-constant block, per-shot block.
@@ -440,13 +446,108 @@ pub fn canon_maker_note(body: &Body, shot_seed: u64, file_number: u32) -> Vec<u8
     out
 }
 
+/// `CameraInfo` byte offsets of `FileIndex` and `DirectoryIndex` (stored as index - 1 and directory + 1) for the
+/// Canon models the corpus or tests use (ExifTool's Canon tables).
+pub fn camera_info_offsets(model: &str) -> Option<(usize, usize)> {
+    match model {
+        "Canon EOS 5D Mark III" => Some((0x28c, 0x298)),
+        "Canon EOS 70D" => Some((0x2b3, 0x2bf)),
+        _ => None,
+    }
+}
+
+/// A Canon maker note whose file number is in `CameraInfo` (0x000D, an out-of-line value right after the IFD)
+/// rather than in tag 0x0008, placed at `base` in its file (`CameraInfo`'s offset points there).
+pub fn canon_camera_info_maker_note(
+    body: &Body,
+    shot_seed: u64,
+    file_number: u32,
+    (file_index, directory_index): (usize, usize),
+    base: u32,
+) -> Vec<u8> {
+    let e = body.model.endian;
+    let u16b = |v: u16| match e {
+        Endian::Little => v.to_le_bytes(),
+        Endian::Big => v.to_be_bytes(),
+    };
+    let u32b = |v: u32| match e {
+        Endian::Little => v.to_le_bytes(),
+        Endian::Big => v.to_be_bytes(),
+    };
+    let serial = body.serial.parse::<u64>().unwrap_or(0) as u32;
+    let info_len = (directory_index.max(file_index) + 4 + 0x20) as u32;
+    let ifd_len = 2 + 3 * 12 + 4;
+    let entries: [(u16, u16, u32, u32); 3] = [
+        (0x000C, 4, 1, serial),
+        (0x000D, 7, info_len, base + ifd_len),
+        (0x0013, 4, 1, (mix64(shot_seed) & 0xFFFF_FFFF) as u32),
+    ];
+    let mut out = Vec::new();
+    out.extend_from_slice(&u16b(entries.len() as u16));
+    for (tag, typ, count, value) in entries {
+        out.extend_from_slice(&u16b(tag));
+        out.extend_from_slice(&u16b(typ));
+        out.extend_from_slice(&u32b(count));
+        out.extend_from_slice(&u32b(value));
+    }
+    out.extend_from_slice(&u32b(0));
+    let mut info = vec![0u8; info_len as usize];
+    let mut s = shot_seed ^ body.maker_seed;
+    for b in info.iter_mut() {
+        s = mix64(s);
+        *b = s as u8;
+    }
+    let (dir, index) = (file_number / 10_000, file_number % 10_000);
+    info[file_index..file_index + 4].copy_from_slice(&u32b(index - 1));
+    info[directory_index..directory_index + 4].copy_from_slice(&u32b(dir + 1));
+    out.extend_from_slice(&info);
+    out
+}
+
 /// The maker note `spec` asks for, if any.
 pub fn spec_maker_note(spec: &ExifSpec<'_>) -> Option<Vec<u8>> {
     let seed = spec.maker_note?;
     Some(match spec.file_number {
-        Some(n) => canon_maker_note(spec.body, seed, n),
+        Some(n) => match camera_info_offsets(spec.body.model.model).filter(|_| spec.camera_info) {
+            Some(offsets) => {
+                canon_camera_info_maker_note(spec.body, seed, n, offsets, spec.note_base)
+            }
+            None => canon_maker_note(spec.body, seed, n),
+        },
         None => maker_note(spec.body, seed),
     })
+}
+
+/// Whether the maker note of `spec` points into itself (a `CameraInfo` note) and so depends on where it lands.
+fn note_is_placed(spec: &ExifSpec<'_>) -> bool {
+    spec.camera_info
+        && spec.maker_note.is_some()
+        && spec.file_number.is_some()
+        && camera_info_offsets(spec.body.model.model).is_some()
+}
+
+/// Write a file with `write`, its maker note at the offset where it lands: written once to find the note, then
+/// again with the note built for that offset (same length, so the layout is the same).
+pub fn place_maker_note(spec: &ExifSpec<'_>, write: impl Fn(&ExifSpec<'_>) -> Vec<u8>) -> Vec<u8> {
+    let first = write(spec);
+    if !note_is_placed(spec) {
+        return first;
+    }
+    let note = spec_maker_note(spec).unwrap_or_default();
+    let Some(at) = first.windows(note.len()).position(|w| w == note.as_slice()) else {
+        return first;
+    };
+    let placed = ExifSpec {
+        note_base: at as u32,
+        ..spec.clone()
+    };
+    let out = write(&placed);
+    debug_assert_eq!(
+        out.len(),
+        first.len(),
+        "the note's length does not depend on its place"
+    );
+    out
 }
 
 fn dms(e6: i64) -> Value {
@@ -524,6 +625,10 @@ pub fn exif_ifds(spec: &ExifSpec<'_>) -> (Ifd, Option<Ifd>) {
 
 /// The EXIF TIFF stream (to wrap with [`crate::jpeg::app1_exif`]).
 pub fn exif_tiff(spec: &ExifSpec<'_>) -> Vec<u8> {
+    place_maker_note(spec, exif_tiff_at)
+}
+
+fn exif_tiff_at(spec: &ExifSpec<'_>) -> Vec<u8> {
     let m = spec.body.model;
     let c = spec.capture;
     let mut ifd0 = Ifd::new();

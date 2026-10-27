@@ -114,6 +114,9 @@ pub struct ConvertedFrame {
     pub dng_mtime: i64,
     /// Canon file number (`directory * 10000 + index`) in the maker notes of all three.
     pub file_number: u32,
+    /// The file number is in `CameraInfo` (current Canon DSLRs, the owner's EOS 70D) instead of tag 0x0008: the
+    /// second set of each preset (ADR-0105).
+    pub camera_info: bool,
     /// The converter's rendering of the RAW (the DNG preview): the frame seen through another pipeline.
     pub render: Perturb,
 }
@@ -1334,6 +1337,7 @@ impl Planner {
                 jpeg_copy_path,
                 dng_mtime: shot.mtime + self.rng.random_range(86_400..86_400 * 300),
                 file_number: directory * 10_000 + index,
+                camera_info: set == 1,
                 render,
             });
             groups.push(shot.group.clone());
