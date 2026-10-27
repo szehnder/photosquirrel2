@@ -249,7 +249,7 @@ impl Colors {
 
     /// The faint diagonal hatch over [`Colors::placeholder_surface`].
     pub fn placeholder_stroke(&self) -> Hsla {
-        Self::tint(self.text, if self.dark { 0.07 } else { 0.08 })
+        Self::tint(self.text, if self.dark { 0.07 } else { 0.05 })
     }
 
     /// Alpha of the soft background of a status chip ([`Colors::chip_bg`]).

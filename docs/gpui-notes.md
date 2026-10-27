@@ -488,3 +488,14 @@ activated the window. Whatever a capture must show has to be ready inside the st
 delivered after the update (the Excluded view sets its inspected file when it installs its list, so the inspector
 loads the details within the grace). Headless tests call `window.render_frame` themselves and do not show this.
 
+
+## Placeholder tiles and their dialog (preview-placeholders)
+- The grid draws placeholder tiles in five extra layers per frame (surfaces, hatch and glyph sprites, chips, text,
+  mark icons), batched over every visible cell (`ui_gallery::placeholder::Layers`), never per cell. The hatch is an
+  inline SVG (`paint_svg(.., Some(bytes), ..)`) stretched over the surface with `preserveAspectRatio="none"`; one
+  atlas tile per cell size.
+- I already toggles the inspector in `Shell && !Input`; a deeper context (`GalleryGrid`) binding the same key would
+  win while the grid is focused and break the inspector toggle, so the placeholder shortcut is Shift+I everywhere.
+- Scripted screenshots: `--gallery-select N --command shell::ShowPreviewHelp` opens "Why no preview?" for item N in
+  frame one (its content is read inside the start-up grace); `PHOTOSQUIRREL_GRID_CELL=96` (dev only) starts the
+  Library grid at another tile size; `--gallery-filter no-preview[=<reason>[:<format>]]` starts it filtered.

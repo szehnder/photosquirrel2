@@ -56,7 +56,9 @@ fn sentence(reason: &PreviewReason, detail: Option<&PlaceholderReason>, label: &
             PreviewReason::UnsupportedVariant,
             Some(PlaceholderReason::UnsupportedVariant { detail }),
         ) => {
-            format!("This version of PhotoSquirrel can't read {detail} files.")
+            format!(
+                "This {label} file is a variant this version of PhotoSquirrel does not decode: {detail}."
+            )
         }
         (PreviewReason::UnsupportedVariant, _) => {
             format!("This version of PhotoSquirrel can't read this kind of {label} file.")

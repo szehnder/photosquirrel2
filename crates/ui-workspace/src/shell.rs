@@ -725,6 +725,20 @@ impl Shell {
             "shell::ToggleNavigator" => self.toggle_panel(Side::Navigator, window, cx),
             "shell::ShowLoupe" => self.show_library(LibraryMode::Loupe, window, cx),
             "shell::ShowLibrary" => self.show_library(LibraryMode::Grid, window, cx),
+            "shell::ShowPreviewHelp" => {
+                // Scripted screenshots: "Why no preview?" for the `--gallery-select` item (ADR-0109).
+                self.show_library(LibraryMode::Grid, window, cx);
+                let model = crate::views::library::LibraryHub::model(cx);
+                let id = {
+                    let m = model.read(cx);
+                    crate::startup::StartupGrace::select(cx)
+                        .or(m.selection.focus)
+                        .and_then(|i| m.index.id(i))
+                };
+                if let Some(id) = id {
+                    self.open_preview_help(id, window, cx);
+                }
+            }
             other => match ViewId::ALL.into_iter().find(|v| v.action().name() == other) {
                 Some(view) => self.show_view(view, window, cx),
                 None => return false,

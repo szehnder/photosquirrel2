@@ -741,28 +741,33 @@ impl GalleryInspector {
             badge.status,
             &ui_gallery::theme::GridColors::current(cx),
         );
+        let reason = ui_gallery::placeholder::reason_line(badge);
         Some(
-            h_flex()
+            v_flex()
                 .w_full()
-                .gap(Tokens::space(2.0))
-                .items_center()
+                .gap(Tokens::space(1.0))
+                .items_start()
                 .child(
-                    Icon::new(ui_gallery::placeholder::status_icon(badge.status))
-                        .size(Tokens::icon_sm())
-                        .text_color(tone),
-                )
-                .child(
-                    div()
-                        .id("inspector-placeholder-reason")
-                        .test_support()
-                        .aria_label(SharedString::from(ui_gallery::placeholder::reason_line(
-                            badge,
-                        )))
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(Tokens::text_sm())
-                        .text_color(colors.text_muted)
-                        .child(ui_gallery::placeholder::reason_line(badge)),
+                    h_flex()
+                        .w_full()
+                        .gap(Tokens::space(2.0))
+                        .items_center()
+                        .child(
+                            Icon::new(ui_gallery::placeholder::status_icon(badge.status))
+                                .size(Tokens::icon_sm())
+                                .text_color(tone),
+                        )
+                        .child(
+                            div()
+                                .id("inspector-placeholder-reason")
+                                .test_support()
+                                .aria_label(SharedString::from(reason.clone()))
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(Tokens::text_sm())
+                                .text_color(colors.text_muted)
+                                .child(reason),
+                        ),
                 )
                 .child(crate::views::kit::button(
                     "inspector-why-no-preview",

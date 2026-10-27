@@ -444,6 +444,13 @@ impl LibraryView {
         };
         this.load_cameras(cx);
         this.load_previews(cx);
+        // Dev-only hook for scripted screenshots of the grid at other tile sizes (placeholders at every size).
+        if let Some(cell) = std::env::var("PHOTOSQUIRREL_GRID_CELL")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            this.grid.update(cx, |g, cx| g.set_cell(cell, None, cx));
+        }
         this.start_live_updates(window, cx);
         if let Some(i) = crate::startup::StartupGrace::select(cx) {
             this.model.update(cx, |m, cx| {
