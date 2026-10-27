@@ -52,8 +52,9 @@ fn windows_without_hevc() -> Decoders {
                     open: Some(STORE_LINK.into()),
                     ..FixStep::default()
                 },
+                // The closing step of every Linux and Windows fix (ps-sysdecode's guidance).
                 FixStep {
-                    text: "Then restart PhotoSquirrel".into(),
+                    text: "Then restart PhotoSquirrel and rescan your sources".into(),
                     ..FixStep::default()
                 },
             ],
@@ -272,6 +273,12 @@ fn scenario_photo_inspector_missing_decoder_shows_install_steps(cx: &mut TestApp
     assert_eq!(
         label("preview-help-restart", &mut cx).as_deref(),
         Some(RESTART_TEXT)
+    );
+    // One closing line: the report's "restart and rescan" step is not shown beside it.
+    assert!(
+        !exists("preview-help-fix-step-1", &mut cx),
+        "only the install step: {:?}",
+        label("preview-help-fix-step-1", &mut cx)
     );
     assert!(
         RESTART_TEXT
@@ -514,4 +521,271 @@ fn scenario_gallery_notice_after_an_update_that_adds_tiff_variants(cx: &mut Test
         !exists("library-preview-notice", cx)
     });
     let _ = (shell, LibraryMode::Grid);
+}
+
+/// Shift+I on a selected placeholder opens "Why no preview?" for it, in the grid and in the loupe (I alone toggles
+/// the inspector).
+#[gpui_kit::test]
+fn shift_i_opens_the_dialog_in_the_grid_and_the_loupe(cx: &mut TestAppContext) {
+    let d = scanned(mixed());
+    let (backend, shell, mut cx) = open_app(cx, &d.data, windows_without_hevc());
+    library_ready(&mut cx);
+    let heic = item(&backend, "IMG_0001.HEIC");
+    let lib = cx.update(|_, cx| LibraryHub::library(cx).unwrap());
+    let (grid, model) = cx.update(|_, cx| {
+        let l = lib.read(cx);
+        (l.grid().clone(), l.model().clone())
+    });
+    let index = cx
+        .update(|_, cx| model.read(cx).index.position_of(heic))
+        .expect("the HEIC is listed");
+    // Wait for its summary (the placeholder badge), then select it and focus the grid.
+    let m = model.clone();
+    wait_long(&mut cx, "the HEIC's summary", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            m.read(cx)
+                .summary(index)
+                .is_some_and(|s| s.placeholder.is_some())
+        })
+    });
+    grid.update(&mut cx, |g, cx| g.click(index, Modifiers::none(), cx));
+    cx.update(|w, cx| {
+        let f = grid.read(cx).focus_handle().clone();
+        w.focus(&f, cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("shift-i");
+    let s = shell.clone();
+    wait_long(&mut cx, "the dialog from the grid", move |cx| {
+        cx.update(|_, cx| s.read(cx).preview_help().is_some())
+    });
+    assert_eq!(
+        cx.update(|_, cx| shell.read(cx).preview_help().unwrap().read(cx).item()),
+        heic
+    );
+    let s = shell.clone();
+    cx.update(|w, cx| s.update(cx, |s, cx| s.close_overlay(w, cx)));
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| shell.read(cx).preview_help().is_none()));
+    // The loupe on the same item.
+    let l = lib.clone();
+    cx.update(|w, cx| l.update(cx, |l, cx| l.set_mode(LibraryMode::Loupe, w, cx)));
+    cx.run_until_parked();
+    let loupe = cx.update(|_, cx| lib.read(cx).loupe().clone());
+    cx.update(|w, cx| {
+        let f = loupe.read(cx).focus_handle().clone();
+        w.focus(&f, cx);
+        w.render_frame(cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("shift-i");
+    let s = shell.clone();
+    wait_long(&mut cx, "the dialog from the loupe", move |cx| {
+        cx.update(|_, cx| s.read(cx).preview_help().is_some())
+    });
+    assert_eq!(
+        cx.update(|_, cx| shell.read(cx).preview_help().unwrap().read(cx).item()),
+        heic
+    );
+}
+
+/// Fill in previews from the Library notice, a job shorter than a live-update poll: the tiles it filled in show
+/// their thumbnails without a restart, and the notice's counts are read again.
+#[gpui_kit::test]
+fn filled_in_tiles_show_their_thumbnails_after_a_short_job(cx: &mut TestAppContext) {
+    let d = scanned(mixed());
+    let (backend, _shell, mut cx) = open_app(cx, &d.data, fake());
+    library_ready(&mut cx);
+    let heic = item(&backend, "IMG_0002.HEIC");
+    let lib = cx.update(|_, cx| LibraryHub::library(cx).unwrap());
+    let (grid, model) = cx.update(|_, cx| {
+        let l = lib.read(cx);
+        (l.grid().clone(), l.model().clone())
+    });
+    let index = cx
+        .update(|_, cx| model.read(cx).index.position_of(heic))
+        .expect("the HEIC is listed");
+    let g = grid.clone();
+    wait_long(&mut cx, "the HEIC's placeholder tile", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            matches!(
+                g.read(cx).painted(index),
+                Some(ui_gallery::grid::CellPaint::PlaceholderTile { .. })
+            )
+        })
+    });
+    wait_long(&mut cx, "the notice", |cx| {
+        exists("library-preview-notice", cx)
+    });
+    click("library-preview-fill", &mut cx);
+    let g = grid.clone();
+    wait_long(&mut cx, "the filled-in thumbnail", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            matches!(
+                g.read(cx).painted(index),
+                Some(ui_gallery::grid::CellPaint::Texture { .. })
+            )
+        })
+    });
+    let r = backend.scan().unwrap().engine().catalog().read();
+    assert!(
+        r.file_by_id(heic.into())
+            .unwrap()
+            .unwrap()
+            .preview
+            .is_none(),
+        "filled in"
+    );
+    // The counts are read again: nothing is offered any more, and the notice stays away.
+    wait_long(&mut cx, "the counts read again", |cx| {
+        cx.update(|_, cx| {
+            LibraryHub::library(cx).is_some_and(|l| {
+                let l = l.read(cx);
+                !l.previews().is_empty() && l.previews().iter().all(|r| r.fillable == 0)
+            })
+        })
+    });
+    assert!(!exists("library-preview-notice", &mut cx));
+}
+
+/// A refused Fill in previews (another run is going) is said in a toast, and the notice comes back.
+#[gpui_kit::test]
+fn a_refused_fill_in_shows_a_toast_and_keeps_the_notice(cx: &mut TestAppContext) {
+    let d = scanned(mixed());
+    let (backend, shell, mut cx) = open_app(cx, &d.data, fake());
+    library_ready(&mut cx);
+    wait_long(&mut cx, "the notice", |cx| {
+        exists("library-preview-notice", cx)
+    });
+    // Another process is scanning this catalog (its run is recorded as running).
+    let c = rusqlite::Connection::open(d.data.join(ps_service::scan::CATALOG_FILE)).unwrap();
+    c.execute(
+        "INSERT INTO scan_run (status, started_at) VALUES ('running', 1)",
+        [],
+    )
+    .unwrap();
+    click("library-preview-fill", &mut cx);
+    let s = shell.clone();
+    wait_long(&mut cx, "the toast", move |cx| {
+        cx.update(|_, cx| s.read(cx).toast().is_some())
+    });
+    let title = cx.update(|_, cx| shell.read(cx).toast().unwrap().title.to_string());
+    assert_eq!(title, "Could not fill in previews");
+    wait_long(&mut cx, "the notice back", |cx| {
+        exists("library-preview-notice", cx)
+    });
+    let _ = backend;
+}
+
+/// A catalog made by 0.2.0 without a poster-frame tool: the video's stored placeholder records no reason and its
+/// row nothing (migration 24 cannot tell it from a poster frame). Opened by this build, migration 25's task marks it
+/// from the thumbnail store (ADR-0111): its tile is a placeholder that says why, with the info button, and the
+/// dialog explains the poster-frame tool.
+#[gpui_kit::test]
+fn videos_from_older_catalogs_show_why_they_have_no_preview(cx: &mut TestAppContext) {
+    let mut files = mixed();
+    files.push((
+        "DCIM/IMG_5000.MOV".into(),
+        ps_fixtures::media::movie(&ps_fixtures::media::MovieSpec::iphone()),
+    ));
+    let d = scanned(files);
+    {
+        let svc = ScanService::open(&d.data, ScanOptions::default()).unwrap();
+        let r = svc.engine().catalog().read();
+        let video = (1..100)
+            .filter_map(|i| r.file_by_id(ps_model::FileId(i)).ok().flatten())
+            .find(|f| f.format == Some(ps_model::Format::Mov))
+            .expect("the video is catalogued");
+        assert!(video.preview.is_some(), "this build marks it as it scans");
+        let probe = ps_media::probe_bytes(&[], 0, None);
+        let mut ph = ps_media::thumb::placeholder(&probe, None, "video (no poster-frame tool)");
+        if let Some(p) = ph.placeholder.as_mut() {
+            p.media_kind = ps_model::MediaKind::Video;
+            p.format = Some(ps_model::Format::Mov);
+        }
+        assert!(
+            ph.placeholder.as_ref().unwrap().reason.is_none(),
+            "as 0.2.0 stored it"
+        );
+        svc.engine()
+            .thumbs()
+            .put_many([(&video.identity.unwrap(), &ph)])
+            .unwrap();
+    }
+    // The catalog as migration 24 left it (0.2.0's rows, the video unmarked).
+    let c = rusqlite::Connection::open(d.data.join(ps_service::scan::CATALOG_FILE)).unwrap();
+    c.execute_batch(
+        "UPDATE file SET preview_gen = NULL, preview_reason = NULL WHERE format = 'mov';
+         DROP TABLE catalog_task;
+         PRAGMA user_version = 24;",
+    )
+    .unwrap();
+    drop(c);
+    let (backend, shell, mut cx) = open_app(cx, &d.data, windows_without_hevc());
+    library_ready(&mut cx);
+    let video = item(&backend, "IMG_5000.MOV");
+    let r = backend.scan().unwrap().engine().catalog().read();
+    assert_eq!(
+        r.file_by_id(video.into()).unwrap().unwrap().preview,
+        Some(ps_model::PreviewStamp {
+            generation: 0,
+            reason: PreviewReason::NoPosterTool
+        }),
+        "marked at open"
+    );
+    let lib = cx.update(|_, cx| LibraryHub::library(cx).unwrap());
+    let (grid, model) = cx.update(|_, cx| {
+        let l = lib.read(cx);
+        (l.grid().clone(), l.model().clone())
+    });
+    let index = cx
+        .update(|_, cx| model.read(cx).index.position_of(video))
+        .expect("the video is listed");
+    let g = grid.clone();
+    wait_long(&mut cx, "the video's placeholder tile", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            matches!(
+                g.read(cx).painted(index),
+                Some(ui_gallery::grid::CellPaint::PlaceholderTile {
+                    status: ps_model::PlaceholderStatus::NeedsLibrary,
+                    ..
+                })
+            )
+        })
+    });
+    let centre = cx.update(|_, cx| grid.read(cx).cell_center(index, cx));
+    cx.simulate_mouse_move(centre, None, Modifiers::none());
+    let g = grid.clone();
+    wait_until(&mut cx, "the info button", move |cx| {
+        cx.update(|w, cx| {
+            w.render_frame(cx);
+            g.read(cx).info_button_center(index).is_some()
+        })
+    });
+    let info = cx.update(|_, cx| grid.read(cx).info_button_center(index).unwrap());
+    cx.simulate_click(info, Modifiers::none());
+    let s = shell.clone();
+    wait_long(&mut cx, "the dialog's content", move |cx| {
+        cx.update(|_, cx| {
+            s.read(cx)
+                .preview_help()
+                .is_some_and(|d| !matches!(d.read(cx).state(), HelpState::Loading))
+        })
+    });
+    wait_until(&mut cx, "the dialog drawn", |cx| {
+        exists("preview-help-reason", cx)
+    });
+    let reason = label("preview-help-reason", &mut cx).unwrap();
+    assert!(reason.contains("poster-frame tool (ffmpeg)"), "{reason}");
+    // What to do: install ffmpeg (or, where one is set up, when the frame comes).
+    let fix = label("preview-help-fix", &mut cx).or_else(|| label("preview-help-poster", &mut cx));
+    assert!(
+        fix.as_deref()
+            .is_some_and(|f| f.contains("ffmpeg") || f.contains("poster-frame tool")),
+        "{fix:?}"
+    );
 }

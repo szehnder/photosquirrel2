@@ -497,5 +497,6 @@ loads the details within the grace). Headless tests call `window.render_frame` t
 - I already toggles the inspector in `Shell && !Input`; a deeper context (`GalleryGrid`) binding the same key would
   win while the grid is focused and break the inspector toggle, so the placeholder shortcut is Shift+I everywhere.
 - Scripted screenshots: `--gallery-select N --command shell::ShowPreviewHelp` opens "Why no preview?" for item N in
-  frame one (its content is read inside the start-up grace); `PHOTOSQUIRREL_GRID_CELL=96` (dev only) starts the
-  Library grid at another tile size; `--gallery-filter no-preview[=<reason>[:<format>]]` starts it filtered.
+  frame one (its content is read inside the start-up grace); `PHOTOSQUIRREL_GRID_CELL=96` starts the Library
+  grid at another tile size (a harmless screenshot hook, in release builds too, which `cargo xtask screenshot`
+  runs: the user can zoom the same way); `--gallery-filter no-preview[=<reason>[:<format>]]` starts it filtered.

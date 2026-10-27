@@ -386,6 +386,12 @@ impl Shell {
         .detach();
     }
 
+    /// Follow a run started elsewhere (Fill in previews from the Library or the dialog): the status bar and the
+    /// Library's live updates sample it like a scan, until it ends.
+    pub fn watch_activity(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        self.start_activity_sampling(window, cx);
+    }
+
     /// Sample the backend's activity every 100 ms until it reports idle (ADR-0019).
     fn start_activity_sampling(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let service = self.service.clone();
@@ -681,6 +687,7 @@ impl Shell {
                     if let Some(lib) = crate::views::library::LibraryHub::library(cx) {
                         lib.update(cx, |l, cx| l.fill_started(cx));
                     }
+                    this.watch_activity(window, cx);
                     this.show_toast(
                         ToastKind::Info,
                         "Filling in previews",

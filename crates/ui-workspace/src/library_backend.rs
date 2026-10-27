@@ -149,7 +149,11 @@ impl LibraryBackend for CatalogBackend {
     }
 
     fn activity(&self) -> Option<ActivitySnapshot> {
-        let snap = self.scan().ok()?.snapshot()?;
+        let scan = self.scan().ok()?;
+        // The engine keeps the last run's snapshot after it ends: a finished run is no activity (the status bar
+        // and the Library's live updates stop with it).
+        scan.active()?;
+        let snap = scan.snapshot()?;
         // Sources can change status during a run; re-read them on the next query.
         self.lib.refresh_sources();
         Some(ActivitySnapshot {

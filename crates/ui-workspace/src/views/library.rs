@@ -345,6 +345,9 @@ pub struct LibraryView {
     previews: Vec<ps_model::PreviewStatusRow>,
     /// Fill in previews was started from here: the notice stays hidden until the counts are read again.
     filling: bool,
+    /// Live-update polls left before a Fill in previews job that ended between two polls counts as ended (the
+    /// grid is read again and the counts too); 0 when no job is being watched.
+    fill_watch: u8,
     live_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -439,12 +442,14 @@ impl LibraryView {
             cameras: Vec::new(),
             previews: Vec::new(),
             filling: false,
+            fill_watch: 0,
             live_task: None,
             _subscriptions: subs,
         };
         this.load_cameras(cx);
         this.load_previews(cx);
-        // Dev-only hook for scripted screenshots of the grid at other tile sizes (placeholders at every size).
+        // A scripted-screenshot hook (`cargo xtask screenshot`, which runs the release build): start with another
+        // tile size, to capture placeholders at every size. Harmless otherwise: the user can zoom the same way.
         if let Some(cell) = std::env::var("PHOTOSQUIRREL_GRID_CELL")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
@@ -545,23 +550,55 @@ impl LibraryView {
         fill_notice_text(&self.previews)
     }
 
-    /// Fill in previews of every waiting format (the notice's button).
-    pub fn fill_in_previews(&mut self, cx: &mut Context<'_, Self>) {
+    /// Fill in previews of every waiting format (the notice's button). A refusal (a scan is running, no library)
+    /// is shown as a toast and the notice comes back.
+    pub fn fill_in_previews(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let source = self.model.read(cx).source().clone();
         self.filling = true;
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(e) = source.fill_previews(ps_model::FillScope::all()) {
-                    log::warn!("fill in previews: {e:#}");
+        let task = cx.background_executor().spawn(async move {
+            source
+                .fill_previews(ps_model::FillScope::all())
+                .map_err(|e| format!("{e:#}"))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                let shell = Shell::for_window(window, cx);
+                match result {
+                    Ok(()) => {
+                        this.fill_started(cx);
+                        if let Some(shell) = shell {
+                            shell.update(cx, |s, cx| s.watch_activity(window, cx));
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("fill in previews: {e}");
+                        this.filling = false;
+                        if let Some(shell) = shell {
+                            shell.update(cx, |s, cx| {
+                                s.show_toast(
+                                    crate::shell::ToastKind::Warning,
+                                    "Could not fill in previews",
+                                    e,
+                                    true,
+                                    cx,
+                                );
+                            });
+                        }
+                    }
                 }
-            })
-            .detach();
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
-    /// A Fill in previews job was started elsewhere (the dialog): hide the notice until the counts change.
+    /// A Fill in previews job was started (here or from the dialog): hide the notice until the counts are read
+    /// again, and read the grid and the counts again when the job ends, even one shorter than a live-update poll.
     pub fn fill_started(&mut self, cx: &mut Context<'_, Self>) {
         self.filling = true;
+        self.fill_watch = 2;
         cx.notify();
     }
 
@@ -587,8 +624,9 @@ impl LibraryView {
         self.set_filters(f, cx);
     }
 
-    /// While the shell reports activity (a scan), re-query every 2 s keeping the top item in place; when the
-    /// activity ends, read the placeholder counts again.
+    /// While the shell reports activity (a scan, Fill in previews), re-query every 2 s keeping the top item in
+    /// place; when the activity ends (or a watched Fill in previews job ended between two polls), re-query once
+    /// more and read the placeholder counts again.
     fn start_live_updates(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.live_task = Some(cx.spawn_in(window, async move |this, cx| {
             let mut was_active = false;
@@ -598,9 +636,21 @@ impl LibraryView {
                     .update_in(cx, |this, window, cx| {
                         let scanning = Shell::for_window(window, cx)
                             .is_some_and(|s| s.read(cx).activity_snapshot().is_some());
-                        if scanning {
-                            this.grid.update(cx, |g, cx| g.refresh_keeping_anchor(cx));
+                        let ended = if scanning {
+                            false
                         } else if was_active {
+                            true
+                        } else if this.fill_watch > 0 {
+                            this.fill_watch -= 1;
+                            this.fill_watch == 0
+                        } else {
+                            false
+                        };
+                        if scanning || ended {
+                            this.grid.update(cx, |g, cx| g.refresh_keeping_anchor(cx));
+                        }
+                        if ended {
+                            this.fill_watch = 0;
                             this.load_previews(cx);
                         }
                         was_active = scanning;
@@ -1271,7 +1321,9 @@ impl LibraryView {
                     "Fill in previews",
                     Some(IconName::RefreshCw),
                     crate::views::kit::Tone::Primary,
-                    crate::views::kit::on(cx.listener(|this, _, _, cx| this.fill_in_previews(cx))),
+                    crate::views::kit::on(
+                        cx.listener(|this, _, window, cx| this.fill_in_previews(window, cx)),
+                    ),
                     cx,
                 ))
                 .child(crate::views::kit::button(
