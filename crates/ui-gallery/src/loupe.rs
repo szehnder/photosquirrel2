@@ -38,7 +38,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", LoupeClose, c),
         KeyBinding::new("z", LoupeToggleZoom, c),
         KeyBinding::new("space", LoupeToggleZoom, c),
-        KeyBinding::new("i", LoupeShowPlaceholderInfo, c),
+        KeyBinding::new("shift-i", LoupeShowPlaceholderInfo, c),
     ]);
 }
 

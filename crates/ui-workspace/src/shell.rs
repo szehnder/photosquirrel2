@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use gpui_kit::*;
+use ps_model::ItemId;
 use ps_model::settings::ThemeSetting;
 use ui_theme::{Mode, Tokens};
 
@@ -50,6 +51,8 @@ impl Render for DraggedSplitter {
 pub(crate) enum Overlay {
     Palette(Entity<CommandPalette>),
     Settings(Entity<SettingsWindow>),
+    /// "Why no preview?" for one file (ADR-0109).
+    PreviewHelp(Entity<crate::views::preview_help::PreviewHelpDialog>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -611,6 +614,90 @@ impl Shell {
         settings
     }
 
+    /// "Why no preview?" for the selected Library item, when it has a placeholder.
+    pub fn show_selected_preview_help(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let model = crate::views::library::LibraryHub::model(cx);
+        let item = {
+            let m = model.read(cx);
+            m.selection.focus.and_then(|i| {
+                m.summary(i)
+                    .filter(|s| s.placeholder.is_some())
+                    .map(|s| s.id)
+            })
+        };
+        if let Some(id) = item {
+            self.open_preview_help(id, window, cx);
+        }
+    }
+
+    /// The open "Why no preview?" dialog.
+    pub fn preview_help(&self) -> Option<&Entity<crate::views::preview_help::PreviewHelpDialog>> {
+        match &self.overlay {
+            Some(Overlay::PreviewHelp(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Open "Why no preview?" for `item` (ADR-0109): its content is read in the background, or on this thread
+    /// within the start-up grace (scripted screenshots).
+    pub fn open_preview_help(
+        &mut self,
+        item: ItemId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Entity<crate::views::preview_help::PreviewHelpDialog> {
+        use crate::views::preview_help::{PreviewHelpDialog, PreviewHelpEvent};
+        let source = crate::views::library::LibraryHub::model(cx)
+            .read(cx)
+            .source()
+            .clone();
+        let primed = crate::startup::StartupGrace::deadline(cx).and_then(|deadline| {
+            let s = source.clone();
+            crate::startup::StartupGrace::within(deadline, move || {
+                PreviewHelpDialog::read(&s, item)
+            })
+        });
+        let dialog = cx.new(|cx| match primed {
+            Some(state) => PreviewHelpDialog::with_state(item, source, state, cx),
+            None => PreviewHelpDialog::new(item, source, cx),
+        });
+        self._subscriptions.push(cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, e: &PreviewHelpEvent, window, cx| match e {
+                PreviewHelpEvent::Close => this.close_overlay(window, cx),
+                PreviewHelpEvent::ShowThem { reason, format } => {
+                    let (reason, format) = (*reason, *format);
+                    this.close_overlay(window, cx);
+                    this.show_library(LibraryMode::Grid, window, cx);
+                    if let Some(lib) = crate::views::library::LibraryHub::library(cx) {
+                        lib.update(cx, |l, cx| {
+                            l.show_no_preview(Some(reason), format, cx);
+                        });
+                    }
+                }
+                PreviewHelpEvent::FillStarted(_) => {
+                    this.close_overlay(window, cx);
+                    if let Some(lib) = crate::views::library::LibraryHub::library(cx) {
+                        lib.update(cx, |l, cx| l.fill_started(cx));
+                    }
+                    this.show_toast(
+                        ToastKind::Info,
+                        "Filling in previews",
+                        "Only the files that can get a preview now are read; progress is in Sources.",
+                        true,
+                        cx,
+                    );
+                }
+            },
+        ));
+        let f = dialog.read(cx).focus_handle().clone();
+        window.focus(&f, cx);
+        self.overlay = Some(Overlay::PreviewHelp(dialog.clone()));
+        cx.notify();
+        dialog
+    }
+
     pub fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.overlay.take().is_some() {
             window.focus(&self.focus, cx);
@@ -825,6 +912,9 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &ShowReports, w, cx| this.show_view(ViewId::Reports, w, cx)),
             )
+            .on_action(cx.listener(|this, _: &ShowPreviewHelp, w, cx| {
+                this.show_selected_preview_help(w, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleInspector, w, cx| {
                 this.toggle_panel(Side::Inspector, w, cx)
             }))

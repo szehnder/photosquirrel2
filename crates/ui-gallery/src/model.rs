@@ -40,7 +40,7 @@ pub enum GalleryEvent {
     SelectionChanged,
     /// Enter/E on an item.
     OpenLoupe(usize),
-    /// The info button or `I` on an item with a placeholder (ADR-0109): the "Why no preview?" dialog for it.
+    /// The info button or Shift+I on an item with a placeholder (ADR-0109): the "Why no preview?" dialog for it.
     PlaceholderInfo(ItemId),
 }
 

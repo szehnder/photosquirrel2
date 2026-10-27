@@ -207,6 +207,8 @@ pub struct FilterBar {
     pub insight: InsightCriteria,
     /// Completion-report dispositions (any of them; empty: no disposition filter).
     pub dispositions: Vec<Disposition>,
+    /// Only items without a preview, of this reason and format when given (ADR-0109).
+    pub no_preview: Option<ps_model::NoPreviewFilter>,
 }
 
 impl FilterBar {
@@ -223,8 +225,25 @@ impl FilterBar {
                 "photos" => f.kind = Some(MediaKind::Image),
                 "videos" => f.kind = Some(MediaKind::Video),
                 "no-stacks" => f.stacks_off = true,
+                "no-preview" => f.no_preview = Some(ps_model::NoPreviewFilter::default()),
                 w => {
-                    if let Some(name) = w.strip_prefix("category=") {
+                    if let Some(spec) = w.strip_prefix("no-preview=") {
+                        // `no-preview=<reason>` or `no-preview=<reason>:<format>`.
+                        let (reason, format) = spec.split_once(':').unwrap_or((spec, ""));
+                        f.no_preview = Some(ps_model::NoPreviewFilter {
+                            reason: Some(
+                                ps_model::PreviewReason::from_key(reason).ok_or_else(|| {
+                                    format!("unknown placeholder reason {reason}")
+                                })?,
+                            ),
+                            format: (!format.is_empty())
+                                .then(|| {
+                                    ps_model::Format::from_storage(format)
+                                        .ok_or_else(|| format!("unknown format {format}"))
+                                })
+                                .transpose()?,
+                        });
+                    } else if let Some(name) = w.strip_prefix("category=") {
                         let c = SceneCategory::ALL
                             .into_iter()
                             .find(|c| {
@@ -290,6 +309,11 @@ impl FilterBar {
                 self.clone().toggle_disposition(*d),
             ));
         }
+        if let Some(np) = &self.no_preview {
+            let mut next = self.clone();
+            next.no_preview = None;
+            out.push(("no-preview".to_owned(), no_preview_label(np), next));
+        }
         out
     }
 
@@ -299,6 +323,7 @@ impl FilterBar {
                 kind: self.kind,
                 camera_model: self.camera.clone(),
                 has_gps: self.gps,
+                no_preview: self.no_preview.clone(),
                 ..library_filter()
             },
             sort: self.sort,
@@ -316,8 +341,63 @@ pub struct LibraryView {
     mode: LibraryMode,
     pub filters: FilterBar,
     cameras: Vec<(String, u64)>,
+    /// Placeholders by format and reason (the No preview menu and the Fill in previews notice, ADR-0109).
+    previews: Vec<ps_model::PreviewStatusRow>,
+    /// Fill in previews was started from here: the notice stays hidden until the counts are read again.
+    filling: bool,
     live_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The Fill in previews notice was dismissed for this session (ADR-0109).
+#[derive(Default)]
+pub struct PreviewNoticeDismissed(pub bool);
+
+impl Global for PreviewNoticeDismissed {}
+
+/// "No preview: needs a library · HEIC".
+pub fn no_preview_label(np: &ps_model::NoPreviewFilter) -> String {
+    let mut s = match np.reason {
+        Some(r) => format!("No preview: {}", r.label()),
+        None => "No preview".to_owned(),
+    };
+    if let Some(f) = np.format {
+        s.push_str(" · ");
+        s.push_str(f.label());
+    }
+    s
+}
+
+/// The notice's text: "37 TIFF files can get previews now" (formats with fillable placeholders, most first);
+/// `None` when nothing can be filled in.
+pub fn fill_notice_text(rows: &[ps_model::PreviewStatusRow]) -> Option<String> {
+    let mut by_format: Vec<(String, u64)> = Vec::new();
+    for r in rows.iter().filter(|r| r.fillable > 0) {
+        let label = ps_model::Format::from_storage(&r.format)
+            .map_or_else(|| r.format.to_uppercase(), |f| f.label().to_owned());
+        match by_format.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, n)) => *n += r.fillable,
+            None => by_format.push((label, r.fillable)),
+        }
+    }
+    if by_format.is_empty() {
+        return None;
+    }
+    by_format.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let total: u64 = by_format.iter().map(|(_, n)| n).sum();
+    let parts: Vec<String> = by_format
+        .iter()
+        .map(|(l, n)| format!("{} {l}", format_count(*n)))
+        .collect();
+    let list = match parts.as_slice() {
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+        [] => String::new(),
+    };
+    Some(format!(
+        "{list} {} can get previews now",
+        if total == 1 { "file" } else { "files" }
+    ))
 }
 
 impl LibraryView {
@@ -331,16 +411,24 @@ impl LibraryView {
         let loupe = cx.new(|cx| LoupeView::new(model.clone(), cx));
         let subs = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&model, window, |this, _, e: &GalleryEvent, window, cx| {
-                if let GalleryEvent::OpenLoupe(i) = e {
-                    this.open_loupe(*i, window, cx);
-                }
-            }),
-            cx.subscribe_in(&loupe, window, |this, _, e: &LoupeEvent, window, cx| {
-                if let LoupeEvent::Close(i) = e {
-                    this.close_loupe(*i, window, cx);
-                }
-            }),
+            cx.subscribe_in(
+                &model,
+                window,
+                |this, _, e: &GalleryEvent, window, cx| match e {
+                    GalleryEvent::OpenLoupe(i) => this.open_loupe(*i, window, cx),
+                    GalleryEvent::PlaceholderInfo(id) => open_preview_help(*id, window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe_in(
+                &loupe,
+                window,
+                |this, _, e: &LoupeEvent, window, cx| match e {
+                    LoupeEvent::Close(i) => this.close_loupe(*i, window, cx),
+                    LoupeEvent::PlaceholderInfo(id) => open_preview_help(*id, window, cx),
+                    LoupeEvent::Moved(_) => {}
+                },
+            ),
         ];
         let mut this = Self {
             model,
@@ -349,10 +437,13 @@ impl LibraryView {
             mode: LibraryMode::Grid,
             filters: StartupFilters::get(cx),
             cameras: Vec::new(),
+            previews: Vec::new(),
+            filling: false,
             live_task: None,
             _subscriptions: subs,
         };
         this.load_cameras(cx);
+        this.load_previews(cx);
         this.start_live_updates(window, cx);
         if let Some(i) = crate::startup::StartupGrace::select(cx) {
             this.model.update(cx, |m, cx| {
@@ -402,9 +493,98 @@ impl LibraryView {
         .detach();
     }
 
-    /// While the shell reports activity (a scan), re-query every 2 s keeping the top item in place.
+    /// Read the placeholder counts again (start-up, and after a scan or a Fill in previews job ends).
+    pub fn load_previews(&mut self, cx: &mut Context<'_, Self>) {
+        if let Some(deadline) = crate::startup::StartupGrace::deadline(cx) {
+            // Within the start-up grace (scripted screenshots): on a helper thread, waited for until the deadline.
+            let source = self.model.read(cx).source().clone();
+            let rows = crate::startup::StartupGrace::within(deadline, move || {
+                source.preview_status().unwrap_or_default()
+            });
+            if let Some(rows) = rows {
+                self.previews = rows;
+                return;
+            }
+        }
+        let source = self.model.read(cx).source().clone();
+        let task = cx
+            .background_executor()
+            .spawn(async move { source.preview_status().unwrap_or_default() });
+        cx.spawn(async move |this, cx| {
+            let rows = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.previews = rows;
+                this.filling = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Placeholders by format and reason, as last read.
+    pub fn previews(&self) -> &[ps_model::PreviewStatusRow] {
+        &self.previews
+    }
+
+    /// The Fill in previews notice's text, when it is shown.
+    pub fn fill_notice(&self, cx: &App) -> Option<String> {
+        if self.filling
+            || cx
+                .try_global::<PreviewNoticeDismissed>()
+                .is_some_and(|d| d.0)
+        {
+            return None;
+        }
+        fill_notice_text(&self.previews)
+    }
+
+    /// Fill in previews of every waiting format (the notice's button).
+    pub fn fill_in_previews(&mut self, cx: &mut Context<'_, Self>) {
+        let source = self.model.read(cx).source().clone();
+        self.filling = true;
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(e) = source.fill_previews(ps_model::FillScope::all()) {
+                    log::warn!("fill in previews: {e:#}");
+                }
+            })
+            .detach();
+        cx.notify();
+    }
+
+    /// A Fill in previews job was started elsewhere (the dialog): hide the notice until the counts change.
+    pub fn fill_started(&mut self, cx: &mut Context<'_, Self>) {
+        self.filling = true;
+        cx.notify();
+    }
+
+    /// Dismiss the notice for this session.
+    pub fn dismiss_fill_notice(&mut self, cx: &mut Context<'_, Self>) {
+        cx.set_global(PreviewNoticeDismissed(true));
+        cx.notify();
+    }
+
+    /// Show only the items without a preview of `reason` and `format` ("Show them" in the dialog): the No
+    /// preview filter on an otherwise unfiltered Library.
+    pub fn show_no_preview(
+        &mut self,
+        reason: Option<ps_model::PreviewReason>,
+        format: Option<ps_model::Format>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let f = FilterBar {
+            sort: self.filters.sort,
+            no_preview: Some(ps_model::NoPreviewFilter { reason, format }),
+            ..FilterBar::default()
+        };
+        self.set_filters(f, cx);
+    }
+
+    /// While the shell reports activity (a scan), re-query every 2 s keeping the top item in place; when the
+    /// activity ends, read the placeholder counts again.
     fn start_live_updates(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         self.live_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut was_active = false;
             loop {
                 cx.background_executor().timer(LIVE_REFRESH).await;
                 let alive = this
@@ -413,7 +593,10 @@ impl LibraryView {
                             .is_some_and(|s| s.read(cx).activity_snapshot().is_some());
                         if scanning {
                             this.grid.update(cx, |g, cx| g.refresh_keeping_anchor(cx));
+                        } else if was_active {
+                            this.load_previews(cx);
                         }
+                        was_active = scanning;
                     })
                     .is_ok();
                 if !alive {
@@ -505,7 +688,8 @@ impl LibraryView {
         let unfiltered = f.camera.is_none()
             && f.gps.is_none()
             && f.insight == InsightCriteria::default()
-            && f.dispositions.is_empty();
+            && f.dispositions.is_empty()
+            && f.no_preview.is_none();
         let files = match (f.stacks_off, unfiltered, f.kind) {
             (false, true, None) => cx.try_global::<LibraryTotals>().map_or(0, |t| t.files),
             _ => 0,
@@ -696,6 +880,57 @@ impl LibraryView {
                     menu
                 })
         };
+        let preview_menu = {
+            let weak = weak.clone();
+            let f = f.clone();
+            let rows = self.previews.clone();
+            let total: u64 = rows.iter().map(|r| r.count).sum();
+            Button::new("library-no-preview")
+                .label(match &f.no_preview {
+                    None => "Preview".to_owned(),
+                    Some(np) => no_preview_label(np),
+                })
+                .icon(Icon::new(IconName::Image))
+                .compact()
+                .dropdown_caret(true)
+                .dropdown_menu(move |menu, _, _| {
+                    let mut menu = menu;
+                    let item = |label: String, on: bool, np: Option<ps_model::NoPreviewFilter>| {
+                        let weak = weak.clone();
+                        let mut next = f.clone();
+                        next.no_preview = np;
+                        PopupMenuItem::new(label)
+                            .checked(on)
+                            .on_click(move |_, _, cx| {
+                                let next = next.clone();
+                                let _ = weak.update(cx, |v, cx| v.set_filters(next, cx));
+                            })
+                    };
+                    menu = menu.item(item("Any".into(), f.no_preview.is_none(), None));
+                    let all = ps_model::NoPreviewFilter::default();
+                    menu = menu.item(item(
+                        format!("No preview  ·  {}", format_count(total)),
+                        f.no_preview.as_ref() == Some(&all),
+                        Some(all),
+                    ));
+                    if !rows.is_empty() {
+                        menu = menu.separator();
+                    }
+                    for r in &rows {
+                        let np = ps_model::NoPreviewFilter {
+                            reason: Some(r.reason),
+                            format: ps_model::Format::from_storage(&r.format),
+                        };
+                        let on = f.no_preview.as_ref() == Some(&np);
+                        menu = menu.item(item(
+                            format!("{}  ·  {}", no_preview_label(&np), format_count(r.count)),
+                            on,
+                            Some(np),
+                        ));
+                    }
+                    menu
+                })
+        };
         let chip = |id: &'static str, label: &'static str, on: bool, next: FilterBar| {
             let weak = weak.clone();
             div()
@@ -831,7 +1066,8 @@ impl LibraryView {
                     .child(
                         filter_cluster("library-filters-ai")
                             .child(ai_menu)
-                            .child(status_menu),
+                            .child(status_menu)
+                            .child(preview_menu),
                     ),
             )
             .child(div().flex_shrink_0().child(sort_menu))
@@ -919,6 +1155,7 @@ impl LibraryView {
             let mut next = self.filters.clone();
             next.insight = InsightCriteria::default();
             next.dispositions.clear();
+            next.no_preview = None;
             next
         };
         row = row.child(
@@ -971,9 +1208,77 @@ impl Render for LibraryView {
             .bg(colors.gallery)
             .when(self.mode == LibraryMode::Grid, |d| {
                 let active = self.active_filters(cx);
-                d.child(self.toolbar(cx)).children(active)
+                let notice = self.preview_notice(cx);
+                d.child(self.toolbar(cx)).children(active).children(notice)
             })
             .child(div().flex_1().min_h_0().child(body))
+    }
+}
+
+/// Open "Why no preview?" for `id` in this window's shell (deferred: the caller may be updating a view).
+pub fn open_preview_help(id: ItemId, window: &mut Window, cx: &mut App) {
+    window.defer(cx, move |window, cx| {
+        if let Some(shell) = Shell::for_window(window, cx) {
+            shell.update(cx, |s, cx| {
+                s.open_preview_help(id, window, cx);
+            });
+        }
+    });
+}
+
+impl LibraryView {
+    /// "37 TIFF files can get previews now · Fill in previews · Dismiss" (ADR-0109).
+    fn preview_notice(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
+        let text = self.fill_notice(cx)?;
+        let colors = *ui_theme::colors(cx);
+        Some(
+            h_flex()
+                .id("library-preview-notice")
+                .test_support()
+                .aria_label(SharedString::from(text.clone()))
+                .flex_none()
+                .w_full()
+                .min_h(Tokens::size(40.0))
+                .px(Tokens::space(4.0))
+                .py(Tokens::space(1.0))
+                .gap(Tokens::space(2.0))
+                .items_center()
+                .bg(ui_theme::Colors::chip_bg(colors.success))
+                .border_b_1()
+                .border_color(colors.border)
+                .child(
+                    Icon::new(IconName::RefreshCw)
+                        .size(Tokens::icon_sm())
+                        .text_color(colors.tone_text(colors.success)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(Tokens::text_sm())
+                        .text_color(colors.text)
+                        .child(text),
+                )
+                .child(crate::views::kit::button(
+                    "library-preview-fill",
+                    "Fill in previews",
+                    Some(IconName::RefreshCw),
+                    crate::views::kit::Tone::Primary,
+                    crate::views::kit::on(cx.listener(|this, _, _, cx| this.fill_in_previews(cx))),
+                    cx,
+                ))
+                .child(crate::views::kit::button(
+                    "library-preview-dismiss",
+                    "Dismiss",
+                    None,
+                    crate::views::kit::Tone::Ghost,
+                    crate::views::kit::on(
+                        cx.listener(|this, _, _, cx| this.dismiss_fill_notice(cx)),
+                    ),
+                    cx,
+                ))
+                .into_any_element(),
+        )
     }
 }
 
@@ -2328,6 +2633,17 @@ impl ExcludedView {
                 })
                 .collect()
         });
+        // Files with a placeholder show the same tile as the grid, at list size (ADR-0109).
+        let placeholders: Vec<Option<(ps_model::PlaceholderBadge, bool)>> = {
+            let m = self.model.read(cx);
+            visible
+                .iter()
+                .map(|i| {
+                    m.summary(*i)
+                        .and_then(|s| s.placeholder.clone().map(|p| (p, s.video)))
+                })
+                .collect()
+        };
         let colors = *ui_theme::colors(cx);
         let m = self.model.read(cx);
         let selected: Vec<bool> = visible
@@ -2350,7 +2666,20 @@ impl ExcludedView {
                 .size(Tokens::thumb_sm())
                 .rounded(Tokens::RADIUS_SM)
                 .overflow_hidden()
-                .child(crate::views::review_kit::photo(tex, false, cx));
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(match (&tex, &placeholders[k]) {
+                    (None, Some((badge, video))) => ui_gallery::placeholder::placeholder_element(
+                        SharedString::from(format!("excluded-placeholder-{ix}")),
+                        badge,
+                        *video,
+                        Tokens::size(24.0),
+                        ui_gallery::placeholder::Lod::Tiny,
+                        cx,
+                    ),
+                    _ => crate::views::review_kit::photo(tex, false, cx).into_any_element(),
+                });
             let (name, path, category, reasons) = match &row {
                 Some(r) => (
                     crate::views::kit::middle_ellipsis(&r.name, 48),

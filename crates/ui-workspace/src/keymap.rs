@@ -53,6 +53,8 @@ pub fn default_bindings() -> Vec<Binding> {
         b!("secondary-b", ToggleNavigator, Some(SHELL)),
         b!("secondary-alt-i", ToggleInspector, Some(SHELL)),
         b!("i", ToggleInspector, Some(BROWSE)),
+        // I toggles the inspector; Shift+I explains a placeholder (the grid and the loupe bind it too).
+        b!("shift-i", ShowPreviewHelp, Some(BROWSE)),
         b!("secondary-,", OpenSettings, None),
         b!("f1", OpenCommandPalette, None),
         b!("secondary-shift-p", OpenCommandPalette, None),

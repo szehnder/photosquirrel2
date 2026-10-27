@@ -147,6 +147,14 @@ fn register_commands(cx: &mut App) {
         CommandMeta::new("Library", "Rescan All Sources", Rescan)
             .keywords(&["scan", "refresh", "update"]),
         CommandMeta::new("Library", "Resume Interrupted Scan", ResumeScan).keywords(&["continue"]),
+        CommandMeta::new("Library", "Why No Preview?", ShowPreviewHelp).keywords(&[
+            "placeholder",
+            "missing",
+            "decoder",
+            "heic",
+            "tiff",
+            "fill in previews",
+        ]),
         CommandMeta::new("View", "Toggle Inspector", ToggleInspector)
             .keywords(&["details", "metadata", "panel"]),
         CommandMeta::new("View", "Toggle Navigator", ToggleNavigator)

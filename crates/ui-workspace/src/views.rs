@@ -18,6 +18,7 @@ pub mod duplicates;
 pub mod export;
 pub mod kit;
 pub mod library;
+pub mod preview_help;
 pub mod reports;
 pub mod review_kit;
 pub mod scan;

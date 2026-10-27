@@ -53,6 +53,26 @@ pub fn status_text(s: &ProgressSnapshot) -> &'static str {
     }
 }
 
+/// The run card's title: the scan status, or for a Fill in previews job (ADR-0109) "Filling in previews: 12 of
+/// 37".
+pub fn run_title(s: &ProgressSnapshot) -> String {
+    if !s.fill {
+        return status_text(s).to_owned();
+    }
+    match s.status {
+        RunStatus::Running if s.phase == ScanPhase::Analyzing || s.processed > 0 => format!(
+            "Filling in previews: {} of {}",
+            crate::inspector::format_count(s.processed),
+            crate::inspector::format_count(s.to_process)
+        ),
+        RunStatus::Running => "Filling in previews".to_owned(),
+        RunStatus::Paused => "Fill in previews paused".to_owned(),
+        RunStatus::Completed => "Previews filled in".to_owned(),
+        RunStatus::Cancelled => "Fill in previews cancelled".to_owned(),
+        RunStatus::Interrupted => "Fill in previews interrupted".to_owned(),
+    }
+}
+
 /// Everything the dashboard needs, gathered before building elements.
 pub struct DashboardModel<'a> {
     pub monitor: &'a ScanMonitor,
@@ -123,7 +143,7 @@ fn run_card(m: &DashboardModel<'_>, s: &ProgressSnapshot, colors: &Colors, cx: &
     let pending = m.monitor.pending;
     let status = pending
         .map(|p| p.label().to_owned())
-        .unwrap_or_else(|| status_text(s).to_owned());
+        .unwrap_or_else(|| run_title(s));
     let pct = m.monitor.percent().unwrap_or(0);
     let (fps, bps) = m.monitor.rates();
     let eta = m.monitor.eta();

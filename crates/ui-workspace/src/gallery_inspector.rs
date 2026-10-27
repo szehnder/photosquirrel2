@@ -671,11 +671,16 @@ impl GalleryInspector {
                         let Some(id) = id else {
                             return;
                         };
-                        let (thumb, aspect, dominant) = {
+                        let (thumb, aspect, dominant, placeholder) = {
                             let m = model.read(cx);
                             match m.summary_of(id) {
-                                Some(s) => (s.thumb, s.aspect(), s.dominant),
-                                None => (None, 1.5, None),
+                                Some(s) => (
+                                    s.thumb,
+                                    s.aspect(),
+                                    s.dominant,
+                                    s.placeholder.clone().map(|p| (p, s.video, s.capture_ms)),
+                                ),
+                                None => (None, 1.5, None, None),
                             }
                         };
                         let (bw, bh) =
@@ -697,7 +702,20 @@ impl GalleryInspector {
                                 let _ = window.paint_image(b, b, Corners::default(), img, 0, false);
                             }
                             None => {
-                                if let Some(c) = dominant {
+                                if let Some((badge, video, capture)) = placeholder {
+                                    // The same placeholder tile as the grid's (ADR-0109).
+                                    use ui_gallery::placeholder as ph;
+                                    let parts = ph::layout(
+                                        ph::tile_rect(bounds),
+                                        ph::Lod::Full,
+                                        &badge,
+                                        video,
+                                        capture.map(ph::date_label),
+                                        false,
+                                    );
+                                    let colors = ui_gallery::theme::GridColors::current(cx);
+                                    ph::paint(&parts, &colors, window, cx);
+                                } else if let Some(c) = dominant {
                                     window
                                         .paint_quad(fill(b, ui_gallery::theme::dominant_colour(c)));
                                 }
@@ -713,6 +731,53 @@ impl GalleryInspector {
 
 /// One copyable `label  value` row.
 impl GalleryInspector {
+    /// The "Why no preview?" link for a file with a placeholder, whatever the reason (ADR-0109): it opens the
+    /// dialog, the one full explanation.
+    fn why_no_preview(&self, d: &ItemDetail, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
+        let badge = d.placeholder.as_ref()?;
+        let colors = *ui_theme::colors(cx);
+        let id = d.id;
+        let tone = ui_gallery::placeholder::status_tone(
+            badge.status,
+            &ui_gallery::theme::GridColors::current(cx),
+        );
+        Some(
+            h_flex()
+                .w_full()
+                .gap(Tokens::space(2.0))
+                .items_center()
+                .child(
+                    Icon::new(ui_gallery::placeholder::status_icon(badge.status))
+                        .size(Tokens::icon_sm())
+                        .text_color(tone),
+                )
+                .child(
+                    div()
+                        .id("inspector-placeholder-reason")
+                        .test_support()
+                        .aria_label(SharedString::from(ui_gallery::placeholder::reason_line(
+                            badge,
+                        )))
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(Tokens::text_sm())
+                        .text_color(colors.text_muted)
+                        .child(ui_gallery::placeholder::reason_line(badge)),
+                )
+                .child(crate::views::kit::button(
+                    "inspector-why-no-preview",
+                    "Why no preview?",
+                    Some(IconName::Info),
+                    crate::views::kit::Tone::Ghost,
+                    crate::views::kit::on(move |_, window, cx| {
+                        crate::views::library::open_preview_help(id, window, cx)
+                    }),
+                    cx,
+                ))
+                .into_any_element(),
+        )
+    }
+
     /// Why there is no preview (ADR-0091): no decoder on this system, with how to enable it, or a decoder is
     /// available now and a rescan of the source fills the preview in. Text from the decoder report of now.
     fn preview_note(&self, d: &ItemDetail, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
@@ -1121,6 +1186,7 @@ impl Render for GalleryInspector {
                         cx,
                     ))
                     .children(self.preview_note(&d, cx))
+                    .children(self.why_no_preview(&d, cx))
                     .child(section("Capture", cx))
                     .child(row(
                         "inspector-captured",

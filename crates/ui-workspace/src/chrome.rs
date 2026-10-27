@@ -700,6 +700,7 @@ pub(crate) fn overlay(
     let content: AnyElement = match shell.overlay.as_ref()? {
         Overlay::Palette(p) => p.clone().into_any_element(),
         Overlay::Settings(s) => s.clone().into_any_element(),
+        Overlay::PreviewHelp(d) => d.clone().into_any_element(),
     };
     let fade = Duration::from_millis(Motion::Normal.nominal_millis());
     let reduce = cx.reduce_motion();

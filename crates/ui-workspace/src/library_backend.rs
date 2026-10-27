@@ -153,7 +153,11 @@ impl LibraryBackend for CatalogBackend {
         // Sources can change status during a run; re-read them on the next query.
         self.lib.refresh_sources();
         Some(ActivitySnapshot {
-            label: "Scanning".into(),
+            label: if snap.fill {
+                "Filling in previews".into()
+            } else {
+                "Scanning".into()
+            },
             done: snap.processed,
             total: Some(snap.to_process),
             paused: snap.status == RunStatus::Paused,
@@ -225,6 +229,19 @@ impl GallerySource for CatalogBackend {
 
     fn put_back(&self, ids: &[ItemId]) -> anyhow::Result<ui_gallery::source::PutBack> {
         self.lib.put_back(ids)
+    }
+
+    fn explain(&self, id: ItemId) -> anyhow::Result<Option<ps_model::PreviewHelp>> {
+        self.lib.explain(id)
+    }
+
+    fn preview_status(&self) -> anyhow::Result<Vec<ps_model::PreviewStatusRow>> {
+        self.lib.preview_status()
+    }
+
+    fn fill_previews(&self, scope: ps_model::FillScope) -> anyhow::Result<()> {
+        self.lib.fill_previews(scope)?;
+        Ok(())
     }
 }
 

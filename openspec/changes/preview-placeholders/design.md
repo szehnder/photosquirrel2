@@ -199,3 +199,15 @@ ADR-0109 records the decisions of architectural weight; these are the difference
 - **Migration 24 also adds `scan_run.fill_scope`** (JSON) beside `kind`, so a resumed Fill in job fills the same scope.
 - **Fill in summary counts**: `failed` counts files decoded again that still have no preview; files that could not be
   read (I/O) stay waiting and count in `still_waiting`.
+- **UI as built**: the grid reports `GalleryEvent::PlaceholderInfo(ItemId)` through the gallery model (there is no
+  `GridEvent`), the loupe `LoupeEvent::PlaceholderInfo`. The info shortcut is **Shift+I**, because I already toggles
+  the inspector (keymap); the "help overlay" entry is the command palette's "Why No Preview?" with its key hint.
+- **The status mark stays at small sizes** (the roadmap gate asks for the reason mark at every tile size); small
+  tiles drop only the caption and the date, tiny ones (filmstrip, list rows) show the glyph and a mark dot.
+- **The inspector keeps the HEIC note and its "How to enable" disclosure** (the `photo-inspector` spec requires them
+  in the File section) and adds a reason line with "Why no preview?" for every placeholder; its header draws the tile.
+- **The dialog is a shell overlay** like Settings (Esc or a click outside closes it), not a gpui-kit dialog.
+- **The scan summary's undecoded notice gets no "Why?" link**: the dialog explains one file and the notice is per
+  format; the notice keeps its install steps, and the Library notice offers Fill in previews.
+- **The render bench** gets `--bench-placeholders`, and `gallery-scroll-p95` is measured with 30% placeholder tiles
+  (ADR-0110, a budget definition change); the headless proxy has the same case.

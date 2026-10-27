@@ -79,7 +79,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("+", ZoomInCells, c),
         KeyBinding::new("-", ZoomOutCells, c),
         KeyBinding::new("s", ToggleStack, c),
-        KeyBinding::new("i", ShowPlaceholderInfo, c),
+        KeyBinding::new("shift-i", ShowPlaceholderInfo, c),
     ]);
 }
 
@@ -295,7 +295,7 @@ impl GalleryGrid {
             .map(|b| b.center())
     }
 
-    /// Open the "Why no preview?" dialog for the focused item when it has a placeholder (the `I` shortcut).
+    /// Open the "Why no preview?" dialog for the focused item when it has a placeholder (the Shift+I shortcut).
     pub fn show_focused_placeholder_info(&mut self, cx: &mut Context<'_, Self>) {
         let focus = self.model.read(cx).selection.focus;
         if let Some(i) = focus {

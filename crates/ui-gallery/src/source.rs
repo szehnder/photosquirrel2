@@ -66,6 +66,20 @@ pub trait GallerySource: Send + Sync + 'static {
     fn cleanup_running(&self) -> bool {
         false
     }
+    /// The "Why no preview?" dialog's content for an item (ADR-0109); `None` when it has a preview.
+    fn explain(&self, id: ItemId) -> anyhow::Result<Option<ps_model::PreviewHelp>> {
+        let _ = id;
+        Ok(None)
+    }
+    /// Placeholders by format and reason, with how many can be filled in now (the Library notice).
+    fn preview_status(&self) -> anyhow::Result<Vec<ps_model::PreviewStatusRow>> {
+        Ok(Vec::new())
+    }
+    /// Start Fill in previews for `scope` (a run like a scan).
+    fn fill_previews(&self, scope: ps_model::FillScope) -> anyhow::Result<()> {
+        let _ = scope;
+        anyhow::bail!("Fill in previews is not available here")
+    }
 }
 
 /// A source with nothing in it (until a catalog is open).

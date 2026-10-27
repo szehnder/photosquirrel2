@@ -29,6 +29,8 @@ actions!(
         ZoomOut,
         ZoomReset,
         ToggleTheme,
+        /// "Why no preview?" for the selected Library item with a placeholder (Shift+I, ADR-0109).
+        ShowPreviewHelp,
         Quit,
     ]
 );
