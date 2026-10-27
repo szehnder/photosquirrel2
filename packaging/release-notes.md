@@ -9,7 +9,7 @@ download the file for your system below.
 | Debian, Ubuntu (x64) | `PhotoSquirrel-{{version}}-linux-x86_64.deb` | `sudo apt install ./PhotoSquirrel-{{version}}-linux-x86_64.deb` |
 | Anything else | `.tar.gz` / `.zip` | Both programs, unpacked and ready to run |
 
-Every package contains the desktop app (`photosquirrel`), the headless CLI (`photosquirrel-cli`) and the licence
+Every package contains the desktop app (`photosquirrel`), the headless CLI (`photosquirrel-cli`) and the license
 notices of the open-source components they include (`THIRD-PARTY-LICENSES`). Each file has a
 `.sha256` beside it; check it with `sha256sum -c <file>.sha256` (on macOS, `shasum -a 256 -c`).
 
@@ -88,7 +88,7 @@ The Linux AppImage also starts with the AppImage runtime (the program that mount
 (LGPL-2.1) statically, together with musl, squashfuse, zstd and zlib. Attached to this release
 ({{runtime_sources}}): the libfuse source it was built from and the patch the runtime applies to it, and, to relink
 the runtime against a modified libfuse, the source of the runtime itself and of squashfuse. The AppImage's
-`THIRD-PARTY-LICENSES` names every component of the runtime with its version and licence and says how to relink.
+`THIRD-PARTY-LICENSES` names every component of the runtime with its version and license and says how to relink.
 
 ### First launch
 

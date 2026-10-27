@@ -74,7 +74,7 @@ You don't need Rust or any developer tools.
 | Anything else | `.tar.gz` (Linux, macOS) or `.zip` (Windows) | Unpack; both programs are inside, ready to run |
 
 Every package contains the desktop app (`photosquirrel`), the command-line tool (`photosquirrel-cli`) and the
-licence notices of the open-source components they include (`THIRD-PARTY-LICENSES`). Each download has a
+license notices of the open-source components they include (`THIRD-PARTY-LICENSES`). Each download has a
 `.sha256` file beside it: check it with `sha256sum -c <file>.sha256` (on macOS, `shasum -a 256 -c <file>.sha256`).
 
 ### First launch
@@ -375,9 +375,9 @@ Architecture decisions are in [`docs/adr/`](docs/adr/README.md) and the specs in
 [`AGENTS.md`](AGENTS.md) describes the workflow, the crate layering and the rules every change keeps (above all:
 never lose a photo). `cargo xtask ci` runs everything CI checks.
 
-## Licence
+## License
 
-PhotoSquirrel is licensed under the [Apache License 2.0](LICENSE). The licences of the components it includes are
+PhotoSquirrel is licensed under the [Apache License 2.0](LICENSE). The licenses of the components it includes are
 listed in `THIRD-PARTY-LICENSES` in every package.
 
 **LGPL components.** The raw-photo decoder [rawler](https://crates.io/crates/rawler) 0.8.0 is licensed under the
@@ -399,4 +399,4 @@ the small program that mounts the image. PhotoSquirrel ships the build pinned in
 zlib and libfuse 3.15.0, which is LGPL-2.1 and linked statically. Every release attaches the libfuse source the
 runtime was built from (`fuse-3.15.0.tar.xz`) and the patch the runtime applies to it, and, to relink the runtime
 against a modified libfuse, the source of the runtime itself (`type2-runtime-dd6cebe.tar`) and of squashfuse
-(`squashfuse-0.5.2.tar.gz`). The AppImage's `THIRD-PARTY-LICENSES` lists each component with its licence.
+(`squashfuse-0.5.2.tar.gz`). The AppImage's `THIRD-PARTY-LICENSES` lists each component with its license.
