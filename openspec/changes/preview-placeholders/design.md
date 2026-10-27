@@ -211,3 +211,36 @@ ADR-0109 records the decisions of architectural weight; these are the difference
   format; the notice keeps its install steps, and the Library notice offers Fill in previews.
 - **The render bench** gets `--bench-placeholders`, and `gallery-scroll-p95` is measured with 30% placeholder tiles
   (ADR-0110, a budget definition change); the headless proxy has the same case.
+- **ADR-0110's "the baseline is re-recorded with placeholders" is still to do.** ADR-0110 is accepted and is not
+  edited: the windowed `gallery-scroll-p95` measurement with `--bench-placeholders 30` (task 7.1) needs an unlocked
+  desktop session and is pending the owner; until then only the headless proxy (`render_cost`) has the 30% case.
+
+### Gate-review fixes
+
+- **Filled-in tiles show their thumbnails.** A placeholder's thumbnail key (its content id) does not change when it
+  is filled in, and the gallery model kept it in its "unavailable" set and reused loaded summaries across live
+  refreshes, so a filled-in tile stayed a blank square until restart. A live refresh (`refresh_keeping`) now marks the
+  loaded summaries stale; their pages are read again (the old summaries stay on screen meanwhile), and a summary that
+  changed drops its thumbnails from the unavailable set, so they are requested again.
+- **The Library follows a Fill in previews job to its end.** The shell sampled activity only for runs it started, so
+  the Library's live updates never saw a fill job; and the backend reported the last run's snapshot as activity after
+  it ended. A started job now starts the shell's sampling (`Shell::watch_activity`), a finished run is no activity,
+  and a job that ends between two 2 s polls is still followed by one refresh and a re-read of the counts (the
+  Library watches two polls). A refused Fill in previews from the notice is shown as a toast and the notice comes
+  back, as the dialog shows its error.
+- **Videos of older catalogs** are marked at open from the thumbnail store (ADR-0111, migration 25, `catalog_task`),
+  so they get the placeholder tile with its reason and info button. With a poster-frame tool set up the dialog says
+  the frame comes when the file is analysed again; the waiting rule is unchanged (video poster generation 0), so Fill
+  in previews does not re-read them.
+- **One closing line in the dialog**: the decoder report's last step ("Then restart PhotoSquirrel and rescan your
+  sources", `ps_sysdecode::guidance::RESTART_STEP`) is left out of the dialog's fix (`without_rescan_step`), which
+  ends with "Then restart PhotoSquirrel and fill in previews". The report keeps it everywhere else (doctor, the scan
+  summary), as the `decoder-support` spec requires; a rescan also fills them in.
+- **A re-decode never replaces stored pixels** with its placeholder (the guard `persist_batch` has); the row then
+  shows the stored preview.
+- **The waiting rule's SQL requires `preview_reason IS NOT NULL`** (as the Rust rule, which reads such a row as having
+  a preview), so it is never NULL and uses the partial index.
+- **Mark and caption contrast**: the status marks reach 3:1 on their circle and the caption 4.5:1 on the tile surface
+  in both themes (`Colors::legible_on`), from the same tokens.
+- `PHOTOSQUIRREL_GRID_CELL` stays in release builds (`cargo xtask screenshot` runs the release app); it only sets the
+  starting tile size.

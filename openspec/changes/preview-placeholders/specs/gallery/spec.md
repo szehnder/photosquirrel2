@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Placeholder tiles
-An item with a placeholder SHALL be drawn as a placeholder tile, never a blank square. The tile SHALL show the media glyph, the format badge, "No preview", and a status mark for its reason, using theme tokens only. At small tile sizes it SHALL show only the glyph and badge. The loupe, the Excluded grid and the list thumbnails SHALL use the same placeholder.
+An item with a placeholder SHALL be drawn as a placeholder tile, never a blank square. The tile SHALL show the media glyph, the format badge, "No preview", and a status mark for its reason, using theme tokens only. At small tile sizes it SHALL show the glyph, badge and mark without text. The loupe, the Excluded grid and list thumbnails SHALL use the same placeholder. A placeholder filled in SHALL show its thumbnail without a restart.
 
 #### Scenario: TIFF without a preview shows a placeholder tile
 - **WHEN** the grid shows a TIFF whose placeholder reason is an unsupported variant
@@ -11,7 +11,11 @@ An item with a placeholder SHALL be drawn as a placeholder tile, never a blank s
 
 #### Scenario: Small tiles keep glyph and badge
 - **WHEN** the grid's tile size is the smallest setting
-- **THEN** placeholder tiles show the glyph and the format badge, and no text is clipped
+- **THEN** placeholder tiles show the glyph, the format badge and the status mark, no caption, and no text is clipped
+
+#### Scenario: Filled-in placeholder shows its thumbnail
+- **WHEN** a placeholder tile's file gets a preview (Fill in previews or a rescan) while the Library is open
+- **THEN** after the next live refresh its cell shows the thumbnail, not a placeholder tile or a blank square
 
 #### Scenario: Loupe shows the large placeholder
 - **WHEN** the loupe opens a HEIC that has no preview and no decoder
