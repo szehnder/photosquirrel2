@@ -36,7 +36,7 @@ Starts after `heic-system-decoders`, `excluded-view-filters` and `burst-frame-id
 ## 7. Budgets and docs
 
 - [ ] 7.1 Gallery scroll bench case with 30% placeholders. Verify: `cargo xtask bench --check`, with the `gallery-scroll` p95 within budget.
-- [ ] 7.2 README "Photos without a preview" section; `docs/` note on bumping decoder generations. Verify: `grep -n "Fill in previews" README.md`.
+- [x] 7.2 README "Photos without a preview" section; `docs/` note on bumping decoder generations. Verify: `grep -n "Fill in previews" README.md`. Done: README "Photos without a preview" (and the HEIC, TIFF-limits and command-line sections), `docs/decoder-generations.md`, and the 0.3.0 release-notes line.
 
 ## 8. Verification
 

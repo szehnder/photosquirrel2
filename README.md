@@ -113,13 +113,15 @@ install for your system:
 
 Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exact copies and exported; they show
 "No HEIC decoder on this system", and the scan summary and the inspector say how to enable previews. After the
-install, restart and rescan: only those photos are read again, and they get previews and are matched to their
-resized JPEG copies. `PHOTOSQUIRREL_HEIF_DECODER=none` makes PhotoSquirrel behave as if no decoder were found.
+install, restart PhotoSquirrel and click **Fill in previews** (or rescan): only those photos are read again, and
+they get previews and are matched to their resized JPEG copies. `PHOTOSQUIRREL_HEIF_DECODER=none` makes
+PhotoSquirrel behave as if no decoder were found.
 
 ### Known limitations
 
 - **TIFF limits.** Palette (indexed) and CIE L\*a\*b\* TIFFs above 64 MB are catalogued and de-duplicated by
-  content only, and BigTIFF files (the variant for files above 4 GB) are not recognised yet. A TIFF whose image
+  content only, and BigTIFF files (the variant for files above 4 GB) are catalogued with a "not supported yet"
+  placeholder but not decoded. A TIFF whose image
   decodes to more than 4 GB (about 30000x24000 at 16-bit RGB) and has no smaller resolution level stored gets a
   placeholder thumbnail and is de-duplicated by content only. Colour profiles are not applied, and floating-point
   values above 1.0 are clipped.
@@ -154,6 +156,8 @@ photosquirrel-cli export run --library ~/Pictures/Library --upgrade --yes  # als
                                                       # the library copies (listed by every plan)
 photosquirrel-cli report                              # what happened to every file found
 photosquirrel-cli report excluded                     # excluded files by category (see the Excluded view)
+photosquirrel-cli previews status                     # photos without a preview, by format and reason
+photosquirrel-cli previews fill                       # fill in the previews that can be made now
 photosquirrel-cli cleanup plan --source 1             # what a cleanup would move into quarantine; moves nothing
 photosquirrel-cli cleanup select 3 --except-folder "Backup 2012"  # narrow the plan; moves nothing
 photosquirrel-cli cleanup run 3 --yes                 # re-verify each file, then move it; never deletes
@@ -244,6 +248,34 @@ a date in its file name or XMP sidecar, then its folder).
 photosquirrel-cli scan                                         # re-dates old rows, reads nothing for them
 photosquirrel-cli scan --refresh-analysis                      # also re-classifies files from older versions
 photosquirrel-cli --json export dry-run --library ~/Pictures/Library   # each file's date, precision and source
+```
+
+## Photos without a preview
+
+Some files cannot be drawn on this computer, or by this version: a HEIC without the system's decoder, a TIFF
+variant this version does not read (BigTIFF), a video without a poster-frame tool, a damaged file. They are never
+blank squares. Each one gets a placeholder tile with its format ("TIFF", "HEIC"), "No preview" and a mark that
+says what kind of problem it is:
+
+- **needs a library** (download mark): install the decoder this system lacks;
+- **ready to fill in** (refresh mark): a preview can be made now;
+- **not supported yet** (info mark): a later version may read it;
+- **damaged** (warning mark): the decoder could not read the data.
+
+Such files are still catalogued, matched by exact content and exported. Hover a tile and click its info button
+(or select it and press Shift+I), or use **Why no preview?** in the inspector or the loupe: the dialog names
+the reason in plain words and what to do, from install steps for your system to **Fill in previews**, and "Show
+them" lists every file with the same reason (the Library's **Preview** menu does the same).
+
+**Fill in previews** re-decodes only the files whose placeholder can become a preview now, after you installed a
+decoder or updated PhotoSquirrel (0.3.0 reads TIFFs that 0.2.0 could not). It reads each such file once, walks no
+folder, skips files on drives that are not connected (and counts them), regroups the files it filled in, and can
+be paused and cancelled like a scan. The Library offers it in a one-line notice when files are waiting; the next
+rescan of a source fills them in too. On the command line:
+
+```
+photosquirrel-cli previews status            # placeholders by format and reason, and how many can be filled in
+photosquirrel-cli previews fill --format heic # fill in previews (Ctrl-C stops; the rest keeps waiting)
 ```
 
 ## Freeing up space (optional)

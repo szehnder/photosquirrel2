@@ -50,6 +50,10 @@ to their resized or re-exported JPEG copies.
 - **AVIF** is decoded everywhere by a bundled AV1 decoder.
 - **Previews filled in after an install:** once a decoder is available, the next rescan reads only the photos that
   waited for it and gives them previews, perceptual hashes and duplicate matching.
+- **Photos without a preview say why:** placeholder tiles show the format and a mark (needs a library, ready to
+  fill in, not supported yet, damaged), and "Why no preview?" explains each one. **Fill in previews** reads only
+  the files that can get a preview now, such as TIFFs catalogued by 0.2.0 that stayed blank
+  (`previews fill` on the command line).
 - **Better copies are offered, never copied twice:** when a photo already in your library gets a better copy later
   (a HEIC decoded at last, another keeper you chose, a better copy on a new drive), the export copies nothing for it
   and lists it as a better copy; `export run --upgrade` (or the option in the Export view) copies it beside the
