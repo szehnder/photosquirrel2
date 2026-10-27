@@ -150,6 +150,9 @@ pub struct SourceReportRow {
     pub counts: CompletionCounts,
     pub excluded: Vec<(ExclusionReason, u64, u64)>,
     pub folders: Vec<FolderRow>,
+    /// Analysed files bearing on the source that wait for the frame-identity re-read (ADR-0108): its badge is
+    /// not confirmed and cleanup is refused until a rescan.
+    pub rescan_needed: u64,
 }
 
 /// The completion report for one library.
@@ -858,6 +861,7 @@ impl ScanBackend for CatalogBackend {
                         .cloned()
                         .unwrap_or_else(|| format!("Source {}", s.source.0)),
                     counts: s.counts.clone(),
+                    rescan_needed: s.rescan_needed,
                     excluded: excluded_rows(&s.excluded),
                     folders: s
                         .folders
@@ -1416,6 +1420,7 @@ impl DemoBackend {
                 counts,
                 excluded,
                 folders,
+                rescan_needed: 0,
             });
         }
         let mut totals = CompletionCounts::default();

@@ -16,15 +16,6 @@ use ps_service::cleanup::RunOptions;
 use ps_service::export::profile_settings;
 use ps_service::scan::{ScanOptions, ScanService};
 
-/// What catalog migration 23 leaves of a catalog the build before frame identity wrote: no frame ids, every row
-/// current but the RAW-format rows and the Canon camera files of their capture seconds (the migration's rule).
-const DOWNGRADE: &str = "UPDATE file SET meta_version = 0, frame_id = NULL;
-    UPDATE file SET meta_version = 1
-    WHERE (format IS NULL OR format NOT LIKE 'raw:%')
-      AND NOT (camera_model LIKE 'canon%' AND capture_ts IS NOT NULL
-               AND capture_ts / 1000 IN (SELECT capture_ts / 1000 FROM file
-                                         WHERE format LIKE 'raw:%' AND capture_ts IS NOT NULL));";
-
 fn write(path: &Path, bytes: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, bytes).unwrap();
@@ -52,6 +43,23 @@ fn card(root: &Path) {
             &f.jpeg,
         );
     }
+}
+
+/// One test at a time: the frame-identity hook is process-wide.
+static HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn hook() -> std::sync::MutexGuard<'static, ()> {
+    HOOK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn scratch() -> tempfile::TempDir {
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(base).unwrap();
+    tempfile::Builder::new()
+        .prefix("ps-frame-identity-")
+        .tempdir_in(base)
+        .unwrap()
 }
 
 fn rel(s: &str) -> RelPath {
@@ -102,12 +110,8 @@ fn library_files(library: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn scenario_cleanup_quarantined_frame_of_a_split_burst_is_pending() {
-    let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
-    fs::create_dir_all(base).unwrap();
-    let tmp = tempfile::Builder::new()
-        .prefix("ps-frame-identity-")
-        .tempdir_in(base)
-        .unwrap();
+    let _g = hook();
+    let tmp = scratch();
     let root = tmp.path().join("card");
     card(&root);
     let root = root
@@ -161,7 +165,8 @@ fn scenario_cleanup_quarantined_frame_of_a_split_burst_is_pending() {
     // Upgraded (migration 23 leaves RAW rows at metadata version 0), then rescanned: the frames split.
     {
         let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&data)).unwrap();
-        c.execute_batch(DOWNGRADE).unwrap();
+        c.execute_batch(&ps_catalog::db::frame_identity_reset_sql())
+            .unwrap();
     }
     let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
     svc.start(&[]).unwrap();
@@ -235,4 +240,159 @@ fn scenario_cleanup_quarantined_frame_of_a_split_burst_is_pending() {
         "{:?}",
         source_report(&svc).counts
     );
+}
+
+#[test]
+fn scenario_cleanup_stale_groups_refused_before_the_rescan() {
+    let _g = hook();
+    let tmp = scratch();
+    let root = tmp.path().join("card");
+    card(&root);
+    let root = root
+        .canonicalize()
+        .map(ps_model::path::simplify_canonical)
+        .unwrap();
+    let data = tmp.path().join("data");
+    let library = tmp.path().join("Library");
+
+    // The build before ADR-0105: scan, export, and a cleanup plan of DCIM that counts frame 35's CR2 as covered
+    // by frame 34's DNG. Not run yet.
+    ps_model::frame::set_frame_identity_enabled(false);
+    let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
+    let src = svc.add_source(&root).unwrap().source.id;
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    export(&svc, &library);
+    let id = ids(&svc, &library);
+    let cr2 = id["DCIM/101CANON/IMG_0035.CR2"];
+    let old_plan = svc.cleanups().plan(src, Some(rel("DCIM")), None).unwrap();
+    assert!(old_plan.moves.iter().any(|m| m.file == cr2));
+    let old_run = old_plan.summary.as_ref().unwrap().run.id;
+    drop(svc);
+    ps_model::frame::set_frame_identity_enabled(true);
+
+    // Upgraded (migration 23), not rescanned yet: the report flags the source, plan and run are refused.
+    {
+        let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&data)).unwrap();
+        c.execute_batch(&ps_catalog::db::frame_identity_reset_sql())
+            .unwrap();
+    }
+    let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
+    let source_report = |svc: &ScanService| {
+        svc.exports()
+            .completion(None, false)
+            .unwrap()
+            .report
+            .sources
+            .into_iter()
+            .find(|s| s.source == SourceId(src.0))
+            .unwrap()
+    };
+    assert!(source_report(&svc).rescan_needed > 0);
+    let refused = |e: ps_service::cleanup::CleanupError| {
+        assert!(
+            matches!(e, ps_service::cleanup::CleanupError::RescanFirst { files } if files > 0),
+            "{e}"
+        );
+        assert!(e.to_string().contains("rescan"), "{e}");
+    };
+    refused(
+        svc.cleanups()
+            .plan(src, Some(rel("DCIM")), None)
+            .unwrap_err(),
+    );
+    refused(
+        svc.cleanups()
+            .run(
+                old_run,
+                RunOptions::default(),
+                &AtomicBool::new(false),
+                &RunProgress::default(),
+            )
+            .unwrap_err(),
+    );
+    assert!(
+        root.join("DCIM/101CANON/IMG_0035.CR2").is_file(),
+        "nothing moved"
+    );
+
+    // After the rescan the report is confirmed again and a new plan never counts frame 35's CR2 as covered by a
+    // copy of frame 34.
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    assert_eq!(source_report(&svc).rescan_needed, 0);
+    svc.cleanups().discard(old_run).unwrap();
+    let plan = svc.cleanups().plan(src, Some(rel("DCIM")), None).unwrap();
+    for m in plan.moves.iter().filter(|m| m.file == cr2) {
+        assert!(
+            !m.covering_library_path.display().contains("IMG_0034"),
+            "{}",
+            m.covering_library_path
+        );
+    }
+}
+
+/// ADR-0108: a quarantined file removed from the quarantine folder by hand is marked current quietly, not reported
+/// unreadable on every rescan.
+#[test]
+fn a_quarantined_file_gone_from_the_quarantine_folder_is_not_an_error() {
+    let _g = hook();
+    let tmp = scratch();
+    let root = tmp.path().join("card");
+    card(&root);
+    let root = root
+        .canonicalize()
+        .map(ps_model::path::simplify_canonical)
+        .unwrap();
+    let data = tmp.path().join("data");
+    let library = tmp.path().join("Library");
+    ps_model::frame::set_frame_identity_enabled(false);
+    let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
+    let src = svc.add_source(&root).unwrap().source.id;
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    export(&svc, &library);
+    let plan = svc.cleanups().plan(src, Some(rel("DCIM")), None).unwrap();
+    let run = plan.summary.as_ref().unwrap().run.id;
+    svc.cleanups()
+        .run(
+            run,
+            RunOptions::default(),
+            &AtomicBool::new(false),
+            &RunProgress::default(),
+        )
+        .unwrap();
+    drop(svc);
+    ps_model::frame::set_frame_identity_enabled(true);
+    let mut removed = 0;
+    for m in &plan.moves {
+        let q = m.quarantine_rel_path.under(&root);
+        if q.is_file() {
+            fs::remove_file(&q).unwrap();
+            removed += 1;
+        }
+    }
+    assert!(removed > 0);
+    let catalog = ps_catalog::db::catalog_path(&data);
+    {
+        let c = rusqlite::Connection::open(&catalog).unwrap();
+        c.execute_batch(&ps_catalog::db::frame_identity_reset_sql())
+            .unwrap();
+    }
+    let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
+    for _ in 0..2 {
+        svc.start(&[]).unwrap();
+        let s = svc.wait().unwrap();
+        assert_eq!(s.errors, 0, "{s:?}");
+    }
+    drop(svc);
+    let c = rusqlite::Connection::open(&catalog).unwrap();
+    let stale: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM file WHERE meta_version < 1 AND stage = 3",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale, 0);
 }

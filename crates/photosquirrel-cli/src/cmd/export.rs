@@ -414,6 +414,9 @@ struct SourceOut {
     counts: CountsOut,
     excluded: std::collections::BTreeMap<&'static str, (u64, u64)>,
     badge: String,
+    /// Analysed files bearing on the source that wait for the frame-identity re-read (ADR-0108): the badge is not
+    /// confirmed and cleanup is refused until a rescan.
+    rescan_needed: u64,
     folders: Option<Vec<FolderOut>>,
 }
 
@@ -452,7 +455,12 @@ fn report_out(
                 root: roots.get(&s.source).cloned().unwrap_or_default(),
                 counts: counts(&s.counts),
                 excluded: s.excluded.iter().map(|(r, v)| (r.as_str(), *v)).collect(),
-                badge: s.badge.label(),
+                badge: if s.rescan_needed > 0 {
+                    format!("{} (not confirmed: rescan first)", s.badge.label())
+                } else {
+                    s.badge.label()
+                },
+                rescan_needed: s.rescan_needed,
                 folders: folders.then(|| {
                     s.folders
                         .iter()
@@ -507,6 +515,13 @@ fn print_report(o: &ReportOut) {
             f["quarantined"],
             f["superseded"]
         );
+        if s.rescan_needed > 0 {
+            println!(
+                "    {} files {}",
+                s.rescan_needed,
+                ps_export::RESCAN_NEEDED_HINT
+            );
+        }
         if f["superseded"] > 0 {
             println!(
                 "    {}: NOT accounted for; {}",

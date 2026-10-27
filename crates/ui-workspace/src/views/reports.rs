@@ -37,6 +37,30 @@ pub fn folder_cell_alerts(d: Disposition) -> bool {
     )
 }
 
+/// The pending files only in a quarantine folder, by reason (as `ps_export::in_quarantine_label`): library copy
+/// gone, or moved out of the group whose library copy covered them (ADR-0105).
+fn in_quarantine_label(c: &CompletionCounts) -> String {
+    let all = c.pending_in_quarantine;
+    let regrouped = c.pending_regrouped.min(all);
+    let gone = all - regrouped;
+    match (gone, regrouped) {
+        (_, 0) => format!(
+            "{} only in quarantine, library copy gone",
+            format_count(all)
+        ),
+        (0, _) => format!(
+            "{} only in quarantine, group changed: undo the cleanup or export again",
+            format_count(all)
+        ),
+        _ => format!(
+            "{} only in quarantine: {} library copy gone, {} group changed (undo the cleanup or export again)",
+            format_count(all),
+            format_count(gone),
+            format_count(regrouped)
+        ),
+    }
+}
+
 /// "100% accounted for" or what is outstanding (ADR-0023, same rule as `ps_export::Badge`).
 pub fn badge_label(c: &CompletionCounts) -> String {
     let pending = c.files_of(Disposition::Pending);
@@ -49,17 +73,7 @@ pub fn badge_label(c: &CompletionCounts) -> String {
     if pending > 0 || superseded == 0 {
         let mut p = format!("{} pending", format_count(pending));
         if c.pending_in_quarantine > 0 {
-            if c.pending_regrouped == c.pending_in_quarantine {
-                p.push_str(&format!(
-                    " ({} only in quarantine, group changed: undo the cleanup or export again)",
-                    format_count(c.pending_in_quarantine)
-                ));
-            } else {
-                p.push_str(&format!(
-                    " ({} only in quarantine, library copy gone)",
-                    format_count(c.pending_in_quarantine)
-                ));
-            }
+            p.push_str(&format!(" ({})", in_quarantine_label(c)));
         }
         parts.push(p);
     }
@@ -270,9 +284,21 @@ fn stacked(c: &CompletionCounts, colors: &Colors) -> Div {
         }))
 }
 
-fn badge(c: &CompletionCounts, id: String, colors: &Colors) -> AnyElement {
-    let ok = c.fully_accounted();
+/// [`badge_label`], flagged while `rescan_needed` files wait for the frame-identity re-read (ADR-0108).
+pub fn confirmed_badge_label(c: &CompletionCounts, rescan_needed: u64) -> String {
     let label = badge_label(c);
+    if rescan_needed == 0 {
+        return label;
+    }
+    format!(
+        "{label} · not confirmed: rescan first ({} files analysed before frame numbers were read)",
+        format_count(rescan_needed)
+    )
+}
+
+fn badge(c: &CompletionCounts, rescan_needed: u64, id: String, colors: &Colors) -> AnyElement {
+    let ok = c.fully_accounted() && rescan_needed == 0;
+    let label = confirmed_badge_label(c, rescan_needed);
     h_flex()
         .id(SharedString::from(id))
         .test_support()
@@ -441,7 +467,12 @@ impl Render for ReportsView {
             .child(
                 kit::card_title("All sources", cx)
                     .child(div().flex_1())
-                    .child(badge(&data.totals, "report-badge-all".into(), &colors)),
+                    .child(badge(
+                        &data.totals,
+                        data.sources.iter().map(|s| s.rescan_needed).sum(),
+                        "report-badge-all".into(),
+                        &colors,
+                    )),
             )
             .child(stacked(&data.totals, &colors))
             .child(legend)
@@ -657,6 +688,7 @@ impl Render for ReportsView {
                         })
                         .child(badge(
                             &s.counts,
+                            s.rescan_needed,
                             format!("report-badge-{}", s.id.0),
                             &colors,
                         )),
@@ -992,6 +1024,7 @@ fn folder_table(
                 .justify_end()
                 .child(badge(
                     &f.counts,
+                    0,
                     format!("report-folder-badge-{}-{i}", source.0),
                     colors,
                 )),
@@ -1003,7 +1036,8 @@ fn folder_table(
 
 #[cfg(test)]
 mod alert_tests {
-    use super::{REPORTS_SUBTITLE, folder_cell_alerts};
+    use super::{REPORTS_SUBTITLE, badge_label, confirmed_badge_label, folder_cell_alerts};
+    use ps_model::CompletionCounts;
     use ps_model::Disposition;
 
     /// Superseded cells are alerts like pending and unreadable ones; the subtitle names better copies (re-review
@@ -1023,5 +1057,27 @@ mod alert_tests {
             ]
         );
         assert!(REPORTS_SUBTITLE.contains("better copy not in the library yet"));
+    }
+
+    #[test]
+    fn the_badge_names_each_quarantine_reason() {
+        let mut c = CompletionCounts::default();
+        for _ in 0..3 {
+            c.add(Disposition::Pending, 10);
+            c.add_pending_in_quarantine();
+        }
+        assert!(badge_label(&c).contains("3 only in quarantine, library copy gone"));
+        c.pending_regrouped = 3;
+        assert!(badge_label(&c).contains("3 only in quarantine, group changed"));
+        c.pending_regrouped = 1;
+        let mixed = badge_label(&c);
+        assert!(
+            mixed.contains("2 library copy gone, 1 group changed"),
+            "{mixed}"
+        );
+        // Waiting for the frame-identity re-read: flagged, even at 100%.
+        let full = CompletionCounts::default();
+        assert_eq!(confirmed_badge_label(&full, 0), "100% accounted for");
+        assert!(confirmed_badge_label(&full, 4).contains("not confirmed: rescan first (4 files"));
     }
 }

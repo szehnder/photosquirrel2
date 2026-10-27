@@ -17,7 +17,7 @@
 //! Nothing here touches a source tree directly: only `ps-export::quarantine` renames files, and only after
 //! re-verifying them. Nothing is ever deleted.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -85,6 +85,11 @@ pub enum CleanupError {
     NotDiscardable { id: i64, why: String },
     #[error("cleanup run {id} cannot be narrowed: {why}")]
     NotNarrowable { id: i64, why: String },
+    #[error(
+        "{files} analysed files bearing on this cleanup were catalogued before frame numbers were read, so their \
+         groups may still hold two burst frames: rescan the source (and any source sharing groups with it) first"
+    )]
+    RescanFirst { files: u64 },
     #[error("the catalog is open read-only (another PhotoSquirrel process owns it)")]
     ReadOnly,
 }
@@ -508,15 +513,20 @@ impl<'a> Cleanups<'a> {
             None => ex.last_library()?.ok_or(CleanupError::NoLibrary)?,
         };
         let (files, dispositions, _) = ex.dispositions(&library, false)?;
+        let in_scope = |f: &ps_export::FileFacts| {
+            f.source == source && folder.as_ref().is_none_or(|dir| f.rel_path.is_within(dir))
+        };
+        // ADR-0108: groups formed before frame identity are not trusted for a move.
+        let stale = ex.rescan_needed(&files, &[&in_scope])?[0];
+        if stale > 0 {
+            return Err(CleanupError::RescanFirst { files: stale });
+        }
         let mut stats: HashMap<FileId, StatFingerprint> = HashMap::new();
         self.catalog().read().for_each_file(|f| {
             if f.key.source == source {
                 stats.insert(f.id, f.stat);
             }
         })?;
-        let in_scope = |f: &ps_export::FileFacts| {
-            f.source == source && folder.as_ref().is_none_or(|dir| f.rel_path.is_within(dir))
-        };
         let mut held: Vec<Skipped> = files
             .iter()
             .zip(&dispositions)
@@ -795,6 +805,26 @@ impl<'a> Cleanups<'a> {
             .ok_or(CleanupError::NoLibrary)?;
         if !library.is_dir() {
             return Err(CleanupError::LibraryOffline(library));
+        }
+        // ADR-0108: groups formed before frame identity are not trusted for a move (a plan made before the upgrade).
+        if !r
+            .files_below_meta_version(ps_model::META_LOGIC_VERSION)?
+            .is_empty()
+        {
+            let planned: HashSet<FileId> = moves
+                .iter()
+                .filter(|m| m.state == MoveState::Planned)
+                .map(|m| m.file)
+                .collect();
+            let ex = self.svc.exports();
+            let (files, _, _) = ex.dispositions(&library, false)?;
+            let stale = ex.rescan_needed(
+                &files,
+                &[&|f: &ps_export::FileFacts| planned.contains(&f.file)],
+            )?[0];
+            if stale > 0 {
+                return Err(CleanupError::RescanFirst { files: stale });
+            }
         }
         let ledger = r.ledger(run.library_id)?;
         // Read before the holds are derived: a change committed meanwhile makes the run derive them again.

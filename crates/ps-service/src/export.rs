@@ -573,7 +573,22 @@ impl<'a> Exports<'a> {
                 .export_library_verified(l.id, ps_export::now_ms())?;
         }
         let verified_at_ms = record()?.and_then(|l| l.verified_at_ms);
-        let report = ps_export::report(&files, &d, &checks);
+        let mut report = ps_export::report(&files, &d, &checks);
+        let ids: Vec<ps_model::SourceId> = report.sources.iter().map(|s| s.source).collect();
+        let scopes: Vec<Box<dyn Fn(&FileFacts) -> bool>> = ids
+            .iter()
+            .map(|&id| {
+                Box::new(move |f: &FileFacts| f.source == id) as Box<dyn Fn(&FileFacts) -> bool>
+            })
+            .collect();
+        let refs: Vec<&dyn Fn(&FileFacts) -> bool> = scopes.iter().map(|b| b.as_ref()).collect();
+        for (s, n) in report
+            .sources
+            .iter_mut()
+            .zip(self.rescan_needed(&files, &refs)?)
+        {
+            s.rescan_needed = n;
+        }
         let mut totals = ps_model::CompletionCounts::default();
         for (f, x) in files.iter().zip(&d) {
             ps_export::count_disposition(&mut totals, x, f.size);
@@ -585,6 +600,43 @@ impl<'a> Exports<'a> {
             report,
             totals,
         })
+    }
+
+    /// Analysed rows not yet re-read for frame identity (ADR-0105) that bear on each of `scopes` over `files`: in
+    /// the scope, or in a duplicate group with a file in it. Until a rescan re-reads them, such a group may still
+    /// hold two burst frames, so its coverage is not to be trusted: cleanup refuses and the report says so
+    /// (ADR-0108). Zeros, from one cheap query, once every row is current.
+    pub fn rescan_needed(
+        &self,
+        files: &[FileFacts],
+        scopes: &[&dyn Fn(&FileFacts) -> bool],
+    ) -> Result<Vec<u64>> {
+        let r = self.catalog().read();
+        let stale: HashSet<FileId> = r
+            .files_below_meta_version(ps_model::META_LOGIC_VERSION)?
+            .into_iter()
+            .collect();
+        if stale.is_empty() {
+            return Ok(vec![0; scopes.len()]);
+        }
+        let groups = r.group_memberships()?;
+        Ok(scopes
+            .iter()
+            .map(|in_scope| {
+                let scoped: HashSet<FileId> = files
+                    .iter()
+                    .filter(|f| in_scope(f))
+                    .map(|f| f.file)
+                    .collect();
+                let mut bearing: HashSet<FileId> = stale.intersection(&scoped).copied().collect();
+                for (_, members, _) in &groups {
+                    if members.iter().any(|m| scoped.contains(m)) {
+                        bearing.extend(members.iter().filter(|m| stale.contains(m)));
+                    }
+                }
+                bearing.len() as u64
+            })
+            .collect())
     }
 
     /// Files with a given disposition (drill-down), with absolute paths.

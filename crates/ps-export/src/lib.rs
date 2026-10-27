@@ -43,8 +43,9 @@ pub use copy::{CopyConfig, CopyError, CopyHooks, CopyOutcome, NoHooks};
 pub use date::{DateFacts, DateOrigin, DateSource, FilingDate};
 pub use disposition::{
     Badge, CompletionReport, CopyCheck, DispositionFacts, FileDisposition, FileFacts, FolderReport,
-    GroupFacts, REGROUPED_HINT, SUPERSEDED_HINT, SourceReport, check_library, copy_check_text,
-    count_disposition, derive_dispositions, in_quarantine_label, report, superseded_label,
+    GroupFacts, REGROUPED_HINT, RESCAN_NEEDED_HINT, SUPERSEDED_HINT, SourceReport, check_library,
+    copy_check_text, count_disposition, derive_dispositions, in_quarantine_label, report,
+    superseded_label,
 };
 pub use execute::{ExecConfig, ExecError, ExportReport, FailedFile, StopReason, execute};
 pub use input::{CopyRef, ExportInput, ExportUnit, KeeperFile, SourceInfo};

@@ -18,7 +18,7 @@
 pub mod synthetic;
 
 /// Better copies not in the library (ADR-0093): the report's words, shared with the app.
-pub use ps_export::{SUPERSEDED_HINT, superseded_label};
+pub use ps_export::{RESCAN_NEEDED_HINT, SUPERSEDED_HINT, superseded_label};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

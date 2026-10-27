@@ -436,7 +436,10 @@ pub fn in_quarantine_label(in_quarantine: u64, regrouped: u64) -> String {
 }
 
 /// What to do about files a regroup moved out of the group their library copy covers (ADR-0105).
-pub const REGROUPED_HINT: &str = "a regroup moved them out of the group whose library copy covered them when      cleanup moved them (burst frames told apart), so that copy is of another photo. Keep the quarantine folder;      run `export run` to copy them (read from the quarantine folder) or `cleanup undo` (Undo in the Cleanup view)      to put them back.";
+pub const REGROUPED_HINT: &str = "a regroup moved them out of the group whose library copy covered them when \
+     cleanup moved them (burst frames told apart), so that copy is of another photo. Keep the quarantine folder; \
+     run `export run` to copy them (read from the quarantine folder) or `cleanup undo` (Undo in the Cleanup view) \
+     to put them back.";
 
 /// "N better copies not in the library yet", the superseded files of a report (ADR-0093).
 pub fn superseded_label(n: u64) -> String {
@@ -446,6 +449,11 @@ pub fn superseded_label(n: u64) -> String {
         format!("{n} better copies not in the library yet")
     }
 }
+
+/// What a report says about a source whose groups wait for the frame-identity re-read (ADR-0108).
+pub const RESCAN_NEEDED_HINT: &str = "analysed before frame numbers were read: their groups may still hold two burst \
+     frames, so this is not confirmed and cleanup waits. Rescan the source (and any source sharing groups with it) \
+     first.";
 
 /// What to do about superseded files, for reports.
 pub const SUPERSEDED_HINT: &str = "the library holds only a lesser copy of these photos; `export run --upgrade` \
@@ -471,6 +479,10 @@ pub struct SourceReport {
     pub badge: Badge,
     /// Sorted by folder.
     pub folders: Vec<FolderReport>,
+    /// Analysed files whose metadata predates frame identity and that bear on this source (in it, or grouped with
+    /// a file of it): until a rescan re-reads them its groups, and so the badge, are not confirmed (ADR-0108).
+    /// Filled by the service; 0 here.
+    pub rescan_needed: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -518,6 +530,7 @@ pub fn report(
         .map(|(source, ((counts, excluded), folders))| SourceReport {
             source,
             badge: Badge::of(&counts),
+            rescan_needed: 0,
             counts,
             excluded,
             folders: folders
@@ -547,6 +560,13 @@ pub fn report(
 mod tests {
     use super::*;
     use ps_model::{ExportProfile, LedgerKind, LedgerState};
+
+    #[test]
+    fn hints_have_single_spaces() {
+        for h in [REGROUPED_HINT, SUPERSEDED_HINT, RESCAN_NEEDED_HINT] {
+            assert!(!h.contains("  "), "{h}");
+        }
+    }
 
     fn rel(s: &str) -> RelPath {
         RelPath::from_bytes(s.as_bytes().to_vec()).expect("rel")
