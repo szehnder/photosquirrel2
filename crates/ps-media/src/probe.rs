@@ -202,6 +202,7 @@ fn probe_format(buf: &[u8], file_size: u64, format: Format, rec: &mut ProbeRecor
         Format::Tiff | Format::Raw(_) if Tiff::parse(buf).is_some() => {
             probe_tiff(View::new(buf, &[]), file_size, format, rec)
         }
+        Format::Tiff if is_bigtiff(buf) => probe_bigtiff(buf, rec),
         Format::Raw(RawFormat::Raf) => probe_raf(buf, file_size, rec),
         Format::Raw(RawFormat::Cr3) => probe_cr3(buf, rec),
         Format::Heic | Format::Avif => probe_heif(buf, file_size, rec),
@@ -228,6 +229,73 @@ fn probe_format(buf: &[u8], file_size: u64, format: Format, rec: &mut ProbeRecor
         }
         Format::Svg => rec.has_alpha = true,
         _ => {}
+    }
+}
+
+/// A BigTIFF header (version 43 with 8-byte offsets), either byte order.
+pub fn is_bigtiff(b: &[u8]) -> bool {
+    b.starts_with(b"II\x2B\x00\x08\x00\x00\x00") || b.starts_with(b"MM\x00\x2B\x00\x08\x00\x00")
+}
+
+/// The first directory of a BigTIFF within the probe window: width, height and orientation. The file is not
+/// decoded (a placeholder names the variant), but its dimensions make it a picture in the catalog.
+fn probe_bigtiff(buf: &[u8], rec: &mut ProbeRecord) {
+    let le = buf.starts_with(b"II");
+    let u16_at = |o: usize| -> Option<u16> {
+        let b: [u8; 2] = buf.get(o..o + 2)?.try_into().ok()?;
+        Some(if le {
+            u16::from_le_bytes(b)
+        } else {
+            u16::from_be_bytes(b)
+        })
+    };
+    let u64_at = |o: usize| -> Option<u64> {
+        let b: [u8; 8] = buf.get(o..o + 8)?.try_into().ok()?;
+        Some(if le {
+            u64::from_le_bytes(b)
+        } else {
+            u64::from_be_bytes(b)
+        })
+    };
+    let read = || -> Option<(u32, u32, u16)> {
+        let ifd = usize::try_from(u64_at(8)?).ok()?;
+        let n = usize::try_from(u64_at(ifd)?).ok()?.min(4096);
+        let (mut w, mut h, mut orientation) = (None, None, 1u16);
+        for i in 0..n {
+            let e = ifd + 8 + i * 20;
+            let tag = u16_at(e)?;
+            let ty = u16_at(e + 2)?;
+            // An inline SHORT, LONG or LONG8 value.
+            let value = match ty {
+                3 => u64::from(u16_at(e + 12)?),
+                // A LONG is the first four bytes of the value field.
+                4 if le => u64_at(e + 12)? & 0xFFFF_FFFF,
+                4 => u64_at(e + 12)? >> 32,
+                16 => u64_at(e + 12)?,
+                _ => continue,
+            };
+            match tag {
+                256 => w = u32::try_from(value).ok(),
+                257 => h = u32::try_from(value).ok(),
+                274 => orientation = u16::try_from(value).unwrap_or(1),
+                _ => {}
+            }
+        }
+        Some((w?, h?, orientation))
+    };
+    match read() {
+        Some((w, h, o)) if w > 0 && h > 0 => {
+            rec.stored = Some(Dimensions::new(w, h));
+            if (1..=8).contains(&o) {
+                rec.orientation = Orientation(o as u8);
+            }
+        }
+        _ => {
+            rec.error.get_or_insert(ProbeError {
+                kind: ProbeErrorKind::Truncated,
+                message: "BigTIFF directory beyond the probe window".into(),
+            });
+        }
     }
 }
 
@@ -300,6 +368,10 @@ pub fn sniff(b: &[u8]) -> Result<Format, String> {
     }
     if starts(b"II*\x00") || starts(b"MM\x00*") {
         return Ok(tiff_flavour(b));
+    }
+    if is_bigtiff(b) {
+        // Recognised, not decoded (`preview-placeholders`): a placeholder says so.
+        return Ok(Format::Tiff);
     }
     if let Some(brands) = bmff::ftyp_brands(b) {
         return bmff_flavour(&brands);

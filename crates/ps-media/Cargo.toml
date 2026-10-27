@@ -40,7 +40,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 ps-media = { path = ".", features = ["test-support"] }
-ps-fixtures.workspace = true
+ps-fixtures = { workspace = true, features = ["scratch"] }
 proptest.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true

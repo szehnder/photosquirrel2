@@ -125,6 +125,10 @@ pub enum Command {
     /// A re-decode failed with the decoder present (ADR-0098): `decoder_missing` cleared and the failure recorded,
     /// so the next rescan retries it only while the failure is transient or after a decoder upgrade.
     DecodeFailed(Vec<(FileKey, ps_model::DecodeFailure)>),
+    /// A re-decode's placeholder outcome (ADR-0109): `Some` stamps the new placeholder's generation and reason (it
+    /// is not filled in again until the file or the generation changes), `None` clears them (a preview now). Only
+    /// thumbed rows are written.
+    SetPreview(Vec<(FileKey, Option<ps_model::PreviewStamp>)>),
     /// The user's include/exclude decision about a file (`None` clears it). Needs catalog migration 7
     /// (`user_inclusion`, [`crate::db::GALLERY_MIGRATION`]); without it the command reports an error.
     ///
@@ -160,6 +164,7 @@ impl Command {
             Command::SetHashes(_) => "set_hashes",
             Command::Redecoded(_) => "redecoded",
             Command::ClearDecoderMissing(_) => "clear_decoder_missing",
+            Command::SetPreview(_) => "set_preview",
             Command::DecodeFailed(_) => "decode_failed",
             Command::SetUserDecision { .. } => "set_user_decision",
         }
@@ -178,7 +183,12 @@ enum Msg {
     ExecDurable(ExecFn, Sender<Result<()>>),
     Flush(Sender<WriteErrors>),
     AddSource(NewSource, Sender<Result<SourceId>>),
-    StartRun(Vec<SourceId>, bool, Sender<Result<ScanRunId>>),
+    StartRun(
+        Vec<SourceId>,
+        bool,
+        Option<ps_model::FillScope>,
+        Sender<Result<ScanRunId>>,
+    ),
     Shutdown,
 }
 
@@ -428,7 +438,19 @@ impl Writer {
         refresh_analysis: bool,
     ) -> Result<ScanRunId> {
         let (reply, rx) = bounded(1);
-        self.send(Msg::StartRun(sources, refresh_analysis, reply))?;
+        self.send(Msg::StartRun(sources, refresh_analysis, None, reply))?;
+        rx.recv().map_err(|_| CatalogError::WriterClosed)?
+    }
+
+    /// Record a new `running` Fill in previews job (`scan_run.kind = 'fill'`, ADR-0109) over `sources` with its
+    /// scope, so a resume fills in the same scope.
+    pub fn start_fill_run(
+        &self,
+        sources: Vec<SourceId>,
+        scope: ps_model::FillScope,
+    ) -> Result<ScanRunId> {
+        let (reply, rx) = bounded(1);
+        self.send(Msg::StartRun(sources, false, Some(scope), reply))?;
         rx.recv().map_err(|_| CatalogError::WriterClosed)?
     }
 
@@ -519,8 +541,8 @@ impl WriterThread {
                     let r = self.immediate(|c| add_source(c, &s));
                     let _ = reply.send(r);
                 }
-                Msg::StartRun(sources, refresh, reply) => {
-                    let r = self.immediate(|c| start_run(c, &sources, refresh));
+                Msg::StartRun(sources, refresh, fill, reply) => {
+                    let r = self.immediate(|c| start_run(c, &sources, refresh, fill.as_ref()));
                     let _ = reply.send(r);
                 }
                 Msg::Shutdown => break,
@@ -841,9 +863,11 @@ impl WriterThread {
                         let n = c
                             .prepare_cached(
                                 "UPDATE file SET phash = ?3, dhash = ?4, hash_version = ?5,
-                                     decoder_missing = NULL, decode_failure = NULL
+                                     decoder_missing = NULL, decode_failure = NULL,
+                                     preview_gen = NULL, preview_reason = NULL
                                  WHERE source_id = ?1 AND rel_path = ?2
-                                   AND (decoder_missing IS NOT NULL OR decode_failure IS NOT NULL)",
+                                   AND (decoder_missing IS NOT NULL OR decode_failure IS NOT NULL
+                                        OR preview_gen IS NOT NULL)",
                             )?
                             .execute(params![
                                 k.source.0,
@@ -876,6 +900,23 @@ impl WriterThread {
                              WHERE source_id = ?1 AND rel_path = ?2",
                         )?
                         .execute(params![k.source.0, k.path.as_bytes()])?;
+                        Ok(())
+                    });
+                }
+            }
+            Command::SetPreview(rows) => {
+                for (k, p) in &rows {
+                    self.row(name, Some(k), |c| {
+                        c.prepare_cached(
+                            "UPDATE file SET preview_gen = ?3, preview_reason = ?4
+                             WHERE source_id = ?1 AND rel_path = ?2 AND stage = 3",
+                        )?
+                        .execute(params![
+                            k.source.0,
+                            k.path.as_bytes(),
+                            p.map(|p| i64::from(p.generation)),
+                            p.map(|p| p.reason.as_str())
+                        ])?;
                         Ok(())
                     });
                 }
@@ -928,6 +969,8 @@ const ANALYSIS_COLUMNS: &[(&str, &str)] = &[
     ("decode_failure", "NULL"),
     ("frame_id", "NULL"),
     ("meta_version", "0"),
+    ("preview_gen", "NULL"),
+    ("preview_reason", "NULL"),
 ];
 const PROBE_COLUMNS: &[(&str, &str)] = &[
     ("class", "NULL"),
@@ -1022,7 +1065,7 @@ const ANALYZED_SQL: &str = "UPDATE file SET stage = 2,
         camera_model = ?12, has_gps = ?13, metadata = ?14,
         width = coalesce(?15, width), height = coalesce(?16, height),
         capture_precision = ?17, date_version = ?18, decoder_missing = ?19, decode_failure = ?20,
-        frame_id = ?21, meta_version = ?22
+        frame_id = ?21, meta_version = ?22, preview_gen = ?23, preview_reason = ?24
     WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
 
 /// All columns at once, for rows that arrive with results and are new (the common synthetic/import case).
@@ -1033,10 +1076,10 @@ static INSERT_FULL_SQL: LazyLock<String> = LazyLock::new(|| {
         content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_offset_min,
         capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen,
         class_facts, classifier_hash, capture_precision, date_version, decoder_missing, decode_failure,
-        frame_id, meta_version, exclusion)
+        frame_id, meta_version, preview_gen, preview_reason, exclusion)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
-            ?34, {})
+            ?34, ?35, ?36, {})
     ON CONFLICT (source_id, rel_path) DO NOTHING",
         exclusion_sql("?8", "?10", "?9", "?3")
     )
@@ -1162,6 +1205,8 @@ fn insert_full(
             .map(ps_model::DecodeFailure::to_storage),
         x.frame_id,
         i64::from(ps_model::META_LOGIC_VERSION),
+        a.preview.map(|p| i64::from(p.generation)),
+        a.preview.map(|p| p.reason.as_str()),
     ])
 }
 
@@ -1270,6 +1315,8 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
             .map(ps_model::DecodeFailure::to_storage),
         x.frame_id,
         i64::from(ps_model::META_LOGIC_VERSION),
+        a.preview.map(|p| i64::from(p.generation)),
+        a.preview.map(|p| p.reason.as_str()),
     ])
 }
 
@@ -1454,13 +1501,29 @@ fn add_source(c: &Connection, s: &NewSource) -> rusqlite::Result<SourceId> {
     Ok(SourceId(c.last_insert_rowid()))
 }
 
-fn start_run(c: &Connection, sources: &[SourceId], refresh: bool) -> rusqlite::Result<ScanRunId> {
+fn start_run(
+    c: &Connection,
+    sources: &[SourceId],
+    refresh: bool,
+    fill: Option<&ps_model::FillScope>,
+) -> rusqlite::Result<ScanRunId> {
     let ids: Vec<i64> = sources.iter().map(|s| s.0).collect();
     let json = serde_json::to_string(&ids)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    let scope = fill
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     c.prepare_cached(
-        "INSERT INTO scan_run (status, started_at, sources, refresh_analysis) VALUES ('running', ?1, ?2, ?3)",
+        "INSERT INTO scan_run (status, started_at, sources, refresh_analysis, kind, fill_scope)
+         VALUES ('running', ?1, ?2, ?3, ?4, ?5)",
     )?
-    .execute(params![now_ms(), json, i64::from(refresh)])?;
+    .execute(params![
+        now_ms(),
+        json,
+        i64::from(refresh),
+        if fill.is_some() { "fill" } else { "scan" },
+        scope
+    ])?;
     Ok(ScanRunId(c.last_insert_rowid()))
 }

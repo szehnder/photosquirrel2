@@ -93,16 +93,26 @@ pub fn decode<R: Read + Seek>(
     r.map(|img| (img, stats))
 }
 
+/// The detail of the placeholder of a BigTIFF, which this version recognises and does not decode (ADR-0109).
+pub const BIGTIFF: &str = "BigTIFF";
+
 /// [`decode`] that calls `stop` before every strip or tile and returns [`DecodeError::Cancelled`] as soon as it
 /// returns true (the scanner's pause and cancel checkpoint, ADR-0008: `stop` may block while paused). The
 /// stats are returned whatever the outcome, so a caller learns the first image's dimensions from a decode
-/// that failed.
+/// that failed. A BigTIFF is refused with [`DecodeError::Unsupported`]`(`[`BIGTIFF`]`)` (ADR-0109).
 pub fn decode_with<R: Read + Seek>(
     mut reader: R,
     min_long: u32,
     stop: &dyn Fn() -> bool,
 ) -> (Result<RgbImage, DecodeError>, TiffDecodeStats) {
     let mut stats = TiffDecodeStats::default();
+    let mut head = [0u8; 8];
+    let bigtiff = reader.seek(SeekFrom::Start(0)).is_ok()
+        && reader.read_exact(&mut head).is_ok()
+        && crate::probe::is_bigtiff(&head);
+    if bigtiff {
+        return (Err(DecodeError::Unsupported(BIGTIFF.into())), stats);
+    }
     let r = contain(|| decode_inner(&mut reader, min_long, stop, &mut stats))
         .unwrap_or_else(|| Err(DecodeError::Failed("TIFF decoder failure".into())));
     (r, stats)

@@ -144,6 +144,17 @@ impl ThumbStore {
         })
     }
 
+    /// The kind of the stored thumbnail of a content identity, without reading its blob (`None`: none stored).
+    pub fn stored_kind(&self, id: &ContentId) -> Result<Option<ThumbKind>> {
+        self.read(|c| {
+            let kind: Option<String> = c
+                .prepare_cached("SELECT kind FROM thumb WHERE content_id = ?1")?
+                .query_row([&id.digest[..]], |r| r.get(0))
+                .optional()?;
+            Ok(kind.as_deref().and_then(ThumbKind::parse))
+        })
+    }
+
     /// The stored thumbnail of a content identity.
     pub fn get(&self, id: &ContentId) -> Result<Option<ThumbnailRecord>> {
         self.read(|c| {

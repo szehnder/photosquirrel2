@@ -52,6 +52,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     EXCLUSION_CATEGORY_MIGRATION,
     EXCLUSION_CATEGORY_FIX_MIGRATION,
     FRAME_IDENTITY_MIGRATION,
+    PREVIEW_GEN_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -196,6 +197,13 @@ pub const FRAME_IDENTITY_MIGRATION: Migration = Migration {
     version: 23,
     name: "frame_identity",
     sql: include_str!("../migrations/0023_frame_identity.sql"),
+};
+/// Migration 24 (ADR-0109: `file.preview_gen`, `file.preview_reason` and the partial index `file_preview`;
+/// `scan_run.kind` and `scan_run.fill_scope`; placeholder stills of older catalogs marked at generation 0).
+pub const PREVIEW_GEN_MIGRATION: Migration = Migration {
+    version: 24,
+    name: "preview_gen",
+    sql: include_str!("../migrations/0024_preview_gen.sql"),
 };
 /// SQL that puts a catalog back where migration 23 leaves one written before frame identity (ADR-0105): no frame
 /// ids, every row current except those the migration keeps for the re-read. It reuses the migration's own

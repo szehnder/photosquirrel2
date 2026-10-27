@@ -131,7 +131,7 @@ impl DecodeFailure {
 }
 
 /// Why a placeholder stands in for pixels (stored with the placeholder; absent in rows written before it).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PlaceholderReason {
     /// No decoder for this format on this machine.
@@ -140,6 +140,28 @@ pub enum PlaceholderReason {
     NoPosterTool,
     /// An AVIF image sequence without a still item.
     Sequence,
+    /// The format is recognised and this file uses a layout this version does not decode ("BigTIFF").
+    UnsupportedVariant { detail: String },
+    /// The decoder failed on data that should be decodable: the file may be damaged.
+    Unreadable { message: String },
+    /// A reason written by a newer version that this one does not know (`preview-placeholders`, ADR-0109).
+    #[serde(other)]
+    NeedsNewerVersion,
+}
+
+impl PlaceholderReason {
+    /// The reason's kind, as `file.preview_reason` stores it.
+    pub fn kind(&self) -> crate::PreviewReason {
+        use crate::PreviewReason as R;
+        match self {
+            PlaceholderReason::DecoderMissing { .. } => R::DecoderMissing,
+            PlaceholderReason::NoPosterTool => R::NoPosterTool,
+            PlaceholderReason::Sequence => R::Sequence,
+            PlaceholderReason::UnsupportedVariant { .. } => R::UnsupportedVariant,
+            PlaceholderReason::Unreadable { .. } => R::Unreadable,
+            PlaceholderReason::NeedsNewerVersion => R::NeedsNewerVersion,
+        }
+    }
 }
 
 /// One step of a fix: text, optionally a command to run or a link to open.

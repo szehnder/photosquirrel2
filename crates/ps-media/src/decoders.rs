@@ -135,6 +135,27 @@ impl Decoders {
     }
 }
 
+/// The decoder generation of every format family in this build (ADR-0109). A placeholder records its family's
+/// generation; one older than this counts as waiting, so Fill in previews and the next rescan decode it again.
+///
+/// **Bump a family's generation in any change that makes files of it decodable that were not before** (a new
+/// layout, compression, colour model or bit depth, a lifted size limit), and list it in `docs/decoder-generations.md`.
+/// A forgotten bump only means old placeholders wait for a changed file or a manual Fill in; nothing is lost.
+///
+/// - TIFF 1: `tiff-support` (directories beyond the probe window, strip-wise decoding, large files in one pass).
+/// - HEIF 1, AVIF 1: `heic-system-decoders` (the system HEIC decoder, the bundled AV1 decoder).
+/// - every other family 0.
+pub const GENERATIONS: ps_model::Generations = ps_model::Generations::from_pairs(&[
+    (ps_model::DecodeFamily::Jpeg, 0),
+    (ps_model::DecodeFamily::Png, 0),
+    (ps_model::DecodeFamily::Tiff, 1),
+    (ps_model::DecodeFamily::Heif, 1),
+    (ps_model::DecodeFamily::Avif, 1),
+    (ps_model::DecodeFamily::Webp, 0),
+    (ps_model::DecodeFamily::Raw, 0),
+    (ps_model::DecodeFamily::VideoPoster, 0),
+]);
+
 /// The placeholder note for a missing decoder.
 pub fn missing_note(key: DecoderKey) -> String {
     format!("No {} decoder on this system", key.label())
@@ -292,5 +313,31 @@ pub mod fake {
         fn applies_transforms(&self) -> bool {
             self.transforms
         }
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use ps_model::DecodeFamily as F;
+
+    /// The decoder generations of this build. When a change makes files of a family decodable that were not
+    /// before, bump that family here and in [`super::GENERATIONS`], and note it in `docs/decoder-generations.md`
+    /// (ADR-0109): placeholders of older generations are then filled in by Fill in previews and the next rescan.
+    #[test]
+    fn decoder_generations_of_this_build() {
+        let expected = [
+            (F::Jpeg, 0),
+            (F::Png, 0),
+            (F::Tiff, 1),
+            (F::Heif, 1),
+            (F::Avif, 1),
+            (F::Webp, 0),
+            (F::Raw, 0),
+            (F::VideoPoster, 0),
+        ];
+        for (family, generation) in expected {
+            assert_eq!(super::GENERATIONS.of(family), generation, "{family:?}");
+        }
+        assert_eq!(expected.len(), F::ALL.len(), "every family listed");
     }
 }

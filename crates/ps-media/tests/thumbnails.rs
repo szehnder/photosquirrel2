@@ -344,7 +344,17 @@ fn corrupt_inputs_fail_without_panicking() {
     let mut fake = vec![0xFF, 0xD8, 0xFF];
     fake.extend_from_slice(&r);
     let p = probe(&fake);
-    assert!(make_thumbnail(&fake, &p, &ps_media::Decoders::none()).is_err());
+    // Never pixels: an error, or a placeholder saying the data could not be read (ADR-0109).
+    match make_thumbnail(&fake, &p, &ps_media::Decoders::none()) {
+        Err(_) => {}
+        Ok((t, _)) => {
+            assert_eq!(t.kind, ThumbKind::Placeholder);
+            assert!(matches!(
+                t.placeholder.and_then(|p| p.reason),
+                Some(ps_model::PlaceholderReason::Unreadable { .. })
+            ));
+        }
+    }
 }
 
 /// 12 MP JPEG analysis decode + grid thumbnail, single-threaded: median <= 100 ms (ADR-0026 derived).

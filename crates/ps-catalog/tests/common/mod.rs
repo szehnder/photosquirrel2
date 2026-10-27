@@ -109,6 +109,7 @@ pub fn analysis_of(i: u64) -> AnalysisResult {
         identity: ContentId::full(digest_of(i)),
         decoder_missing: None,
         decode_failure: None,
+        preview: None,
         hashes: Some(PerceptualHash {
             phash: mix(i ^ 1),
             dhash: mix(i ^ 2),

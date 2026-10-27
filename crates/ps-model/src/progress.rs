@@ -172,6 +172,10 @@ pub struct DiffCounts {
     /// (read-only, at most the probe window; counted in `unchanged` too; ADR-0105).
     #[serde(default)]
     pub frame_reread: u64,
+    /// Unchanged placeholders made by an older decoder generation than this version's for their format: decoded
+    /// again, once (counted in `unchanged` too; ADR-0109).
+    #[serde(default)]
+    pub outdated_previews: u64,
 }
 
 impl DiffCounts {
@@ -193,6 +197,7 @@ impl DiffCounts {
         self.redecoded += o.redecoded;
         self.decode_retries += o.decode_retries;
         self.frame_reread += o.frame_reread;
+        self.outdated_previews += o.outdated_previews;
     }
 
     /// Unchanged files that still keep a class decided before facts were stored, after this run.
@@ -285,6 +290,9 @@ pub struct ProgressSnapshot {
     pub active_workers: u32,
     /// File buffer bytes in flight between readers and workers.
     pub buffered_bytes: u64,
+    /// The run is a Fill in previews job (no walk; ADR-0109).
+    #[serde(default)]
+    pub fill: bool,
 }
 
 impl ProgressSnapshot {

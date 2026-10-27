@@ -92,5 +92,5 @@ fn migration_23_keeps_raw_rows_and_their_same_second_canon_files_for_a_re_read()
     let v: u32 = c
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 23);
+    assert_eq!(v, db::latest(db::CATALOG_MIGRATIONS));
 }

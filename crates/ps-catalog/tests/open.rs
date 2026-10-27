@@ -188,15 +188,18 @@ fn scenario_catalog_old_catalog_upgraded() {
     // precision 0 = second, date version 1 = the rules before ADR-0069/0070; none of these rows has an EXIF
     // provenance, so none is marked current), then migration 19's `decoder_missing` (NULL: none is a HEIC or
     // AVIF waiting for a decoder), migration 20's `decode_failure` (NULL: no failure recorded) and migration 21's
-    // `exclusion` (NULL: every row is a photo), and migration 23's `frame_id` (NULL) and `meta_version` (1: a
-    // JPEG is marked current without reading it).
+    // `exclusion` (NULL: every row is a photo), migration 23's `frame_id` (NULL) and `meta_version` (1: a
+    // JPEG is marked current without reading it), and migration 24's `preview_gen` and `preview_reason` (NULL:
+    // these rows are analysed, not thumbed, so none is a placeholder).
     let width = before[0].len();
     let after = snapshot(&path);
     assert!(
         after.iter().all(|r| {
             let added = &r[width..];
+            let (added, previews) = added.split_at(added.len() - 2);
             let (nullable, rest) = added.split_at(added.len() - 7);
-            nullable.iter().all(|v| *v == Value::Null)
+            previews.iter().all(|v| *v == Value::Null)
+                && nullable.iter().all(|v| *v == Value::Null)
                 && rest
                     == [
                         Value::Integer(0),

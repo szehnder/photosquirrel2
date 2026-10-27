@@ -457,3 +457,44 @@ fn tiff_encoder(spec: &TiffSpec, images: &[(u32, u32, Vec<u8>, u32)]) -> Vec<u8>
     }
     out.into_inner()
 }
+
+/// A little-endian BigTIFF (version 43, 8-byte offsets) holding one uncompressed 8-bit RGB strip of
+/// [`photo_rgb`]`(width, height, seed)`, its directory right after the header (`preview-placeholders`: a format
+/// variant PhotoSquirrel recognises and does not decode).
+pub fn bigtiff_rgb(width: u32, height: u32, seed: u64) -> Vec<u8> {
+    let pixels = photo_rgb(width, height, seed);
+    // (tag, type, count, value): SHORT = 3, LONG8 = 16; values inline (at most 8 bytes).
+    let entries: [(u16, u16, u64, u64); 10] = [
+        (256, 16, 1, u64::from(width)),
+        (257, 16, 1, u64::from(height)),
+        // BitsPerSample: three SHORTs of 8, inline.
+        (258, 3, 3, 8 | (8 << 16) | (8 << 32)),
+        (259, 3, 1, 1),
+        (262, 3, 1, 2),
+        (273, 16, 1, 0), // StripOffsets, patched below
+        (277, 3, 1, 3),
+        (278, 16, 1, u64::from(height)),
+        (279, 16, 1, pixels.len() as u64),
+        (284, 3, 1, 1),
+    ];
+    let ifd_at = 16u64;
+    let ifd_len = 8 + entries.len() as u64 * 20 + 8;
+    let data_at = ifd_at + ifd_len;
+    let mut out = Vec::with_capacity(data_at as usize + pixels.len());
+    out.extend_from_slice(b"II");
+    out.extend_from_slice(&43u16.to_le_bytes());
+    out.extend_from_slice(&8u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&ifd_at.to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+    for (tag, ty, count, value) in entries {
+        let value = if tag == 273 { data_at } else { value };
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&ty.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&pixels);
+    out
+}

@@ -360,6 +360,19 @@ pub(crate) fn extend_filter_sql(
         args.push(Value::Integer(start));
         args.push(Value::Integer(end));
     }
+    if let Some(np) = &f.no_preview {
+        // Placeholder rows only, through the partial index `file_preview` (migration 24, ADR-0109).
+        sql.push_str(" AND id IN (SELECT id FROM file WHERE preview_reason IS NOT NULL");
+        if let Some(r) = np.reason {
+            sql.push_str(" AND preview_reason = ?");
+            args.push(Value::Text(r.as_str().to_owned()));
+        }
+        if let Some(fmt) = np.format {
+            sql.push_str(" AND format = ?");
+            args.push(Value::Text(fmt.storage_key()));
+        }
+        sql.push(')');
+    }
     Ok(())
 }
 

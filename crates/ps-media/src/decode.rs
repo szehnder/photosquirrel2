@@ -582,6 +582,10 @@ fn decode_tiff_buffer(
     min_long: u32,
     stop: &dyn Fn() -> bool,
 ) -> Result<RgbImage, DecodeError> {
+    if crate::probe::is_bigtiff(bytes) {
+        // Not through the generic decoder either: the variant is reported, not half supported (ADR-0109).
+        return Err(DecodeError::Unsupported(crate::tiff_decode::BIGTIFF.into()));
+    }
     match crate::tiff_decode::decode_with(Cursor::new(bytes), min_long, stop).0 {
         Ok(img) => Ok(img),
         Err(DecodeError::Cancelled) => Err(DecodeError::Cancelled),

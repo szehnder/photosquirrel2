@@ -129,6 +129,9 @@ pub struct AnalysisResult {
     /// A HEIC or AVIF decode that failed with its decoder present (`file.decode_failure`, ADR-0098); `None`
     /// clears it.
     pub decode_failure: Option<ps_model::DecodeFailure>,
+    /// The thumbnail stored with this analysis is a placeholder: its generation and reason
+    /// (`file.preview_gen`, `file.preview_reason`, ADR-0109); `None` clears them.
+    pub preview: Option<ps_model::PreviewStamp>,
 }
 
 impl AnalysisResult {
@@ -187,6 +190,8 @@ pub struct RunRecord {
     pub stats: serde_json::Value,
     /// The run refreshes the analysis of unchanged files without stored class facts (ADR-0071, ADR-0082).
     pub refresh_analysis: bool,
+    /// A Fill in previews job and its scope (`scan_run.kind = 'fill'`, ADR-0109); `None` for scans.
+    pub fill: Option<ps_model::FillScope>,
 }
 
 /// Everything stored about one file (detail pages, inspector, scanner diff).
@@ -230,6 +235,9 @@ pub struct FileRecord {
     pub decode_failure: Option<ps_model::DecodeFailure>,
     /// The metadata rules its stored metadata was read under (catalog migration 23, ADR-0105).
     pub meta_version: u8,
+    /// Its placeholder's decoder generation and reason (catalog migration 24, ADR-0109); `None` with a real
+    /// thumbnail.
+    pub preview: Option<ps_model::PreviewStamp>,
 }
 
 /// One recorded failure of a file (`file_error` row).

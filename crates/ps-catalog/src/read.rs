@@ -44,10 +44,10 @@ impl std::fmt::Debug for Readers {
 pub(crate) const FILE_COLUMNS: &str = "id, source_id, rel_path, size, mtime_ns, file_index, stage, class, reasons, format,
     width, height, content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_undated,
     camera_model, has_gps, attempts, missing_since, first_seen, capture_offset_min, capture_provenance,
-    capture_precision, date_version, decoder_missing, decode_failure, meta_version";
+    capture_precision, date_version, decoder_missing, decode_failure, meta_version, preview_gen, preview_reason";
 
 /// Number of columns in [`FILE_COLUMNS`]: the index of the first column a query appends after them.
-pub(crate) const FILE_COLUMN_COUNT: usize = 31;
+pub(crate) const FILE_COLUMN_COUNT: usize = 33;
 
 impl Readers {
     pub(crate) fn open(path: &Path, size: usize) -> Result<Readers> {
@@ -436,7 +436,8 @@ impl Readers {
     pub fn runs(&self) -> Result<Vec<RunRecord>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
-                "SELECT id, status, started_at, ended_at, sources, stats, refresh_analysis FROM scan_run ORDER BY id",
+                "SELECT id, status, started_at, ended_at, sources, stats, refresh_analysis, kind, fill_scope
+                 FROM scan_run ORDER BY id",
             )?;
             let mut rows = stmt.query([])?;
             let mut out = Vec::new();
@@ -454,6 +455,17 @@ impl Readers {
                     sources: sources.into_iter().map(SourceId).collect(),
                     stats: serde_json::from_str(&stats).map_err(|e| corrupt(&e.to_string()))?,
                     refresh_analysis: r.get::<_, i64>(6)? != 0,
+                    fill: match (r.get::<_, String>(7)?.as_str(), r.get::<_, Option<String>>(8)?) {
+                        ("fill", scope) => Some(
+                            scope
+                                .as_deref()
+                                .map(serde_json::from_str)
+                                .transpose()
+                                .map_err(|e| corrupt(&e.to_string()))?
+                                .unwrap_or_default(),
+                        ),
+                        _ => None,
+                    },
                 });
             }
             Ok(out)
@@ -734,6 +746,17 @@ pub(crate) fn file_record(r: &Row<'_>) -> Result<FileRecord> {
             _ => None,
         },
         meta_version: r.get::<_, i64>(30)? as u8,
+        preview: match (r.get::<_, Option<i64>>(31)?, r.get_ref(32)?) {
+            (Some(g), ValueRef::Text(t)) => Some(ps_model::PreviewStamp {
+                generation: u16::try_from(g).unwrap_or(u16::MAX),
+                // A reason this version does not know: written by a newer one.
+                reason: std::str::from_utf8(t)
+                    .ok()
+                    .and_then(ps_model::PreviewReason::from_key)
+                    .unwrap_or(ps_model::PreviewReason::NeedsNewerVersion),
+            }),
+            _ => None,
+        },
     })
 }
 

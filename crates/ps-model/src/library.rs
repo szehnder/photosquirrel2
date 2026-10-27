@@ -82,6 +82,8 @@ pub struct ItemSummary {
     /// The file's source is offline (unplugged drive, unreachable share).
     pub offline: bool,
     pub missing: bool,
+    /// The item has a placeholder instead of a preview: what its tile shows (ADR-0109).
+    pub placeholder: Option<crate::PlaceholderBadge>,
 }
 
 impl ItemSummary {
@@ -184,6 +186,9 @@ pub struct ItemDetail {
     /// Why there is no preview when the decoder of its format is missing (ADR-0091), from the decoder report of
     /// now (so it is current after an install and restart); `None` for every other file.
     pub preview_note: Option<PreviewNote>,
+    /// The item has a placeholder: its format, reason and status mark (the inspector's "Why no preview?" link,
+    /// ADR-0109).
+    pub placeholder: Option<crate::PlaceholderBadge>,
 }
 
 /// An item's completion-report disposition, as the inspector shows it.

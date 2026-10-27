@@ -84,6 +84,10 @@ pub struct Filter {
     /// set, `classes` is ignored: the list is the excluded set narrowed by the selection.
     #[serde(default)]
     pub exclusion: Option<crate::ExclusionSelection>,
+    /// Only items without a preview, of a placeholder reason and format when given (the Library's "No preview"
+    /// filter, ADR-0109).
+    #[serde(default)]
+    pub no_preview: Option<crate::NoPreviewFilter>,
 }
 
 impl Filter {

@@ -19,6 +19,7 @@ mod error;
 mod gallery;
 pub mod groups;
 mod model;
+pub mod previews;
 mod read;
 pub mod stores;
 pub mod thumbs;
@@ -40,6 +41,7 @@ pub use model::{
     AnalysisResult, FileErrorRecord, FileFailure, FileKey, FileRecord, FileRow, MetaReread,
     NewSource, ProbeResult, Reclassification, Redate, Results, RunRecord, SourceRecord,
 };
+pub use previews::WaitingRule;
 pub use read::{PAGE_SIZE, Readers};
 pub use stores::{AiCounts, AiItemState, AiQueueRow, AiResultRow, AiRunState, LibraryRecord};
 pub use thumbs::{THUMBS_FILE, ThumbStore};

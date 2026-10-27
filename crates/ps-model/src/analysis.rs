@@ -636,6 +636,10 @@ pub struct PlaceholderInfo {
     /// Why there are no pixels (absent in records stored before this field existed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<crate::PlaceholderReason>,
+    /// The decoder generation of the format's family that made this placeholder (ADR-0109); 0 in records stored
+    /// before generations existed.
+    #[serde(default)]
+    pub generation: u16,
 }
 
 /// A grid thumbnail (384 px long edge JPEG at q82) or placeholder, ready for the thumbnail store.
@@ -788,6 +792,7 @@ mod tests {
                 capture_date: None,
                 note: "n".into(),
                 reason: None,
+                generation: 0,
             }),
         };
         round_trip(&t);

@@ -114,6 +114,7 @@ fn placeholders_kinds_and_validation() {
             capture_date: None,
             note: "no poster-frame tool configured".into(),
             reason: None,
+            generation: 0,
         }),
     };
     store.put(&id, &placeholder).expect("put");

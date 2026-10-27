@@ -10,30 +10,57 @@ use ps_model::{
 use crate::decode::{self, DecodeError, DecodeSource, Decoded, RgbImage};
 use crate::decoders::Decoders;
 
-/// The placeholder for a decode that cannot produce pixels on this machine (a missing decoder, an AVIF
-/// sequence), or `None` for a real failure.
+/// The placeholder for a decode that cannot produce pixels on this machine, with its reason (ADR-0109): a missing
+/// decoder, an AVIF sequence, a format variant this version does not decode (`DecodeError::Unsupported`, a RAW
+/// without an embedded preview, a decode too large for bounded memory) or data the decoder rejected
+/// (`Unreadable`, with the error). `None` when the decode did not complete for a reason that says nothing about
+/// the file (cancelled, interrupted, refused): those are retried, not recorded.
 pub fn placeholder_for_error(
     probe: &ProbeRecord,
     capture: Option<CaptureTime>,
     e: &DecodeError,
 ) -> Option<ThumbnailRecord> {
+    let reason = reason_for_error(e)?;
     // The photo's own capture date when the caller has none (the grid shows it on the placeholder).
     let capture = capture.or(probe.camera.date_time_original);
-    match e {
-        DecodeError::DecoderMissing(key) => Some(placeholder_for(
-            probe,
-            capture,
-            &crate::decoders::missing_note(*key),
-            Some(PlaceholderReason::DecoderMissing { key: *key }),
-        )),
-        DecodeError::Sequence => Some(placeholder_for(
-            probe,
-            capture,
-            "preview unavailable (AVIF sequence)",
-            Some(PlaceholderReason::Sequence),
-        )),
-        _ => None,
-    }
+    let note = match &reason {
+        PlaceholderReason::DecoderMissing { key } => crate::decoders::missing_note(*key),
+        PlaceholderReason::Sequence => "preview unavailable (AVIF sequence)".to_owned(),
+        PlaceholderReason::UnsupportedVariant { detail } => {
+            format!("preview unavailable (not supported: {detail})")
+        }
+        PlaceholderReason::Unreadable { message } => {
+            format!("preview unavailable (could not be decoded: {message})")
+        }
+        PlaceholderReason::NoPosterTool | PlaceholderReason::NeedsNewerVersion => {
+            "preview unavailable".to_owned()
+        }
+    };
+    Some(placeholder_for(probe, capture, &note, Some(reason)))
+}
+
+/// The placeholder reason of a decode error ([`placeholder_for_error`]); `None` for errors that say nothing
+/// about the file.
+pub fn reason_for_error(e: &DecodeError) -> Option<PlaceholderReason> {
+    Some(match e {
+        DecodeError::DecoderMissing(key) => PlaceholderReason::DecoderMissing { key: *key },
+        DecodeError::Sequence => PlaceholderReason::Sequence,
+        DecodeError::Unsupported(detail) => PlaceholderReason::UnsupportedVariant {
+            detail: detail.clone(),
+        },
+        DecodeError::NoRawPreview => PlaceholderReason::UnsupportedVariant {
+            detail: "RAW files without an embedded preview".into(),
+        },
+        DecodeError::TooLarge(detail) => PlaceholderReason::UnsupportedVariant {
+            detail: format!("files this large ({detail})"),
+        },
+        DecodeError::Failed(message) => PlaceholderReason::Unreadable {
+            message: message.clone(),
+        },
+        DecodeError::Interrupted(_) | DecodeError::Refused(_) | DecodeError::Cancelled => {
+            return None;
+        }
+    })
 }
 
 /// Grid thumbnail long edge.
@@ -202,6 +229,9 @@ pub fn placeholder_for(
             capture_date: capture.or_else(|| probe.video.as_ref().and_then(|v| v.creation)),
             note: note.to_owned(),
             reason,
+            // This build's generation of the format's family (ADR-0109); a scan run with other generations (a
+            // test's override) stamps its own.
+            generation: crate::decoders::GENERATIONS.of_format(probe.format),
         }),
     }
 }

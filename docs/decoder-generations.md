@@ -1,0 +1,35 @@
+# Decoder generations
+
+Every placeholder (a file catalogued without a preview) records the **decoder generation** of its format's family
+that made it ([ADR-0109](adr/0109-placeholders-carry-a-reason-and-a-decoder-generation.md)). When the running
+version's generation of that family is newer, the placeholder counts as waiting: the Library offers **Fill in
+previews**, `photosquirrel-cli previews fill` fills it in, and the next rescan of its source decodes it again, once.
+
+## When to bump
+
+Bump a family's generation in `ps_media::decoders::GENERATIONS` (and in the `decoder_generations_of_this_build`
+test beside it) in **any change that makes files of that family decodable that were not before**:
+
+- a new layout, compression, colour model, bit depth or sample format (a TIFF predictor, 16-bit PNG, CMYK JPEG);
+- a lifted size or memory limit (files that got "files this large" placeholders);
+- a new or newly bundled decoder (the AV1 decoder for AVIF, the system HEIC decoder);
+- a probe fix that finds dimensions or data an earlier version missed (TIFF directories beyond the probe window).
+
+Do not bump for speed-ups, quality changes or fixes to files that already decoded: every placeholder of the family
+is read again once after a bump.
+
+## Families and generations
+
+| Family | Formats | Generation | Since |
+|---|---|---|---|
+| JPEG | JPEG | 0 | |
+| PNG | PNG, GIF, BMP | 0 | |
+| TIFF | TIFF | 1 | `tiff-support` (0.3.0) |
+| HEIF | HEIC, HEIF | 1 | `heic-system-decoders` (0.3.0) |
+| AVIF | AVIF | 1 | `heic-system-decoders` (0.3.0) |
+| WebP | WebP | 0 | |
+| RAW | RAW embedded previews | 0 | |
+| Video poster | every video format | 0 | |
+
+Add a row here, with the change that bumped it, whenever a generation changes. A forgotten bump loses nothing: the
+old placeholders simply wait until their file changes.
