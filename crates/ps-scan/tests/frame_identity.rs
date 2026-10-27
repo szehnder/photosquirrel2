@@ -36,15 +36,6 @@ impl Drop for Legacy {
     }
 }
 
-/// What catalog migration 23 leaves of a catalog the build before frame identity wrote: no frame ids, every row
-/// current but the RAW-format rows and the Canon camera files of their capture seconds (the migration's rule).
-const DOWNGRADE: &str = "UPDATE file SET meta_version = 0, frame_id = NULL;
-    UPDATE file SET meta_version = 1
-    WHERE (format IS NULL OR format NOT LIKE 'raw:%')
-      AND NOT (camera_model LIKE 'canon%' AND capture_ts IS NOT NULL
-               AND capture_ts / 1000 IN (SELECT capture_ts / 1000 FROM file
-                                         WHERE format LIKE 'raw:%' AND capture_ts IS NOT NULL));";
-
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
     ps_fixtures::scratch::write(path, bytes).expect("write");
@@ -71,8 +62,42 @@ fn card(root: &Path) -> [BurstFrameFiles; 2] {
             &f.jpeg,
         );
     }
+    // Files whose frame cannot matter (ADR-0106): a Nikon JPEG of the burst's second, and a Canon JPEG of another
+    // second. Migration 23 marks them current; the re-read never opens them.
+    for (path, make, model, time, seed) in OTHERS {
+        let spec = ps_fixtures::media::ExifSpec {
+            make: Some(make.into()),
+            model: Some(model.into()),
+            date_time_original: Some(time.into()),
+            sub_sec_original: Some("14".into()),
+            maker_note: Some(ps_fixtures::media::canon_maker_note()),
+            ..Default::default()
+        };
+        write(
+            &root.join(path),
+            &ps_fixtures::media::jpeg_with_exif(960, 640, seed, 90, &spec),
+        );
+    }
     frames
 }
+
+/// (path, make, model, capture time, scene seed) of the files [`card`] adds that the re-read must not open.
+const OTHERS: [(&str, &str, &str, &str, u64); 2] = [
+    (
+        "friends/DSC_0001.JPG",
+        "NIKON CORPORATION",
+        "NIKON D750",
+        "2019:07:04 12:00:05",
+        71,
+    ),
+    (
+        "DCIM/101CANON/IMG_0099.JPG",
+        "Canon",
+        "Canon EOS 5D Mark III",
+        "2019:07:04 12:00:09",
+        72,
+    ),
+];
 
 /// The group (its id) of every file of `source`, by path.
 fn groups(env: &Env, source: SourceId) -> std::collections::BTreeMap<String, Option<FileId>> {
@@ -104,7 +129,8 @@ fn old_catalog(root: &Path) -> (Env, SourceId) {
     }
     env.close();
     let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&env.dir)).expect("db");
-    c.execute_batch(DOWNGRADE).expect("downgrade");
+    c.execute_batch(&ps_catalog::db::frame_identity_reset_sql())
+        .expect("downgrade");
     drop(c);
     env.reopen(ScanOptions::default());
     (env, id)
@@ -141,12 +167,23 @@ fn scenario_incremental_rescan_old_catalog_splits_merged_burst_frames_on_rescan(
             .and_then(|e| e.to_str())
             .unwrap_or_default();
         assert!(matches!(ext, "CR2" | "DNG" | "JPG"), "{path:?} read");
+        assert!(
+            OTHERS.iter().all(|o| !path.ends_with(o.0)),
+            "{path:?}: not a file whose frame can matter"
+        );
         assert!(*n <= ps_media::PROBE_LIMIT as u64, "{path:?}: {n} bytes");
     }
     assert!(
         env.instr.opens().iter().all(|o| !o.access.writes()),
         "read-only"
     );
+    for o in env.instr.opens() {
+        assert!(
+            OTHERS.iter().all(|x| !o.path.ends_with(x.0)),
+            "{:?} opened",
+            o.path
+        );
+    }
     assert_eq!(summary.diff.frame_reread, 8);
     assert_eq!(summary.grouping.as_ref().map(|g| g.groups_split), Some(1));
 

@@ -886,6 +886,11 @@ fn process_file(
                 ctx.progress.file_done(idx);
             } else if t.refresh {
                 refresh_unreadable(ctx, idx, &t, &e);
+            } else if t.meta_reread && e.kind() == io::ErrorKind::NotFound && t.read_path.is_some()
+            {
+                // The file a cleanup run moved into the quarantine folder is gone from there (removed by hand): there
+                // is nothing left to read, now or later. Marked current without new facts, quietly (ADR-0108).
+                reread_gone(ctx, idx, &t);
             } else if t.meta_reread {
                 reread_unreadable(ctx, idx, &t, &e);
             } else if t.redecode.is_some() {
@@ -916,23 +921,46 @@ fn process_file(
         delay: ctx.opts.chunk_delay,
     };
 
-    // A header re-read for frame identity (ADR-0105): the probe window only, read-only; the facts are merged into
-    // the stored metadata. No decode, no hashing, nothing else changes.
+    // A header re-read for frame identity (ADR-0105): the probe window, read-only, plus bounded targeted reads of
+    // directories and frame values beyond it (ADR-0108); the facts are merged into the stored metadata. No decode,
+    // no hashing, nothing else changes.
     if t.meta_reread {
         let mut head = Vec::with_capacity((size as usize).min(ps_media::PROBE_LIMIT));
-        if let Err(e) = read_into(&mut r, &mut head, ps_media::PROBE_LIMIT) {
-            if !is_cancel(&e) {
-                if ctx.root_available(idx) {
-                    reread_unreadable(ctx, idx, &t, &e);
-                } else {
-                    ctx.lose(idx);
-                }
+        let read = read_into(&mut r, &mut head, ps_media::PROBE_LIMIT).and_then(|()| {
+            let probe = ps_media::probe_bytes(&head, size, Some(rel.as_path()));
+            let mut fetch = |off: u64, len: usize| -> io::Result<Vec<u8>> {
+                r.seek(SeekFrom::Start(off))?;
+                let mut v = Vec::with_capacity(len.min(CHUNK));
+                (&mut r).take(len as u64).read_to_end(&mut v)?;
+                Ok(v)
+            };
+            ps_media::reread_frame_facts(&head, size, &probe, &mut fetch)
+        });
+        let facts = match read {
+            Ok(Some(facts)) => facts,
+            Ok(None) => {
+                // A frame value beyond the bounds: not stamped, so the row is not taken for "no frame identity"; a
+                // later full analysis (a change or a refresh) reads it, and cleanup waits for it (ADR-0108).
+                log::info!(
+                    "{}: frame values lie beyond the re-read's bounds; left for a full analysis",
+                    t.path
+                );
+                ctx.progress.file_done(idx);
+                ctx.progress.set_dir(idx, reader, None);
+                return;
             }
-            return;
-        }
+            Err(e) => {
+                if !is_cancel(&e) {
+                    if ctx.root_available(idx) {
+                        reread_unreadable(ctx, idx, &t, &e);
+                    } else {
+                        ctx.lose(idx);
+                    }
+                }
+                return;
+            }
+        };
         drop(file);
-        let probe = ps_media::probe_bytes(&head, size, Some(rel.as_path()));
-        let facts = ps_media::read_frame_facts(&head, &probe);
         ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
             key: FileKey::new(src.id, t.path.clone()),
             frame_id: facts.frame_id,
@@ -1236,6 +1264,18 @@ fn refresh_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, e: &io::Error) {
             io_message(e)
         ),
     });
+    ctx.progress.file_done(idx);
+}
+
+/// A quarantined file gone from the quarantine folder (ADR-0108): marked current with no new facts, no error.
+fn reread_gone(ctx: &RunCtx, idx: usize, t: &Todo) {
+    ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
+        key: FileKey::new(ctx.sources[idx].id, t.path.clone()),
+        frame_id: None,
+        maker_notes: false,
+        camera_original: false,
+        version: ps_model::META_LOGIC_VERSION,
+    }]));
     ctx.progress.file_done(idx);
 }
 

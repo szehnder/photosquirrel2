@@ -197,6 +197,21 @@ pub const FRAME_IDENTITY_MIGRATION: Migration = Migration {
     name: "frame_identity",
     sql: include_str!("../migrations/0023_frame_identity.sql"),
 };
+/// SQL that puts a catalog back where migration 23 leaves one written before frame identity (ADR-0105): no frame
+/// ids, every row current except those the migration keeps for the re-read. It reuses the migration's own
+/// marking statement, so tests that rebuild an old catalog cannot drift from it.
+#[doc(hidden)]
+pub fn frame_identity_reset_sql() -> String {
+    let sql = FRAME_IDENTITY_MIGRATION.sql;
+    let at = sql
+        .find("UPDATE file SET meta_version = 1")
+        .unwrap_or(sql.len());
+    format!(
+        "UPDATE file SET meta_version = 0, frame_id = NULL;\n{}",
+        &sql[at..]
+    )
+}
+
 /// `thumbs.db` migrations.
 pub const THUMB_MIGRATIONS: &[Migration] = &[Migration {
     version: 1,

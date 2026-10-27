@@ -9,12 +9,14 @@
 -- below the build's META_LOGIC_VERSION and regroups it. Only rows whose frame can matter stay below it: every
 -- RAW-format row (DNG included), and the Canon camera files taken in the same capture second as a RAW-format file
 -- (their maker notes record the file number that tells a converted DNG's frame from its neighbour's). Every other
--- row is marked current here without reading it. SQL only: it reads no file bytes.
+-- row is marked current here without reading it (a row without a camera model included: COALESCE, because
+-- `NULL LIKE ...` is NULL and `NOT NULL` would leave it unmarked). SQL only: it reads no file bytes.
 ALTER TABLE file ADD COLUMN frame_id TEXT;
 ALTER TABLE file ADD COLUMN meta_version INTEGER NOT NULL DEFAULT 0;
 UPDATE file SET meta_version = 1
 WHERE (format IS NULL OR format NOT LIKE 'raw:%')
-  AND NOT (camera_model LIKE 'canon%'
-           AND capture_ts IS NOT NULL
-           AND capture_ts / 1000 IN (SELECT capture_ts / 1000 FROM file
-                                     WHERE format LIKE 'raw:%' AND capture_ts IS NOT NULL));
+  AND NOT COALESCE(camera_model LIKE 'canon%'
+                   AND capture_ts IS NOT NULL
+                   AND capture_ts / 1000 IN (SELECT capture_ts / 1000 FROM file
+                                             WHERE format LIKE 'raw:%' AND capture_ts IS NOT NULL),
+                   0);

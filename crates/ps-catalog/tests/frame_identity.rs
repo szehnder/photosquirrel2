@@ -11,7 +11,7 @@ fn migration_23_keeps_raw_rows_and_their_same_second_canon_files_for_a_re_read()
     db::create_catalog_at_version(&path, db::FRAME_IDENTITY_MIGRATION.version - 1).unwrap();
     // (name, format, camera model, capture ms): the burst second is 1_587_348_023 s.
     let burst = 1_587_348_023_000i64;
-    let rows: [(&str, Option<&str>, Option<&str>, Option<i64>); 8] = [
+    let rows: [(&str, Option<&str>, Option<&str>, Option<i64>); 9] = [
         (
             "IMG_0034.CR2",
             Some("raw:cr2"),
@@ -39,6 +39,8 @@ fn migration_23_keeps_raw_rows_and_their_same_second_canon_files_for_a_re_read()
             Some("NIKON D750"),
             Some(burst),
         ),
+        // No camera model in the RAW's second (a scan or a stripped copy): marked current, not re-read.
+        ("scan_0001.jpg", Some("jpeg"), None, Some(burst + 200)),
         ("IMG_1234.HEIC", Some("heic"), Some("iPhone 12"), None),
         ("clip.mov", Some("mov"), None, None),
         ("notes.txt", None, None, None),
@@ -76,6 +78,7 @@ fn migration_23_keeps_raw_rows_and_their_same_second_canon_files_for_a_re_read()
         ("IMG_0035.JPG", 0),
         ("IMG_0099.JPG", 1),
         ("DSC_0001.JPG", 1),
+        ("scan_0001.jpg", 1),
         ("IMG_1234.HEIC", 1),
         ("clip.mov", 1),
         ("notes.txt", 1),

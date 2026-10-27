@@ -142,6 +142,26 @@ pub struct MediaMetadata {
 }
 
 impl MediaMetadata {
+    /// Record the frame identity (ADR-0105): the field and its `Frame` tags for the inspector (replacing earlier
+    /// ones), the same for a fresh analysis and a header re-read.
+    pub fn set_frame_id(&mut self, id: Option<crate::FrameId>) {
+        self.all_tags.retain(|(g, _, _)| g != "Frame");
+        if let Some(id) = &id {
+            if let Some(r) = &id.raw_name {
+                self.all_tags
+                    .push(("Frame".into(), "OriginalRawFileStem".into(), r.clone()));
+            }
+            if let Some(n) = id.file_number {
+                self.all_tags.push((
+                    "Frame".into(),
+                    "FileNumber".into(),
+                    crate::FrameId::file_number_label(n),
+                ));
+            }
+        }
+        self.frame_id = id;
+    }
+
     /// Width and height after applying orientation.
     pub fn oriented_dimensions(&self) -> Option<(u32, u32)> {
         let (w, h) = (self.width?, self.height?);

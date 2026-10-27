@@ -12,7 +12,7 @@
 
 use ps_model::{FrameId, MediaKind, ProbeRecord};
 
-use crate::tiff::{Endian, IfdKind, Tiff, u16_at, u32_at};
+use crate::tiff::{Endian, IfdKind, Segment, Tiff, View, u16_at, u32_at};
 
 /// What the header of a file says about its frame.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -220,9 +220,15 @@ impl Note<'_> {
                 break;
             };
             match tag {
+                // An unreadable or implausible FileNumber falls through to CameraInfo.
                 0x0008 if typ == 4 && count == 1 => {
-                    let v = u32_at(self.value(pos, typ, count)?, 0, self.endian)?;
-                    return plausible(v / 10_000, v % 10_000);
+                    if let Some(n) = self
+                        .value(pos, typ, count)
+                        .and_then(|v| u32_at(v, 0, self.endian))
+                        .and_then(|v| plausible(v / 10_000, v % 10_000))
+                    {
+                        return Some(n);
+                    }
                 }
                 0x000D => camera_info = self.value(pos, typ, count),
                 _ => {}
@@ -289,9 +295,105 @@ pub fn read_frame_facts(bytes: &[u8], probe: &ProbeRecord) -> FrameFacts {
         .unwrap_or_default()
 }
 
+/// Largest frame value (`OriginalRawFileName`, `DNGPrivateData`, the Exif maker note) a re-read fetches from
+/// beyond the probe window (ADR-0108); a larger one leaves the facts incomplete.
+pub const FRAME_VALUE_MAX_BYTES: u64 = 1024 * 1024;
+
+/// The frame facts of a file of `file_size` bytes whose first `head` bytes (the probe window) are known: the
+/// one-time re-read of ADR-0105. For a TIFF-based file (CR2, DNG, ...), directories beyond the window are fetched
+/// through `fetch(offset, len)` within the ADR-0084 bounds, then the frame values the window lacks, each at most
+/// [`FRAME_VALUE_MAX_BYTES`] (ADR-0108). `Ok(None)` when the facts cannot be complete within those bounds: the
+/// caller then leaves the row for a later read instead of recording "no frame identity".
+pub fn reread_frame_facts<E>(
+    head: &[u8],
+    file_size: u64,
+    probe: &ProbeRecord,
+    fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
+) -> Result<Option<FrameFacts>, E> {
+    if !ps_model::frame::frame_identity_enabled() || probe.kind() != Some(MediaKind::Image) {
+        return Ok(Some(FrameFacts::default()));
+    }
+    let tiff_based = head.starts_with(b"II*\0") || head.starts_with(b"MM\0*");
+    if !tiff_based || (head.len() as u64) >= file_size {
+        // The whole file, or an EXIF block (JPEG APP1, at most 64 KB near the start) the probe found in the window.
+        if probe.exif_range.is_some_and(|r| r.slice(head).is_none()) {
+            return Ok(None);
+        }
+        return Ok(Some(read_frame_facts(head, probe)));
+    }
+    let loaded = crate::tiff::load_directories(head, file_size, fetch)?;
+    if !loaded.complete {
+        return Ok(None);
+    }
+    let mut segments = loaded.segments;
+    let wanted = match crate::util::contain(|| {
+        let t = Tiff::parse_view(View::new(head, &segments))?;
+        frame_value_misses(&t, file_size)
+    })
+    .flatten()
+    {
+        Some(w) => w,
+        None => return Ok(None),
+    };
+    for (off, len) in wanted {
+        let bytes = fetch(off, usize::try_from(len).unwrap_or(usize::MAX))?;
+        if (bytes.len() as u64) < len {
+            return Ok(None);
+        }
+        segments.push(Segment { offset: off, bytes });
+    }
+    Ok(
+        crate::util::contain(|| read_tiff(&Tiff::parse_view(View::new(head, &segments))?))
+            .flatten(),
+    )
+}
+
+/// The (offset, length) of the frame values the view lacks, or `None` when one is larger than
+/// [`FRAME_VALUE_MAX_BYTES`] or lies outside the file.
+fn frame_value_misses(t: &Tiff<'_>, file_size: u64) -> Option<Vec<(u64, u64)>> {
+    let (ifds, _) = t.walk();
+    let mut out = Vec::new();
+    for ifd in &ifds {
+        for e in &ifd.entries {
+            let wanted = matches!(
+                (ifd.kind, e.tag),
+                (IfdKind::Chain(0), 0xC68B | 0xC634) | (IfdKind::Exif, 0x927C)
+            );
+            if !wanted || t.value_bytes(e).is_some() {
+                continue;
+            }
+            let size = entry_size(e.typ, e.count)?;
+            if size <= 4 {
+                continue;
+            }
+            let off = u64::from(t.value_offset(e)?);
+            if size > FRAME_VALUE_MAX_BYTES || off.checked_add(size)? > file_size {
+                return None;
+            }
+            out.push((off, size));
+        }
+    }
+    Some(out)
+}
+
+/// Bytes of a value of TIFF type `typ` and `count` (the types frame values use).
+fn entry_size(typ: u16, count: u32) -> Option<u64> {
+    let unit: u64 = match typ {
+        1 | 2 | 6 | 7 => 1,
+        3 | 8 => 2,
+        4 | 9 | 11 | 13 => 4,
+        5 | 10 | 12 => 8,
+        _ => return None,
+    };
+    unit.checked_mul(u64::from(count))
+}
+
 fn read(bytes: &[u8], probe: &ProbeRecord) -> Option<FrameFacts> {
     let block = tiff_block(bytes, probe)?;
-    let t = Tiff::parse(block)?;
+    read_tiff(&Tiff::parse(block)?)
+}
+
+fn read_tiff(t: &Tiff<'_>) -> Option<FrameFacts> {
     let (ifds, _) = t.walk();
     let mut make = None;
     let mut model = None;
@@ -426,6 +528,55 @@ mod camera_info_tests {
         info[0x2bf..0x2c3].copy_from_slice(&dir_raw.to_le_bytes());
         v.extend_from_slice(&info);
         v
+    }
+
+    /// [`note_70d`] with a `FileNumber` (0x0008) entry of `file_number` before `CameraInfo`.
+    fn note_70d_with_tag_8(base: u32, file_number: u32) -> Vec<u8> {
+        let info_len = 0x300u32;
+        let mut v = Vec::new();
+        v.extend_from_slice(&2u16.to_le_bytes());
+        v.extend_from_slice(&0x0008u16.to_le_bytes());
+        v.extend_from_slice(&4u16.to_le_bytes());
+        v.extend_from_slice(&1u32.to_le_bytes());
+        v.extend_from_slice(&file_number.to_le_bytes());
+        v.extend_from_slice(&0x000Du16.to_le_bytes());
+        v.extend_from_slice(&7u16.to_le_bytes());
+        v.extend_from_slice(&info_len.to_le_bytes());
+        v.extend_from_slice(&(base + 30).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        let mut info = vec![0u8; info_len as usize];
+        info[0x2b3..0x2b7].copy_from_slice(&33u32.to_le_bytes());
+        info[0x2bf..0x2c3].copy_from_slice(&102u32.to_le_bytes());
+        v.extend_from_slice(&info);
+        v
+    }
+
+    #[test]
+    fn an_implausible_file_number_tag_falls_through_to_camera_info() {
+        for tag_8 in [0, 99_999_999] {
+            let bytes = note_70d_with_tag_8(0x100, tag_8);
+            let note = Note {
+                bytes: &bytes,
+                base: 0x100,
+                endian: Endian::Little,
+            };
+            assert_eq!(
+                note.canon_file_number(Some("Canon EOS 70D")),
+                Some(1_010_034),
+                "tag 0x0008 = {tag_8}"
+            );
+        }
+        // A plausible tag 0x0008 decides.
+        let bytes = note_70d_with_tag_8(0x100, 1_000_007);
+        let note = Note {
+            bytes: &bytes,
+            base: 0x100,
+            endian: Endian::Little,
+        };
+        assert_eq!(
+            note.canon_file_number(Some("Canon EOS 70D")),
+            Some(1_000_007)
+        );
     }
 
     #[test]

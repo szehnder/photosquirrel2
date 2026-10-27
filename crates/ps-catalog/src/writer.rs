@@ -1289,7 +1289,7 @@ fn set_meta_reread(c: &Connection, r: &MetaReread) -> rusqlite::Result<usize> {
     let Some(json) = stored else { return Ok(0) };
     let mut m: ps_model::Metadata = serde_json::from_str(&json)
         .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(e)))?;
-    m.fields.frame_id.clone_from(&r.frame_id);
+    m.fields.set_frame_id(r.frame_id.clone());
     m.fields.has_maker_notes |= r.maker_notes;
     m.likely_camera_original |= r.camera_original;
     let json = serde_json::to_string(&m)

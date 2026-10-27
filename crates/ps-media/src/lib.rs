@@ -32,7 +32,7 @@ pub use date::{
 };
 pub use decode::{DecodeError, Decoded, RgbImage, decode_for_analysis};
 pub use decoders::{Decoders, StillDecoder};
-pub use frame::{FrameFacts, read_frame_facts};
+pub use frame::{FrameFacts, read_frame_facts, reread_frame_facts};
 pub use fs::{CountingReader, open_read_only, read_all};
 pub use metadata::extract_metadata;
 pub use probe::{
