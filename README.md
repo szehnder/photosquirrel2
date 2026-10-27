@@ -125,6 +125,11 @@ PhotoSquirrel behave as if no decoder were found.
   decodes to more than 4 GB (about 30000x24000 at 16-bit RGB) and has no smaller resolution level stored gets a
   placeholder thumbnail and is de-duplicated by content only. Colour profiles are not applied, and floating-point
   values above 1.0 are clipped.
+- **Adobe RGB photos** (Canon `_MG_` files and others recorded in Adobe RGB) are shown without colour
+  conversion, so their previews look slightly muted; the files themselves are exported unchanged.
+- **FAT and exFAT drives** (most SD cards and many USB sticks): after the card is unplugged and inserted again,
+  the next rescan may read many files again in full, because these drives do not keep stable file ids. Nothing is
+  lost or grouped wrongly; it only takes about as long as the first scan.
 - **Cleanup is new in 0.2.0** and optional. Without it PhotoSquirrel never touches your sources at all; with it,
   files are only moved within the same drive, after a confirmation, and every move can be undone.
 - **Windows performance** has only been measured on CI machines, where writing very large catalogs (around a

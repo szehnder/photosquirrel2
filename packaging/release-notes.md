@@ -44,6 +44,10 @@ to their resized or re-exported JPEG copies.
 
 ### What's new in 0.3.0
 
+- **Burst frames are kept apart.** A RAW burst converted to DNG (Adobe's converter drops the first frame's
+  `00` sub-second time) could put one frame in the next frame's group, so that frame was never exported. Files that
+  record different frames (the DNG's original file name, the Canon file number) are now never one photo, and two
+  files that record the same frame still are.
 - **TIFF photos** are fully supported: scans, previews and look-matching, including large and tiled TIFFs, in
   bounded memory.
 - **HEIC through your system's decoder**, with guidance for your system when a decoder is missing (see above).
@@ -62,6 +66,14 @@ to their resized or re-exported JPEG copies.
   thumbnail caches, graphics, too small, could not be read, not a supported file) with a chip and a count; files
   that are not photos at all are hidden until you ask. Search, sort, List and Grid modes with thumbnails, and put
   back the selection or everything shown in one step (`report excluded` on the command line).
+
+### Upgrading from 0.2.0
+
+Rescan your sources once after the update. The rescan re-reads the headers of RAW files and of the camera files
+shot in the same second (read-only, a few hundred KB each), splits any merged burst frames, and lists the
+separated frames as pending so the next export copies them. Until that rescan, cleanup asks you to rescan first
+and the report marks the affected sources "not confirmed: rescan first". A file already in quarantine whose
+group changed is reported as pending, with `cleanup undo` (or Restore) to put it back.
 
 ### LGPL components
 

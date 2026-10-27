@@ -5900,7 +5900,7 @@ dependencies = [
 
 [[package]]
 name = "photosquirrel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5919,7 +5919,7 @@ dependencies = [
 
 [[package]]
 name = "photosquirrel-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -6190,7 +6190,7 @@ dependencies = [
 
 [[package]]
 name = "ps-catalog"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "crossbeam-channel",
@@ -6207,7 +6207,7 @@ dependencies = [
 
 [[package]]
 name = "ps-dedup"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "ps-fixtures",
@@ -6225,7 +6225,7 @@ dependencies = [
 
 [[package]]
 name = "ps-export"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "log",
@@ -6246,7 +6246,7 @@ dependencies = [
 
 [[package]]
 name = "ps-fixtures"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "image",
@@ -6266,7 +6266,7 @@ dependencies = [
 
 [[package]]
 name = "ps-hash"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -6281,7 +6281,7 @@ dependencies = [
 
 [[package]]
 name = "ps-llm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "log",
@@ -6299,7 +6299,7 @@ dependencies = [
 
 [[package]]
 name = "ps-media"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "criterion",
@@ -6329,7 +6329,7 @@ dependencies = [
 
 [[package]]
 name = "ps-model"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6337,7 +6337,7 @@ dependencies = [
 
 [[package]]
 name = "ps-scan"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "crossbeam-channel",
@@ -6359,7 +6359,7 @@ dependencies = [
 
 [[package]]
 name = "ps-service"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -6385,7 +6385,7 @@ dependencies = [
 
 [[package]]
 name = "ps-sysdecode"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libloading",
  "log",
@@ -8527,7 +8527,7 @@ dependencies = [
 
 [[package]]
 name = "ui-gallery"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -8541,7 +8541,7 @@ dependencies = [
 
 [[package]]
 name = "ui-theme"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -8551,7 +8551,7 @@ dependencies = [
 
 [[package]]
 name = "ui-workspace"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -10085,7 +10085,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
