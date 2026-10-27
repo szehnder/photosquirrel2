@@ -13,6 +13,8 @@ rustc-hash.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+# `frame::set_frame_identity_enabled`, the frame-identity test hook (ADR-0105).
+ps-model = { workspace = true, features = ["test-hooks"] }
 ps-fixtures.workspace = true
 ps-media.workspace = true
 proptest.workspace = true

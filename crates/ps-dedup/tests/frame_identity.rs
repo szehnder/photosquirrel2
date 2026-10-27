@@ -326,3 +326,97 @@ fn scenario_duplicate_detection_two_converted_dngs_of_two_frames_not_merged() {
     let g = group(&[a, cr2], &Constraints::default());
     assert_eq!(members(&g, 1), vec![1, 3]);
 }
+
+#[test]
+fn scenario_duplicate_detection_re_saved_dng_of_one_frame_still_joins() {
+    // A converted DNG and the same DNG after Lightroom wrote XMP into it: same dimensions, other bytes, both
+    // record frame 101-0034 and the same capture time (ADR-0107).
+    let dng = |id: i64, path: &'static str, frame: Option<FrameId>, hash: (u32, u32)| {
+        input(File {
+            id,
+            path,
+            format: DNG,
+            dims: DNG_DIMS,
+            millis: None,
+            maker_notes: true,
+            frame,
+            hash,
+        })
+    };
+    let a = dng(1, "1/2020/IMG_0034.DNG", dng_id(34), (0, 0));
+    let b = dng(2, "2/Lightroom/IMG_0034.DNG", dng_id(34), (0, 0));
+    assert!(
+        matches!(pair_verdict(&a, &b), PairVerdict::Edge { .. }),
+        "{:?}",
+        pair_verdict(&a, &b)
+    );
+    let g = group(&[a.clone(), b.clone()], &Constraints::default());
+    assert_eq!(members(&g, 1), vec![1, 2]);
+    // Only the RAW name recorded (no file number on either side): the stem and the capture time agree.
+    let stem_only = |x: &DedupInput| {
+        let mut x = x.clone();
+        x.meta.frame.as_mut().unwrap().file_number = None;
+        x
+    };
+    let (sa, sb) = (stem_only(&a), stem_only(&b));
+    assert!(matches!(pair_verdict(&sa, &sb), PairVerdict::Edge { .. }));
+    // A stem can repeat after the counter rolls over: without a capture time on one side it is not evidence.
+    let mut undated = sb.clone();
+    undated.meta.capture_time = None;
+    assert!(matches!(
+        pair_verdict(&sa, &undated),
+        PairVerdict::Suggestion {
+            reason: Contradiction::TwoCameraOriginals { .. },
+            ..
+        }
+    ));
+    // A stem on one side and a file number on the other is no agreement either.
+    assert!(matches!(
+        pair_verdict(&a, &sb),
+        PairVerdict::Suggestion {
+            reason: Contradiction::TwoCameraOriginals { .. },
+            ..
+        }
+    ));
+    // Two DNGs of two frames still split, as before.
+    let c = dng(3, "1/2020/IMG_0035.DNG", dng_id(35), (1, 1));
+    let g = group(&[a, c], &Constraints::default());
+    assert!(g.groups.is_empty(), "{:?}", g.groups);
+}
+
+#[test]
+fn nef_and_its_converted_dng_of_equal_dimensions_stay_apart_without_a_recorded_frame() {
+    // ADR-0107: a non-Canon RAW and a converted DNG with no agreeing identity (no file number, the NEF records no
+    // OriginalRawFileName) keep the conservative split: an extra copy is exported, nothing is left out.
+    let nikon = |mut x: DedupInput| {
+        x.meta.camera_make = Some("NIKON CORPORATION".into());
+        x.meta.camera_model = Some("NIKON D750".into());
+        x
+    };
+    let nef = nikon(input(File {
+        id: 1,
+        path: "1/DCIM/100NCD750/DSC_0034.NEF",
+        format: Format::Raw(RawFormat::Nef),
+        dims: (6032, 4032),
+        millis: Some(300),
+        maker_notes: true,
+        frame: None,
+        hash: (0, 0),
+    }));
+    let dng = nikon(input(File {
+        id: 2,
+        path: "1/2020/DSC_0034.dng",
+        format: DNG,
+        dims: (6032, 4032),
+        millis: Some(300),
+        maker_notes: true,
+        frame: FrameId::new(Some("DSC_0034".into()), None),
+        hash: (0, 0),
+    }));
+    let g = group(&[nef, dng], &Constraints::default());
+    assert!(g.groups.is_empty(), "{:?}", g.groups);
+    assert!(matches!(
+        g.suggestions[0].reason,
+        Contradiction::TwoCameraOriginals { .. }
+    ));
+}

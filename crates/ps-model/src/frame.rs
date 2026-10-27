@@ -4,6 +4,7 @@
 //! camera's file number (`101-0034`). Two files that record different frames are never one image, whatever their
 //! hashes and capture times. A missing identity never matches anything, and a file name is never an identity.
 
+#[cfg(feature = "test-hooks")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,19 @@ impl FrameId {
         None
     }
 
+    /// Whether both positively record the same frame (ADR-0107): equal camera file numbers, or, when neither
+    /// records a file number, equal `OriginalRawFileName` stems. A stem can repeat after the camera's counter rolls
+    /// over, so callers also require the same capture time.
+    pub fn same_frame(&self, other: &FrameId) -> bool {
+        match (self.file_number, other.file_number) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => {
+                matches!((&self.raw_name, &other.raw_name), (Some(a), Some(b)) if a == b)
+            }
+            _ => false,
+        }
+    }
+
     /// The catalog's `file.frame_id` text: `raw:IMG_0034 num:101-0034` (the parts present).
     pub fn storage(&self) -> String {
         let mut parts = Vec::new();
@@ -90,16 +104,27 @@ impl FrameId {
     }
 }
 
+#[cfg(feature = "test-hooks")]
 static FRAME_IDENTITY: AtomicBool = AtomicBool::new(true);
 
 /// Whether frame identities, maker notes in `DNGPrivateData` and the RAW-original rule are in force (always, except
-/// in tests that group a corpus the way builds before ADR-0105 did).
+/// in tests that group a corpus the way builds before ADR-0105 did, with the `test-hooks` feature).
+#[cfg(feature = "test-hooks")]
 pub fn frame_identity_enabled() -> bool {
     FRAME_IDENTITY.load(Ordering::Relaxed)
 }
 
-/// Test hook: turn frame identity off (metadata reading in `ps-media` and the frame and RAW-original rules in
-/// `ps-dedup`) to reproduce the grouping of builds before ADR-0105. Process-wide: only for a test binary of its own.
+/// Whether frame identities, maker notes in `DNGPrivateData` and the RAW-original rule are in force: always in a
+/// build without the `test-hooks` feature.
+#[cfg(not(feature = "test-hooks"))]
+pub const fn frame_identity_enabled() -> bool {
+    true
+}
+
+/// Test hook (feature `test-hooks`, enabled only from dev-dependencies): turn frame identity off (metadata reading
+/// in `ps-media` and the frame and RAW-original rules in `ps-dedup`) to reproduce the grouping of builds before
+/// ADR-0105. Process-wide: only for a test binary of its own.
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub fn set_frame_identity_enabled(enabled: bool) {
     FRAME_IDENTITY.store(enabled, Ordering::Relaxed);
@@ -137,6 +162,15 @@ mod tests {
         let renamed = FrameId::new(Some("2020-04-20_0001".into()), Some(1_010_034)).expect("r");
         assert_eq!(a.differs(&renamed), None);
         assert_eq!(FrameId::new(None, None), None);
+        // Same frame only on positive agreement.
+        assert!(a.same_frame(&renamed));
+        assert!(!a.same_frame(&b));
+        assert!(!b.same_frame(&c), "a file number and a stem never agree");
+        assert!(c.same_frame(&c.clone()));
+        assert!(
+            !a.same_frame(&c),
+            "one file number missing: the stems alone do not decide"
+        );
         assert_eq!(a.storage(), "raw:IMG_0034 num:101-0034");
         assert_eq!(a.label(), "101-0034 (IMG_0034)");
         let json = serde_json::to_string(&a).expect("json");

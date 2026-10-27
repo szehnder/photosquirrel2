@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# `frame::set_frame_identity_enabled` (ADR-0105): tests that group a corpus the way builds before frame identity
+# did. Enabled only from dev-dependencies, so no shipped build can turn frame identity off.
+test-hooks = []
+
 [dependencies]
 serde.workspace = true
 

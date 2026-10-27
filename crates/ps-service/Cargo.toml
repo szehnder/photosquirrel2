@@ -28,6 +28,8 @@ rusqlite.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]
+# `frame::set_frame_identity_enabled`, the frame-identity test hook (ADR-0105).
+ps-model = { workspace = true, features = ["test-hooks"] }
 tempfile.workspace = true
 # `FakeHeif`, the deterministic HEIC test decoder (ADR-0089).
 ps-media = { workspace = true, features = ["test-support"] }

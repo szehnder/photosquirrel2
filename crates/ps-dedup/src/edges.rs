@@ -338,6 +338,22 @@ pub fn raw_jpeg_companions(a: &DedupInput, b: &DedupInput, strict: bool) -> bool
     }
 }
 
+/// Both files positively record one frame (ADR-0107): the same frame identity ([`FrameId::same_frame`]) and the
+/// same capture time, to the second and to the sub-second when both record it. Anything missing is not evidence.
+///
+/// [`FrameId::same_frame`]: ps_model::FrameId::same_frame
+fn same_recorded_frame(ma: &crate::input::DedupMeta, mb: &crate::input::DedupMeta) -> bool {
+    let (Some(fa), Some(fb)) = (&ma.frame, &mb.frame) else {
+        return false;
+    };
+    let (Some(ta), Some(tb)) = (ma.capture_time, mb.capture_time) else {
+        return false;
+    };
+    fa.same_frame(fb)
+        && ta.local_seconds == tb.local_seconds
+        && (!(ma.subsec_present && mb.subsec_present) || ta.millis == tb.millis)
+}
+
 /// The metadata test of ADR-0013 / ADR-0035 for a hash-matching pair.
 pub fn metadata_contradiction(a: &DedupInput, b: &DedupInput) -> Option<Contradiction> {
     let (ma, mb) = (&a.meta, &b.meta);
@@ -379,9 +395,11 @@ pub fn metadata_contradiction(a: &DedupInput, b: &DedupInput) -> Option<Contradi
     }
     // ADR-0035: two camera originals of one model with identical stored dimensions are two shots; a RAW file is
     // a camera original whether or not its maker notes were parsed (ADR-0105). The RAW and JPEG halves of one
-    // capture (same stem, same folder, same time) are one shot, not two originals.
+    // capture (same stem, same folder, same time) are one shot, not two originals, and so are two files that both
+    // record the same frame at the same capture time (ADR-0107: a DNG and the same DNG with XMP written into it).
     let original = |x: &DedupInput| x.meta.has_maker_notes || (rules && x.format.is_raw());
     if original(a)
+        && !(rules && same_recorded_frame(ma, mb))
         && original(b)
         && mda.is_some()
         && mda == mdb
