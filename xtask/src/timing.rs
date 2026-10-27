@@ -51,6 +51,11 @@ pub const TESTS: &[TimingTest] = &[
         name: "gallery_frame_cpu_cost_flinging_1m",
     },
     TimingTest {
+        package: "ui-gallery",
+        target: "render_cost",
+        name: "gallery_frame_cpu_cost_flinging_1m_with_placeholders",
+    },
+    TimingTest {
         package: "ps-scan",
         target: "control",
         name: "scenario_scan_control_cancel_within_250_ms",
