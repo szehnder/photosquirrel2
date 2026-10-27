@@ -118,7 +118,30 @@ corpus would have caught the bug).
   it); `ps-media` re-exports it.
 - **One test hook.** `ps_model::frame::set_frame_identity_enabled(false)` turns off reading frame identities and
   `DNGPrivateData` maker notes (ps-media) and the frame and RAW-original rules (ps-dedup), so a test can group a
-  corpus the way the build before this change did. It is only called by tests.
+  corpus the way the build before this change did. It exists only with ps-model's `test-hooks` feature, which only
+  dev-dependencies enable; without it `frame_identity_enabled()` is a constant `true`.
+
+Gate-review fixes (task 7.4 review):
+
+- **The same recorded frame is not "two camera originals" (ADR-0107).** D3's RAW-original rule split a DNG from the
+  same DNG with XMP written into it. The rule is skipped when both files record the same frame (equal file numbers,
+  or equal `OriginalRawFileName` stems when neither has a file number) and the same capture time (second, and
+  sub-second when both have one). A NEF and its converted DNG of equal dimensions stay a suggestion: no agreeing
+  identity is recorded. The duplicate-detection delta has the scenario.
+- **Cleanup and the report wait for the re-read (ADR-0108).** Before the first rescan after migration 23, cleanup
+  plan and run are refused ("rescan first") while a stale analysed row is in scope or grouped with a file in scope,
+  and the report flags those sources as not confirmed (CLI badge and `rescan_needed`, the app's badges). The cleanup
+  delta has the scenario.
+- **The re-read is complete or not stamped (ADR-0108).** Directories and frame values beyond the probe window are
+  fetched with bounded targeted reads; when a bound stops the re-read, the row stays below the version. A quarantined
+  file removed from the quarantine folder is stamped quietly. The re-read records the `Frame` tags in the tag list
+  like a fresh analysis.
+- **Migration 23 marks model-less rows current** (`COALESCE`; migration 23 is unreleased, v0.2.0 shipped migrations
+  up to 18, so the SQL is fixed in place). Tests rebuild an old catalog from the migration's own statement
+  (`ps_catalog::db::frame_identity_reset_sql`).
+- **A Canon `FileNumber` tag that cannot be read, or is implausible, falls through to `CameraInfo`.**
+- **The corpus models the EOS 70D path.** The second converted-burst set of each preset records its file number in
+  `CameraInfo` (at the EOS 5D Mark III offsets of the corpus body) instead of tag 0x0008 (corpus revision 3).
 
 ## Evidence: the corpus catches the bug (task 2.2)
 
@@ -138,6 +161,11 @@ violations. New baseline: 19,741 pairs, 1,903 groups, 8,834 grouped files, 4,166
 suggestions (old: 19,381 / 1,843 / 8,594 / 4,048,886,433 / 5,570). The differences are exactly the converted-burst
 sets: +60 groups, +240 files, +360 pairs, +117,132,069 bytes (each frame's CR2 and camera JPEG), +828 suggestions
 (768 across frames of a set, 60 CR2-to-JPEG-copy pairs inside a frame's group; see tasks.md 7.1).
+
+After the gate-review fixes (ADR-0107, corpus revision 3): the same precision, recall, keeper accuracy (1.0000) and
+0 violations; 19,741 pairs, 1,903 groups, 8,834 grouped files, 4,166,020,278 reclaimable bytes, **6,338**
+suggestions. The 60 CR2-to-JPEG-copy suggestions are gone (same file number and capture time: one frame), and the
+second converted set's `CameraInfo` maker notes add 1,776 bytes.
 
 ## The owner's SD card (task 7.2)
 
