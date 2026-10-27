@@ -51,6 +51,9 @@ pub struct RunSummary {
     /// query, never per-file events (ADR-0019).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undecoded: Vec<ps_model::Undecoded>,
+    /// A Fill in previews job's outcome (ADR-0109); absent for scans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<ps_model::FillSummary>,
 }
 
 impl RunSummary {

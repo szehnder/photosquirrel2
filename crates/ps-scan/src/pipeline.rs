@@ -93,6 +93,12 @@ pub(crate) struct RunCtx {
     pub zone: Arc<dyn ps_media::LocalZone>,
     /// Refresh the analysis of unchanged files without stored class facts (ADR-0071).
     pub refresh_analysis: bool,
+    /// A Fill in previews job of this scope (ADR-0109): no walk; the work list is the catalog's waiting rows.
+    pub fill: Option<ps_model::FillScope>,
+    /// Fill in previews counters: previews made, files decoded again without one, waiting files of offline sources.
+    pub filled: AtomicU64,
+    pub fill_failed: AtomicU64,
+    pub skipped_offline: AtomicU64,
 }
 
 impl RunCtx {
@@ -157,8 +163,25 @@ pub(crate) fn execute(ctx: Arc<RunCtx>) -> RunSummary {
         }
     }
 
-    // 1. Walk and diff every source in parallel (listing + stat only).
-    let diffs: Vec<Option<DiffOutput>> = std::thread::scope(|sc| {
+    // 1. Walk and diff every source in parallel (listing + stat only); a Fill in previews job lists nothing and
+    // takes its work from the catalog (ADR-0109).
+    let diffs: Vec<Option<DiffOutput>> = if let Some(scope) = ctx.fill.clone() {
+        ctx.progress.set_fill();
+        fill_work(&ctx, &scope)
+    } else {
+        walk_and_diff_all(&ctx)
+    };
+
+    // 2. The staged pipeline over the files to process.
+    if !ctx.ctl.is_cancelled() {
+        ctx.progress.set_phase(ScanPhase::Analyzing);
+        run_pipeline(&ctx, diffs);
+    }
+    finish(&ctx, started)
+}
+
+fn walk_and_diff_all(ctx: &Arc<RunCtx>) -> Vec<Option<DiffOutput>> {
+    std::thread::scope(|sc| {
         let handles: Vec<_> = (0..ctx.sources.len())
             .map(|i| {
                 let ctx = &ctx;
@@ -171,14 +194,119 @@ pub(crate) fn execute(ctx: Arc<RunCtx>) -> RunSummary {
             .into_iter()
             .map(|h| h.ok().and_then(|h| h.join().ok().flatten()))
             .collect()
-    });
+    })
+}
 
-    // 2. The staged pipeline over the files to process.
-    if !ctx.ctl.is_cancelled() {
-        ctx.progress.set_phase(ScanPhase::Analyzing);
-        run_pipeline(&ctx, diffs);
+/// The waiting rule of this run's decoders, generations and poster-frame tool (ADR-0109).
+pub(crate) fn waiting_rule(opts: &ScanOptions) -> ps_catalog::WaitingRule {
+    ps_catalog::WaitingRule {
+        decodable: ps_model::DecoderKey::ALL
+            .into_iter()
+            .filter(|k| opts.decoders.can_decode(*k))
+            .collect(),
+        generations: opts.generations,
+        poster_tool: opts.poster_tool.is_some(),
     }
+}
 
+/// The work of a Fill in previews job (ADR-0109): the run's sources' placeholders that can be filled in now, in
+/// path order per source, read from the catalog (no folder is listed). Rows of offline sources are counted and
+/// left waiting. A row the re-decode can fill is queued as a re-decode (its identity checked against the bytes
+/// read); one without dimensions, larger than the analysis buffer or a video is analysed again from
+/// `discovered`, as a rescan does.
+fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput>> {
+    let ids: Vec<SourceId> = ctx.sources.iter().map(|s| s.id).collect();
+    let rows = match ctx
+        .catalog
+        .read()
+        .fillable_files(&waiting_rule(&ctx.opts), scope, &ids)
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("fill run {}: waiting rows: {e}", ctx.run);
+            return Vec::new();
+        }
+    };
+    let mut outs: Vec<DiffOutput> = ctx.sources.iter().map(|_| DiffOutput::default()).collect();
+    for r in rows {
+        let Some(idx) = ctx.sources.iter().position(|s| s.id == r.key.source) else {
+            continue;
+        };
+        let s = &ctx.sources[idx];
+        if s.offline {
+            ctx.skipped_offline.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        let out = &mut outs[idx];
+        let Some(identity) = r.identity else { continue };
+        let full = crate::diff::needs_full_analysis(&r);
+        let order = out.todo.len() as u32;
+        let mut todo = Todo {
+            path: r.key.path.clone(),
+            stat: r.stat,
+            order,
+            thumbs_db_sibling: false,
+            stage: r.stage,
+            is_new: false,
+            refresh: false,
+            redecode: Some(identity),
+            prior_failure: None,
+            meta_reread: false,
+            read_path: None,
+        };
+        out.counts.unchanged += 1;
+        if full {
+            // Classified again: the folder's Thumbs.db hint, from two stats (no listing).
+            let dir = r.key.path.under(&s.root);
+            let dir = dir.parent().unwrap_or(&s.root);
+            todo.thumbs_db_sibling = ["Thumbs.db", "thumbs.db"].iter().any(|n| {
+                ctx.opts
+                    .fs
+                    .metadata(&dir.join(n))
+                    .is_ok_and(|m| m.is_file())
+            });
+            todo.redecode = None;
+            todo.stage = Stage::Discovered;
+            out.counts.outdated_previews += 1;
+            out.upserts
+                .push(ps_catalog::FileRow::discovered(r.key.clone(), r.stat));
+            *out.stages.get_mut(Stage::Discovered) += 1;
+        } else {
+            out.counts.redecode += 1;
+            *out.stages.get_mut(r.stage) += 1;
+        }
+        if r.decoder_missing.is_none() && !full {
+            out.counts.outdated_previews += 1;
+        }
+        out.bytes_to_process += r.stat.size;
+        out.present += 1;
+        out.todo.push(todo);
+    }
+    outs.into_iter()
+        .enumerate()
+        .map(|(idx, mut d)| {
+            if ctx.sources[idx].offline {
+                ctx.progress.set_incomplete(idx);
+                return None;
+            }
+            for chunk in std::mem::take(&mut d.upserts).chunks(UPSERT_CHUNK) {
+                ctx.submit(Command::UpsertFiles(chunk.to_vec()));
+            }
+            ctx.progress.set_diff(
+                idx,
+                &d.counts,
+                d.present,
+                &d.stages,
+                d.todo.len() as u64,
+                d.bytes_to_process,
+            );
+            Some(d)
+        })
+        .collect()
+}
+
+/// Flush, regroup and record the outcome of a run.
+fn finish(ctx: &Arc<RunCtx>, started: Instant) -> RunSummary {
     // 3. Flush and record the outcome.
     ctx.progress.set_phase(ScanPhase::Finishing);
     if let Err(e) = ctx.catalog.writer().flush() {
@@ -202,8 +330,30 @@ pub(crate) fn execute(ctx: Arc<RunCtx>) -> RunSummary {
         None
     };
     // After the flush and the regroup: the waiting counts are the catalog's.
-    let mut summary = summarize(&ctx, status, started.elapsed());
+    let mut summary = summarize(ctx, status, started.elapsed());
     summary.grouping = grouping;
+    if let Some(scope) = &ctx.fill {
+        let online: Vec<SourceId> = ctx
+            .sources
+            .iter()
+            .filter(|s| !s.offline && !s.lost.load(Ordering::Acquire))
+            .map(|s| s.id)
+            .collect();
+        let still_waiting = if online.is_empty() {
+            0
+        } else {
+            ctx.catalog
+                .read()
+                .fillable_files(&waiting_rule(&ctx.opts), scope, &online)
+                .map_or(0, |r| r.len() as u64)
+        };
+        summary.fill = Some(ps_model::FillSummary {
+            filled: ctx.filled.load(Ordering::Relaxed),
+            skipped_offline: ctx.skipped_offline.load(Ordering::Relaxed),
+            failed: ctx.fill_failed.load(Ordering::Relaxed),
+            still_waiting,
+        });
+    }
     ctx.submit(Command::SetRunStatus {
         run: ctx.run,
         status,
@@ -257,6 +407,7 @@ fn summarize(ctx: &RunCtx, status: RunStatus, elapsed: Duration) -> RunSummary {
         retries_exhausted: ctx.retries_exhausted.load(Ordering::Relaxed),
         grouping: None,
         undecoded: undecoded(ctx),
+        fill: None,
     }
 }
 
@@ -359,6 +510,8 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
         ctx.classifier_hash,
         ctx.refresh_analysis,
         &ctx.opts.decoders,
+        &ctx.opts.generations,
+        ctx.opts.poster_tool.is_some(),
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -483,8 +636,14 @@ enum Redecode {
     /// The decoder is missing again: the file keeps waiting.
     StillMissing,
     /// The decoder rejected the data or did not complete: the file keeps its exact-copy analysis, with the failure
-    /// recorded for the next rescan's retry rule (ADR-0098).
-    Undecodable(String, Option<ps_model::DecodeFailure>),
+    /// recorded for the next rescan's retry rule (ADR-0098), and a new placeholder saying why, stamped with this
+    /// run's generation (ADR-0109; none when the decode did not complete for a reason that says nothing about the
+    /// file).
+    Undecodable(
+        String,
+        Option<ps_model::DecodeFailure>,
+        Option<(ThumbnailRecord, ps_model::PreviewStamp)>,
+    ),
 }
 
 fn run_pipeline(ctx: &Arc<RunCtx>, diffs: Vec<Option<DiffOutput>>) {
@@ -1403,7 +1562,7 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
     // The decoder this format needs and this machine lacks (ADR-0091), or how its decode failed (ADR-0098).
     let mut decoder_missing = None;
     let mut decode_failure = None;
-    let (hashes, thumb) = if probe.kind() == Some(MediaKind::Video) {
+    let (hashes, mut thumb) = if probe.kind() == Some(MediaKind::Video) {
         (
             None,
             ps_media::thumb::video_thumbnail(
@@ -1430,19 +1589,23 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
                     message: format!("analysis failed: {e}"),
                 });
             }
-            Err(e) => (
-                None,
-                ps_media::thumb::placeholder(
-                    &probe,
-                    capture,
-                    &format!("preview unavailable ({e})"),
-                ),
-            ),
+            Err(e) => (None, placeholder_of(&probe, capture, &e)),
         }
     } else if !full {
         (
             None,
-            ps_media::thumb::placeholder(&probe, capture, "preview unavailable (file too large)"),
+            ps_media::thumb::placeholder_for(
+                &probe,
+                capture,
+                "preview unavailable (file too large)",
+                Some(ps_model::PlaceholderReason::UnsupportedVariant {
+                    detail: format!(
+                        "{} files over {} MB",
+                        probe.format.map_or("such", |f| f.label()),
+                        ANALYSIS_BUFFER_MAX_BYTES >> 20
+                    ),
+                }),
+            ),
         )
     } else {
         let Ok(permit) = decode_permit(ctx, &probe, busy) else {
@@ -1461,14 +1624,7 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
                     None => unreachable!("a placeholder for every missing decoder"),
                 }
             }
-            Err(DecodeError::NoRawPreview) => (
-                None,
-                ps_media::thumb::placeholder(
-                    &probe,
-                    capture,
-                    "preview unavailable (no embedded preview)",
-                ),
-            ),
+            Err(e @ DecodeError::NoRawPreview) => (None, placeholder_of(&probe, capture, &e)),
             // A HEIC or AVIF the decoder rejects (truncated, corrupt, or larger than the decode cap) keeps its
             // identity and metadata with a placeholder, as without a decoder: catalogued, de-duplicated by exact
             // content and exported (ADR-0095, as a re-decode does, ADR-0091). Reported, never `unreadable`.
@@ -1482,14 +1638,36 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
                         "could not be decoded ({e}); it is catalogued with a placeholder and exported as is"
                     ),
                 });
+                let reason = ps_media::thumb::reason_for_error(&e).unwrap_or(
+                    ps_model::PlaceholderReason::Unreadable {
+                        message: e.to_string(),
+                    },
+                );
                 (
                     None,
-                    ps_media::thumb::placeholder(
+                    ps_media::thumb::placeholder_for(
                         &probe,
                         capture,
                         &format!("preview unavailable (could not be decoded: {e})"),
+                        Some(reason),
                     ),
                 )
+            }
+            // A recognised still with dimensions whose decode failed (ADR-0109, amending ADR-0055): catalogued with
+            // its identity, metadata and a placeholder that says why, never hashed. A variant this version does not
+            // decode is not an error; data the decoder rejected is reported.
+            Err(e) if probe.display.is_some() || metadata.fields.width.is_some() => {
+                if !matches!(e, DecodeError::Unsupported(_) | DecodeError::TooLarge(_)) {
+                    ctx.progress.error(RecentError {
+                        source: ctx.sources[idx].id,
+                        path: path.clone(),
+                        stage: Stage::Thumbed,
+                        message: format!(
+                            "could not be read ({e}); it is catalogued with a placeholder and exported as is"
+                        ),
+                    });
+                }
+                (None, placeholder_of(&probe, capture, &e))
             }
             Err(e) => {
                 return Some(Persist::Failed {
@@ -1501,6 +1679,8 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
         }
     };
     drop(bytes);
+    // Placeholders carry this run's decoder generation of their format (ADR-0109).
+    let preview = stamp(ctx, &mut thumb, probe.format);
     Some(Persist::Done {
         idx,
         path,
@@ -1512,9 +1692,42 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
             decode_failure,
             hashes,
             metadata,
+            preview,
         }),
         thumb,
     })
+}
+
+/// The placeholder of a failed decode, with its reason ([`ps_media::thumb::placeholder_for_error`]); a decode that
+/// did not complete for a reason that says nothing about the file counts as could not be read.
+fn placeholder_of(
+    probe: &ProbeRecord,
+    capture: Option<ps_model::CaptureTime>,
+    e: &DecodeError,
+) -> ThumbnailRecord {
+    ps_media::thumb::placeholder_for_error(probe, capture, e).unwrap_or_else(|| {
+        ps_media::thumb::placeholder_for(
+            probe,
+            capture,
+            &format!("preview unavailable ({e})"),
+            Some(ps_model::PlaceholderReason::Unreadable {
+                message: e.to_string(),
+            }),
+        )
+    })
+}
+
+/// Stamp a placeholder with this run's decoder generation of `format` (a test's override included) and return
+/// the row's `preview_gen` and `preview_reason`; `None` for real pixels (ADR-0109).
+fn stamp(
+    ctx: &RunCtx,
+    thumb: &mut ThumbnailRecord,
+    format: Option<ps_model::Format>,
+) -> Option<ps_model::PreviewStamp> {
+    if let Some(p) = thumb.placeholder.as_mut() {
+        p.generation = ctx.opts.generations.of_format(format);
+    }
+    ps_model::PreviewStamp::of(thumb)
 }
 
 /// Reserve the estimated working memory of a HEIC or AVIF decode in the run's decode budget (ADR-0095); `None`
@@ -1606,7 +1819,18 @@ fn analyze_redecode(
         },
         Err(DecodeError::Cancelled) => return None,
         Err(DecodeError::DecoderMissing(_)) => Redecode::StillMissing,
-        Err(e) => Redecode::Undecodable(e.to_string(), failure_record(ctx, probe, &e, prior)),
+        Err(e) => {
+            let placeholder =
+                ps_media::thumb::placeholder_for_error(probe, None, &e).and_then(|mut t| {
+                    let p = stamp(ctx, &mut t, probe.format)?;
+                    Some((t, p))
+                });
+            Redecode::Undecodable(
+                e.to_string(),
+                failure_record(ctx, probe, &e, prior),
+                placeholder,
+            )
+        }
     };
     Some(Persist::Redecoded {
         idx,
@@ -1671,6 +1895,9 @@ fn persist_batch(
     for item in batch {
         match item {
             Persist::Failed { idx, path, message } => {
+                if ctx.fill.is_some() {
+                    ctx.fill_failed.fetch_add(1, Ordering::Relaxed);
+                }
                 ctx.fail(idx, &path, Stage::Probed, Stage::Analyzed, message);
             }
             Persist::Redecoded {
@@ -1686,7 +1913,17 @@ fn persist_batch(
                 class,
                 analysis,
                 thumb,
-            } => done.push((idx, path, is_new, class, analysis, thumb)),
+            } => {
+                if ctx.fill.is_some() {
+                    let counter = if analysis.preview.is_some() {
+                        &ctx.fill_failed
+                    } else {
+                        &ctx.filled
+                    };
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
+                done.push((idx, path, is_new, class, analysis, thumb));
+            }
         }
     }
     if done.is_empty() {
@@ -1698,7 +1935,14 @@ fn persist_batch(
     let to_store: Vec<(&ContentId, &ThumbnailRecord)> = done
         .iter()
         .filter(|d| seen.insert(d.4.identity))
-        .filter(|d| !ctx.thumbs.contains(&d.4.identity).unwrap_or(false))
+        // A stored placeholder is replaced (a preview now, or a placeholder that says why at this generation,
+        // ADR-0109); stored pixels are kept.
+        .filter(|d| {
+            matches!(
+                ctx.thumbs.stored_kind(&d.4.identity),
+                Ok(None | Some(ps_model::ThumbKind::Placeholder))
+            )
+        })
         .map(|d| (&d.4.identity, &d.5))
         .collect();
     if let Err(e) = ctx.thumbs.put_many(to_store) {
@@ -1770,12 +2014,24 @@ fn persist_redecode(
             }
             match hashes {
                 Some(h) => ctx.submit(Command::Redecoded(vec![(key, h)])),
-                None => ctx.submit(Command::ClearDecoderMissing(vec![key])),
+                None => {
+                    ctx.submit(Command::ClearDecoderMissing(vec![key.clone()]));
+                    ctx.submit(Command::SetPreview(vec![(key, None)]));
+                }
             }
             ctx.progress.redecoded(idx);
+            ctx.filled.fetch_add(1, Ordering::Relaxed);
         }
         Redecode::StillMissing => {}
-        Redecode::Undecodable(why, failure) => {
+        Redecode::Undecodable(why, failure, placeholder) => {
+            ctx.fill_failed.fetch_add(1, Ordering::Relaxed);
+            // The placeholder now says why, at this run's generation: not read again until the file or the
+            // generation changes (ADR-0109).
+            if let Some((t, p)) = placeholder
+                && ctx.thumbs.put_many([(&identity, &t)]).is_ok()
+            {
+                ctx.submit(Command::SetPreview(vec![(key.clone(), Some(p))]));
+            }
             ctx.submit(match failure {
                 Some(f) => Command::DecodeFailed(vec![(key, f)]),
                 None => Command::ClearDecoderMissing(vec![key]),

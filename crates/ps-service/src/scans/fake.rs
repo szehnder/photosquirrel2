@@ -549,6 +549,7 @@ impl FakeScanService {
             throughput,
             active_workers: if running { 12 } else { 0 },
             buffered_bytes: if running { 48 << 20 } else { 0 },
+            fill: false,
         }
     }
 

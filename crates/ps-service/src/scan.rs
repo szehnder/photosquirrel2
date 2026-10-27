@@ -252,6 +252,40 @@ impl ScanService {
         })
     }
 
+    // ---- previews (preview-placeholders, ADR-0109) ----
+
+    /// The waiting rule as far as this process knows it now (never waits for decoder detection: while detection
+    /// has not answered, no HEIC decoder counts as present). For the grid's status marks and the Library notice.
+    pub fn waiting_rule(&self) -> ps_catalog::WaitingRule {
+        let mut rule = self.engine.waiting_rule();
+        if let Some(d) = self.decoders.try_get() {
+            rule.decodable = ps_model::DecoderKey::ALL
+                .into_iter()
+                .filter(|k| d.can_decode(*k))
+                .collect();
+        }
+        rule
+    }
+
+    /// Placeholders of `sources` (all when empty) by format and reason, with how many can be filled in now: one
+    /// aggregate query (waits for decoder detection, so call off the UI thread).
+    pub fn preview_status(&self, sources: &[SourceId]) -> Result<Vec<ps_model::PreviewStatusRow>> {
+        self.prime_decoders();
+        self.engine.preview_status(sources)
+    }
+
+    /// Start a Fill in previews job over `sources` (all when empty) for `scope` (ADR-0109): a run like a scan
+    /// (progress, pause, resume, cancel) that reads only the waiting files, once each, and walks no folder.
+    /// Refused while a scan, an export or a cleanup runs.
+    pub fn fill_previews(
+        &self,
+        scope: ps_model::FillScope,
+        sources: &[SourceId],
+    ) -> Result<ScanRunId> {
+        self.prime_decoders();
+        self.unless_busy(|e| e.start_fill(scope, sources))
+    }
+
     /// Recompute stale perceptual hashes from the thumbnail store (no source access).
     pub fn upgrade_hashes(&self) -> Result<HashUpgradeReport> {
         ps_scan::upgrade_hashes_current(self.engine.catalog(), self.engine.thumbs())

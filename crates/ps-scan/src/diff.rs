@@ -19,6 +19,10 @@
 //! - **re-decoded**: an unchanged, thumbed file analysed without the decoder its format needs (its
 //!   `decoder_missing` marker, ADR-0091) is queued for a re-decode when the run's decoder registry has that
 //!   decoder (one full read); otherwise it is counted as awaiting a decoder and nothing is read.
+//! - **outdated previews**: an unchanged, thumbed placeholder made by an older decoder generation than this
+//!   version's for its format (`file.preview_gen`, ADR-0109) is re-decoded once (one full read), or analysed again
+//!   from `discovered` when it has no dimensions, is larger than the analysis buffer or is a video. A placeholder
+//!   at the current generation (a variant not supported, data that could not be read) is not read.
 //! - **re-read for frame identity**: an unchanged, analysed row analysed before frame identity existed
 //!   (`meta_version` below [`ps_model::META_LOGIC_VERSION`]: RAW-format rows and the Canon camera files of their
 //!   capture seconds, catalog migration 23) has its probe window read again (at most [`ps_media::PROBE_LIMIT`]
@@ -131,6 +135,34 @@ fn needs_frame_reread(r: &ps_catalog::FileRecord) -> bool {
         && r.identity.is_some()
 }
 
+/// A thumbed placeholder an older decoder generation made (ADR-0109): this version may decode it now. Rows waiting
+/// for a decoder or with a recorded decode failure follow their own rules (ADR-0091, ADR-0098).
+pub(crate) fn outdated_placeholder(
+    r: &ps_catalog::FileRecord,
+    generations: &ps_model::Generations,
+    poster_tool: bool,
+) -> bool {
+    r.stage == Stage::Thumbed
+        && r.decoder_missing.is_none()
+        && r.decode_failure.is_none()
+        && r.identity.is_some()
+        && r.preview.is_some_and(|p| {
+            p.generation < generations.of_format(r.format)
+                && !(p.reason == ps_model::PreviewReason::NoPosterTool && !poster_tool)
+        })
+}
+
+/// An outdated placeholder that needs a full analysis rather than a re-decode: no dimensions (the probe of an
+/// older version could not read them, ADR-0084), larger than the analysis buffer (a TIFF analysed in one pass,
+/// ADR-0086), or a video (its poster frame comes from the analysis).
+pub(crate) fn needs_full_analysis(r: &ps_catalog::FileRecord) -> bool {
+    r.width.is_none()
+        || r.stat.size > ps_model::limits::ANALYSIS_BUFFER_MAX_BYTES
+        || r.format
+            .is_some_and(|f| f.kind() == ps_model::MediaKind::Video)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn diff(
     source: SourceId,
     entries: Vec<WalkEntry>,
@@ -139,6 +171,8 @@ pub fn diff(
     classifier_hash: u64,
     refresh_analysis: bool,
     decoders: &ps_media::Decoders,
+    generations: &ps_model::Generations,
+    poster_tool: bool,
 ) -> ps_catalog::Result<DiffOutput> {
     let mut stale = Vec::new();
     let mut out = DiffOutput {
@@ -249,6 +283,19 @@ pub fn diff(
                         out.bytes_to_process += w.stat.size;
                         *out.stages.get_mut(Stage::Discovered) += 1;
                     }
+                    // A placeholder of an older decoder generation (ADR-0109) that only a full analysis can fill in.
+                    Some(r)
+                        if r.missing_since_ms.is_none()
+                            && outdated_placeholder(r, generations, poster_tool)
+                            && needs_full_analysis(r) =>
+                    {
+                        out.counts.unchanged += 1;
+                        out.counts.outdated_previews += 1;
+                        out.upserts.push(FileRow::discovered(key, w.stat));
+                        out.todo.push(todo(Stage::Discovered, false));
+                        out.bytes_to_process += w.stat.size;
+                        *out.stages.get_mut(Stage::Discovered) += 1;
+                    }
                     Some(r) => {
                         out.counts.unchanged += 1;
                         if r.missing_since_ms.is_some() {
@@ -285,6 +332,21 @@ pub fn diff(
                                 out.todo.push(Todo {
                                     redecode: Some(id),
                                     prior_failure: Some(f.clone()),
+                                    ..todo(r.stage, false)
+                                });
+                                out.bytes_to_process += w.stat.size;
+                                redecoding = true;
+                            }
+                            // A placeholder of an older decoder generation (ADR-0109): decoded again, once; it
+                            // then carries the current generation.
+                            if !redecoding
+                                && let Some(id) = r.identity
+                                && outdated_placeholder(r, generations, poster_tool)
+                            {
+                                out.counts.outdated_previews += 1;
+                                out.counts.redecode += 1;
+                                out.todo.push(Todo {
+                                    redecode: Some(id),
                                     ..todo(r.stage, false)
                                 });
                                 out.bytes_to_process += w.stat.size;

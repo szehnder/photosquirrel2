@@ -111,6 +111,7 @@ fn row(source: ps_model::SourceId, i: u64) -> FileRow {
                 identity: ContentId::full(digest),
                 decoder_missing: None,
                 decode_failure: None,
+                preview: None,
                 hashes: None,
                 metadata: Metadata {
                     fields: MediaMetadata {

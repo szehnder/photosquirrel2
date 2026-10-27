@@ -77,6 +77,7 @@ struct Diff {
     redecoded: AtomicU64,
     decode_retries: AtomicU64,
     frame_reread: AtomicU64,
+    outdated_previews: AtomicU64,
 }
 
 impl Diff {
@@ -99,6 +100,7 @@ impl Diff {
             redecoded: self.redecoded.load(Ordering::Relaxed),
             decode_retries: self.decode_retries.load(Ordering::Relaxed),
             frame_reread: self.frame_reread.load(Ordering::Relaxed),
+            outdated_previews: self.outdated_previews.load(Ordering::Relaxed),
         }
     }
 
@@ -119,6 +121,8 @@ impl Diff {
         self.redecode.store(d.redecode, Ordering::Relaxed);
         self.decode_retries
             .store(d.decode_retries, Ordering::Relaxed);
+        self.outdated_previews
+            .store(d.outdated_previews, Ordering::Relaxed);
         // `refreshed`, `redecoded` and `frame_reread` count during the run (Progress::refreshed,
         // Progress::redecoded, Progress::frame_reread), after the diff.
     }
@@ -217,6 +221,8 @@ pub struct Progress {
     files_done: AtomicU64,
     errors: AtomicU64,
     recent: Mutex<Recent>,
+    /// A Fill in previews job (ADR-0109).
+    fill: std::sync::atomic::AtomicBool,
 }
 
 impl Progress {
@@ -237,7 +243,13 @@ impl Progress {
                 samples: VecDeque::with_capacity(SAMPLES),
                 last_sample: (start, 0, 0),
             }),
+            fill: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Mark the run as a Fill in previews job (snapshots say so).
+    pub fn set_fill(&self) {
+        self.fill.store(true, Ordering::Relaxed);
     }
 
     pub fn run(&self) -> ScanRunId {
@@ -508,6 +520,7 @@ impl Progress {
             throughput: r.samples.iter().copied().collect(),
             active_workers,
             buffered_bytes,
+            fill: self.fill.load(Ordering::Relaxed),
         }
     }
 }

@@ -235,6 +235,7 @@ impl GallerySource for SyntheticSource {
                     video: id.0 % 37 == 0,
                     offline: false,
                     missing: false,
+                    placeholder: None,
                 }
             })
             .collect())

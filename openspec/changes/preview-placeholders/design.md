@@ -173,3 +173,29 @@
 - `ui-workspace`: headless dialog content for each reason, Show them, the notice, and Fill in from the dialog.
 - CLI tests for `previews status` and `previews fill`.
 - Screenshot review of the grid with mixed placeholders at three tile sizes, light and dark, plus the dialog.
+
+## Deviations (as built)
+
+ADR-0109 records the decisions of architectural weight; these are the differences from the plan above.
+
+- **Damaged stills are catalogued, not failed** (amends ADR-0055). The design's `Unreadable` reason needs a row to
+  carry it: a recognised still with dimensions whose decode fails is now thumbed with an `Unreadable` placeholder
+  (identity and metadata kept, never hashed, reported as an error, exported as is). Before, a non-HEIC decode error
+  failed the file, so it was neither grouped by exact content nor exported.
+- **BigTIFF is recognised by the probe** (its first directory's dimensions, inside the probe window) and refused by
+  the decoder with `Unsupported("BigTIFF")`, also through the generic decoder fallback. Before, a BigTIFF was junk
+  of no recognised format.
+- **`NeedsNewerVersion`** is the `#[serde(other)]` variant: an older app reading a newer app's reason gets it.
+- **Backfill rule**: thumbed stills without perceptual hashes (`media_kind = 0`); videos are not marked (their rows
+  cannot tell a poster frame from a placeholder) and take their reason from the stored placeholder record. Reasons:
+  `decoder_missing` / `unreadable` (decode failure) / `unsupported_variant` (RAW, sampled identity) / `unreadable`.
+- **The waiting rule leaves rows with a recorded decode failure to ADR-0098's retry rule**; the generation rule only
+  applies to rows without a decoder marker or failure record.
+- **Outdated placeholders that a re-decode cannot fill** (no dimensions, larger than the 64 MB analysis buffer, or a
+  video) are analysed again from `discovered`, in rescans and in the Fill in job. In the job the folder's Thumbs.db
+  hint for the re-classification comes from two stats (`Thumbs.db`, `thumbs.db`), not a listing.
+- **The thumbnail store replaces a stored placeholder** when an analysis of the same content stores a preview or a
+  newer placeholder (before, an existing row was never replaced by a full analysis).
+- **Migration 24 also adds `scan_run.fill_scope`** (JSON) beside `kind`, so a resumed Fill in job fills the same scope.
+- **Fill in summary counts**: `failed` counts files decoded again that still have no preview; files that could not be
+  read (I/O) stay waiting and count in `still_waiting`.

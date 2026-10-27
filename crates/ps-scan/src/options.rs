@@ -58,6 +58,9 @@ pub struct ScanOptions {
     /// The decoders of this machine (ADR-0089): HEIC through the operating system's decoder when detection
     /// found one. Default: none (core tests; `ps-service` passes the detected registry).
     pub decoders: Arc<ps_media::Decoders>,
+    /// The decoder generations placeholders are stamped with and compared against (ADR-0109): the build's
+    /// [`ps_media::decoders::GENERATIONS`]; tests simulate an update by raising one.
+    pub generations: ps_model::Generations,
 }
 
 impl Default for ScanOptions {
@@ -79,6 +82,7 @@ impl Default for ScanOptions {
             zone: None,
             refresh_analysis: false,
             decoders: Arc::new(ps_media::Decoders::none()),
+            generations: ps_media::decoders::GENERATIONS,
         }
     }
 }
@@ -100,6 +104,7 @@ impl std::fmt::Debug for ScanOptions {
             .field("zone", &self.zone.is_some())
             .field("refresh_analysis", &self.refresh_analysis)
             .field("decoders", &self.decoders)
+            .field("generations", &self.generations)
             .finish_non_exhaustive()
     }
 }

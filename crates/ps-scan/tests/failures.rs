@@ -210,10 +210,12 @@ fn scenario_scanning_recent_lists_bounded() {
     }
 }
 
-/// ADR-0055: a truncated or corrupt JPEG is recorded as an analysis failure, never hashed with grey padding
-/// (where a damaged full-size copy could group with its intact derivatives and win keeper on pixel count).
+/// ADR-0055: a truncated or corrupt JPEG is never hashed with grey padding (where a damaged full-size copy could
+/// group with its intact derivatives and win keeper on pixel count). Since ADR-0109 it is catalogued with its
+/// identity and a placeholder that keeps the decoder's error, instead of failing: exact copies are found and it is
+/// exported as is.
 #[test]
-fn truncated_and_corrupt_jpegs_are_failed_not_hashed() {
+fn truncated_and_corrupt_jpegs_keep_a_placeholder_not_hashed() {
     use ps_fixtures::media as fx;
     let _cores = shared();
     let tmp = tempfile::tempdir().expect("tmp");
@@ -242,21 +244,39 @@ fn truncated_and_corrupt_jpegs_are_failed_not_hashed() {
     ps_fixtures::scratch::write(root.join("garbage.jpg"), garbage).expect("write");
     let e = env();
     let id = e.add(&root);
-    completed(&e.scan(&[id]));
+    let s = e.scan(&[id]);
+    completed(&s);
+    assert!(s.errors >= 3, "each damaged file is reported: {}", s.errors);
     let files = e.files(id);
     let intact = &files["intact.jpg"];
     assert_eq!(intact.stage, Stage::Thumbed);
     assert!(intact.hashes.is_some(), "the intact copy is hashed");
     for name in ["truncated.jpg", "small-truncated.jpg", "garbage.jpg"] {
         let f = &files[name];
-        assert_eq!(f.stage, Stage::Failed, "{name}");
+        assert_eq!(f.stage, Stage::Thumbed, "{name}: catalogued");
         assert!(f.hashes.is_none(), "{name} is not hashed");
-        let errors = e.readers().file_errors(f.id).expect("errors");
+        assert!(f.identity.is_some(), "{name} has its exact identity");
+        assert_eq!(
+            f.preview.map(|p| p.reason),
+            Some(ps_model::PreviewReason::Unreadable),
+            "{name}"
+        );
+        let t = e
+            .s()
+            .thumbs()
+            .get(&f.identity.unwrap())
+            .unwrap()
+            .expect("stored");
         assert!(
-            errors
-                .first()
-                .is_some_and(|x| x.message.contains("analysis failed")),
-            "{name}: {errors:?}"
+            matches!(
+                t.placeholder.and_then(|p| p.reason),
+                Some(ps_model::PlaceholderReason::Unreadable { .. })
+            ),
+            "{name}: the decoder's error is kept"
         );
     }
+    assert!(
+        e.readers().group_memberships().unwrap().is_empty(),
+        "never grouped with the intact copy by look"
+    );
 }

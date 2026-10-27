@@ -1040,11 +1040,13 @@ impl Library {
             }
         }
         let sources = self.sources()?;
+        let rule = self.scan()?.waiting_rule();
         Ok(records
             .into_iter()
             .map(|r| {
                 let online = sources.get(&r.key.source).is_some_and(|s| s.online);
                 ItemSummary {
+                    placeholder: crate::previews::badge(&r, &rule),
                     id: ItemId::try_from(r.id).unwrap_or_default(),
                     thumb: r.identity.map(|c| ThumbKey(c.digest)),
                     dominant: r.identity.and_then(|c| colour_of.get(&c.digest).copied()),
@@ -1237,6 +1239,7 @@ impl Library {
                 None
             }),
             insight,
+            placeholder: crate::previews::badge(&r, &self.scan()?.waiting_rule()),
             preview_note: match r.decoder_missing {
                 Some(key) => {
                     let decoders = self.scan()?.decoders();

@@ -14,6 +14,7 @@
 //! - [`cleanup`]: reversible quarantine cleanup: plan, run, undo, reconcile (`quarantine-cleanup`).
 //! - [`ops`]: scans, exports and cleanup operations exclude each other (ADR-0065).
 //! - [`decoders`]: the machine's HEIC decoder, detected once off the caller's thread (ADR-0089).
+//! - [`previews`]: placeholders that say why, "Why no preview?" and Fill in previews (ADR-0109).
 
 pub mod ai;
 /// How paths are shown (the home folder as `~`): the app's lists and the Excluded view's search use the same rule.
@@ -28,6 +29,7 @@ pub mod json_store;
 pub mod library;
 pub mod ops;
 pub mod power;
+pub mod previews;
 pub mod review;
 pub mod scan;
 pub mod scans;

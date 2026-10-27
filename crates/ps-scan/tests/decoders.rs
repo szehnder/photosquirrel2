@@ -351,6 +351,11 @@ fn scenario_incremental_rescan_old_catalog_marks_undecoded_heic_and_avif() {
              ALTER TABLE user_inclusion DROP COLUMN origin;
              ALTER TABLE file DROP COLUMN frame_id;
              ALTER TABLE file DROP COLUMN meta_version;
+             DROP INDEX file_preview;
+             ALTER TABLE file DROP COLUMN preview_gen;
+             ALTER TABLE file DROP COLUMN preview_reason;
+             ALTER TABLE scan_run DROP COLUMN kind;
+             ALTER TABLE scan_run DROP COLUMN fill_scope;
              PRAGMA user_version = 18;",
         )
         .unwrap();

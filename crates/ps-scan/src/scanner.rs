@@ -539,8 +539,40 @@ impl Scanner {
         let ids: Vec<SourceId> = records.iter().map(|r| r.id).collect();
         let refresh = refresh_analysis || self.options().refresh_analysis;
         let run = self.catalog.writer().start_run_with(ids, refresh)?;
-        *slot = Some(self.spawn(run, records, refresh)?);
+        *slot = Some(self.spawn(run, records, refresh, None)?);
         Ok(run)
+    }
+
+    /// Start a Fill in previews job (ADR-0109) over `sources` (all when empty): re-decode the placeholders within
+    /// `scope` that can become previews now ([`ps_catalog::WaitingRule`] of this scanner's decoders, generations
+    /// and poster-frame tool), read once each, without walking any folder. Files on offline sources are counted and
+    /// left waiting. A run like a scan: sampled progress, pause, resume and cancel, a regroup at the end.
+    pub fn start_fill(
+        &self,
+        scope: ps_model::FillScope,
+        sources: &[SourceId],
+    ) -> Result<ScanRunId> {
+        let mut slot = self.active.lock();
+        self.ensure_idle(&slot)?;
+        let records = self.run_sources(sources)?;
+        let ids: Vec<SourceId> = records.iter().map(|r| r.id).collect();
+        let run = self.catalog.writer().start_fill_run(ids, scope.clone())?;
+        *slot = Some(self.spawn(run, records, false, Some(scope))?);
+        Ok(run)
+    }
+
+    /// The placeholders of `sources` (all when empty) by format and reason, with how many this scanner's
+    /// decoders, generations and poster-frame tool can fill in now (ADR-0109).
+    pub fn preview_status(&self, sources: &[SourceId]) -> Result<Vec<ps_model::PreviewStatusRow>> {
+        Ok(self
+            .catalog
+            .read()
+            .preview_status(&self.waiting_rule(), sources)?)
+    }
+
+    /// The waiting rule of the options the next run starts with.
+    pub fn waiting_rule(&self) -> ps_catalog::WaitingRule {
+        crate::pipeline::waiting_rule(&self.opts.lock())
     }
 
     /// The zone runs make instants local with (ADR-0070): the configured one, else the machine's.
@@ -593,8 +625,8 @@ impl Scanner {
             stats: None,
         })?;
         self.catalog.writer().flush()?;
-        // A refresh run resumes as a refresh run (ADR-0082).
-        *slot = Some(self.spawn(run, records, rec.refresh_analysis)?);
+        // A refresh run resumes as a refresh run (ADR-0082), a Fill in previews job as one (ADR-0109).
+        *slot = Some(self.spawn(run, records, rec.refresh_analysis, rec.fill.clone())?);
         Ok(run)
     }
 
@@ -642,6 +674,7 @@ impl Scanner {
         run: ScanRunId,
         records: Vec<SourceRecord>,
         refresh: bool,
+        fill: Option<ps_model::FillScope>,
     ) -> Result<Arc<ActiveRun>> {
         let opts = self.options();
         let mut sources = Vec::with_capacity(records.len());
@@ -694,7 +727,11 @@ impl Scanner {
             groups: self.groups.clone(),
             classifier_hash: opts.classifier.stable_hash(),
             zone: zone_of(&opts),
-            refresh_analysis: opts.refresh_analysis || refresh,
+            refresh_analysis: (opts.refresh_analysis || refresh) && fill.is_none(),
+            fill,
+            filled: AtomicU64::new(0),
+            fill_failed: AtomicU64::new(0),
+            skipped_offline: AtomicU64::new(0),
         });
         let thread = std::thread::Builder::new()
             .name(format!("ps-scan-run-{run}"))
