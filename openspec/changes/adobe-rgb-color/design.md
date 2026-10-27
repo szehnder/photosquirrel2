@@ -69,6 +69,8 @@ and without the change's conversion. It runs the analysis with a test hook that 
 
 ### D4. Old catalogs (migration 26)
 
+The owner chose this on 2026-10-27: only `_`-named files are re-checked; renamed Adobe RGB files wait for their next analysis.
+
 - `0026_colour.sql`: `ALTER TABLE file ADD COLUMN colour TEXT`. Values are `srgb`, `adobe_rgb`, `display_p3`,
   `profile:<description>` or `unchecked`. New analyses write the probe's answer.
 - Backfill:

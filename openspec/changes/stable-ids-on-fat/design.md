@@ -55,6 +55,8 @@ The first rescan after the upgrade is the remount case too, and it reads nothing
 
 ### D3. FAT's whole-hour shift
 
+The owner chose this on 2026-10-27: an exact whole-hour shift with the same size is unchanged.
+
 `vfat`/`msdos` store local time with 2 s resolution and no zone. Linux converts with the kernel time zone (or
 `tz=UTC`); Windows and macOS use their local zone. Moving the card between machines, or a daylight-saving change
 before a remount on a machine with a local-time RTC, shifts every mtime by whole hours. exFAT stores a UTC offset
