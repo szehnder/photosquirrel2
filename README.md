@@ -173,6 +173,12 @@ photosquirrel-cli doctor                              # version, data folder, op
 
 `photosquirrel-cli --help` and `photosquirrel-cli <command> --help` list every option.
 
+Log messages go to standard error. By default they are PhotoSquirrel's own warnings and errors, and only the errors
+of the EXIF and RAW decoders it uses (their warnings are per-file notes to their own developers; what a file's
+problem means for you is in the scan summary and `previews status`). `RUST_LOG` replaces this default:
+`RUST_LOG=rawler=warn photosquirrel-cli scan` shows the RAW decoder's diagnostics, such as "No lens definition
+found in database", for a bug report, and `RUST_LOG=debug` shows everything. The app reads `RUST_LOG` the same way.
+
 With "pause scans on battery" on (Settings, General, or `pause_on_battery = true` under `[general]` in
 `settings.toml`), a scan started from the command line pauses too when the computer switches to battery power,
 and, unlike the app, which asks, **resumes by itself** once mains power is back, so an unattended overnight scan

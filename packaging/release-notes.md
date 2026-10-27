@@ -42,6 +42,12 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
+### What's new since 0.3.0
+
+- **Quieter command line:** a scan of a Canon card no longer prints a wall of "No lens definition found in
+  database" lines from the RAW decoder; only its errors are shown. `RUST_LOG=rawler=warn` brings its warnings back
+  for a bug report.
+
 ### What's new in 0.3.0
 
 - **Burst frames are kept apart.** A RAW burst converted to DNG (Adobe's converter drops the first frame's
