@@ -660,9 +660,9 @@ fn settings(t: &ExportTarget) -> ps_export::ProfileSettings {
 }
 
 fn main() -> ExitCode {
-    // nom-exif logs a WARN for every odd but harmless EXIF tag it skips; RUST_LOG still overrides this.
+    // Third-party decoder warnings hidden (ps_media::LOG_DEFAULT_FILTER); RUST_LOG still overrides this.
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn,nom_exif=error"),
+        env_logger::Env::default().default_filter_or(ps_media::LOG_DEFAULT_FILTER),
     )
     .target(env_logger::Target::Stderr)
     .init();

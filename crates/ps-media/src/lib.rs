@@ -42,6 +42,15 @@ pub use probe::{
 pub use ps_model::META_LOGIC_VERSION;
 pub use thumb::{analyze_still, analyze_still_held, analyze_still_with, make_thumbnail};
 
+/// The `env_logger` filter both binaries start with when `RUST_LOG` is unset (`quiet-decoder-logs`); a set
+/// `RUST_LOG` replaces it whole (`RUST_LOG=rawler=warn` brings rawler's diagnostics back for a bug report).
+/// - `warn`: PhotoSquirrel's own crates (and every other dependency) log warnings and errors.
+/// - `nom_exif=error`: nom-exif warns about every odd but harmless EXIF tag it skips.
+/// - `rawler=error`: rawler warns per file about tags it skipped and lenses missing from its table ("No lens
+///   definition found in database"), addressed to its maintainers. What such a file means for the user (no RAW
+///   metadata, no preview) is reported by our own results, never only through the log.
+pub const LOG_DEFAULT_FILTER: &str = "warn,nom_exif=error,rawler=error";
+
 /// The decoder report of this machine with the poster-frame entry for `poster_tool` (the configured ffmpeg
 /// path; callers wanting the PATH default resolve it with [`poster::ffmpeg_on_path`] first), for `doctor`, the
 /// scan summary and the inspector (ADR-0089).

@@ -6303,6 +6303,7 @@ version = "0.3.0"
 dependencies = [
  "chrono",
  "criterion",
+ "env_logger",
  "fast_image_resize",
  "image",
  "imagesize 0.14.0",
