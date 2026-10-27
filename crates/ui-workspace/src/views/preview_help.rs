@@ -57,6 +57,9 @@ pub const RESTART_TEXT: &str = "Then restart PhotoSquirrel and fill in previews.
 pub const FILL_NOW_TEXT: &str = "A preview can be made now.";
 pub const LATER_VERSION_TEXT: &str =
     "A later version may; PhotoSquirrel fills these in after an update.";
+/// A video placeholder made without a poster-frame tool, when one is set up now.
+pub const POSTER_TOOL_SET_TEXT: &str = "A poster-frame tool is set up now: videos get their preview frame when they \
+     are analysed, so this one gets it once the file changes.";
 pub const DAMAGED_TEXT: &str =
     "The file may be damaged. Try opening it in another app. If it opens there, please report it.";
 
@@ -216,10 +219,14 @@ impl PreviewHelpDialog {
                         .test_support(),
                     ),
                 };
-                col = col.child(
-                    Self::text("preview-help-restart", RESTART_TEXT, colors.text_muted)
-                        .test_support(),
-                );
+                // One closing line: the report's own "restart and rescan" step is left out of `fix` by the
+                // service (`ps_service::previews::without_rescan_step`).
+                if fix.as_ref().is_none_or(|f| f.restart) {
+                    col = col.child(
+                        Self::text("preview-help-restart", RESTART_TEXT, colors.text_muted)
+                            .test_support(),
+                    );
+                }
             }
             PreviewAction::FillIn { count, .. } => {
                 let label = if *count == 1 {
@@ -308,12 +315,8 @@ impl PreviewHelpDialog {
                         cx,
                     )),
                     None => col.child(
-                        Self::text(
-                            "preview-help-poster",
-                            "Set the poster-frame tool (ffmpeg) in Settings, then fill in previews.",
-                            colors.text,
-                        )
-                        .test_support(),
+                        Self::text("preview-help-poster", POSTER_TOOL_SET_TEXT, colors.text)
+                            .test_support(),
                     ),
                 };
             }

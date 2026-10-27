@@ -40,6 +40,16 @@ pub fn no_preview_filter(reason: Option<PreviewReason>, format: Option<Format>) 
     }
 }
 
+/// The decoder report's fix as the dialog shows it: without its closing "restart and rescan your sources" step,
+/// because the dialog ends with "Then restart PhotoSquirrel and fill in previews" (the Fill in previews job reads
+/// only the waiting files; the rescan the report names elsewhere also works).
+pub fn without_rescan_step(mut fix: ps_model::Fix) -> ps_model::Fix {
+    fix.steps.retain(|s| {
+        !(s.text == ps_sysdecode::guidance::RESTART_STEP && s.command.is_none() && s.url.is_none())
+    });
+    fix
+}
+
 /// The reason in plain words.
 fn sentence(reason: &PreviewReason, detail: Option<&PlaceholderReason>, label: &str) -> String {
     match (reason, detail) {
@@ -142,7 +152,7 @@ impl Library {
                     PreviewAction::Install {
                         key,
                         reason: e.and_then(|e| e.reason.clone()),
-                        fix: e.and_then(|e| e.fix.clone()),
+                        fix: e.and_then(|e| e.fix.clone()).map(without_rescan_step),
                     }
                 }
                 (PreviewReason::UnsupportedVariant, d) => PreviewAction::UpdateLater {

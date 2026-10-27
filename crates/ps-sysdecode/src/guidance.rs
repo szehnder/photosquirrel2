@@ -120,8 +120,12 @@ fn store(text: &str, id: &str) -> FixStep {
     }
 }
 
+/// The step every Linux and Windows fix ends with. The "Why no preview?" dialog shows its own closing line instead
+/// ("Then restart PhotoSquirrel and fill in previews", ADR-0109), so it recognises this one by its text.
+pub const RESTART_STEP: &str = "Then restart PhotoSquirrel and rescan your sources";
+
 fn restart() -> FixStep {
-    step("Then restart PhotoSquirrel and rescan your sources")
+    step(RESTART_STEP)
 }
 
 const RPMFUSION_FEDORA: &str = "sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm";
