@@ -22,8 +22,22 @@ use ui_gallery::{GalleryGrid, GalleryModel};
 // A wall-clock budget: run alone, after the other tests, by `cargo xtask timing` (part of `cargo xtask ci`).
 #[ignore = "timing"]
 fn gallery_frame_cpu_cost_flinging_1m(cx: &mut TestAppContext) {
+    let p95 = fling(cx, 0);
+    println!("measure gallery-frame-cpu-p95={p95:.3} ms");
+}
+
+/// The same fling with 30% of the items drawn as placeholder tiles (ADR-0109, ADR-0110): the same bound.
+#[gpui_kit::test]
+#[ignore = "timing"]
+fn gallery_frame_cpu_cost_flinging_1m_with_placeholders(cx: &mut TestAppContext) {
+    let p95 = fling(cx, 30);
+    println!("gallery headless frame p95 with 30% placeholder tiles: {p95:.3} ms");
+}
+
+/// Fling through 1M items with `placeholders` percent placeholder tiles; the frame p95 (ms).
+fn fling(cx: &mut TestAppContext, placeholders: u32) -> f32 {
     support::init(cx);
-    let source = Arc::new(SyntheticSource::new(1_000_000, 3_000));
+    let source = Arc::new(SyntheticSource::new(1_000_000, 3_000).with_placeholders(placeholders));
     let s2 = source.clone();
     let model = cx.new(move |cx| {
         let mut m = GalleryModel::new(s2.clone(), GalleryQuery::default());
@@ -61,10 +75,9 @@ fn gallery_frame_cpu_cost_flinging_1m(cx: &mut TestAppContext) {
     let p = Percentiles::of(&times[100..]);
     let paint = Percentiles::of(&cx.update(|_, cx| grid.read(cx).stats.paint_ms.clone()));
     println!(
-        "gallery headless frame ms (layout+prepaint+paint, 1M items, warm textures): p50={:.3} p95={:.3} max={:.3}; grid paint p95={:.3}",
+        "gallery headless frame ms (layout+prepaint+paint, 1M items, warm textures, {placeholders}% placeholders): p50={:.3} p95={:.3} max={:.3}; grid paint p95={:.3}",
         p.p50, p.p95, p.max, paint.p95
     );
-    println!("measure gallery-frame-cpu-p95={:.3} ms", p.p95);
     if !cfg!(debug_assertions) {
         assert!(
             p.p95 <= 8.3,
@@ -72,4 +85,5 @@ fn gallery_frame_cpu_cost_flinging_1m(cx: &mut TestAppContext) {
             p.p95
         );
     }
+    p.p95
 }

@@ -18,7 +18,7 @@ const WINDOW: [f32; 2] = [1600.0, 1000.0];
 /// Cells small enough to use half-size (192 px) textures, so all 3,000 fit the 512 MB budget.
 const CELL: f32 = 150.0;
 
-pub fn run(seconds: f32) {
+pub fn run(seconds: f32, placeholder_percent: u32) {
     gpui_kit::application()
         .with_assets(ui_workspace::assets::AppAssets)
         .run(move |cx| {
@@ -39,7 +39,8 @@ pub fn run(seconds: f32) {
                 ..Default::default()
             };
             let opened = cx.open_window(options, move |_, cx| {
-                let source = Arc::new(SyntheticSource::new(ITEMS, DISTINCT));
+                let source =
+                    Arc::new(SyntheticSource::new(ITEMS, DISTINCT).with_placeholders(placeholder_percent));
                 let model = cx.new(|cx| {
                     let mut m = GalleryModel::new(source.clone(), GalleryQuery::default());
                     m.apply_list(source.list(), cx);

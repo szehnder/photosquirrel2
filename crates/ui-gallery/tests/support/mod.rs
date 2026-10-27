@@ -139,6 +139,9 @@ impl GallerySource for FakeSource {
         ))
     }
     fn preview(&self, id: ItemId) -> anyhow::Result<Preview> {
+        if self.placeholders.contains_key(&id) {
+            return Ok(Preview::Unavailable("no decoder".into()));
+        }
         if self.offline.contains(&id) {
             return Ok(Preview::Offline);
         }
@@ -206,4 +209,17 @@ pub fn frames(cx: &mut VisualTestContext, n: usize) {
         cx.update(|window, cx| window.render_frame(cx));
     }
     cx.run_until_parked();
+}
+
+/// A placeholder badge (ADR-0109).
+pub fn badge(
+    format: &str,
+    reason: ps_model::PreviewReason,
+    status: ps_model::PlaceholderStatus,
+) -> ps_model::PlaceholderBadge {
+    ps_model::PlaceholderBadge {
+        format_label: format.into(),
+        reason,
+        status,
+    }
 }

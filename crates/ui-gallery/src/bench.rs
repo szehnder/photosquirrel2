@@ -1,6 +1,7 @@
 //! The render benchmark (`photosquirrel --render-bench`, ADR-0026): flings the grid through a synthetic
 //! 1,000,000-item list with warm textures and reports frame-interval percentiles in the line
-//! `frame interval ms: p50=.. p95=..` that `cargo xtask bench` reads.
+//! `frame interval ms: p50=.. p95=..` that `cargo xtask bench` reads. `--bench-placeholders 30` draws 30% of the
+//! items as placeholder tiles (ADR-0110).
 
 use std::time::{Duration, Instant};
 
@@ -146,14 +147,46 @@ pub fn fling_path(t: f64) -> f64 {
 pub struct SyntheticSource {
     pub items: usize,
     pub distinct: usize,
+    /// Percent of the items drawn as placeholder tiles (no preview, ADR-0109), spread evenly over the list.
+    pub placeholder_percent: u32,
 }
+
+/// Thumbnail keys of the synthetic placeholders: none has a texture, so the grid draws their tiles.
+const PLACEHOLDER_KEYS: u64 = 64;
 
 impl SyntheticSource {
     pub fn new(items: usize, distinct: usize) -> Self {
         Self {
             items,
             distinct: distinct.max(1),
+            placeholder_percent: 0,
         }
+    }
+
+    /// The same list with `percent` of the items as placeholders, of every status in turn.
+    pub fn with_placeholders(mut self, percent: u32) -> Self {
+        self.placeholder_percent = percent.min(100);
+        self
+    }
+
+    /// The placeholder badge of item `id`, for [`Self::placeholder_percent`] of the items.
+    pub fn placeholder_of(&self, id: ItemId) -> Option<ps_model::PlaceholderBadge> {
+        use ps_model::{PlaceholderStatus as S, PreviewReason as R};
+        let h = u64::from(id.0).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40;
+        if (h % 100) as u32 >= self.placeholder_percent {
+            return None;
+        }
+        let (format, reason, status) = match h % 4 {
+            0 => ("TIFF", R::UnsupportedVariant, S::NotSupported),
+            1 => ("HEIC", R::DecoderMissing, S::NeedsLibrary),
+            2 => ("JPEG", R::Unreadable, S::Damaged),
+            _ => ("TIFF", R::Unreadable, S::ReadyToFill),
+        };
+        Some(ps_model::PlaceholderBadge {
+            format_label: format.into(),
+            reason,
+            status,
+        })
     }
 
     pub fn thumb_key(&self, id: ItemId) -> ThumbKey {
@@ -223,9 +256,16 @@ impl GallerySource for SyntheticSource {
             .iter()
             .map(|id| {
                 let n = u64::from(id.0) % self.distinct as u64;
+                let placeholder = self.placeholder_of(*id);
+                // A placeholder's thumbnail key has no texture (its stored record holds no pixels).
+                let key = if placeholder.is_some() {
+                    self.distinct as u64 + n % PLACEHOLDER_KEYS
+                } else {
+                    n
+                };
                 ItemSummary {
                     id: *id,
-                    thumb: Some(ThumbKey::synthetic(n)),
+                    thumb: Some(ThumbKey::synthetic(key)),
                     dominant: Some(self.dominant(n)),
                     name: format!("IMG_{:07}.JPG", id.0),
                     width: Some(6000),
@@ -235,7 +275,7 @@ impl GallerySource for SyntheticSource {
                     video: id.0 % 37 == 0,
                     offline: false,
                     missing: false,
-                    placeholder: None,
+                    placeholder,
                 }
             })
             .collect())

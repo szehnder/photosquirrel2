@@ -147,7 +147,7 @@ metric = "p95"
 max = 8.3
 unit = "ms"
 change = "gallery"
-source = { kind = "app", args = ["--render-bench", "10"], runs = 1, render_p95 = true }
+source = { kind = "app", args = ["--render-bench", "10", "--bench-placeholders", "30"], runs = 1, render_p95 = true }
 
 [[budget]]
 name = "first-gallery-frame"

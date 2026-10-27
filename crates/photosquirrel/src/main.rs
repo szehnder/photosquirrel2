@@ -65,6 +65,9 @@ struct Args {
     /// and print frame-interval percentiles (`frame interval ms: p50=.. p95=..`), then quit.
     #[arg(long, value_name = "SECONDS", num_args = 0..=1, default_missing_value = "10")]
     render_bench: Option<f32>,
+    /// With `--render-bench`: draw this percent of the items as placeholder tiles (no preview, ADR-0110).
+    #[arg(long, value_name = "PERCENT", default_value_t = 0, hide = true)]
+    bench_placeholders: u32,
     /// Select this Library item (list index) at start-up (scripted screenshots of the inspector and loupe).
     #[arg(long, value_name = "INDEX", hide = true)]
     gallery_select: Option<usize>,
@@ -142,7 +145,7 @@ fn main() {
         std::process::exit(synthetic::rerun_on(items));
     }
     if let Some(secs) = args.render_bench {
-        bench::run(secs);
+        bench::run(secs, args.bench_placeholders);
         return;
     }
     let data_dir = data_dir(&args);

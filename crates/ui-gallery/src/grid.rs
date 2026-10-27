@@ -16,6 +16,7 @@ use crate::bench::{FlingBench, FrameStats};
 use crate::index::StackRole;
 use crate::layout::{GridLayout, clamp_cell, zoom_about};
 use crate::model::{GalleryEvent, GalleryModel, PAGE, TexKey, fade_progress};
+use crate::placeholder::{self, Lod, Parts};
 use crate::scrubber::Mark;
 use crate::theme::*;
 
@@ -44,6 +45,7 @@ actions!(
         ZoomInCells,
         ZoomOutCells,
         ToggleStack,
+        ShowPlaceholderInfo,
     ]
 );
 
@@ -77,6 +79,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("+", ZoomInCells, c),
         KeyBinding::new("-", ZoomOutCells, c),
         KeyBinding::new("s", ToggleStack, c),
+        KeyBinding::new("i", ShowPlaceholderInfo, c),
     ]);
 }
 
@@ -89,6 +92,11 @@ pub enum CellPaint {
     Placeholder([u8; 3]),
     /// The thumbnail, `alpha` into its fade-in.
     Texture { alpha: f32 },
+    /// A placeholder tile (no preview, ADR-0109): its status mark and level of detail.
+    PlaceholderTile {
+        status: ps_model::PlaceholderStatus,
+        lod: Lod,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -126,6 +134,8 @@ pub struct GalleryGrid {
     /// The last frame's cell labels and the cells drawn with the no-preview icon (tests).
     painted_labels: Vec<(usize, SharedString)>,
     painted_icons: Vec<usize>,
+    /// The last frame's placeholder tiles and their parts (the info button's hit region, tests).
+    painted_placeholders: Vec<(usize, Parts)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -161,6 +171,7 @@ impl GalleryGrid {
             cell_label: None,
             painted_labels: Vec::new(),
             painted_icons: Vec::new(),
+            painted_placeholders: Vec::new(),
             _subscriptions: subs,
         }
     }
@@ -268,6 +279,28 @@ impl GalleryGrid {
     /// icon the Excluded list's thumbnail column shows).
     pub fn painted_icons(&self) -> &[usize] {
         &self.painted_icons
+    }
+
+    /// The last frame's placeholder tiles (index, parts).
+    pub fn painted_placeholders(&self) -> &[(usize, Parts)] {
+        &self.painted_placeholders
+    }
+
+    /// The window position of the centre of a placeholder's info button, when it was drawn last frame.
+    pub fn info_button_center(&self, index: usize) -> Option<Point<Pixels>> {
+        self.painted_placeholders
+            .iter()
+            .find(|(i, _)| *i == index)
+            .and_then(|(_, p)| p.info)
+            .map(|b| b.center())
+    }
+
+    /// Open the "Why no preview?" dialog for the focused item when it has a placeholder (the `I` shortcut).
+    pub fn show_focused_placeholder_info(&mut self, cx: &mut Context<'_, Self>) {
+        let focus = self.model.read(cx).selection.focus;
+        if let Some(i) = focus {
+            self.model.update(cx, |m, cx| m.placeholder_info(i, cx));
+        }
     }
 
     // ---- scrolling -----------------------------------------------------------------------------------
@@ -516,6 +549,15 @@ impl GalleryGrid {
         let Some(index) = self.index_at(e.position, cx) else {
             return;
         };
+        // The info button of a placeholder (ADR-0109): the dialog for that file, the selection unchanged.
+        if self
+            .painted_placeholders
+            .iter()
+            .any(|(i, p)| *i == index && p.info.is_some_and(|b| b.contains(&e.position)))
+        {
+            self.model.update(cx, |m, cx| m.placeholder_info(index, cx));
+            return;
+        }
         if self.badge_hit(index, e.position, cx) {
             self.model.update(cx, |m, cx| m.toggle_stack(index, cx));
             return;
@@ -743,9 +785,12 @@ impl GalleryGrid {
         let mut covers: Vec<PaintQuad> = Vec::new();
         let mut badges: Vec<(Bounds<Pixels>, SharedString, Hsla, Hsla)> = Vec::new();
         let mut icons: Vec<Bounds<Pixels>> = Vec::new();
+        let mut placeholders = placeholder::Layers::default();
         self.painted.clear();
         self.painted_labels.clear();
         self.painted_icons.clear();
+        self.painted_placeholders.clear();
+        let hovered = self.hovered;
         let cell_label = self.cell_label.take();
         let mut any_content = false;
 
@@ -815,6 +860,32 @@ impl GalleryGrid {
                             );
                         }
                         self.painted.push((i, CellPaint::Texture { alpha }));
+                    }
+                    None if let Some(badge) = summary.placeholder.as_ref() => {
+                        // No preview: a placeholder tile that says why (ADR-0109), never a flat fill.
+                        let lod = Lod::for_cell(cell);
+                        let area = Bounds::new(
+                            point(left + lpx(inset), top + lpx(inset)),
+                            size(lpx(boxw), lpx(boxw)),
+                        );
+                        let show_info = hovered == Some(i) || selected || focus == Some(i);
+                        let parts = placeholder::layout(
+                            placeholder::tile_rect(area),
+                            lod,
+                            badge,
+                            summary.video,
+                            summary.capture_ms.map(placeholder::date_label),
+                            show_info,
+                        );
+                        placeholders.push(&parts, &colors);
+                        self.painted.push((
+                            i,
+                            CellPaint::PlaceholderTile {
+                                status: badge.status,
+                                lod,
+                            },
+                        ));
+                        self.painted_placeholders.push((i, parts));
                     }
                     None => {
                         tiles.push(fill(photo, place).corner_radii(PHOTO_RADIUS));
@@ -934,6 +1005,7 @@ impl GalleryGrid {
                     window.paint_quad(q);
                 }
             });
+            placeholders.paint(clip, window, cx);
             window.paint_layer(clip, |window| {
                 for (b, image) in images {
                     let _ = window.paint_image(b, b, PHOTO_RADIUS.into(), image, 0, false);
@@ -1232,6 +1304,9 @@ impl Render for GalleryGrid {
             .on_action(cx.listener(|this, _: &ZoomInCells, _, cx| this.zoom_by(1.0, None, cx)))
             .on_action(cx.listener(|this, _: &ZoomOutCells, _, cx| this.zoom_by(-1.0, None, cx)))
             .on_action(cx.listener(|this, _: &ToggleStack, _, cx| this.toggle_focused_stack(cx)))
+            .on_action(cx.listener(|this, _: &ShowPlaceholderInfo, _, cx| {
+                this.show_focused_placeholder_info(cx)
+            }))
             .child(
                 canvas(
                     move |_, _, _| {},

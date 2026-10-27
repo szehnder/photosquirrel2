@@ -79,6 +79,11 @@ icon_assets!(
         Tag,
         KeyRound,
         Plug,
+        // preview-placeholders: media glyphs and status marks of placeholder tiles
+        Image,
+        Film,
+        Download,
+        RefreshCw,
     ]
 );
 

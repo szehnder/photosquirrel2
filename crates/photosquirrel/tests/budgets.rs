@@ -100,7 +100,8 @@ fn scenario_gallery_1m_scroll_p95_within_8_3_ms() {
     if !gui_tests_enabled() {
         return;
     }
-    let stdout = run_app(&["--render-bench", "10"]);
+    // 30% of the items are placeholder tiles (ADR-0110).
+    let stdout = run_app(&["--render-bench", "10", "--bench-placeholders", "30"]);
     let p95: f64 = stdout
         .lines()
         .find(|l| l.contains("frame interval ms"))

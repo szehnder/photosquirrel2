@@ -37,6 +37,8 @@ pub const BADGE_PX: f32 = 11.0;
 pub const BADGE_HEIGHT: f32 = 18.0;
 pub const BADGE_PAD: f32 = 6.0;
 pub const BADGE_MARGIN: f32 = 6.0;
+/// The ring of a placeholder's info button (ADR-0109).
+pub const PLACEHOLDER_RING: Pixels = px(1.5);
 /// The no-preview icon's side, as a fraction of the cell size.
 pub const NO_PREVIEW_ICON: f32 = 0.24;
 
@@ -94,6 +96,20 @@ pub struct GridColors {
     pub missing: Hsla,
     /// The no-preview icon on a cell without a thumbnail (the Excluded list's placeholder colour).
     pub no_preview: Hsla,
+    /// Placeholder tiles (ADR-0109): surface, hatch, glyph, format chip, caption and the mark's circle.
+    pub placeholder_surface: Hsla,
+    pub placeholder_stroke: Hsla,
+    pub placeholder_glyph: Hsla,
+    pub placeholder_chip: Hsla,
+    pub placeholder_chip_text: Hsla,
+    pub placeholder_caption: Hsla,
+    pub placeholder_mark_bg: Hsla,
+    /// Status mark tones: needs a library (accent), ready to fill in (success), not supported yet (muted),
+    /// damaged (warning).
+    pub mark_library: Hsla,
+    pub mark_ready: Hsla,
+    pub mark_unsupported: Hsla,
+    pub mark_damaged: Hsla,
 }
 
 impl GridColors {
@@ -137,6 +153,17 @@ impl GridColors {
             loupe: c.loupe,
             missing: c.warning,
             no_preview: c.text_faint,
+            placeholder_surface: c.placeholder_surface(),
+            placeholder_stroke: c.placeholder_stroke(),
+            placeholder_glyph: c.text_faint,
+            placeholder_chip: Colors::tint(c.text, 0.11),
+            placeholder_chip_text: c.text_muted,
+            placeholder_caption: c.text_faint,
+            placeholder_mark_bg: Colors::tint(mix(c.gallery, c.chrome, 0.5), 0.92),
+            mark_library: c.accent_text,
+            mark_ready: c.success,
+            mark_unsupported: c.text_muted,
+            mark_damaged: c.warning,
         }
     }
 

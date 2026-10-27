@@ -13,7 +13,16 @@ use crate::model::{GalleryModel, TexKey, render_image};
 use crate::source::Preview;
 use crate::theme::*;
 
-actions!(loupe, [LoupeNext, LoupePrev, LoupeClose, LoupeToggleZoom]);
+actions!(
+    loupe,
+    [
+        LoupeNext,
+        LoupePrev,
+        LoupeClose,
+        LoupeToggleZoom,
+        LoupeShowPlaceholderInfo
+    ]
+);
 
 pub const LOUPE_CONTEXT: &str = "Loupe";
 /// Previews kept decoded (current and neighbours).
@@ -29,6 +38,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", LoupeClose, c),
         KeyBinding::new("z", LoupeToggleZoom, c),
         KeyBinding::new("space", LoupeToggleZoom, c),
+        KeyBinding::new("i", LoupeShowPlaceholderInfo, c),
     ]);
 }
 
@@ -38,6 +48,8 @@ pub enum LoupeEvent {
     Close(usize),
     /// The photo shown changed.
     Moved(usize),
+    /// "Why no preview?" for the item shown, which has a placeholder (ADR-0109).
+    PlaceholderInfo(ItemId),
 }
 
 #[derive(Clone)]
@@ -62,6 +74,12 @@ pub enum Shown {
     /// The stored thumbnail with a notice ("Source offline").
     Thumbnail {
         notice: String,
+    },
+    /// The large placeholder of an item without a preview (ADR-0109): its reason line and the bounds of the
+    /// "Why no preview?" button.
+    Placeholder {
+        reason: String,
+        info: Bounds<Pixels>,
     },
 }
 
@@ -156,6 +174,17 @@ impl LoupeView {
 
     pub fn close(&mut self, cx: &mut Context<'_, Self>) {
         cx.emit(LoupeEvent::Close(self.index));
+    }
+
+    /// "Why no preview?" for the item shown, when it has a placeholder.
+    pub fn show_placeholder_info(&mut self, cx: &mut Context<'_, Self>) {
+        let m = self.model.read(cx);
+        let has = m
+            .summary(self.index)
+            .is_some_and(|s| s.placeholder.is_some());
+        if let (Some(id), true) = (m.index.id(self.index), has) {
+            cx.emit(LoupeEvent::PlaceholderInfo(id));
+        }
     }
 
     pub fn toggle_zoom(&mut self, cx: &mut Context<'_, Self>) {
@@ -296,6 +325,12 @@ impl LoupeView {
             self.open(j, cx);
             return;
         }
+        if let Shown::Placeholder { info, .. } = &self.shown
+            && info.contains(&e.position)
+        {
+            self.show_placeholder_info(cx);
+            return;
+        }
         if e.click_count >= 2 {
             self.toggle_zoom(cx);
             return;
@@ -368,12 +403,26 @@ impl LoupeView {
                     Point::default(),
                     scale,
                 );
-                match texture {
-                    Some(img) => {
+                let placeholder = summary
+                    .as_ref()
+                    .and_then(|s| s.placeholder.clone().map(|b| (b, s.video, s.capture_ms)));
+                match (texture, placeholder) {
+                    (Some(img), _) => {
                         let _ =
                             window.paint_image(fitted, fitted, Corners::default(), img, 0, false);
                     }
-                    None => {
+                    (None, Some((badge, video, capture))) => {
+                        // The large placeholder, its reason and "Why no preview?" (ADR-0109).
+                        let shown = paint_large_placeholder(
+                            area, &badge, video, capture, &colors, window, cx,
+                        );
+                        self.shown = shown;
+                        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                            self.paint_filmstrip(bounds, &colors, window, cx)
+                        });
+                        return;
+                    }
+                    (None, None) => {
                         let c = summary
                             .as_ref()
                             .and_then(|s| s.dominant)
@@ -433,6 +482,7 @@ impl LoupeView {
         let current = self.index;
         let mut quads = Vec::new();
         let mut images = Vec::new();
+        let mut tiny = crate::placeholder::Layers::default();
         self.model.update(cx, |m, cx| {
             m.request_pages(lo..hi.max(lo + 1).min(len.max(1)), cx);
             m.want(&range, &[], &[], 1, cx);
@@ -460,6 +510,17 @@ impl LoupeView {
                     );
                     match s.thumb.and_then(|t| m.any_texture(t)) {
                         Some(img) => images.push((photo, img)),
+                        None if let Some(badge) = s.placeholder.as_ref() => {
+                            let parts = crate::placeholder::layout(
+                                crate::placeholder::tile_rect(cell),
+                                crate::placeholder::Lod::Tiny,
+                                badge,
+                                s.video,
+                                None,
+                                false,
+                            );
+                            tiny.push(&parts, colors);
+                        }
                         None => quads.push(fill(
                             photo,
                             s.dominant
@@ -493,6 +554,7 @@ impl LoupeView {
                 window.paint_quad(q);
             }
         });
+        tiny.paint(strip, window, cx);
         window.paint_layer(strip, |window| {
             for (b, img) in images {
                 let _ = window.paint_image(b, b, PHOTO_RADIUS.into(), img, 0, false);
@@ -504,6 +566,91 @@ impl LoupeView {
             }
         });
     }
+}
+
+/// The large placeholder of the loupe: the tile at full detail in the middle of `area` with the info button, the
+/// reason below it and a "Why no preview?" button (its bounds are the hit region).
+fn paint_large_placeholder(
+    area: Bounds<Pixels>,
+    badge: &ps_model::PlaceholderBadge,
+    video: bool,
+    capture: Option<i64>,
+    colors: &GridColors,
+    window: &mut Window,
+    cx: &mut App,
+) -> Shown {
+    let aw = f32::from(area.size.width);
+    let ah = f32::from(area.size.height);
+    let side = (aw * 0.5).min(ah * 0.62).max(1.0);
+    let tile = Bounds::new(
+        point(
+            area.left() + lpx((aw - side) / 2.0),
+            area.top() + lpx((ah - side) / 2.0 - LOUPE_PADDING),
+        ),
+        size(lpx(side), lpx(side)),
+    );
+    let rect = crate::placeholder::tile_rect(tile);
+    let parts = crate::placeholder::layout(
+        rect,
+        crate::placeholder::Lod::Full,
+        badge,
+        video,
+        capture.map(crate::placeholder::date_label),
+        false,
+    );
+    crate::placeholder::paint(&parts, colors, window, cx);
+    let reason = crate::placeholder::reason_line(badge);
+    let below = rect.bottom() + lpx(BADGE_MARGIN * 2.0);
+    let line_h = NOTICE_PX * 1.8;
+    let reason_part = crate::placeholder::TextPart {
+        bounds: Bounds::new(
+            point(area.left(), below),
+            size(area.size.width, lpx(line_h)),
+        ),
+        text: reason.clone().into(),
+        px: NOTICE_PX,
+    };
+    let label = "Why no preview?";
+    let bw = BADGE_PAD * 4.0 + NOTICE_PX * 0.62 * label.chars().count() as f32;
+    let bh = NOTICE_PX * 2.4;
+    let info = Bounds::new(
+        point(
+            area.left() + lpx((aw - bw) / 2.0),
+            below + lpx(line_h + BADGE_MARGIN),
+        ),
+        size(lpx(bw), lpx(bh)),
+    );
+    window.paint_layer(area, |window| {
+        window.paint_quad(fill(info, colors.notice_bg).corner_radii(lpx(bh / 2.0)));
+        window.paint_quad(quad(
+            info,
+            lpx(bh / 2.0),
+            transparent_black(),
+            PLACEHOLDER_RING,
+            crate::placeholder::status_tone(badge.status, colors),
+            BorderStyle::Solid,
+        ));
+    });
+    crate::placeholder::paint_texts(
+        vec![
+            (reason_part, colors.notice_text),
+            (
+                crate::placeholder::TextPart {
+                    bounds: Bounds::new(
+                        point(info.left(), info.top() + lpx((bh - NOTICE_PX * 1.4) / 2.0)),
+                        size(info.size.width, lpx(NOTICE_PX * 1.4)),
+                    ),
+                    text: label.into(),
+                    px: NOTICE_PX,
+                },
+                colors.notice_text,
+            ),
+        ],
+        area,
+        window,
+        cx,
+    );
+    Shown::Placeholder { reason, info }
 }
 
 /// A notice chip centred near the top of `area`.
@@ -575,6 +722,9 @@ impl Render for LoupeView {
             .on_action(cx.listener(|this, _: &LoupePrev, _, cx| this.step(-1, cx)))
             .on_action(cx.listener(|this, _: &LoupeClose, _, cx| this.close(cx)))
             .on_action(cx.listener(|this, _: &LoupeToggleZoom, _, cx| this.toggle_zoom(cx)))
+            .on_action(cx.listener(|this, _: &LoupeShowPlaceholderInfo, _, cx| {
+                this.show_placeholder_info(cx)
+            }))
             .child(
                 canvas(
                     move |_, _, _| {},

@@ -143,6 +143,11 @@ impl Tokens {
     pub fn kbd_height() -> Rems {
         Self::size(18.0)
     }
+    /// Placeholder tiles (ADR-0109): below this cell size (logical px) a tile shows only its glyph, format
+    /// badge and status mark; below [`Self::TILE_LOD_TINY`] only the glyph. The grid's smallest cell (96 px)
+    /// is "small"; filmstrip and list thumbnails are "tiny".
+    pub const TILE_LOD_SMALL: f32 = 132.0;
+    pub const TILE_LOD_TINY: f32 = 80.0;
     /// Grip area of panel splitters (the visible line stays a hairline).
     pub const SPLITTER_GRIP: Pixels = px(6.0);
 

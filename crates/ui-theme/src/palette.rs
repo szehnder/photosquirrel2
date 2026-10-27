@@ -238,6 +238,20 @@ impl Colors {
         if self.dark { self.chrome } else { self.raised }
     }
 
+    /// The soft surface of a placeholder tile, a photo without a preview (ADR-0109): a step lighter than the
+    /// gallery surround in dark, darker in light, never a colour of its own.
+    pub fn placeholder_surface(&self) -> Hsla {
+        crate::contrast::over(
+            Self::tint(self.text, if self.dark { 0.075 } else { 0.065 }),
+            self.gallery,
+        )
+    }
+
+    /// The faint diagonal hatch over [`Colors::placeholder_surface`].
+    pub fn placeholder_stroke(&self) -> Hsla {
+        Self::tint(self.text, if self.dark { 0.07 } else { 0.08 })
+    }
+
     /// Alpha of the soft background of a status chip ([`Colors::chip_bg`]).
     pub const CHIP_TINT: f32 = 0.14;
 

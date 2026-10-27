@@ -13,6 +13,7 @@ pub mod index;
 pub mod layout;
 pub mod loupe;
 pub mod model;
+pub mod placeholder;
 pub mod scrubber;
 pub mod selection;
 pub mod source;

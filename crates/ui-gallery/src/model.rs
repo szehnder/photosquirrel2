@@ -40,6 +40,8 @@ pub enum GalleryEvent {
     SelectionChanged,
     /// Enter/E on an item.
     OpenLoupe(usize),
+    /// The info button or `I` on an item with a placeholder (ADR-0109): the "Why no preview?" dialog for it.
+    PlaceholderInfo(ItemId),
 }
 
 /// Live-update and query state of the list.
@@ -580,6 +582,16 @@ impl GalleryModel {
 
     pub fn open_loupe(&mut self, index: usize, cx: &mut Context<'_, Self>) {
         cx.emit(GalleryEvent::OpenLoupe(index));
+    }
+
+    /// Ask for the "Why no preview?" dialog of the item at `index` when it has a placeholder (ADR-0109); the
+    /// selection is left as it is.
+    pub fn placeholder_info(&mut self, index: usize, cx: &mut Context<'_, Self>) {
+        let id = self.index.id(index);
+        let has = self.summary(index).is_some_and(|s| s.placeholder.is_some());
+        if let (Some(id), true) = (id, has) {
+            cx.emit(GalleryEvent::PlaceholderInfo(id));
+        }
     }
 }
 
