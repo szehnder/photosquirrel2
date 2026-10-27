@@ -311,3 +311,66 @@ fn burst_frame(
         stem,
     }
 }
+
+/// The lens id [`cr2_unknown_lens`] records in its `CameraSettings`: not in rawler's lens table.
+pub const UNKNOWN_LENS_ID: u16 = 4242;
+
+/// A Canon CR2 (little-endian, `Canon EOS 5D Mark III`, a 640x426 JPEG in IFD0) that takes `ps-media`'s rawler
+/// fallback and reaches rawler's lens lookup with a lens id rawler does not know (`quiet-decoder-logs`):
+/// - the maker note's `CameraSettings` (tag 0x0001, 40 SHORTs, file-absolute offset) holds [`UNKNOWN_LENS_ID`]
+///   at index 22, where rawler's CR2 decoder reads the lens id, so `raw_metadata` logs "No lens definition
+///   found in database";
+/// - IFD0 has a private tag (0xC5D8) whose count runs past the end of the file. nom-exif rejects the whole
+///   container for it while rawler skips the tag, so metadata comes from rawler, as for the owner's CR2s.
+pub fn cr2_unknown_lens(seed: u64) -> Vec<u8> {
+    let preview = crate::media::jpeg(640, 426, seed, 90);
+    let first = cr2_unknown_lens_at(&preview, 0);
+    let probe = camera_settings_note(0);
+    let at = first
+        .windows(probe.len())
+        .position(|w| w == probe.as_slice())
+        .unwrap_or(0);
+    let mut b = cr2_unknown_lens_at(&preview, u32::try_from(at).unwrap_or(0));
+    let ifd0 = u32::from_le_bytes([b[4], b[5], b[6], b[7]]) as usize;
+    let n = u16::from_le_bytes([b[ifd0], b[ifd0 + 1]]) as usize;
+    for i in 0..n {
+        let e = ifd0 + 2 + 12 * i;
+        if u16::from_le_bytes([b[e], b[e + 1]]) == 0xC5D8 {
+            b[e + 4..e + 8].copy_from_slice(&0x0100_0000u32.to_le_bytes());
+        }
+    }
+    b
+}
+
+/// A Canon maker note with one entry, `CameraSettings`, whose 40 SHORTs follow the directory at `base + 18`.
+fn camera_settings_note(base: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&0x0001u16.to_le_bytes());
+    out.extend_from_slice(&3u16.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(base + 18).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for i in 0..40u16 {
+        let v = if i == 22 { UNKNOWN_LENS_ID } else { 0 };
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+fn cr2_unknown_lens_at(preview: &[u8], note_base: u32) -> Vec<u8> {
+    let mut ex = Ifd::new();
+    ex.ascii(0x9003, "2019:07:04 12:00:05")
+        .set(0x927C, Value::Undefined(camera_settings_note(note_base)));
+    let mut ifd0 = Ifd::new();
+    ifd0.long(0x0100, 640)
+        .long(0x0101, 426)
+        .short(0x0103, 6)
+        .ascii(0x010F, "Canon")
+        .ascii(0x0110, "Canon EOS 5D Mark III")
+        .ascii(0x0132, "2019:07:04 12:00:05")
+        .set(0xC5D8, Value::Undefined(vec![0; 8]))
+        .blob(0x0111, 0x0117, preview.to_vec())
+        .child(0x8769, ex);
+    write_tiff(&ifd0, Endian::Little)
+}
