@@ -46,6 +46,8 @@ pub struct FakeSource {
     pub no_thumbs: bool,
     /// Items with a placeholder instead of a preview (ADR-0109): no thumbnail, this badge.
     pub placeholders: HashMap<ItemId, ps_model::PlaceholderBadge>,
+    /// Placeholders filled in since (Fill in previews): a thumbnail under the same key, no badge.
+    pub filled: Mutex<HashSet<ItemId>>,
 }
 
 pub const DAY_MS: i64 = 86_400_000;
@@ -74,6 +76,7 @@ impl FakeSource {
             no_dominant: HashSet::new(),
             no_thumbs: false,
             placeholders: HashMap::new(),
+            filled: Mutex::new(HashSet::new()),
         }
     }
 
@@ -120,14 +123,20 @@ impl GallerySource for FakeSource {
                 video: false,
                 offline: self.offline.contains(id),
                 missing: false,
-                placeholder: self.placeholders.get(id).cloned(),
+                placeholder: self
+                    .placeholders
+                    .get(id)
+                    .filter(|_| !self.filled.lock().unwrap().contains(id))
+                    .cloned(),
             })
             .collect())
     }
     fn thumbnail(&self, key: &ThumbKey) -> anyhow::Result<Option<Vec<u8>>> {
         let id = id_of(key);
         self.requested.lock().unwrap().push(id);
-        if self.no_thumbs || self.placeholders.contains_key(&id) {
+        if self.no_thumbs
+            || (self.placeholders.contains_key(&id) && !self.filled.lock().unwrap().contains(&id))
+        {
             return Ok(None);
         }
         let mut cache = self.jpeg_cache.lock().unwrap();

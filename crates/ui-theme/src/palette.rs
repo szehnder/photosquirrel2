@@ -260,6 +260,23 @@ impl Colors {
         Self::tint(tone, Self::CHIP_TINT)
     }
 
+    /// `tone` moved in lightness (towards white in dark, black in light) until it reaches `min` contrast over the
+    /// opaque `bg`: status marks and small captions on surfaces other than a panel (placeholder tiles, ADR-0109).
+    pub fn legible_on(&self, tone: Hsla, bg: Hsla, min: f32) -> Hsla {
+        let mut fg = tone;
+        for _ in 0..50 {
+            if crate::contrast::ratio(fg, bg) >= min {
+                break;
+            }
+            fg.l = if self.dark {
+                (fg.l + 0.02).min(1.0)
+            } else {
+                (fg.l - 0.02).max(0.0)
+            };
+        }
+        fg
+    }
+
     /// Text in `tone` that reads as normal text (WCAG AA 4.5:1) on its chip background over a panel: the tone
     /// itself where it is already dark (light theme) or light (dark theme) enough, else the tone moved
     /// towards black or white in lightness.

@@ -108,6 +108,13 @@ fn scenario_gallery_small_tiles_keep_glyph_and_badge(cx: &mut TestAppContext) {
                 parts.glyph.left() >= s.left() && parts.glyph.bottom() <= s.bottom(),
                 "{i}: glyph inside"
             );
+            // The status mark stays at small sizes (the reason at a glance).
+            assert!(
+                f32::from(parts.mark.size.width) > 0.0
+                    && parts.mark.left() >= s.left()
+                    && parts.mark.right() <= s.right(),
+                "{i}: the status mark is drawn inside the tile"
+            );
         }
         assert!(!g.painted_placeholders().is_empty());
     });
@@ -182,4 +189,79 @@ fn scenario_gallery_loupe_shows_the_large_placeholder(cx: &mut TestAppContext) {
         "{:?}",
         events.borrow()
     );
+}
+
+/// A placeholder filled in (Fill in previews, a rescan) keeps its thumbnail key: the next live refresh reads its
+/// summary again and requests the thumbnail it could not get before, so the tile shows the picture, never a blank
+/// square.
+#[gpui_kit::test]
+fn scenario_gallery_filled_in_placeholder_shows_its_thumbnail(cx: &mut TestAppContext) {
+    let src = Arc::new(source());
+    let (grid, model, cx) = open_grid(cx, src.clone());
+    frames(cx, 4);
+    assert!(
+        matches!(
+            cx.update(|_, cx| grid.read(cx).painted(1)),
+            Some(CellPaint::PlaceholderTile { .. })
+        ),
+        "the HEIC starts as a placeholder tile"
+    );
+    let asked = |src: &FakeSource| {
+        src.requested
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|i| **i == ItemId(1))
+            .count()
+    };
+    let before = asked(&src);
+    assert!(before > 0, "its thumbnail was asked for (and not stored)");
+    // The job stores a preview under the same content id; the Library's live refresh follows.
+    src.filled.lock().unwrap().insert(ItemId(1));
+    model.update(cx, |m, cx| m.refresh_keeping(Some(0), cx));
+    let mut painted = None;
+    for _ in 0..20 {
+        frames(cx, 1);
+        painted = cx.update(|_, cx| grid.read(cx).painted(1));
+        if matches!(painted, Some(CellPaint::Texture { .. })) {
+            break;
+        }
+    }
+    assert!(
+        matches!(painted, Some(CellPaint::Texture { .. })),
+        "the filled-in tile shows its thumbnail: {painted:?}"
+    );
+    assert!(asked(&src) > before, "the thumbnail was requested again");
+    // Items whose summaries did not change are not decoded again.
+    let others = src
+        .requested
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|i| **i == ItemId(5))
+        .count();
+    assert_eq!(others, 1, "item 5 decoded once");
+}
+
+/// Every status mark reads on its circle (3:1, non-text contrast) and the caption on the tile's surface (4.5:1),
+/// in both themes: the light theme's ready and damaged marks and the dark theme's caption were too faint.
+#[test]
+fn placeholder_marks_and_caption_are_legible_in_both_themes() {
+    use ui_theme::contrast::{AA_SECONDARY, AA_TEXT, over, ratio};
+    for mode in [ui_theme::Mode::Dark, ui_theme::Mode::Light] {
+        let c = ui_theme::Palette::for_mode(mode).resolve();
+        let g = ui_gallery::theme::GridColors::from_colors(&c);
+        let circle = over(g.placeholder_mark_bg, g.placeholder_surface);
+        for (name, tone) in [
+            ("needs a library", g.mark_library),
+            ("ready", g.mark_ready),
+            ("not supported", g.mark_unsupported),
+            ("damaged", g.mark_damaged),
+        ] {
+            let r = ratio(tone, circle);
+            assert!(r >= AA_SECONDARY, "{mode:?} {name}: {r:.2}");
+        }
+        let r = ratio(g.placeholder_caption, g.placeholder_surface);
+        assert!(r >= AA_TEXT, "{mode:?} caption: {r:.2}");
+    }
 }

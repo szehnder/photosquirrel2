@@ -69,8 +69,14 @@ pub struct GalleryModel {
     pub textures: TextureCache<TexKey, Arc<RenderImage>>,
     released: Vec<Arc<RenderImage>>,
     pub decode: DecodeQueue<TexKey>,
-    /// Thumbnails that are not stored or failed to decode: never requested again.
+    /// Thumbnails that are not stored or failed to decode: not requested again while the item's summary is
+    /// unchanged (a summary that changes, a placeholder filled in, requests it again).
     unavailable: HashSet<TexKey>,
+    /// Items whose summaries predate the last live refresh: shown as they are until their page is read again,
+    /// then replaced (ADR-0109: a placeholder filled in keeps its thumbnail key and gets pixels).
+    stale: HashSet<ItemId>,
+    /// The next list comes from a live refresh: every known summary is read again.
+    revalidate: bool,
     pub selection: Selection,
     /// Textures uploaded this frame (reset by [`Self::begin_frame`]).
     uploads_this_frame: usize,
@@ -104,6 +110,8 @@ impl GalleryModel {
             released: Vec::new(),
             decode: DecodeQueue::default(),
             unavailable: HashSet::new(),
+            stale: HashSet::new(),
+            revalidate: false,
             selection: Selection::default(),
             uploads_this_frame: 0,
             upload_deferred: false,
@@ -160,8 +168,11 @@ impl GalleryModel {
     }
 
     /// Re-run the current query keeping the item at `top` in place (live updates during scans).
+    /// The summaries already loaded are kept on screen and read again with their pages, so items whose
+    /// thumbnail or placeholder changed (a scan, Fill in previews) are drawn anew.
     pub fn refresh_keeping(&mut self, top: Option<usize>, cx: &mut Context<'_, Self>) {
         self.pending_anchor = top.and_then(|i| self.index.keys.get(i).copied());
+        self.revalidate = true;
         self.load(cx);
     }
 
@@ -197,6 +208,9 @@ impl GalleryModel {
     /// Install a list now (tests, the render benchmark and live updates use this directly).
     pub fn apply_list(&mut self, list: IdList, cx: &mut Context<'_, Self>) {
         let old_ids = self.index.ids.clone();
+        if std::mem::take(&mut self.revalidate) {
+            self.stale.extend(self.summaries.keys().copied());
+        }
         self.index.replace(list);
         self.timeline = Timeline::build(&self.index.keys, self.query.sort);
         self.pages.clear();
@@ -361,8 +375,11 @@ impl GalleryModel {
                 continue;
             }
             let ids: Vec<ItemId> = self.index.ids[start..end].to_vec();
-            // Already known (an earlier list or a neighbouring page): no query needed.
-            if ids.iter().all(|i| self.summaries.contains_key(i)) {
+            // Already known (an earlier list or a neighbouring page) and not stale: no query needed.
+            if ids
+                .iter()
+                .all(|i| self.summaries.contains_key(i) && !self.stale.contains(i))
+            {
                 self.remember_page(generation, page, ids);
                 continue;
             }
@@ -378,8 +395,11 @@ impl GalleryModel {
                     this.pages_pending.remove(&(generation, page));
                     match result {
                         Ok(rows) => {
+                            for id in &ids {
+                                this.stale.remove(id);
+                            }
                             for row in rows {
-                                this.summaries.insert(row.id, Arc::new(row));
+                                this.install_summary(row);
                             }
                             this.remember_page(generation, page, ids);
                             cx.notify();
@@ -404,10 +424,26 @@ impl GalleryModel {
                 for id in old {
                     if !keep.contains(&id) {
                         self.summaries.remove(&id);
+                        self.stale.remove(&id);
                     }
                 }
             }
         }
+    }
+
+    /// Install a summary read from the source. When it differs from the one shown (a placeholder filled in, a
+    /// thumbnail stored by a scan), its thumbnails are requested again even if they were unavailable before.
+    fn install_summary(&mut self, row: ItemSummary) {
+        if let Some(old) = self.summaries.get(&row.id)
+            && **old != row
+        {
+            for thumb in [old.thumb, row.thumb].into_iter().flatten() {
+                for level in [0, 1] {
+                    self.unavailable.remove(&TexKey { thumb, level });
+                }
+            }
+        }
+        self.summaries.insert(row.id, Arc::new(row));
     }
 
     /// Insert summaries directly (tests and benchmark set-up).

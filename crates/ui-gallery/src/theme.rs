@@ -130,6 +130,12 @@ impl GridColors {
         } else {
             mix(c.gallery, c.text, 0.06)
         };
+        // Placeholder tiles (ADR-0109): the marks are icons on the mark's circle (3:1, WCAG non-text contrast) and
+        // the caption small text on the surface (4.5:1), in both themes.
+        let surface = c.placeholder_surface();
+        let mark_bg = Colors::tint(mix(c.gallery, c.chrome, 0.5), 0.92);
+        let mark_under = ui_theme::contrast::over(mark_bg, surface);
+        let mark = |tone: Hsla| c.legible_on(tone, mark_under, ui_theme::contrast::AA_SECONDARY);
         Self {
             background: c.gallery,
             tile,
@@ -153,17 +159,17 @@ impl GridColors {
             loupe: c.loupe,
             missing: c.warning,
             no_preview: c.text_faint,
-            placeholder_surface: c.placeholder_surface(),
+            placeholder_surface: surface,
             placeholder_stroke: c.placeholder_stroke(),
             placeholder_glyph: c.text_faint,
             placeholder_chip: Colors::tint(c.text, 0.11),
             placeholder_chip_text: c.text_muted,
-            placeholder_caption: c.text_faint,
-            placeholder_mark_bg: Colors::tint(mix(c.gallery, c.chrome, 0.5), 0.92),
-            mark_library: c.accent_text,
-            mark_ready: c.success,
-            mark_unsupported: c.text_muted,
-            mark_damaged: c.warning,
+            placeholder_caption: c.legible_on(c.text_faint, surface, ui_theme::contrast::AA_TEXT),
+            placeholder_mark_bg: mark_bg,
+            mark_library: mark(c.accent_text),
+            mark_ready: mark(c.success),
+            mark_unsupported: mark(c.text_muted),
+            mark_damaged: mark(c.warning),
         }
     }
 

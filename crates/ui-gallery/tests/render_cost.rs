@@ -14,6 +14,7 @@ use std::time::Instant;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, TestAppContext, px, size};
 use ui_gallery::bench::{Percentiles, SyntheticSource, fling_path};
+use ui_gallery::grid::CellPaint;
 use ui_gallery::model::{TexKey, render_image};
 use ui_gallery::source::{GalleryQuery, ThumbKey};
 use ui_gallery::{GalleryGrid, GalleryModel};
@@ -64,13 +65,42 @@ fn fling(cx: &mut TestAppContext, placeholders: u32) -> f32 {
     support::frames(cx, 3);
     let frames = 1_200;
     let mut times = Vec::with_capacity(frames);
+    let (mut cells, mut tiles) = (0usize, 0usize);
     for f in 0..frames {
         let t = f as f64 / frames as f64;
         grid.update(cx, |g, cx| g.scroll_to_fraction(fling_path(t), cx));
         let start = Instant::now();
         cx.update(|window, cx| window.render_frame(cx));
         times.push(start.elapsed().as_secs_f32() * 1000.0);
+        cx.update(|_, cx| {
+            let painted = grid.read(cx).painted_cells();
+            // Cells whose details have loaded (a bare tile could be either).
+            cells += painted
+                .iter()
+                .filter(|(_, p)| !matches!(p, CellPaint::Tile))
+                .count();
+            tiles += painted
+                .iter()
+                .filter(|(_, p)| matches!(p, CellPaint::PlaceholderTile { .. }))
+                .count();
+        });
         cx.run_until_parked();
+    }
+    // The fling really drew placeholder tiles, in about the share asked for (of the cells whose details had
+    // loaded).
+    let share = tiles as f32 / cells.max(1) as f32;
+    println!(
+        "placeholder tiles: {tiles} of {cells} cells with details ({:.1}%)",
+        share * 100.0
+    );
+    if placeholders == 0 {
+        assert_eq!(tiles, 0, "no placeholder tiles without placeholders");
+    } else {
+        let want = placeholders as f32 / 100.0;
+        assert!(
+            tiles > 0 && share >= want * 0.5 && share <= want * 1.5,
+            "{tiles} placeholder tiles of {cells} cells, {placeholders}% asked for"
+        );
     }
     let p = Percentiles::of(&times[100..]);
     let paint = Percentiles::of(&cx.update(|_, cx| grid.read(cx).stats.paint_ms.clone()));
