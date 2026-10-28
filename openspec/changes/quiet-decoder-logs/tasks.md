@@ -24,7 +24,8 @@ of architectural weight); ADR-0112 and migration 26 go to the next changes.
 
 ## 4. Verification
 
-- [ ] 4.1 `cargo xtask ci` green in a clean worktree; every scenario mapped.
+- [x] 4.1 `cargo xtask ci` green in a clean worktree; every scenario mapped.
+  Done: `cargo xtask ci` in a detached worktree of 9a68f29: "CI passed" (fmt, clippy, layering, tokens, tests, `openspec validate` 35 passed, spec coverage 658 scenarios / 631 mapped, 0 unmapped in archived specs); the 4 scenarios of this change ran and passed; no `target/` appeared in the worktree. (A first run failed only because test executables were pruned mid-run; rerun clean.)
 - [x] 4.2 Corpus gate unchanged (no grouping code changes): medium preset seed 42, the numbers of `preview-placeholders` (precision, recall and keeper accuracy 1.0000, 0 violations).
   Done: release CLI, medium preset seed 42, 10174 files scanned in 18.6 s with 0 errors and no `rawler` line on stderr; `eval-corpus`: precision 1.0000, recall 1.0000, keeper accuracy 1.0000, 0 must-not-merge violations, 19741/19741 pairs, 1903 keeper groups, gate PASS.
 - [x] 4.3 Budgets unchanged: `cargo xtask bench --check` (`scan-analysis-12mp`, `rescan-nochange-100k`).
