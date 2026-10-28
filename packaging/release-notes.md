@@ -49,8 +49,10 @@ to their resized or re-exported JPEG copies.
   its warnings back for a bug report.
 - **SD cards rescan quickly after a remount:** unplugging a FAT or exFAT card (or USB stick) and inserting it again
   no longer makes the next rescan read many of its files again; FAT's whole-hour time shifts after a time-zone change
-  are not changes either. The first rescan after updating reads nothing new. `sources list --json` shows
-  `stable_file_ids`.
+  (up to 26 hours) are not changes either. So on FAT a photo replaced by one of the same size whose time differs by
+  a whole number of hours (or, on FAT and exFAT, lies within the same 2 seconds) is not noticed by a rescan; export
+  and cleanup still check every file's content. NTFS drives (ntfs-3g) keep their file ids. The first rescan after
+  updating reads nothing new. `sources list --json` shows `stable_file_ids`.
 
 ### What's new in 0.3.0
 

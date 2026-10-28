@@ -63,7 +63,7 @@ before a remount on a machine with a local-time RTC, shifts every mtime by whole
 and is excluded.
 
 Rule: with `IdStability::Unstable` and fs type vfat/msdos, the size is equal and `|Δmtime|` is an exact multiple of
-3600 s, at most 15 h -> unchanged, and the row takes the new mtime (a catalog write, no read). This needs the
+3600 s, at most 15 h (26 h as built, see Deviations) -> unchanged, and the row takes the new mtime (a catalog write, no read). This needs the
 filesystem kind at diff time:
 - `WalkEntry` carries a `fat_time: bool` from the probe.
 - `StatFingerprint::unchanged_with(other, FatTime)` holds the rule, so the Rust diff and the SQL `changed`
@@ -110,6 +110,12 @@ The Sources panel shows nothing new. The CLI field is for support and tests.
 - [The hour rule hides a real edit] -> only with an identical size and an exact whole-hour shift, on FAT only.
 - [A probe misclassifies a filesystem] -> the fallback is today's behaviour; the table is a unit test and the ADR
   lists it.
+- [A re-date after a FAT hour shift moves an mtime-dated photo by the shift] -> `RefreshStats` stores the walk's
+  shifted mtime, and the re-date pass (ADR-0071, only when `DATE_LOGIC_VERSION` changes) uses the stored mtime as
+  the last date fallback. Left as is: it touches only photos with no embedded and no file-name date, the date it
+  gives is the one a fresh scan of the card on this machine gives (FAT time has no zone, so neither reading is the
+  "right" one), and keeping the old mtime would need a second stored mtime (a migration) or would break the
+  refresh's job of keeping the upsert's `changed` test away from the old value.
 
 ## Deviations (as built)
 
@@ -139,3 +145,14 @@ The Sources panel shows nothing new. The CLI field is for support and tests.
   hint in the catalog and runs `sources list --json`.
 - **Tests set times with `ps_fixtures::scratch::set_mtime`**, not `File::set_times` (ps-scan's tests are under the
   read-only layering check).
+- **Gate review (ADR-0116, amends ADR-0112).** `fuseblk` is no longer unstable by name: ntfs-3g mounts NTFS as
+  `fuseblk` and reports its MFT numbers, which are stable. A generic FUSE mount (`fuseblk`, `fuse`) is classified
+  by udev's `ID_FS_TYPE` for the mount source's block device (`/run/udev/data/b<major>:<minor>`): exFAT unstable,
+  vfat/msdos FAT, NTFS and unknown stable. The lookup is one pure function, `fs_ids::linux_fs_ids` over a
+  `LinuxFsReader` (real in ps-scan and ps-export, faked in `fuseblk_is_resolved_through_udev`); it replaces the two
+  copies of the FUSE lookup in the probes.
+- **Gate review: the FAT shift limit is 26 h, not 15 h** (UTC-12 to UTC+14; ADR-0116). Still whole hours only,
+  equal size, vfat/msdos only (D3's rule).
+- **Gate review: the export-library search probes once per device.** `find_export_library` lists folders with
+  `read_dir_cached` and one `IdCache`, like the walk; `Instrumentation::probe_count` counts probes
+  (`library_search_probes_each_device_once`).

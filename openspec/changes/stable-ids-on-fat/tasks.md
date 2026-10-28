@@ -1,7 +1,7 @@
 # Tasks
 
-Ships in 0.3.x (ROADMAP row 30), after `quiet-decoder-logs`. Takes **ADR-0112**. **No migration** (D2, D5); migration
-26 goes to `adobe-rgb-color`.
+Ships in 0.3.x (ROADMAP row 30), after `quiet-decoder-logs`. Takes **ADR-0112** (and **ADR-0116**, from the gate
+review). **No migration** (D2, D5); migration 26 goes to `adobe-rgb-color`.
 
 ## 1. Decision
 
@@ -33,4 +33,5 @@ Ships in 0.3.x (ROADMAP row 30), after `quiet-decoder-logs`. Takes **ADR-0112**.
 - [x] 6.3 Owner check (read-only, owner-run, no screenshots without approval): scan the Canon card, unmount, remount, rescan: 0 changed, no file read (`--json` diff counts); `sources list --json` shows `stable_file_ids: false`. Done 2026-10-28 on a scratch copy of the card's 0.3.0-era catalog (card mounted read-only): upgrade rescan 0 changed, 2,632 unchanged, 0 errors (679 MB read, all of it the one-time frame-identity re-read of `burst-frame-identity`, since that catalog predates it); `stable_file_ids: false`; then `udisksctl` unmount and read-only remount; rescan 0 changed, 2,632 unchanged, 0 bytes read, 0.56 s (before this change the same remount re-read 1,355 files, 31 GB, in 6 minutes). Scratch copy removed.
 - [x] 6.4 Budgets: `cargo xtask bench --check`, `rescan-nochange-100k` within budget (one `statfs` per device). Done: `cargo xtask bench --check --only rescan-nochange-100k`: 0.45 s median (budget 4 s; baseline 0.408 s); all 1 budgets met.
 - [x] 6.5 Pushed; GitHub CI green on all five jobs. Done: pushed `46c6acd` (fast-forward from `7077980`); GitHub CI run 40628534332 green on all five jobs (Linux full CI, oldest libheif, windows-2022, macos-14, performance budgets).
+- [x] 6.7 Gate-review findings (ADR-0116, amends 0112): `fuseblk` classified by udev's `ID_FS_TYPE` of its device (ntfs-3g stable, exFAT unstable, unknown stable); FAT shift limit 26 h; README and release notes state the whole-hour case; the re-date fallback after a FAT shift is a documented risk (design, Risks); `find_export_library` probes once per device. Verify: `classification_table`, `fuseblk_is_resolved_through_udev`, `fat_time_tolerates_whole_hour_shifts_only`, `scenario_incremental_rescan_fat_time_zone_shift_is_not_a_change` (26 h), `scenario_incremental_rescan_other_shifts_are_changes` (27 h), `library_search_probes_each_device_once`; clean-worktree CI and GitHub CI.
 - [ ] 6.6 Gate review by a fresh agent that did not write the code.

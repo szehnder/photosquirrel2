@@ -129,9 +129,10 @@ PhotoSquirrel behave as if no decoder were found.
 - **Adobe RGB photos** (Canon `_MG_` files and others recorded in Adobe RGB) are shown without colour
   conversion, so their previews look slightly muted; the files themselves are exported unchanged.
 - **FAT and exFAT drives** (most SD cards and many USB sticks) record file times only to 2 seconds, and on FAT a
-  time-zone change can shift them by whole hours, which a rescan takes as no change. So a photo replaced on the card
-  by another one of exactly the same size within the same 2 seconds is not noticed by a rescan. Export and cleanup
-  check every file's content before copying or moving it, so such a file is never copied or moved as the old photo.
+  time-zone change can shift them by whole hours (up to 26), which a rescan takes as no change. So a photo replaced
+  on the card by another one of exactly the same size is not noticed by a rescan if its time is within the same
+  2 seconds or, on FAT, differs by a whole number of hours. Export and cleanup check every file's content before
+  copying or moving it, so such a file is never copied or moved as the old photo.
 - **Cleanup is new in 0.2.0** and optional. Without it PhotoSquirrel never touches your sources at all; with it,
   files are only moved within the same drive, after a confirmation, and every move can be undone.
 - **Windows performance** has only been measured on CI machines, where writing very large catalogs (around a
