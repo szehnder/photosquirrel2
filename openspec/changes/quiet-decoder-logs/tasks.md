@@ -30,7 +30,7 @@ of architectural weight); ADR-0112 and migration 26 go to the next changes.
   Done: release CLI, medium preset seed 42, 10174 files scanned in 18.6 s with 0 errors and no `rawler` line on stderr; `eval-corpus`: precision 1.0000, recall 1.0000, keeper accuracy 1.0000, 0 must-not-merge violations, 19741/19741 pairs, 1903 keeper groups, gate PASS.
 - [x] 4.3 Budgets unchanged: `cargo xtask bench --check` (`scan-analysis-12mp`, `rescan-nochange-100k`).
   Done: `cargo xtask bench --check --only scan-analysis-12mp --only rescan-nochange-100k`: 4.50 ms (budget 6.67 ms) and 0.45 s (budget 4 s), all 2 budgets met.
-- [ ] 4.4 Owner check (read-only, owner-run): a CLI scan of the Canon card prints no lens-database warnings; `RUST_LOG=rawler=warn` brings them back.
+- [x] 4.4 Owner check (read-only, owner-run): a CLI scan of the Canon card prints no lens-database warnings; `RUST_LOG=rawler=warn` brings them back. Done 2026-10-27 on the card mounted read-only, `DCIM/100CANON` (124 files, 2.0 GB) into a scratch catalog under `target/`: default filter, 0 rawler lines (stderr only the 3 progress lines), 0 errors; `RUST_LOG=rawler=warn`, 117 `rawler::lens` warnings. Scratch catalogs removed.
 - [x] 4.5 Pushed; GitHub CI green on all five jobs.
   Done: pushed daa11f6..aa66fea; run 40606558280 green on all five jobs (Linux full CI, macOS 14, Windows 2022, oldest libheif, performance budgets).
 - [ ] 4.6 Gate review by a fresh agent that did not write the code.
