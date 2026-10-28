@@ -125,7 +125,8 @@ impl SourceFs {
     }
 
     /// List a folder: every entry with its `lstat` data, sorted by name bytes. The filesystem is probed afresh
-    /// (once, when the folder holds a file); a walk uses [`SourceFs::read_dir_cached`].
+    /// (once, when the folder holds a file); anything listing more than one folder uses
+    /// [`SourceFs::read_dir_cached`] with one [`IdCache`].
     pub fn read_dir(&self, dir: &Path) -> io::Result<Vec<DirEntryInfo>> {
         self.read_dir_cached(dir, &mut IdCache::default())
     }
@@ -194,6 +195,9 @@ impl SourceFs {
     /// What the filesystem holding `dir` does with file ids (ADR-0112): one `statfs`. A forced answer of the
     /// instrumentation wins. A failed probe is [`FsIds::STABLE`], the behaviour before ADR-0112.
     pub fn probe_ids(&self, dir: &Path) -> FsIds {
+        if let Some(i) = &self.instr {
+            i.probes.fetch_add(1, Ordering::Relaxed);
+        }
         let forced = self
             .instr
             .as_ref()
@@ -263,25 +267,35 @@ fn device_of(_m: &Metadata) -> u64 {
     0
 }
 
-/// Linux: `statfs` `f_type`, and the mount table's type for a FUSE mount.
+/// Linux: `statfs` `f_type`; for a FUSE mount the mount table's type and, for `fuseblk`, udev's filesystem type of
+/// its device (ADR-0116, [`ps_model::fs_ids::linux_fs_ids`]).
 #[cfg(target_os = "linux")]
 fn probe_fs(dir: &Path) -> FsIds {
-    use ps_model::fs_ids;
     use std::os::unix::fs::MetadataExt;
     let Ok(st) = rustix::fs::statfs(dir) else {
         return FsIds::STABLE;
     };
     #[allow(clippy::unnecessary_cast)]
     let magic = st.f_type as u64;
-    let fuse_type = (magic & 0xffff_ffff == fs_ids::FUSE_SUPER_MAGIC)
-        .then(|| {
-            let dev = std::fs::metadata(dir).ok()?.dev();
-            let (major, minor) = fs_ids::dev_major_minor(dev);
-            let text = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
-            fs_ids::mountinfo_entry(&text, major, minor).map(|(t, _)| t)
-        })
+    let dev = (magic & 0xffff_ffff == ps_model::fs_ids::FUSE_SUPER_MAGIC)
+        .then(|| std::fs::metadata(dir).ok().map(|m| m.dev()))
         .flatten();
-    fs_ids::stable_for_magic(magic, fuse_type.as_deref())
+    ps_model::fs_ids::linux_fs_ids(magic, dev, &SystemFs)
+}
+
+/// The real `/proc`, `/run/udev` and `stat` for [`ps_model::fs_ids::linux_fs_ids`].
+#[cfg(target_os = "linux")]
+struct SystemFs;
+
+#[cfg(target_os = "linux")]
+impl ps_model::fs_ids::LinuxFsReader for SystemFs {
+    fn read_text(&self, path: &str) -> Option<String> {
+        std::fs::read_to_string(path).ok()
+    }
+    fn rdev(&self, path: &str) -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).ok().map(|m| m.rdev())
+    }
 }
 
 /// macOS: `statfs` `f_fstypename` (`msdos`, `exfat`, `apfs`, ...).
@@ -457,6 +471,8 @@ pub struct Instrumentation {
     bytes: Mutex<HashMap<PathBuf, u64>>,
     total_bytes: AtomicU64,
     read_dirs: AtomicU64,
+    /// File-id probes made ([`SourceFs::probe_ids`]).
+    probes: AtomicU64,
     /// Paths whose opens fail with `PermissionDenied` (tests of unreadable files on every platform).
     deny: Mutex<Vec<PathBuf>>,
     /// The probe's answer for every device ([`Instrumentation::force_ids`]).
@@ -550,6 +566,12 @@ impl Instrumentation {
         self.bytes.lock().clear();
         self.total_bytes.store(0, Ordering::Relaxed);
         self.read_dirs.store(0, Ordering::Relaxed);
+        self.probes.store(0, Ordering::Relaxed);
+    }
+
+    /// File-id probes made (one `statfs` each, ADR-0112).
+    pub fn probe_count(&self) -> u64 {
+        self.probes.load(Ordering::Relaxed)
     }
 }
 

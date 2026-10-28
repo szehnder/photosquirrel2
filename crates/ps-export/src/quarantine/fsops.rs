@@ -301,14 +301,25 @@ pub fn file_ids(path: &Path) -> IdStability {
     };
     #[allow(clippy::unnecessary_cast)]
     let magic = st.f_type as u64;
-    let fuse_type = (magic & 0xffff_ffff == fs_ids::FUSE_SUPER_MAGIC)
-        .then(|| {
-            let (major, minor) = fs_ids::dev_major_minor(fs::metadata(path).ok()?.dev());
-            let text = fs::read_to_string("/proc/self/mountinfo").ok()?;
-            fs_ids::mountinfo_entry(&text, major, minor).map(|(t, _)| t)
-        })
+    let dev = (magic & 0xffff_ffff == fs_ids::FUSE_SUPER_MAGIC)
+        .then(|| fs::metadata(path).ok().map(|m| m.dev()))
         .flatten();
-    fs_ids::stable_for_magic(magic, fuse_type.as_deref()).ids
+    fs_ids::linux_fs_ids(magic, dev, &SystemFs).ids
+}
+
+/// The real `/proc`, `/run/udev` and `stat` for [`ps_model::fs_ids::linux_fs_ids`] (ADR-0116).
+#[cfg(target_os = "linux")]
+struct SystemFs;
+
+#[cfg(target_os = "linux")]
+impl ps_model::fs_ids::LinuxFsReader for SystemFs {
+    fn read_text(&self, path: &str) -> Option<String> {
+        fs::read_to_string(path).ok()
+    }
+    fn rdev(&self, path: &str) -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).ok().map(|m| m.rdev())
+    }
 }
 
 #[cfg(target_os = "macos")]
