@@ -28,9 +28,9 @@ Ships in 0.3.x (ROADMAP row 30), after `quiet-decoder-logs`. Takes **ADR-0112**.
 
 ## 6. Verification
 
-- [ ] 6.1 `cargo xtask ci` green in a clean worktree; every scenario mapped.
-- [ ] 6.2 Corpus gate unchanged (no grouping change): medium preset seed 42, precision, recall and keeper accuracy 1.0000, 0 violations, same pair and group counts as `preview-placeholders`.
+- [x] 6.1 `cargo xtask ci` green in a clean worktree; every scenario mapped. Done: clean worktree at `7b7504c` (`git worktree add --detach target/ci-src HEAD`, shared target dir, `CARGO_INCREMENTAL=0` for disk): `CI passed.` (fmt, clippy, layering, tokens, 1,227 tests passed / 0 failed, timing pass, `openspec validate` 35/35, spec coverage 672 scenarios, 642 mapped, 0 unmapped in archived specs; every `stable-ids-on-fat` scenario mapped). `target/ci-src/target` never appeared; worktree removed and pruned. (A first attempt ran out of disk while linking; rerun after pruning `debug/deps`.)
+- [x] 6.2 Corpus gate unchanged (no grouping change): medium preset seed 42, precision, recall and keeper accuracy 1.0000, 0 violations, same pair and group counts as `preview-placeholders`. Done: release CLI, medium preset seed 42, drive-a/b/c: 10,173 files scanned in 17.6 s, 0 errors; precision, recall, keeper accuracy 1.0000, 0 violations; 19,741 pairs, 1,903 groups, 8,834 grouped files, 4,166,020,278 reclaimable bytes, 6,338 suggestions (unchanged). A rescan: 0 bytes read, 10,173 unchanged; `sources list --json`: `stable_file_ids: true` for all three.
 - [ ] 6.3 Owner check (read-only, owner-run, no screenshots without approval): scan the Canon card, unmount, remount, rescan: 0 changed, no file read (`--json` diff counts); `sources list --json` shows `stable_file_ids: false`.
-- [ ] 6.4 Budgets: `cargo xtask bench --check`, `rescan-nochange-100k` within budget (one `statfs` per device).
+- [x] 6.4 Budgets: `cargo xtask bench --check`, `rescan-nochange-100k` within budget (one `statfs` per device). Done: `cargo xtask bench --check --only rescan-nochange-100k`: 0.45 s median (budget 4 s; baseline 0.408 s); all 1 budgets met.
 - [ ] 6.5 Pushed; GitHub CI green on all five jobs.
 - [ ] 6.6 Gate review by a fresh agent that did not write the code.
