@@ -23,8 +23,9 @@
 The default is `rawler=error`, not just `rawler::lens=error`.
 - The other rawler warnings ("Truncated IFD", "Failed to parse TIFF tag", "Camera settings in makernote not found",
   "Unknown make for EXIF file") are just as per-file and just as unactionable for our user.
-- For a file that is really damaged, our own path already reports it: the decode error becomes a placeholder
-  reason (`unreadable`) and a run error.
+- For a file that is really damaged, our own path reports it as a placeholder with its reason. (As built, a
+  truncated RAW file gets `unsupported_variant`, not `unreadable`, and no run error: see Deviations, item 2, and
+  ROADMAP row 33 `damaged-raw-reason`.)
 - Hiding only the lens target would bring the next flood back with the next card.
 
 rawler's `error!` lines still show.

@@ -45,8 +45,8 @@ to their resized or re-exported JPEG copies.
 ### What's new since 0.3.0
 
 - **Quieter command line:** a scan of a Canon card no longer prints a wall of "No lens definition found in
-  database" lines from the RAW decoder; only its errors are shown. `RUST_LOG=rawler=warn` brings its warnings back
-  for a bug report.
+  database" lines from the RAW decoder; only its errors are shown. `RUST_LOG=warn,nom_exif=error,rawler=warn` brings
+  its warnings back for a bug report.
 
 ### What's new in 0.3.0
 
