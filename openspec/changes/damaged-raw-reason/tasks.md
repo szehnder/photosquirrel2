@@ -30,6 +30,8 @@ Ships in 0.3.x (ROADMAP row 33, priority 1). **ADR-0115**, **no migration** (`fi
 - [ ] 4.1 `print_summary` damaged line and `--json` `damaged` (D6). Update `scenario_scan_progress_damaged_raw_file_still_reported_under_the_default_filter` to pin `unreadable`, `errors 1`, `damaged 1` (and the same outcome with `RUST_LOG=rawler=warn`). Verify: that test, `scenario_cli_summary_names_a_damaged_raw`, `scenario_cli_no_damaged_line_for_intact_files`.
 - [ ] 4.2 `report`: `counts.damaged`, `damaged_files`, the badge suffix, the hint line and up to 20 paths (D7). Verify: `scenario_completion_report_exported_damaged_raw_is_still_flagged`; the existing report tests (badge strings) pass, with an intact corpus showing no suffix.
 
+- [ ] 4.3 Cleanup keeps damaged originals (D10): the planner skips them with the reason, and `cleanup run` re-checks it. Verify: `scenario_cleanup_cleanup_keeps_a_damaged_original` (a plan made before the rescan that found the file damaged also leaves it in place).
+
 ## 5. App
 
 - [ ] 5.1 `RunOverview.damaged`; the dashboard's damaged stat and warning notice with Show (D6); `FakeScans` gets a setter like `set_undecoded`. Verify: `scenario_scan_progress_dashboard_warns_about_damaged_files` (headless `#[gpui_kit::test]`); `cargo xtask tokens`.

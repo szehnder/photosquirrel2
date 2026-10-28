@@ -170,6 +170,9 @@ scan a user runs before erasing. The count is an aggregate, never per-file event
 
 ### D7. The completion report flags damaged files; dispositions unchanged
 
+The owner chose on 2026-10-28: keep the badge with ", N damaged", and cleanup never moves a damaged original
+(D10).
+
 A damaged file is copied as is, so its bytes are as safe in the library as on the card, and its disposition stays
 what the rules say. What the report owes the user is the warning that the photo itself may be incomplete, and that
 the card's free space may still hold the rest.
@@ -204,6 +207,13 @@ better than the version that made this placeholder, so it can look at this file 
   from rawler's camera table and no probe preview.
 - The existing CLI test switches its pin from `unsupported_variant` to `unreadable`, `errors 1`, `damaged 1`.
 
+### D10. Cleanup keeps damaged originals (owner's choice)
+
+The cleanup planner (ADR-0096/0099 re-derive coverage before each move) skips a file whose `FileFacts.damaged` is
+true and lists it as kept with the reason "damaged: keep the original for recovery". The run re-checks it before the
+move like every other condition, so a plan made before the file was found damaged does not move it either. The
+damaged file's disposition in the report is unchanged; only cleanup leaves it in place.
+
 ## Risks / Trade-offs
 
 - [A real camera writes a strip count past the end of a good file] -> it shows as damaged with no thumbnail. It is
@@ -217,10 +227,8 @@ better than the version that made this placeholder, so it can look at this file 
   evidence we do not claim damage (D2.6). rawler's message is kept in the detail.
 - [`errors` and `damaged` disagree on a rescan] -> intended (D6). The text says what each means.
 
-## Owner questions
+## Owner decisions (2026-10-28)
 
-1. Should damaged files withhold the "100% accounted for" badge, and keep cleanup from offering their source? This
-   design keeps the badge, because the bytes are in the library, and adds ", N damaged" and the hint. Withholding it
-   would make a card with one cut file never "accounted for".
-2. Is a later change worth it to show the intact embedded preview of a cut RAW, marked damaged? It needs a thumbnail
-   kind that is both pixels and damaged, and a catalog column (a migration after `adobe-rgb-color`'s 26).
+1. Keep the "100% accounted for" badge with ", N damaged" and the hint; cleanup never moves a damaged original
+   (D10).
+2. Showing the intact embedded preview of a cut RAW, marked damaged, comes later as its own change (ROADMAP row 34).

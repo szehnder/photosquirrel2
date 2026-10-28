@@ -67,6 +67,7 @@ None.
 - `scan-progress`: the run summary counts damaged files; the damaged RAW scenario now pins `unreadable`.
 - `cli`: the scan summary line and `--json` carry the damaged count.
 - `completion-report`: damaged files are counted and flagged as at risk.
+- `cleanup`: damaged originals are never planned or moved (the owner's choice).
 
 ## Impact
 
@@ -91,10 +92,10 @@ None.
 ## Out of scope
 
 - Showing the intact embedded preview of a damaged RAW. That needs a thumbnail that is both pixels and damaged,
-  which is a new thumbnail kind and a catalog column. See the owner question in design.md.
+  which is a new thumbnail kind and a catalog column. The owner wants it later, as its own change (ROADMAP row 34).
 - Truncation evidence for RAW files over the 64 MB analysis buffer (they get a "files over 64 MB" placeholder
   without a decode) and for RAW formats other than TIFF-based, CR3 and RAF (MRW, X3F, CRW).
 - Repairing or recovering files. PhotoSquirrel never writes to sources.
-- Holding back cleanup or the "100% accounted for" badge for damaged files (an owner question).
+- Holding back the "100% accounted for" badge for damaged files (the owner chose to keep it, with the damaged count).
 - Truncation checks for plain TIFF, PNG or WebP. Their decoders already fail on cut data, and the failure becomes
   `unreadable`.
