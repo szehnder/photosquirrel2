@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Stat-fingerprint diff
-A rescan SHALL list and stat the source tree without reading file contents, compare each entry's size, modification time (nanoseconds) and file index with the catalog, and classify it as new, changed, unchanged or missing. The file index SHALL be used only where the filesystem keeps it across mounts (not FAT or exFAT). On FAT, an exact whole-hour shift (at most 15 h) of an equal-size file SHALL count as unchanged.
+A rescan SHALL list and stat the source tree without reading file contents, compare each entry's size, modification time (nanoseconds) and file index with the catalog, and classify it as new, changed, unchanged or missing. The file index SHALL be used only where the filesystem keeps it across mounts (not FAT or exFAT). On FAT, an exact whole-hour shift (at most 26 h) of an equal-size file SHALL count as unchanged.
 
 #### Scenario: Diff counts before analysis
 - **WHEN** after a full scan 3 files are added, 2 are modified and 1 is deleted, and the source is rescanned

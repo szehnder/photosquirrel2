@@ -254,6 +254,12 @@ fn scenario_incremental_rescan_fat_time_zone_shift_is_not_a_change() {
         back.iter()
             .all(|(p, r)| r.stat.mtime_ns == before[p].stat.mtime_ns - HOUR_NS)
     );
+    // A card written at UTC-12 and read at UTC+14: 26 hours, still nothing read.
+    c.env.instr.reset();
+    c.env.instr.shift_mtime(25 * HOUR_NS);
+    let s = c.env.scan(&[c.id]);
+    completed(&s);
+    assert_eq!((c.env.instr.open_count(), s.diff.changed), (0, 0));
 }
 
 #[test]
@@ -270,9 +276,9 @@ fn scenario_incremental_rescan_other_shifts_are_changes() {
     let s = c.env.scan(&[c.id]);
     completed(&s);
     assert_eq!((s.diff.changed, s.diff.unchanged), (4, 0), "{:?}", s.diff);
-    // Sixteen hours on FAT: beyond any zone change.
+    // 27 hours on FAT: beyond any zone change (UTC-12 to UTC+14 is 26 h).
     let c = card(IdStability::Unstable, true);
-    c.env.instr.shift_mtime(16 * HOUR_NS);
+    c.env.instr.shift_mtime(27 * HOUR_NS);
     let s = c.env.scan(&[c.id]);
     completed(&s);
     assert_eq!(s.diff.changed, 4, "{:?}", s.diff);
@@ -316,4 +322,26 @@ fn scenario_sources_exfat_source_shows_unstable_file_ids() {
     let s = env.s().add_source(other.path()).expect("add").source;
     let want = if cfg!(unix) { Some(true) } else { None };
     assert_eq!(s.stable_file_ids, want);
+}
+
+#[test]
+fn library_search_probes_each_device_once() {
+    use ps_scan::walk::{LIBRARY_MANIFEST_FILE, LIBRARY_META_DIR, find_export_library};
+    let dir = tempfile::tempdir().unwrap();
+    for d in ["a", "a/b", "c", "c/d/e"] {
+        std::fs::create_dir_all(dir.path().join(d)).unwrap();
+        ps_fixtures::scratch::write(dir.path().join(d).join("x.jpg"), b"x").unwrap();
+    }
+    let (fs, instr) = ps_scan::SourceFs::instrumented();
+    assert_eq!(find_export_library(&fs, dir.path()), None);
+    assert!(instr.read_dirs() >= 5, "{}", instr.read_dirs());
+    assert_eq!(instr.probe_count(), 1, "one statfs for the one device");
+    // A library deeper down is still found.
+    let meta = dir.path().join("c/d").join(LIBRARY_META_DIR);
+    std::fs::create_dir_all(&meta).unwrap();
+    ps_fixtures::scratch::write(meta.join(LIBRARY_MANIFEST_FILE), b"").unwrap();
+    assert_eq!(
+        find_export_library(&fs, dir.path()),
+        Some(dir.path().join("c/d"))
+    );
 }

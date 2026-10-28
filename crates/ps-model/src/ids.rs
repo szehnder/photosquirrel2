@@ -160,8 +160,9 @@ impl StatFingerprint {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FatTime(pub bool);
 
-/// The largest FAT time shift taken for a zone change between mounts (design D3 of `stable-ids-on-fat`).
-pub const FAT_SHIFT_MAX_HOURS: i64 = 15;
+/// The largest FAT time shift taken for a zone change between mounts (design D3 of `stable-ids-on-fat`, ADR-0116):
+/// 26 h, the widest gap between two zones (UTC-12 to UTC+14), so a card written abroad still reads as unchanged.
+pub const FAT_SHIFT_MAX_HOURS: i64 = 26;
 
 #[cfg(test)]
 mod tests {
@@ -212,12 +213,19 @@ mod tests {
             mtime_ns: a.mtime_ns + d,
             ..a
         };
-        for d in [H, -H, 2 * H, 15 * H, -15 * H] {
+        for d in [H, -H, 2 * H, 15 * H, -15 * H, 16 * H, 26 * H, -26 * H] {
             assert!(a.unchanged_with(&at(d), FatTime(true)), "{d}");
             assert!(!a.unchanged_with(&at(d), FatTime(false)), "{d}");
             assert!(!a.unchanged(&at(d)), "{d}");
         }
-        for d in [H / 2, 2_000_000_000, H + 2_000_000_000, 16 * H, -16 * H] {
+        for d in [
+            H / 2,
+            2_000_000_000,
+            H + 2_000_000_000,
+            27 * H,
+            -27 * H,
+            26 * H + 2_000_000_000,
+        ] {
             assert!(!a.unchanged_with(&at(d), FatTime(true)), "{d}");
         }
         // The size must be equal.
