@@ -82,6 +82,11 @@ pub trait QuarantineHooks: Sync {
     fn device(&self, path: &Path) -> io::Result<Option<u64>> {
         fsops::device_of(path)
     }
+    /// Whether the filesystem holding `path` keeps file ids ([`fsops::file_ids`], ADR-0112): the pre-move check
+    /// compares the catalog's file index only where it does.
+    fn file_ids(&self, path: &Path) -> ps_model::IdStability {
+        fsops::file_ids(path)
+    }
     /// After both intents are journaled, just before the rename.
     fn before_rename(&self, _m: &CleanupMove) {}
     /// Right after the rename, before `done` is journaled.

@@ -342,6 +342,58 @@ fn scenario_cleanup_missing_library_copy_blocks_move() {
     );
 }
 
+/// The probe's answer for the source's filesystem (ADR-0112): a remounted FAT or exFAT card is `Unstable`.
+struct FileIds(ps_model::IdStability);
+
+impl QuarantineHooks for FileIds {
+    fn file_ids(&self, _path: &Path) -> ps_model::IdStability {
+        self.0
+    }
+}
+
+#[test]
+fn scenario_sources_quarantine_after_a_remount_is_not_refused_for_a_new_inode() {
+    // The catalog stored inode numbers the card's driver invented at an earlier mount.
+    let mut f = Fixture::new("q-remount", THREE);
+    for m in &mut f.moves {
+        m.file_index = Some(m.file_index.unwrap_or(7).wrapping_add(1 << 40));
+    }
+    // Where ids are kept, a different inode means another file has the name: refused (Unix collects them).
+    if cfg!(unix) {
+        let mut j = MemJournal::default();
+        let r = f.run(&mut j, &FileIds(ps_model::IdStability::Stable));
+        assert_eq!(r.moved, 0);
+        assert!(
+            r.skipped.iter().all(
+                |s| matches!(&s.reason, SkipReason::SourceChanged(t) if t.contains("another file"))
+            ),
+            "{:?}",
+            r.skipped
+        );
+    }
+    // On the card the inode is not compared; size, time and the re-hash still are. One file changed in place with
+    // its size and time kept is refused by the re-hash.
+    let m0 = &f.moves[0];
+    let mut data = fs::read(f.src(m0)).unwrap();
+    data[100] ^= 0xff;
+    fs::write(f.src(m0), &data).unwrap();
+    set_mtime(&f.src(m0), 1_600_000_000);
+    let mut j = MemJournal::default();
+    let r = f.run(&mut j, &FileIds(ps_model::IdStability::Unstable));
+    assert_eq!(r.moved, 2, "{:?}", r.skipped);
+    assert_eq!(r.skipped.len(), 1);
+    assert!(
+        matches!(&r.skipped[0].reason, SkipReason::SourceChanged(t) if t.contains("contents differ")),
+        "{:?}",
+        r.skipped
+    );
+    for m in &f.moves[1..] {
+        assert!(f.q(m).is_file(), "{} moved", m.rel_path);
+        assert_eq!(j.of(m.file), MoveState::Quarantined);
+    }
+    assert!(f.src(m0).is_file(), "the changed file stays");
+}
+
 /// Reports the quarantine folder on another device.
 struct OtherVolume;
 

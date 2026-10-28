@@ -29,6 +29,8 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use ps_model::IdStability;
+
 use crate::rename::RenameMethod;
 
 /// Why a move did not happen. The file is still at its source path.
@@ -288,6 +290,52 @@ pub fn file_index_of(m: &fs::Metadata) -> Option<u64> {
     }
 }
 
+/// Whether the filesystem holding `path` keeps file ids across mounts (ADR-0112): `statfs` (Linux `f_type`, with the
+/// mount table for FUSE; macOS `f_fstypename`). A failed probe is [`IdStability::Stable`], the check before ADR-0112.
+#[cfg(target_os = "linux")]
+pub fn file_ids(path: &Path) -> IdStability {
+    use ps_model::fs_ids;
+    use std::os::unix::fs::MetadataExt;
+    let Ok(st) = rustix::fs::statfs(path) else {
+        return IdStability::Stable;
+    };
+    #[allow(clippy::unnecessary_cast)]
+    let magic = st.f_type as u64;
+    let fuse_type = (magic & 0xffff_ffff == fs_ids::FUSE_SUPER_MAGIC)
+        .then(|| {
+            let (major, minor) = fs_ids::dev_major_minor(fs::metadata(path).ok()?.dev());
+            let text = fs::read_to_string("/proc/self/mountinfo").ok()?;
+            fs_ids::mountinfo_entry(&text, major, minor).map(|(t, _)| t)
+        })
+        .flatten();
+    fs_ids::stable_for_magic(magic, fuse_type.as_deref()).ids
+}
+
+#[cfg(target_os = "macos")]
+pub fn file_ids(path: &Path) -> IdStability {
+    let Ok(st) = rustix::fs::statfs(path) else {
+        return IdStability::Stable;
+    };
+    let name: Vec<u8> = st
+        .f_fstypename
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| *c as u8)
+        .collect();
+    ps_model::fs_ids::stable_for_name(&String::from_utf8_lossy(&name)).ids
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+pub fn file_ids(_path: &Path) -> IdStability {
+    IdStability::Stable
+}
+
+/// Windows: no file index is compared ([`file_index_of`] is `None`).
+#[cfg(not(unix))]
+pub fn file_ids(_path: &Path) -> IdStability {
+    IdStability::Unrecorded
+}
+
 fn not_a_folder(path: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -542,6 +590,17 @@ mod tests {
         let ok = prepare_dir(&root, Path::new("q/1/a")).expect("prepare");
         assert!(ok.is_dir());
         assert!(real_dirs(&root, Path::new("q/1/a")).expect("check"));
+    }
+
+    #[test]
+    fn this_machines_target_dir_keeps_file_ids() {
+        let ids = file_ids(Path::new(env!("CARGO_MANIFEST_DIR")));
+        let want = if cfg!(unix) {
+            IdStability::Stable
+        } else {
+            IdStability::Unrecorded
+        };
+        assert_eq!(ids, want);
     }
 
     #[test]

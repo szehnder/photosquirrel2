@@ -83,9 +83,13 @@ pub(super) fn identity_of(path: &Path, kind: ContentIdKind, size: u64) -> io::Re
     })
 }
 
-/// The file at `path` still is the catalogued one: same size, modification time and (when both are known)
-/// file index, and the same content identity.
-fn verify_source(path: &Path, m: &CleanupMove) -> Result<fs::Metadata, SkipReason> {
+/// The file at `path` still is the catalogued one: same size, modification time and (when both are known and the
+/// filesystem keeps file ids, ADR-0112) file index, and the same content identity.
+fn verify_source(
+    path: &Path,
+    m: &CleanupMove,
+    ids: ps_model::IdStability,
+) -> Result<fs::Metadata, SkipReason> {
     let stat = |p: &Path| match fs::symlink_metadata(p) {
         Ok(md) if md.file_type().is_file() => Ok(md),
         Ok(_) => Err(SkipReason::NotAFile),
@@ -106,6 +110,7 @@ fn verify_source(path: &Path, m: &CleanupMove) -> Result<fs::Metadata, SkipReaso
             ));
         }
         if let (Some(now), Some(then)) = (fsops::file_index_of(md), m.file_index)
+            && ids.keeps_index()
             && now != then
         {
             return Err(SkipReason::SourceChanged(
@@ -315,7 +320,7 @@ fn move_one(
             }
         }
     }
-    let md = match verify_source(&source, m) {
+    let md = match verify_source(&source, m, hooks.file_ids(&source)) {
         Ok(md) => md,
         Err(r) => return skip(m, r, journal, catalog),
     };
