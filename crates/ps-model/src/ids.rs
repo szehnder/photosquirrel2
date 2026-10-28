@@ -133,14 +133,35 @@ impl StatFingerprint {
     /// Two fingerprints describe the same, unchanged file. A missing file index on either side is ignored
     /// (NAS and exFAT often report none or unstable ones).
     pub fn unchanged(&self, other: &StatFingerprint) -> bool {
+        self.unchanged_with(other, FatTime(false))
+    }
+
+    /// [`StatFingerprint::unchanged`], and with `FatTime(true)` (vfat/msdos, ADR-0112) an equal-size file whose
+    /// modification time moved by an exact, non-zero whole number of hours, at most [`FAT_SHIFT_MAX_HOURS`], is
+    /// unchanged too: FAT stores local time without a zone, so a time-zone or daylight-saving change between mounts
+    /// shifts every time by whole hours.
+    pub fn unchanged_with(&self, other: &StatFingerprint, fat: FatTime) -> bool {
+        const HOUR_NS: i128 = 3_600_000_000_000;
+        let delta = (i128::from(self.mtime_ns) - i128::from(other.mtime_ns)).abs();
+        let time = delta == 0
+            || (fat.0
+                && delta % HOUR_NS == 0
+                && delta <= i128::from(FAT_SHIFT_MAX_HOURS) * HOUR_NS);
         self.size == other.size
-            && self.mtime_ns == other.mtime_ns
+            && time
             && match (self.file_index, other.file_index) {
                 (Some(a), Some(b)) => a == b,
                 _ => true,
             }
     }
 }
+
+/// The filesystem stores FAT local time: whole-hour shifts of the modification time are not changes (ADR-0112).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FatTime(pub bool);
+
+/// The largest FAT time shift taken for a zone change between mounts (design D3 of `stable-ids-on-fat`).
+pub const FAT_SHIFT_MAX_HOURS: i64 = 15;
 
 #[cfg(test)]
 mod tests {
@@ -177,5 +198,30 @@ mod tests {
         assert!(a.unchanged(&b));
         assert!(!a.unchanged(&c));
         assert!(!a.unchanged(&StatFingerprint { size: 11, ..a }));
+    }
+
+    #[test]
+    fn fat_time_tolerates_whole_hour_shifts_only() {
+        const H: i64 = 3_600_000_000_000;
+        let a = StatFingerprint {
+            size: 10,
+            mtime_ns: 1_700_000_000_000_000_000,
+            file_index: None,
+        };
+        let at = |d: i64| StatFingerprint {
+            mtime_ns: a.mtime_ns + d,
+            ..a
+        };
+        for d in [H, -H, 2 * H, 15 * H, -15 * H] {
+            assert!(a.unchanged_with(&at(d), FatTime(true)), "{d}");
+            assert!(!a.unchanged_with(&at(d), FatTime(false)), "{d}");
+            assert!(!a.unchanged(&at(d)), "{d}");
+        }
+        for d in [H / 2, 2_000_000_000, H + 2_000_000_000, 16 * H, -16 * H] {
+            assert!(!a.unchanged_with(&at(d), FatTime(true)), "{d}");
+        }
+        // The size must be equal.
+        assert!(!a.unchanged_with(&StatFingerprint { size: 11, ..at(H) }, FatTime(true)));
+        assert!(a.unchanged_with(&a, FatTime(true)));
     }
 }
