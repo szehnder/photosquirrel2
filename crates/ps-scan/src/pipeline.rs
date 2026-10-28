@@ -35,7 +35,7 @@ use ps_model::{
 
 use crate::control::{Busy, Cancelled, Control};
 use crate::diff::{DiffOutput, Todo, diff};
-use crate::fs::{SourceFile, fingerprint};
+use crate::fs::SourceFile;
 use crate::lane::{LaneController, MAX_READERS, Window, p90};
 use crate::memory::{BufferPermit, ByteBudget};
 use crate::options::ScanOptions;
@@ -519,6 +519,11 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
             return None;
         }
     };
+    // Stored stats of unchanged files brought up to the walk's first (ADR-0112: a stale inode, a FAT hour shift), so
+    // the upserts below compare against them.
+    for chunk in std::mem::take(&mut d.stat_refresh).chunks(UPSERT_CHUNK) {
+        ctx.submit(Command::RefreshStats(chunk.to_vec()));
+    }
     for chunk in std::mem::take(&mut d.upserts).chunks(UPSERT_CHUNK) {
         ctx.submit(Command::UpsertFiles(chunk.to_vec()));
     }
@@ -1063,7 +1068,7 @@ fn process_file(
     let meta = file.metadata().ok();
     if meta
         .as_ref()
-        .is_some_and(|m| !fingerprint(m).unchanged(&t.stat))
+        .is_some_and(|m| !ctx.opts.fs.fingerprint(m).unchanged(&t.stat))
     {
         changed_during_scan(ctx, idx, &t);
         return;

@@ -19,6 +19,8 @@ pub struct SourceRow {
     pub status: SourceStatus,
     pub device: String,
     pub volume_uuid: Option<String>,
+    /// The filesystem keeps file ids across mounts (ADR-0112): `false` on FAT and exFAT, `null` when not recorded.
+    pub stable_file_ids: Option<bool>,
     pub total_bytes: Option<u64>,
     pub files: u64,
     pub analyzed: u64,
@@ -40,6 +42,7 @@ fn row(svc: &ps_service::scan::ScanService, s: &SourceInfo) -> Result<SourceRow>
         status: s.status,
         device: s.device.as_str().to_owned(),
         volume_uuid: s.volume_uuid.clone(),
+        stable_file_ids: s.stable_file_ids,
         total_bytes: s.total_bytes,
         files: counts.iter().map(|(_, n)| *n).sum(),
         analyzed: n(&[Stage::Analyzed, Stage::Thumbed]),

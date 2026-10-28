@@ -22,6 +22,10 @@ thiserror.workspace = true
 log.workspace = true
 blake3.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# `statfs`: whether the filesystem keeps file ids (ADR-0112).
+rustix.workspace = true
+
 [dev-dependencies]
 # `frame::set_frame_identity_enabled`, the frame-identity test hook (ADR-0105).
 ps-model = { workspace = true, features = ["test-hooks"] }

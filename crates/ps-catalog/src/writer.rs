@@ -23,6 +23,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use ps_model::{
     FileId, PerceptualHash, RelPath, RunStatus, ScanRunId, SourceId, SourceStatus, Stage,
+    StatFingerprint,
 };
 
 use crate::error::{CatalogError, Result, WriteError, WriteErrors};
@@ -59,6 +60,10 @@ pub enum Command {
     /// `discovered` and clears its results in the same statement (ADR-0007); an unchanged one keeps
     /// everything. Rows carrying results also write them (stage derived from them).
     UpsertFiles(Vec<FileRow>),
+    /// Unchanged files whose stored stat differs from the walk's (ADR-0112: a file index the filesystem does not
+    /// keep, a FAT whole-hour shift): the walk's modification time and file index, nothing else. A row whose size
+    /// differs is left alone.
+    RefreshStats(Vec<(FileKey, StatFingerprint)>),
     /// Probe results with stage `probed` (or `skipped`); clears any analysis results.
     Probed(Vec<(FileKey, ProbeResult)>),
     /// New classes of unchanged files after a classifier settings change, decided from their stored
@@ -91,6 +96,11 @@ pub enum Command {
     },
     /// Start-up: runs left `running` by a crash become `interrupted` (ADR-0008).
     InterruptRunning,
+    /// A source's device hint (ADR-0112: its `ids=` changed at a scan's volume check).
+    SetDeviceHint {
+        source: SourceId,
+        device_hint: String,
+    },
     /// Re-link a source to a new root (ADR-0006): new root path and volume facts, status `online`.
     RelinkSource {
         source: SourceId,
@@ -148,6 +158,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Command::UpsertFiles(_) => "upsert_files",
+            Command::RefreshStats(_) => "refresh_stats",
             Command::Probed(_) => "probed",
             Command::Reclassify(_) => "reclassify",
             Command::Redate(_) => "redate",
@@ -160,6 +171,7 @@ impl Command {
             Command::SetRunStatus { .. } => "set_run_status",
             Command::InterruptRunning => "interrupt_running",
             Command::RelinkSource { .. } => "relink_source",
+            Command::SetDeviceHint { .. } => "set_device_hint",
             Command::FoldSource { .. } => "fold_source",
             Command::RemoveSource { .. } => "remove_source",
             Command::MoveFile { .. } => "move_file",
@@ -726,6 +738,24 @@ impl WriterThread {
                     self.row(name, Some(&r.key), |c| upsert_file(c, r));
                 }
             }
+            Command::RefreshStats(rows) => {
+                for (k, st) in &rows {
+                    self.row(name, Some(k), |c| {
+                        c.prepare_cached(
+                            "UPDATE file SET mtime_ns = ?3, file_index = ?4
+                             WHERE source_id = ?1 AND rel_path = ?2 AND size = ?5",
+                        )?
+                        .execute(params![
+                            k.source.0,
+                            k.path.as_bytes(),
+                            st.mtime_ns,
+                            st.file_index.map(|i| i as i64),
+                            st.size as i64
+                        ])?;
+                        Ok(())
+                    });
+                }
+            }
             Command::Probed(rows) => {
                 for (k, p) in &rows {
                     self.row(name, Some(k), |c| expect_one(set_probed(c, k, p)?, "unknown file"));
@@ -825,6 +855,15 @@ impl WriterThread {
                     [now_ms()],
                 )?;
                 Ok(())
+            }),
+            Command::SetDeviceHint {
+                source,
+                device_hint,
+            } => self.row(name, None, |c| {
+                let n = c
+                    .prepare_cached("UPDATE source SET device_hint = ?2 WHERE id = ?1")?
+                    .execute(params![source.0, device_hint])?;
+                expect_one(n, "unknown source")
             }),
             Command::RelinkSource {
                 source,

@@ -128,6 +128,38 @@ fn scenario_cli_data_dir_override() {
     assert_eq!(json(&o)["data"].as_array().unwrap().len(), 0);
 }
 
+/// `sources list --json` shows whether the source's filesystem keeps file ids (ADR-0112): recorded when the source is
+/// added, read back from its device hint.
+#[test]
+fn sources_list_shows_stable_file_ids() {
+    let data = tempfile::tempdir().unwrap();
+    ok(
+        data.path(),
+        &["sources", "add", corpus().join("drive-a").to_str().unwrap()],
+    );
+    let list = json(&ok(data.path(), &["--json", "sources", "list"]));
+    let want = if cfg!(unix) {
+        Value::Bool(true)
+    } else {
+        Value::Null
+    };
+    assert_eq!(list["data"][0]["stable_file_ids"], want, "{list}");
+    // A card's hint, as the probe records it on exFAT.
+    let c = rusqlite::Connection::open(data.path().join("catalog.db")).unwrap();
+    c.execute(
+        "UPDATE source SET device_hint = 'class=solid_state;fs=exfat;dev=/dev/mmcblk0p1;ids=unstable'",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    let list = json(&ok(data.path(), &["--json", "sources", "list"]));
+    assert_eq!(
+        list["data"][0]["stable_file_ids"],
+        Value::Bool(false),
+        "{list}"
+    );
+}
+
 #[test]
 fn scenario_cli_non_interactive_needs_yes() {
     let data = tempfile::tempdir().unwrap();

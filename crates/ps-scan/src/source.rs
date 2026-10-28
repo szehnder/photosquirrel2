@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use ps_model::{ContentId, ContentIdKind, DeviceClass, RelPath};
+use ps_model::{ContentId, ContentIdKind, DeviceClass, IdStability, RelPath};
 
 use crate::control::Control;
 use crate::fs::SourceFs;
@@ -36,17 +36,44 @@ pub struct VolumeInfo {
     /// The mounted device or share (`/dev/sdb1`, `nas:/photos`).
     pub device: Option<String>,
     pub class: DeviceClass,
+    /// Whether the filesystem keeps file ids across mounts (ADR-0112), from [`SourceFs::probe_ids`]; `None`: not
+    /// probed.
+    pub ids: Option<IdStability>,
 }
 
 impl VolumeInfo {
     /// The `device_hint` stored with a source.
     pub fn hint(&self) -> String {
-        format!(
+        let mut h = format!(
             "class={};fs={};dev={}",
             self.class.as_str(),
             self.fs_type.as_deref().unwrap_or("?"),
             self.device.as_deref().unwrap_or("?")
-        )
+        );
+        if let Some(ids) = self.ids {
+            h.push_str(";ids=");
+            h.push_str(ids.as_str());
+        }
+        h
+    }
+
+    /// Whether a stored `device_hint` says the filesystem keeps file ids (`None`: a hint from before ADR-0112).
+    pub fn ids_from_hint(hint: &str) -> Option<IdStability> {
+        hint.split(';')
+            .find_map(|p| p.strip_prefix("ids="))
+            .and_then(IdStability::parse)
+    }
+
+    /// `hint` with its `ids=` set to `ids` (other parts kept). `None` for a hint that is not one of ours.
+    pub fn hint_with_ids(hint: &str, ids: IdStability) -> Option<String> {
+        Self::class_from_hint(hint)?;
+        let mut parts: Vec<String> = hint
+            .split(';')
+            .filter(|p| !p.starts_with("ids="))
+            .map(str::to_owned)
+            .collect();
+        parts.push(format!("ids={}", ids.as_str()));
+        Some(parts.join(";"))
     }
 
     /// The device class recorded in a stored `device_hint`.
@@ -104,25 +131,17 @@ mod imp {
     }
 
     fn major(dev: u64) -> u64 {
-        ((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0x0000_0fff)
+        ps_model::fs_ids::dev_major_minor(dev).0
     }
 
     fn minor(dev: u64) -> u64 {
-        ((dev >> 12) & 0xffff_ff00) | (dev & 0x0000_00ff)
+        ps_model::fs_ids::dev_major_minor(dev).1
     }
 
     /// (fs type, mount source) of the mount with device `major:minor` (`/proc/self/mountinfo`).
     fn mount_of(major: u64, minor: u64) -> Option<(String, String)> {
         let text = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
-        let want = format!("{major}:{minor}");
-        text.lines().find_map(|l| {
-            let mut parts = l.split(" - ");
-            let pre: Vec<&str> = parts.next()?.split_whitespace().collect();
-            let post: Vec<&str> = parts.next()?.split_whitespace().collect();
-            (pre.get(2) == Some(&want.as_str()))
-                .then(|| Some((post.first()?.to_string(), post.get(1)?.to_string())))
-                .flatten()
-        })
+        ps_model::fs_ids::mountinfo_entry(&text, major, minor)
     }
 
     /// Solid-state or rotational from `/sys/dev/block/<maj:min>/queue/rotational` (the partition's parent
@@ -264,7 +283,10 @@ pub fn measure(fs: &SourceFs, root: &Path) -> Result<Measured, WalkError> {
         files: w.entries.len() as u64,
         total_bytes,
         samples,
-        volume: volume_info(root),
+        volume: VolumeInfo {
+            ids: Some(fs.probe_ids(root).ids),
+            ..volume_info(root)
+        },
     })
 }
 
@@ -410,5 +432,48 @@ mod tests {
         // The workspace lives on a real filesystem with a type and a device.
         assert!(v.fs_type.is_some(), "{v:?}");
         assert!(VolumeInfo::class_from_hint(&v.hint()).is_some());
+    }
+
+    #[test]
+    fn hint_records_file_id_stability() {
+        let v = VolumeInfo {
+            fs_type: Some("exfat".into()),
+            device: Some("/dev/mmcblk0p1".into()),
+            class: DeviceClass::SolidState,
+            ids: Some(IdStability::Unstable),
+            ..VolumeInfo::default()
+        };
+        let h = v.hint();
+        assert!(h.ends_with(";ids=unstable"), "{h}");
+        assert_eq!(VolumeInfo::ids_from_hint(&h), Some(IdStability::Unstable));
+        assert_eq!(
+            VolumeInfo::class_from_hint(&h),
+            Some(DeviceClass::SolidState)
+        );
+        // A hint from before ADR-0112 has none; setting it keeps the other parts.
+        let old = "class=solid_state;fs=exfat;dev=/dev/mmcblk0p1";
+        assert_eq!(VolumeInfo::ids_from_hint(old), None);
+        let new = VolumeInfo::hint_with_ids(old, IdStability::Unstable).expect("ours");
+        assert_eq!(new, format!("{old};ids=unstable"));
+        assert_eq!(
+            VolumeInfo::hint_with_ids(&new, IdStability::Stable).as_deref(),
+            Some(format!("{old};ids=stable").as_str())
+        );
+        assert_eq!(
+            VolumeInfo::hint_with_ids("Synthetic library", IdStability::Stable),
+            None
+        );
+    }
+
+    /// This machine's target directory is on a filesystem that keeps file ids (ext4, btrfs, APFS); Windows records
+    /// none (ADR-0112).
+    #[test]
+    fn target_dir_keeps_file_ids() {
+        let ids = SourceFs::new().probe_ids(Path::new(env!("CARGO_MANIFEST_DIR")));
+        if cfg!(unix) {
+            assert_eq!(ids, ps_model::FsIds::STABLE);
+        } else {
+            assert_eq!(ids, ps_model::FsIds::UNRECORDED);
+        }
     }
 }

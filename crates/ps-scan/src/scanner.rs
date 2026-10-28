@@ -11,8 +11,8 @@ use parking_lot::Mutex;
 
 use ps_catalog::{Catalog, Command, NewSource, RunRecord, SourceRecord, ThumbStore};
 use ps_model::{
-    DeviceClass, ProgressSnapshot, RelPath, RunStatus, ScanRunId, SourceId, SourceStatus,
-    path_from_bytes, path_to_bytes,
+    DeviceClass, IdStability, ProgressSnapshot, RelPath, RunStatus, ScanRunId, SourceId,
+    SourceStatus, path_from_bytes, path_to_bytes,
 };
 
 use crate::control::{Control, ControlState};
@@ -39,6 +39,9 @@ pub struct SourceInfo {
     /// Files sampled into the content fingerprint (at most 64).
     pub fingerprint_samples: usize,
     pub added_at_ms: i64,
+    /// Whether the source's filesystem keeps file ids across mounts (ADR-0112): `false` on FAT and exFAT, `None`
+    /// when not recorded (a source not scanned since ADR-0112, or Windows, which collects none).
+    pub stable_file_ids: Option<bool>,
 }
 
 impl SourceInfo {
@@ -59,6 +62,11 @@ impl SourceInfo {
                 .as_deref()
                 .map_or(0, |f| source::decode(f).len()),
             added_at_ms: r.added_at_ms,
+            stable_file_ids: r
+                .device_hint
+                .as_deref()
+                .and_then(VolumeInfo::ids_from_hint)
+                .and_then(IdStability::stable_file_ids),
         }
     }
 }
@@ -516,7 +524,10 @@ impl Scanner {
                 samples: check.samples,
             });
         }
-        let v = source::volume_info(&root);
+        let v = VolumeInfo {
+            ids: Some(self.options().fs.probe_ids(&root).ids),
+            ..source::volume_info(&root)
+        };
         self.catalog.writer().submit(Command::RelinkSource {
             source: id,
             root: path_to_bytes(&root),
@@ -742,6 +753,17 @@ impl Scanner {
                 Some(f) => f(&root),
                 None => source::volume_info(&root).class,
             };
+            // Whether the filesystem keeps file ids (ADR-0112), recorded when it differs from the stored hint.
+            let ids = online.then(|| opts.fs.probe_ids(&root).ids);
+            if let (Some(ids), Some(hint)) = (ids, r.device_hint.as_deref())
+                && VolumeInfo::ids_from_hint(hint) != Some(ids)
+                && let Some(device_hint) = VolumeInfo::hint_with_ids(hint, ids)
+            {
+                self.catalog.writer().submit(Command::SetDeviceHint {
+                    source: r.id,
+                    device_hint,
+                })?;
+            }
             sources.push(RunSource {
                 id: r.id,
                 root,

@@ -2,8 +2,11 @@
 //! catalog's rows of the source (keyset pages in the same byte order). No file content is read.
 //!
 //! - **new**: a path the catalog has never seen -> inserted at `discovered`, processed.
-//! - **changed**: the fingerprint differs -> reset to `discovered` (results cleared), processed.
-//! - **unchanged**: the fingerprint matches -> nothing written, unless the file was missing (it returns) or an
+//! - **changed**: the fingerprint differs -> reset to `discovered` (results cleared), processed. On a filesystem
+//!   without stable file ids the walk reports no file index, so only size and time count; on FAT local time an
+//!   exact whole-hour shift of an equal-size file is no change (ADR-0112).
+//! - **unchanged**: the fingerprint matches -> nothing written (a stored stat that differs from the walk's, a stale
+//!   inode or a FAT hour shift, is brought up to date without a read, ADR-0112), unless the file was missing (it returns) or an
 //!   earlier run left it unfinished (processed again from the start, ADR-0008). Failed files are retried
 //!   while they have fewer than [`MAX_ATTEMPTS`] attempts.
 //! - **missing**: in the catalog, not on disk -> marked missing (never deleted). Missing files with a content
@@ -37,8 +40,8 @@ use std::collections::HashMap;
 use ps_catalog::{FileKey, FileRow, Readers, Reclassification};
 use ps_media::FolderHints;
 use ps_model::{
-    ClassifierSettings, ContentId, DATE_LOGIC_VERSION, DiffCounts, FileId, PhotoClass, RelPath,
-    SourceId, Stage, StageCounts, StatFingerprint,
+    ClassifierSettings, ContentId, DATE_LOGIC_VERSION, DiffCounts, FatTime, FileId, PhotoClass,
+    RelPath, SourceId, Stage, StageCounts, StatFingerprint,
 };
 
 use crate::redate::StaleDate;
@@ -85,6 +88,9 @@ pub struct DiffOutput {
     pub counts: DiffCounts,
     /// Rows to write before processing: new, changed and returning files.
     pub upserts: Vec<FileRow>,
+    /// Unchanged files whose stored stat differs from the walk's (a stale inode, a FAT hour shift; ADR-0112): the
+    /// walk's mtime and file index are written, before `upserts`. No file is read.
+    pub stat_refresh: Vec<(FileKey, StatFingerprint)>,
     /// Files that just went missing.
     pub newly_missing: Vec<FileKey>,
     /// Unchanged files classified again under new classifier settings (every stale one, so its hash is
@@ -247,6 +253,11 @@ pub fn diff(
                     pi += 1;
                 }
                 let key = FileKey::new(source, w.path.clone());
+                let unchanged =
+                    rec.is_some_and(|r| r.stat.unchanged_with(&w.stat, FatTime(w.fat_time)));
+                if unchanged && rec.is_some_and(|r| r.stat != w.stat) {
+                    out.stat_refresh.push((key.clone(), w.stat));
+                }
                 let todo = |stage, is_new| Todo {
                     path: w.path.clone(),
                     stat: w.stat,
@@ -268,7 +279,7 @@ pub fn diff(
                         out.bytes_to_process += w.stat.size;
                         *out.stages.get_mut(Stage::Discovered) += 1;
                     }
-                    Some(r) if !r.stat.unchanged(&w.stat) => {
+                    Some(_) if !unchanged => {
                         out.counts.changed += 1;
                         out.upserts.push(FileRow::discovered(key, w.stat));
                         out.todo.push(todo(Stage::Discovered, false));

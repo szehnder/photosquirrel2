@@ -8,6 +8,11 @@
 //! [`SourceFs::instrumented`] adds an [`Instrumentation`] hook that records every open (with the access mode
 //! the kernel actually granted, read back from `/proc/self/fdinfo` on Linux), every folder listing and the
 //! bytes read per file. Tests use it to prove the read-only, probe-only and one-read guarantees.
+//!
+//! **File ids (ADR-0112).** A listing asks the OS once per device what filesystem holds the files
+//! ([`SourceFs::probe_ids`], one `statfs`, cached by `st_dev` in an [`IdCache`] for one walk). On FAT and exFAT the
+//! inode numbers are invented per mount, so the fingerprint leaves the file index out there. The instrumentation
+//! can force the probe's answer and remap inode numbers and modification times, to simulate a remount in tests.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -18,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
-use ps_model::StatFingerprint;
+use ps_model::{FsIds, IdStability, StatFingerprint};
 
 /// Read-only access to source trees. Cheap to clone.
 #[derive(Clone, Default)]
@@ -51,6 +56,8 @@ pub struct DirEntryInfo {
     pub kind: EntryKind,
     /// Stat fingerprint for regular files.
     pub stat: Option<StatFingerprint>,
+    /// The file's filesystem stores FAT local time (ADR-0112): whole-hour shifts are not changes.
+    pub fat_time: bool,
     /// The entry could not be stat-ed.
     pub error: Option<io::Error>,
 }
@@ -117,8 +124,14 @@ impl SourceFs {
         std::fs::symlink_metadata(path)
     }
 
-    /// List a folder: every entry with its `lstat` data, sorted by name bytes.
+    /// List a folder: every entry with its `lstat` data, sorted by name bytes. The filesystem is probed afresh
+    /// (once, when the folder holds a file); a walk uses [`SourceFs::read_dir_cached`].
     pub fn read_dir(&self, dir: &Path) -> io::Result<Vec<DirEntryInfo>> {
+        self.read_dir_cached(dir, &mut IdCache::default())
+    }
+
+    /// [`SourceFs::read_dir`] with the walk's per-device probe cache.
+    pub fn read_dir_cached(&self, dir: &Path, ids: &mut IdCache) -> io::Result<Vec<DirEntryInfo>> {
         if let Some(i) = &self.instr {
             i.read_dirs.fetch_add(1, Ordering::Relaxed);
         }
@@ -131,6 +144,7 @@ impl SourceFs {
                         name: OsString::new(),
                         kind: EntryKind::Other,
                         stat: None,
+                        fat_time: false,
                         error: Some(e),
                     });
                     continue;
@@ -150,11 +164,17 @@ impl SourceFs {
                     } else {
                         EntryKind::Other
                     };
-                    let stat = (kind == EntryKind::File).then(|| fingerprint(&m));
+                    let (stat, fat_time) = if kind == EntryKind::File {
+                        let fs_ids = ids.get(device_of(&m), || self.probe_ids(dir));
+                        (Some(self.fingerprint_on(&m, fs_ids)), fs_ids.fat_time)
+                    } else {
+                        (None, false)
+                    };
                     out.push(DirEntryInfo {
                         name,
                         kind,
                         stat,
+                        fat_time,
                         error: None,
                     });
                 }
@@ -162,6 +182,7 @@ impl SourceFs {
                     name,
                     kind: EntryKind::Other,
                     stat: None,
+                    fat_time: false,
                     error: Some(e),
                 }),
             }
@@ -169,6 +190,125 @@ impl SourceFs {
         out.sort_by_cached_key(|a| name_bytes(&a.name));
         Ok(out)
     }
+
+    /// What the filesystem holding `dir` does with file ids (ADR-0112): one `statfs`. A forced answer of the
+    /// instrumentation wins. A failed probe is [`FsIds::STABLE`], the behaviour before ADR-0112.
+    pub fn probe_ids(&self, dir: &Path) -> FsIds {
+        let forced = self
+            .instr
+            .as_ref()
+            .map(|i| (*i.forced_ids.lock(), *i.forced_fat_time.lock()));
+        match forced {
+            Some((Some(ids), fat)) => FsIds {
+                ids,
+                fat_time: fat.unwrap_or(false),
+            },
+            Some((None, Some(fat_time))) => FsIds {
+                fat_time,
+                ..probe_fs(dir)
+            },
+            Some((None, None)) | None => probe_fs(dir),
+        }
+    }
+
+    /// The fingerprint of `m` on a filesystem the probe described as `fs_ids`: no file index where ids are not
+    /// kept. The instrumentation's remount seams apply.
+    pub fn fingerprint_on(&self, m: &Metadata, fs_ids: FsIds) -> StatFingerprint {
+        let mut f = fingerprint(m);
+        if !fs_ids.ids.keeps_index() {
+            f.file_index = None;
+        }
+        self.remount(f)
+    }
+
+    /// The fingerprint of an open file's `fstat`, comparable with the walk's (the instrumentation's remount seams
+    /// apply; a file index the walk left out is ignored by [`StatFingerprint::unchanged`]).
+    pub fn fingerprint(&self, m: &Metadata) -> StatFingerprint {
+        self.remount(fingerprint(m))
+    }
+
+    fn remount(&self, mut f: StatFingerprint) -> StatFingerprint {
+        if let Some(i) = &self.instr {
+            if let Some(remap) = *i.remap_index.lock() {
+                f.file_index = f.file_index.map(remap);
+            }
+            f.mtime_ns = f
+                .mtime_ns
+                .saturating_add(i.mtime_shift.load(Ordering::Relaxed));
+        }
+        f
+    }
+}
+
+/// The walk's probe answers by device number (ADR-0112): one `statfs` per device met.
+#[derive(Debug, Default)]
+pub struct IdCache {
+    by_device: HashMap<u64, FsIds>,
+}
+
+impl IdCache {
+    fn get(&mut self, dev: u64, probe: impl FnOnce() -> FsIds) -> FsIds {
+        *self.by_device.entry(dev).or_insert_with(probe)
+    }
+}
+
+#[cfg(unix)]
+fn device_of(m: &Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    m.dev()
+}
+
+#[cfg(not(unix))]
+fn device_of(_m: &Metadata) -> u64 {
+    0
+}
+
+/// Linux: `statfs` `f_type`, and the mount table's type for a FUSE mount.
+#[cfg(target_os = "linux")]
+fn probe_fs(dir: &Path) -> FsIds {
+    use ps_model::fs_ids;
+    use std::os::unix::fs::MetadataExt;
+    let Ok(st) = rustix::fs::statfs(dir) else {
+        return FsIds::STABLE;
+    };
+    #[allow(clippy::unnecessary_cast)]
+    let magic = st.f_type as u64;
+    let fuse_type = (magic & 0xffff_ffff == fs_ids::FUSE_SUPER_MAGIC)
+        .then(|| {
+            let dev = std::fs::metadata(dir).ok()?.dev();
+            let (major, minor) = fs_ids::dev_major_minor(dev);
+            let text = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+            fs_ids::mountinfo_entry(&text, major, minor).map(|(t, _)| t)
+        })
+        .flatten();
+    fs_ids::stable_for_magic(magic, fuse_type.as_deref())
+}
+
+/// macOS: `statfs` `f_fstypename` (`msdos`, `exfat`, `apfs`, ...).
+#[cfg(target_os = "macos")]
+fn probe_fs(dir: &Path) -> FsIds {
+    let Ok(st) = rustix::fs::statfs(dir) else {
+        return FsIds::STABLE;
+    };
+    let name: Vec<u8> = st
+        .f_fstypename
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| *c as u8)
+        .collect();
+    ps_model::fs_ids::stable_for_name(&String::from_utf8_lossy(&name))
+}
+
+/// Other Unix systems: the behaviour before ADR-0112.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn probe_fs(_dir: &Path) -> FsIds {
+    FsIds::STABLE
+}
+
+/// Windows collects no file index.
+#[cfg(not(unix))]
+fn probe_fs(_dir: &Path) -> FsIds {
+    FsIds::UNRECORDED
 }
 
 fn name_bytes(n: &OsString) -> Vec<u8> {
@@ -319,6 +459,13 @@ pub struct Instrumentation {
     read_dirs: AtomicU64,
     /// Paths whose opens fail with `PermissionDenied` (tests of unreadable files on every platform).
     deny: Mutex<Vec<PathBuf>>,
+    /// The probe's answer for every device ([`Instrumentation::force_ids`]).
+    forced_ids: Mutex<Option<IdStability>>,
+    forced_fat_time: Mutex<Option<bool>>,
+    /// Applied to every reported inode number ([`Instrumentation::remap_file_index`]).
+    remap_index: Mutex<Option<fn(u64) -> u64>>,
+    /// Added to every reported modification time ([`Instrumentation::shift_mtime`]).
+    mtime_shift: std::sync::atomic::AtomicI64,
 }
 
 impl Instrumentation {
@@ -334,6 +481,27 @@ impl Instrumentation {
     /// Make every later open of `path` fail with `PermissionDenied`, as an unreadable file would.
     pub fn deny_open(&self, path: &Path) {
         self.deny.lock().push(path.to_path_buf());
+    }
+
+    /// Make the file-id probe report `ids` for every device (ADR-0112). Unless [`Instrumentation::force_fat_time`]
+    /// says otherwise, a forced answer is not FAT time.
+    pub fn force_ids(&self, ids: IdStability) {
+        *self.forced_ids.lock() = Some(ids);
+    }
+
+    /// Make the probe report FAT local time (vfat/msdos) or not.
+    pub fn force_fat_time(&self, fat: bool) {
+        *self.forced_fat_time.lock() = Some(fat);
+    }
+
+    /// Apply `f` to every inode number a listing or `fstat` reports: a remount that hands out new numbers.
+    pub fn remap_file_index(&self, f: fn(u64) -> u64) {
+        *self.remap_index.lock() = Some(f);
+    }
+
+    /// Add `ns` to every modification time a listing or `fstat` reports: FAT's zone shift after a remount.
+    pub fn shift_mtime(&self, ns: i64) {
+        self.mtime_shift.store(ns, Ordering::Relaxed);
     }
 
     fn denied(&self, path: &Path) -> bool {

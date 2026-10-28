@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use ps_model::{RelPath, StatFingerprint};
 
 use crate::control::{Cancelled, Control};
-use crate::fs::{EntryKind, SourceFs};
+use crate::fs::{EntryKind, IdCache, SourceFs};
 
 /// The folder name ADR-0024 reserves for reversible cleanup; never scanned.
 pub const QUARANTINE_DIR: &str = ".photosquirrel-quarantine";
@@ -71,6 +71,8 @@ pub struct WalkEntry {
     pub order: u32,
     /// The folder also holds a `Thumbs.db` (classifier hint, ADR-0015).
     pub thumbs_db_sibling: bool,
+    /// On FAT local time (ADR-0112): a whole-hour shift of an equal-size file is not a change.
+    pub fat_time: bool,
 }
 
 /// What a walk produced.
@@ -143,6 +145,8 @@ pub fn walk(
     // (absolute dir, relative dir)
     let mut stack: Vec<(PathBuf, Option<RelPath>)> = vec![(root.to_path_buf(), None)];
     let mut order = 0u32;
+    // One file-id probe per device for the whole walk (ADR-0112).
+    let mut ids = IdCache::default();
     while let Some((dir, rel)) = stack.pop() {
         ctl.checkpoint()?;
         on_dir(
@@ -150,7 +154,7 @@ pub fn walk(
                 .map(|r| r.display().into_owned())
                 .unwrap_or_default(),
         );
-        let entries = match fs.read_dir(&dir) {
+        let entries = match fs.read_dir_cached(&dir, &mut ids) {
             Ok(e) => e,
             Err(e) if rel.is_none() => return Err(WalkError::RootUnavailable(e)),
             Err(e) => {
@@ -202,6 +206,7 @@ pub fn walk(
                             stat,
                             order,
                             thumbs_db_sibling: thumbs_db,
+                            fat_time: e.fat_time,
                         });
                         order = order.wrapping_add(1);
                     }
