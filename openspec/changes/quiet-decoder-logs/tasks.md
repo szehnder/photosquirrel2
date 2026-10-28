@@ -31,5 +31,6 @@ of architectural weight); ADR-0112 and migration 26 go to the next changes.
 - [x] 4.3 Budgets unchanged: `cargo xtask bench --check` (`scan-analysis-12mp`, `rescan-nochange-100k`).
   Done: `cargo xtask bench --check --only scan-analysis-12mp --only rescan-nochange-100k`: 4.50 ms (budget 6.67 ms) and 0.45 s (budget 4 s), all 2 budgets met.
 - [ ] 4.4 Owner check (read-only, owner-run): a CLI scan of the Canon card prints no lens-database warnings; `RUST_LOG=rawler=warn` brings them back.
-- [ ] 4.5 Pushed; GitHub CI green on all five jobs.
+- [x] 4.5 Pushed; GitHub CI green on all five jobs.
+  Done: pushed daa11f6..aa66fea; run 40606558280 green on all five jobs (Linux full CI, macOS 14, Windows 2022, oldest libheif, performance budgets).
 - [ ] 4.6 Gate review by a fresh agent that did not write the code.
