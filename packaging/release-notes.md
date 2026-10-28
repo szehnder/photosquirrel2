@@ -47,6 +47,10 @@ to their resized or re-exported JPEG copies.
 - **Quieter command line:** a scan of a Canon card no longer prints a wall of "No lens definition found in
   database" lines from the RAW decoder; only its errors are shown. `RUST_LOG=warn,nom_exif=error,rawler=warn` brings
   its warnings back for a bug report.
+- **SD cards rescan quickly after a remount:** unplugging a FAT or exFAT card (or USB stick) and inserting it again
+  no longer makes the next rescan read many of its files again; FAT's whole-hour time shifts after a time-zone change
+  are not changes either. The first rescan after updating reads nothing new. `sources list --json` shows
+  `stable_file_ids`.
 
 ### What's new in 0.3.0
 

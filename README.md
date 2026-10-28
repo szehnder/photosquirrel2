@@ -31,7 +31,8 @@ and copies those best copies into one clean library folder ready for Apple Photo
 
 - **Scans large collections quickly and remembers them.** Hundreds of thousands of files across SSDs, hard
   drives and network shares. A rescan only looks at what changed; an interrupted scan resumes where it stopped;
-  pause and cancel take effect at once. Scanning can pause by itself while a laptop runs on battery.
+  pause and cancel take effect at once. Scanning can pause by itself while a laptop runs on battery. SD cards and
+  USB sticks (FAT, exFAT) rescan just as quickly after they are unplugged and inserted again.
 - **Finds the same image at any size.** Exact duplicates by content hash, plus thumbnails, resized and recompressed
   versions by perceptual hash. Burst shots and near-identical frames are only *suggested*, never
   merged for you.
@@ -127,9 +128,10 @@ PhotoSquirrel behave as if no decoder were found.
   values above 1.0 are clipped.
 - **Adobe RGB photos** (Canon `_MG_` files and others recorded in Adobe RGB) are shown without colour
   conversion, so their previews look slightly muted; the files themselves are exported unchanged.
-- **FAT and exFAT drives** (most SD cards and many USB sticks): after the card is unplugged and inserted again,
-  the next rescan may read many files again in full, because these drives do not keep stable file ids. Nothing is
-  lost or grouped wrongly; it only takes about as long as the first scan.
+- **FAT and exFAT drives** (most SD cards and many USB sticks) record file times only to 2 seconds, and on FAT a
+  time-zone change can shift them by whole hours, which a rescan takes as no change. So a photo replaced on the card
+  by another one of exactly the same size within the same 2 seconds is not noticed by a rescan. Export and cleanup
+  check every file's content before copying or moving it, so such a file is never copied or moved as the old photo.
 - **Cleanup is new in 0.2.0** and optional. Without it PhotoSquirrel never touches your sources at all; with it,
   files are only moved within the same drive, after a confirmation, and every move can be undone.
 - **Windows performance** has only been measured on CI machines, where writing very large catalogs (around a

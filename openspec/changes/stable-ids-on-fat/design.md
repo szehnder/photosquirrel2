@@ -110,3 +110,32 @@ The Sources panel shows nothing new. The CLI field is for support and tests.
 - [The hour rule hides a real edit] -> only with an identical size and an exact whole-hour shift, on FAT only.
 - [A probe misclassifies a filesystem] -> the fallback is today's behaviour; the table is a unit test and the ADR
   lists it.
+
+## Deviations (as built)
+
+- **D3, no SQL copy of the hour rule.** The rule lives once, in `StatFingerprint::unchanged_with` (Rust). An
+  unchanged row whose stored fingerprint differs from the walk's (a stale inode, a whole-hour FAT shift) goes into
+  `DiffOutput::stat_refresh`, and the scanner writes the walk's mtime and file index with a new writer command,
+  `Command::RefreshStats` (`UPDATE file SET mtime_ns, file_index ... AND size = ?`), submitted before the diff's
+  upserts. The upsert's own `changed` test then never sees the old values (a returning row with a shifted time is
+  not reset), so `UPSERT_SQL` needs no `?8` flag and is unchanged. The same write clears stale inodes (D2) for
+  unchanged rows, which the diff did not upsert before. Recorded in ADR-0112, written with this change; not
+  architectural beyond it.
+- **`rustix` in ps-scan, not `libc`.** `rustix::fs::statfs` (already a workspace dependency, used by ps-export) is
+  the probe in both crates, so neither needs `unsafe`. A Unix target dependency of ps-scan; noted in ADR-0112.
+- **`IdStability::Unrecorded`** is the name of D1's `None` (it would shadow `Option::None`); its hint value is
+  `none` as designed.
+- **The FUSE mount-table lookup** is a pure parser in `ps_model::fs_ids` (`mountinfo_entry`, `dev_major_minor`),
+  used by `source::imp::mount_of` and by both probes; ps-export does not depend on ps-scan.
+- **The scan's volume check** records a changed `ids=` with a new writer command, `Command::SetDeviceHint`; only
+  the `ids=` part of the stored hint changes (`VolumeInfo::hint_with_ids`), so the device class recorded at add is
+  kept. A hint that is not ours (the synthetic library's) is left alone.
+- **The quarantine probe** runs per file (`QuarantineHooks::file_ids`, one `statfs` next to a full re-hash), not
+  per run, so a source spanning mounts is checked per file.
+- **The seams also apply to the pipeline's post-open `fstat`** (`SourceFs::fingerprint`), so a simulated remount
+  does not look like a file changed during the scan.
+- **`scenario_sources_exfat_source_shows_unstable_file_ids`** is a ps-scan test (the probe can only be forced
+  in-process); the JSON field is covered by the CLI test `sources_list_shows_stable_file_ids`, which sets an exFAT
+  hint in the catalog and runs `sources list --json`.
+- **Tests set times with `ps_fixtures::scratch::set_mtime`**, not `File::set_times` (ps-scan's tests are under the
+  read-only layering check).
