@@ -342,7 +342,7 @@ fn a_cut_version_0_row_without_frame_facts_is_checked_once() {
     let path = under(&card.root, CUT_CR2);
     let mut b = std::fs::read(&path).unwrap();
     maker_note_out_of_file(&mut b);
-    std::fs::write(&path, &b).unwrap();
+    ps_fixtures::writer::rewrite_keeping_stat(&path, &b).unwrap();
     let (mut env, id) = catalog_of_0_3_0(&card.root);
     env.close();
     let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&env.dir)).expect("db");
@@ -382,8 +382,14 @@ fn a_checked_raw_stamps_its_identical_copies() {
     let _s = shared();
     let card = card();
     let backup = card._tmp.path().join("backup");
-    std::fs::create_dir_all(&backup).unwrap();
-    std::fs::copy(under(&card.root, INTACT_CR2), backup.join("IMG_0035.CR2")).unwrap();
+    ps_fixtures::DirWriter::new(&backup)
+        .expect("writer")
+        .write(
+            "IMG_0035.CR2",
+            &std::fs::read(under(&card.root, INTACT_CR2)).unwrap(),
+            1_600_000_000,
+        )
+        .expect("write");
     let mut env = env_with(ScanOptions::default());
     let id = env.add(&card.root);
     let b = env.add(&backup);
