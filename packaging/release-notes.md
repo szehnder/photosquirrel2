@@ -44,6 +44,12 @@ to their resized or re-exported JPEG copies.
 
 ### What's new since 0.3.0
 
+- **A RAW file cut short, for example by a card pulled while writing, is shown as damaged and counted, not as
+  "not supported yet".** The scan summary, the run summary and the completion report ("100% accounted for, 1
+  damaged") name such files and say to keep the original card until you have checked them; they are still
+  catalogued and copied as is, never grouped with their camera JPEG, and cleanup never moves them. A RAW from a
+  camera this version does not know says which camera. The first rescan after updating reads each RAW without a
+  preview once.
 - **Quieter command line:** a scan of a Canon card no longer prints a wall of "No lens definition found in
   database" lines from the RAW decoder; only its errors are shown. `RUST_LOG=warn,nom_exif=error,rawler=warn` brings
   its warnings back for a bug report.

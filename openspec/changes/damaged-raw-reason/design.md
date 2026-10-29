@@ -246,3 +246,19 @@ damaged file's disposition in the report is unchanged; only cleanup leaves it in
 - **D2.3 as rawler behaves:** rawler's own JPEG decoder is lenient, so for a known camera a garbled in-file preview
   usually still comes back as a rawler image and is used (D2.3 applies only when rawler gives no image). The
   `Failed` outcome is pinned with an unknown-camera file (`damaged_in_file_preview_is_failed`).
+- **Where the scenarios are tested.** `scenario_thumbnails_raw_cut_after_an_intact_preview_is_damaged` is a
+  `ps-scan` test (no hashes and "not grouped with its camera JPEG" need the catalog); the `ps-media` test
+  `raw_cut_after_an_intact_preview_has_no_image_and_no_hashes` covers the decode. `scenario_cleanup_cleanup_keeps_a_
+  damaged_original` and the old-plan case are `ps-service` tests (an old plan is injected through the catalog, as
+  `chosen_keeper.rs` does; the CLI cannot make one).
+- **The sample-folder check of task 1.3 is left to the owner.** The implementing agent was told not to touch the
+  read-only sample folder; `ps-media/tests/damaged_raw.rs` `real_raws_are_never_damaged` (ignored) runs it with
+  `PHOTOSQUIRREL_SAMPLE_DIR`. The small corpus's RAWs are checked instead (`corpus_raws_are_never_damaged`).
+- **`Badge::FullyAccounted` carries `damaged`** (a struct variant; the JSON adds `damaged` only when it is above 0,
+  so intact reports are unchanged). The app draws a badge with damaged files in the warning colour; its words are
+  the owner's ("100% accounted for, 1 damaged"). `Completion.totals` counts damaged files too.
+- **The Library gets a source restriction** (`FilterBar.sources`, a removable "On 1 source" chip) so the dashboard's
+  and the Reports view's Show list the damaged files of those sources only (`LibraryView::show_damaged`,
+  `Shell::show_damaged`). The Reports view's damaged line opens the gallery, not the in-view drill-down list (which
+  lists dispositions, and a damaged file's disposition is unchanged).
+- **ADR-0115 also amends ADR-0024** (D10, cleanup keeps damaged originals; `SkipReason::Damaged`).

@@ -274,7 +274,13 @@ says what kind of problem it is:
 - **needs a library** (download mark): install the decoder this system lacks;
 - **ready to fill in** (refresh mark): a preview can be made now;
 - **not supported yet** (info mark): a later version may read it;
-- **damaged** (warning mark): the decoder could not read the data.
+- **damaged** (warning mark): the decoder could not read the data, or a RAW file was cut short (a card pulled
+  while the camera was writing, a copy that stopped), even when its embedded preview is whole.
+
+Damaged files are counted: the scan summary and the run summary say how many the sources hold, and the completion
+report adds ", N damaged" and lists them. They are copied as is, but the photo may be incomplete, so keep the
+original card or drive until you have checked them (a recovery tool may still find the rest); cleanup never moves
+them.
 
 Such files are still catalogued, matched by exact content and exported. Hover a tile and click its info button
 (or select it and press Shift+I), or use **Why no preview?** in the inspector or the loupe: the dialog names
