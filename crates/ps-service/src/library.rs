@@ -44,6 +44,16 @@ use crate::insights::{Correction, DEMO_PROVIDER, InsightStamp, InsightStore};
 use crate::scan::{ScanOptions, ScanService};
 use ps_model::settings::Settings;
 
+/// The preview cache's key of a content's 2048 px preview: `hex(blake3(identity hex ‖ ":srgb-1"))` since previews are
+/// converted to sRGB (ADR-0113), so a preview cached before the conversion (keyed by the identity hex) is never
+/// served again and ages out under the cap. 64 hex characters, as the cache requires.
+pub fn preview_cache_key(identity: &ContentId) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(identity.to_hex().as_bytes());
+    h.update(b":srgb-1");
+    h.finalize().to_hex().to_string()
+}
+
 /// Large previews: long edge and disk cache cap (ADR-0016).
 pub const PREVIEW_LONG_EDGE: u32 = 2048;
 pub const PREVIEW_CACHE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -1082,7 +1092,7 @@ impl Library {
         if r.media_kind() == Some(MediaKind::Video) {
             return Ok(Preview::Unavailable("video".into()));
         }
-        let key = r.identity.map(|c| c.to_hex());
+        let key = r.identity.as_ref().map(preview_cache_key);
         let mut cache = lock(&self.previews);
         if cache.is_none() {
             *cache =
@@ -1218,6 +1228,12 @@ impl Library {
             capture_precision: capture.map(|d| d.precision),
             camera_make: f.camera_make.clone(),
             camera_model: f.camera_model.clone(),
+            // `file.colour` (ADR-0113): sRGB, unchecked and unknown show nothing.
+            colour_space: r
+                .colour
+                .as_deref()
+                .and_then(ps_model::ColourSpace::from_storage)
+                .and_then(|c| c.label()),
             lens: f.lens_model.clone(),
             exposure,
             f_number: f.aperture.map(|a| format!("f/{a}")),

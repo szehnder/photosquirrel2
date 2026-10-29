@@ -1190,6 +1190,12 @@ impl Render for GalleryInspector {
                         text,
                         cx,
                     ))
+                    // The colour space when it is not sRGB (ADR-0113); sRGB and unknown show no row.
+                    .children(
+                        d.colour_space
+                            .clone()
+                            .map(|c| row("inspector-colour", "Colour", Some(c), text, cx)),
+                    )
                     .children(self.preview_note(&d, cx))
                     .children(self.why_no_preview(&d, cx))
                     .child(section("Capture", cx))

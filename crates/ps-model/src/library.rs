@@ -160,6 +160,8 @@ pub struct ItemDetail {
     pub capture_precision: Option<crate::DatePrecision>,
     pub camera_make: Option<String>,
     pub camera_model: Option<String>,
+    /// The colour space when it is not sRGB ("Adobe RGB (1998)", "Display P3", "Embedded profile: ..."; ADR-0113).
+    pub colour_space: Option<String>,
     pub lens: Option<String>,
     /// As recorded, e.g. "1/250 s".
     pub exposure: Option<String>,

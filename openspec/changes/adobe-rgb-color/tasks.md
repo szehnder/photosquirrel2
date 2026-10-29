@@ -30,8 +30,10 @@ Ships in 0.3.x (ROADMAP row 31), after `stable-ids-on-fat`. Takes **ADR-0113** a
 
 ## 5. Service and UI
 
-- [ ] 5.1 Large preview: conversion and the new cache key (D4). Verify: a ps-service test that a preview cached under the old key is not returned.
-- [ ] 5.2 Inspector "Colour" row. Verify: `scenario_photo_inspector_adobe_rgb_photo_names_its_colour_space`, `scenario_photo_inspector_srgb_photo_shows_no_colour_row`; `cargo xtask tokens`.
+- [x] 5.1 Large preview: conversion and the new cache key (D4). Verify: a ps-service test that a preview cached under the old key is not returned.
+  Done: `ps_service::library::preview_cache_key` = hex(blake3(identity hex ‖ ":srgb-1")) (64 hex characters); `blake3` moved from dev- to normal dependency of ps-service (already in the workspace). `ps-service/tests/colour.rs` `a_large_preview_cached_under_the_old_key_is_not_returned`: a JPEG cached under the identity hex is not served, the new preview equals `make_large_preview` (converted) and is cached under the new key; all ps-service test binaries green.
+- [x] 5.2 Inspector "Colour" row. Verify: `scenario_photo_inspector_adobe_rgb_photo_names_its_colour_space`, `scenario_photo_inspector_srgb_photo_shows_no_colour_row`; `cargo xtask tokens`.
+  Done: `ItemDetail.colour_space` from `file.colour` (not the metadata JSON: Deviations), the "Colour" row (`inspector-colour`) after Dimensions only when it is set. Both scenarios pass in `ui-workspace/tests/colour.rs` (the loupe's preview from the backend is converted: centre [0..8, 168..176, 40..52]); `cargo xtask tokens` OK, `cargo xtask layering` OK (17 crates).
 
 ## 6. Budgets and docs
 
