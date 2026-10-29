@@ -758,11 +758,7 @@ pub fn decode_preview(
                 !decoders.heif_applies_transforms(),
             )
         }
-        _ => {
-            let j = p.range.slice(bytes)?;
-            let (i, d) = decode_jpeg(j, min_long).ok()?;
-            (i, d, true)
-        }
+        _ => return decode_preview_jpeg(p.range.slice(bytes)?, probe, min_long),
     };
     let image = if orient {
         image.oriented(probe.orientation)
@@ -771,6 +767,19 @@ pub fn decode_preview(
     };
     Some(Decoded {
         image,
+        source: DecodeSource::Preview(p.source),
+        scale_denom: denom,
+    })
+}
+
+/// Decode the probe's embedded JPEG preview from its bytes alone (`jpeg`: the probe's preview range, read on its
+/// own), oriented, as [`decode_preview`] decodes it from the whole file. No truncation check: the caller knows the
+/// file is whole. `None` when the probe has no preview or it does not decode.
+pub fn decode_preview_jpeg(jpeg: &[u8], probe: &ProbeRecord, min_long: u32) -> Option<Decoded> {
+    let p = probe.preview?;
+    let (image, denom) = decode_jpeg(jpeg, min_long).ok()?;
+    Some(Decoded {
+        image: image.oriented(probe.orientation),
         source: DecodeSource::Preview(p.source),
         scale_denom: denom,
     })

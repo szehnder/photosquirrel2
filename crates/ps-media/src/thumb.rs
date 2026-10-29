@@ -270,6 +270,36 @@ pub fn make_thumbnail(
     }
 }
 
+/// The byte range of a RAW file's embedded JPEG preview from which [`make_thumbnail`] makes its grid thumbnail
+/// (usable: >= 320 px and decodable), so the thumbnail can be made again from that range alone
+/// ([`raw_thumbnail_from_preview`]); `None` for other files and previews.
+pub fn raw_preview_range(probe: &ProbeRecord) -> Option<ps_model::ByteRange> {
+    let p = probe.preview?;
+    (probe.format.is_some_and(Format::is_raw)
+        && usable_preview(probe)
+        && p.source == ps_model::PreviewSource::RawPreview
+        && p.range.len > 0)
+        .then_some(p.range)
+}
+
+/// The grid thumbnail of a RAW file made from its embedded preview alone: `preview` holds the bytes of
+/// [`raw_preview_range`], `head` at least the probe window (where the probe found the colour-space evidence). The
+/// same thumbnail [`make_thumbnail`] makes from the whole file of a RAW that is not cut short (ADR-0113: the one-time
+/// colour re-check reads the preview, not the sensor data). `None` when the probe has no usable RAW preview or it does
+/// not decode.
+pub fn raw_thumbnail_from_preview(
+    head: &[u8],
+    preview: &[u8],
+    probe: &ProbeRecord,
+) -> Option<ThumbnailRecord> {
+    raw_preview_range(probe)?;
+    if !preview.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let d = decode::decode_preview_jpeg(preview, probe, THUMB_LONG_EDGE)?;
+    thumbnail_from_image(&d.image, ThumbKind::Image, &ColourSource::of(head, probe)).ok()
+}
+
 fn origin_of(d: &Decoded) -> ThumbOrigin {
     match d.source {
         DecodeSource::Main => ThumbOrigin::MainImage,

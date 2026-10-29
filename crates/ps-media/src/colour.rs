@@ -120,9 +120,27 @@ pub(crate) fn icc_ranges(chunks: &[IccChunk], base: u64) -> Result<Option<Vec<By
     Ok(Some(out))
 }
 
-/// The text of a profile's description tag.
+/// The longest profile description kept, in characters (stored in the catalog and shown by the inspector).
+pub const DESCRIPTION_MAX_CHARS: usize = 64;
+
+/// A profile description as stored and shown: control characters removed, whitespace trimmed, at most
+/// [`DESCRIPTION_MAX_CHARS`] characters (cut ones end in an ellipsis). The text comes from the file, so nothing in it
+/// may break a line of the inspector or the CLI.
+pub(crate) fn clean_description(raw: &str) -> String {
+    let text: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let text = text.trim();
+    if text.chars().count() <= DESCRIPTION_MAX_CHARS {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(DESCRIPTION_MAX_CHARS - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('\u{2026}');
+    cut
+}
+
+/// The text of a profile's description tag ([`clean_description`]).
 fn description(p: &ColorProfile) -> String {
-    match &p.description {
+    let raw = match &p.description {
         Some(moxcms::ProfileText::PlainString(s)) => s.clone(),
         Some(moxcms::ProfileText::Localizable(l)) => l
             .iter()
@@ -132,10 +150,8 @@ fn description(p: &ColorProfile) -> String {
             .unwrap_or_default(),
         Some(moxcms::ProfileText::Description(d)) => d.ascii_string.clone(),
         None => String::new(),
-    }
-    .trim_matches(char::from(0))
-    .trim()
-    .to_owned()
+    };
+    clean_description(&raw)
 }
 
 /// A transform from `src` to sRGB: perceptual intent, relative colorimetric when the profile has no perceptual
@@ -244,29 +260,25 @@ fn classify(icc: &[u8]) -> Result<Option<Classified>, String> {
     if p.color_space != DataColorSpace::Rgb {
         return Ok(None);
     }
-    let desc = description(&p);
-    let classified = if desc.to_ascii_lowercase().contains("srgb") {
-        Classified {
-            space: ColourSpace::Srgb,
-            transform: None,
-        }
+    // Classified by what it does, never by its name: "Linear sRGB" or "scRGB" profiles are not sRGB. The result is
+    // cached with the profile bytes, so the 125-sample check runs once per profile.
+    let t = crate::util::contain(|| transform_from(&p))
+        .flatten()
+        .ok_or_else(|| "no transform could be built from the ICC profile".to_owned())?;
+    let space = if same_as(&t, None) {
+        ColourSpace::Srgb
+    } else if builtin(&ColourSpace::AdobeRgb).is_some_and(|b| same_as(&t, Some(&b))) {
+        ColourSpace::AdobeRgb
+    } else if builtin(&ColourSpace::DisplayP3).is_some_and(|b| same_as(&t, Some(&b))) {
+        ColourSpace::DisplayP3
     } else {
-        let t = crate::util::contain(|| transform_from(&p))
-            .flatten()
-            .ok_or_else(|| "no transform could be built from the ICC profile".to_owned())?;
-        let space = if same_as(&t, None) {
-            ColourSpace::Srgb
-        } else if builtin(&ColourSpace::AdobeRgb).is_some_and(|b| same_as(&t, Some(&b))) {
-            ColourSpace::AdobeRgb
-        } else if builtin(&ColourSpace::DisplayP3).is_some_and(|b| same_as(&t, Some(&b))) {
-            ColourSpace::DisplayP3
-        } else {
-            ColourSpace::Profile { description: desc }
-        };
-        Classified {
-            transform: (!space.is_srgb()).then_some(t),
-            space,
+        ColourSpace::Profile {
+            description: description(&p),
         }
+    };
+    let classified = Classified {
+        transform: (!space.is_srgb()).then_some(t),
+        space,
     };
     remember(icc, &classified);
     Ok(Some(classified))
@@ -402,6 +414,54 @@ mod tests {
             }))
         );
         assert!(profile_space(b"not a profile at all, just bytes").is_err());
+    }
+
+    #[test]
+    fn a_name_saying_srgb_is_not_evidence() {
+        let enc = |p: ColorProfile| p.encode().unwrap();
+        // sRGB primaries with a linear tone curve: called sRGB, but not what sRGB values mean.
+        let mut linear = ColorProfile::new_srgb();
+        let lin = moxcms::ToneReprCurve::Parametric(vec![1.0]);
+        linear.red_trc = Some(lin.clone());
+        linear.green_trc = Some(lin.clone());
+        linear.blue_trc = Some(lin);
+        linear.cicp = None;
+        linear.description = Some(moxcms::ProfileText::PlainString("Linear sRGB".into()));
+        assert_eq!(
+            profile_space(&enc(linear)),
+            Ok(Some(ColourSpace::Profile {
+                description: "Linear sRGB".into()
+            }))
+        );
+        // A wide-gamut profile that names itself sRGB is classified by its transform.
+        let mut wide = ColorProfile::new_display_p3();
+        wide.description = Some(moxcms::ProfileText::PlainString("scRGB (sRGB-like)".into()));
+        assert_eq!(profile_space(&enc(wide)), Ok(Some(ColourSpace::DisplayP3)));
+    }
+
+    #[test]
+    fn descriptions_are_cleaned_and_cut() {
+        assert_eq!(clean_description("  Wide\u{0}\n\tGamut\r "), "WideGamut");
+        let long = "x".repeat(200);
+        let cut = clean_description(&long);
+        assert_eq!(cut.chars().count(), DESCRIPTION_MAX_CHARS);
+        assert!(cut.ends_with('\u{2026}'));
+        assert_eq!(clean_description(&"y".repeat(64)), "y".repeat(64));
+        // From a profile: stored cleaned.
+        let mut pro = ColorProfile::new_pro_photo_rgb();
+        pro.description = Some(moxcms::ProfileText::PlainString(format!(
+            "Evil\u{1b}[31m\n{}",
+            "z".repeat(100)
+        )));
+        let Ok(Some(ColourSpace::Profile { description })) = profile_space(&pro.encode().unwrap())
+        else {
+            panic!("a profile");
+        };
+        assert!(
+            !description.chars().any(char::is_control),
+            "{description:?}"
+        );
+        assert_eq!(description.chars().count(), DESCRIPTION_MAX_CHARS);
     }
 
     #[test]
