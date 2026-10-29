@@ -153,8 +153,17 @@ pub fn untagged_jpeg(rgb: [u8; 3]) -> Vec<u8> {
     patch_jpeg(rgb)
 }
 
+/// The profile encoded by moxcms, with the header's creation date (bytes 24..36: year, month, day, hour, minute,
+/// second, big-endian) set to [`CAPTURE`]'s: moxcms writes the current time there, which made two encodings a second
+/// apart differ.
 fn encoded(p: &moxcms::ColorProfile) -> Vec<u8> {
-    p.encode().expect("moxcms encodes its built-in profiles")
+    let mut v = p.encode().expect("moxcms encodes its built-in profiles");
+    if v.len() >= 36 {
+        for (i, n) in [2024u16, 6, 1, 10, 0, 0].into_iter().enumerate() {
+            v[24 + 2 * i..26 + 2 * i].copy_from_slice(&n.to_be_bytes());
+        }
+    }
+    v
 }
 
 /// moxcms' Display P3 profile, encoded (description "Display P3").
@@ -312,6 +321,11 @@ mod tests {
         );
         assert_eq!(canon_adobe_rgb_cr2(GREEN), canon_adobe_rgb_cr2(GREEN));
         assert_eq!(dng_preview_colour(GREEN, 3), dng_preview_colour(GREEN, 3));
+        // The profile header carries a fixed date, not the time of encoding.
+        assert_eq!(
+            &display_p3_icc()[24..36],
+            &[7, 232, 0, 6, 0, 1, 0, 10, 0, 0, 0, 0]
+        );
     }
 
     #[test]
