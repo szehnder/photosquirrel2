@@ -282,7 +282,8 @@ report adds ", N damaged" and lists them. They are copied as is, but the photo m
 original card or drive until you have checked them (a recovery tool may still find the rest); cleanup never moves
 them, and checks a RAW file (and the library copy that makes a file safe) for a cut again right before each move.
 Formats without a cut check: Minolta MRW, Sigma X3F, Canon CRW, the Sony DSLR-A100's ARW and Panasonic RW2 files
-with an unusual compression; a RAW over 64 MB is not labelled damaged by a scan.
+with an unusual compression; a RAW over 64 MB is not labelled damaged by a scan, and cleanup judges it from its
+directories only (one whose directories lie beyond the check's read limits is moved unjudged).
 
 Such files are still catalogued, matched by exact content and exported. Hover a tile and click its info button
 (or select it and press Shift+I), or use **Why no preview?** in the inspector or the loupe: the dialog names

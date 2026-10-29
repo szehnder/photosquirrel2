@@ -287,3 +287,31 @@ damaged file's disposition in the report is unchanged; only cleanup leaves it in
   - **Blind spots (M2, release notes):** MRW, X3F, CRW, the Sony DSLR-A100's ARW and RW2 with other compressions have
     no check; a RAW over 64 MB is not labelled damaged by a scan (no hashes anyway; cleanup still checks it); a cut
     that removes only padding no directory records is no cut to the check (the 64 KB-short copies of 4 sample files).
+- **Second review fixes (ADR-0117 as built).**
+  - **A cut found but not stored (M-a):** when the structure check finds a cut but the "could not be read"
+    placeholder cannot be stored (thumbnail store write, catalog read or identity missing), the row keeps its
+    structure version: nothing is submitted for a version-1 row, and a version-0 row gets its frame facts at version 1
+    (`FRAME_META_VERSION`), so the next rescan checks it again and cleanup keeps waiting.
+  - **Panasonic RawFormat 8 (M-b):** the RAW 1 rule (RawDataOffset + ceil(w * h / 14) * 16) is a lower bound only
+    for fixed packings, so it applies when tag 0x002D is 1-7 or absent. RawFormat 8 (GH6, G9 II, S5 II/IIX, GH7,
+    S1R II: variable-size Huffman strips; these files carry no 0x000B) is checked by its own strip tables,
+    `CF2StripByteOffsets` (0x0044) and `CF2StripDataSize` (0x0046, bits), which the targeted reads fetch (they are
+    private tags the directory load does not fetch); other values get no check. Six RawFormat-8 samples of
+    raw.pixls.us: 0 judged cut, every half and 64 KB-short copy found (task 1.3).
+  - **Hostile sizes (L1):** a Panasonic size that overflows is no evidence; CR3 `moov` ranges use saturating
+    arithmetic.
+  - **A cut version-0 row without frame facts (L2)** is stamped current without facts (it has no hashes, so no burst
+    joins it by look), instead of being re-read, and reported, on every rescan.
+  - **Unreadable or offline copies (L3):** a checked row stamps every present row with the same full content id
+    (identical bytes, identical structure) that has its frame identity; `CleanupError::RescanFirst` names the first
+    10 files it waits for (`paths`) and says a file still listed after a rescan could not be read or its source was
+    not connected. The re-read error now names both checks ("one-time header check").
+  - **A RAW over 64 MB whose directories exceed the read bounds (L4)** gets `Structure::Unknown`, and cleanup's
+    pre-move check moves it without a judgement (refusing would block every such file, and the move is a reversible
+    quarantine of a file whose exact copy is in the library). ADR-0117's "cleanup's pre-move check still finds its
+    cut" holds for every RAW whose directories lie within the bounds (all real files tried, up to 156 MB); it is not
+    materially wrong, so no amending ADR; the release notes and README say "moved unjudged" for the rest.
+  - **A covering copy that cannot be read for the check (L5)** is an I/O skip (`SkipReason::Io`), not
+    `CoveringDamaged`.
+  - **The cleanup scenario (L6)** has a half-size JPEG whose only covering copy is the cut CR2's library copy (no
+    camera JPEG, whose keeper role differs by platform), so `CoveringDamaged` is always exercised.

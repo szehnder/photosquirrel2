@@ -54,8 +54,9 @@ to their resized or re-exported JPEG copies.
   a source is rescanned, cleanup asks you to rescan it first, and before every move it checks a RAW, and the
   library copy that makes a file safe, for a cut again. Not checked for a cut: Minolta MRW, Sigma X3F, Canon CRW,
   the Sony DSLR-A100's ARW and Panasonic RW2 files with a compression other than the usual one; a RAW over 64 MB is
-  not labelled damaged by a scan (it has no preview anyway; cleanup still checks it); and a cut that removes only
-  padding at the very end of a file is no cut to the check.
+  not labelled damaged by a scan (it has no preview anyway), and cleanup checks it from its directories, so one
+  whose directories lie beyond the check's read limits (none of the real files tried) is moved unjudged; and a cut
+  that removes only padding at the very end of a file is no cut to the check.
 - **Quieter command line:** a scan of a Canon card no longer prints a wall of "No lens definition found in
   database" lines from the RAW decoder; only its errors are shown. `RUST_LOG=warn,nom_exif=error,rawler=warn` brings
   its warnings back for a bug report.
