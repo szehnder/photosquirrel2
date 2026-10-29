@@ -128,9 +128,9 @@ fn scenario_scan_progress_damaged_raw_file_still_reported_under_the_default_filt
     let out = String::from_utf8_lossy(&o.stdout).into_owned();
     let last = out
         .lines()
+        .rev()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|v| v["type"] == "snapshot")
-        .last()
+        .find(|v| v["type"] == "snapshot")
         .unwrap_or_else(|| panic!("no snapshot: {out}"));
     let listed = last["data"]["recent_errors"].to_string();
     assert!(listed.contains("IMG_0034.CR2"), "{last}");
