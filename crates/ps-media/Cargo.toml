@@ -41,6 +41,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 ps-media = { path = ".", features = ["test-support"] }
+# `set_colour_conversion_enabled`, the colour-conversion test hook (ADR-0113).
+ps-model = { workspace = true, features = ["test-hooks"] }
 ps-fixtures = { workspace = true, features = ["scratch"] }
 proptest.workspace = true
 rand.workspace = true

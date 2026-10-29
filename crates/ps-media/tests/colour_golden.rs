@@ -36,10 +36,21 @@ fn thumbnails() -> Vec<(String, Vec<u8>)> {
     out
 }
 
+/// Whether this target is the one the goldens were written on (x86_64 Linux). Elsewhere SIMD paths of the decoder
+/// and the resizer may differ by a code value from it, so the goldens are compared within 2 there; the comparison
+/// with the conversion off below is exact on every target.
+const GOLDEN_TARGET: bool = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+
 #[test]
 fn scenario_thumbnails_srgb_thumbnails_are_unchanged() {
     let write = std::env::var_os("PHOTOSQUIRREL_WRITE_COLOUR_GOLDENS").is_some();
-    for (file, jpeg) in thumbnails() {
+    let now = thumbnails();
+    // This binary is the only user of the process-wide hook: the build before the change, on this target.
+    ps_model::set_colour_conversion_enabled(false);
+    let before = thumbnails();
+    ps_model::set_colour_conversion_enabled(true);
+    assert_eq!(now, before, "sRGB thumbnails are not converted");
+    for (file, jpeg) in now {
         let path = std::path::Path::new(DIR).join(&file);
         if write {
             std::fs::create_dir_all(DIR).unwrap();
@@ -47,9 +58,23 @@ fn scenario_thumbnails_srgb_thumbnails_are_unchanged() {
             continue;
         }
         let golden = std::fs::read(&path).unwrap_or_else(|e| panic!("{file}: {e}"));
-        assert!(
-            golden == jpeg,
-            "{file}: the thumbnail differs from the build before the change"
-        );
+        if GOLDEN_TARGET {
+            assert!(
+                golden == jpeg,
+                "{file}: the thumbnail differs from the build before the change"
+            );
+        } else {
+            let (a, _) = ps_media::decode::decode_jpeg(&golden, 1).unwrap();
+            let (b, _) = ps_media::decode::decode_jpeg(&jpeg, 1).unwrap();
+            assert_eq!((a.width, a.height), (b.width, b.height), "{file}");
+            let worst = a
+                .data
+                .iter()
+                .zip(&b.data)
+                .map(|(x, y)| x.abs_diff(*y))
+                .max()
+                .unwrap_or(0);
+            assert!(worst <= 2, "{file}: differs from the golden by {worst}");
+        }
     }
 }

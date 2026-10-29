@@ -165,4 +165,7 @@ loupe shows the converted large preview (D2) and the filmstrip the converted thu
   the budget (baseline 37.46).
 - **Goldens:** `ps-media/tests/data/colour/` holds eight thumbnails (an untagged 1000x750 photo and the green patch,
   each without and with an embedded sRGB profile, from both the thumbnail and the analysis path), written by
-  `ps-media` at 2212ccf before any change of this one (`PHOTOSQUIRREL_WRITE_COLOUR_GOLDENS=1`).
+  `ps-media` at 2212ccf before any change of this one (`PHOTOSQUIRREL_WRITE_COLOUR_GOLDENS=1`), compared byte for byte
+  on x86_64 Linux, where they were written, and within 2 code values on other targets (their SIMD decode and resize
+  paths may differ by one); on every target the test also compares the thumbnails with the conversion hook off, which
+  must be byte-identical.
