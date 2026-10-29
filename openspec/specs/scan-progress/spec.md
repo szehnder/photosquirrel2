@@ -84,7 +84,7 @@ The dashboard SHALL read at most one progress snapshot per 100 ms, and its frame
 - **THEN** the frame-time p95 differs by less than 1 ms and stays at or below 8.3 ms
 
 ### Requirement: Run summary
-When a run ends the dashboard SHALL show its duration, files processed, photos and videos found, duplicate groups formed, skipped and failed counts, and any incomplete sources.
+When a run ends the dashboard SHALL show its duration, files processed, photos and videos found, duplicate groups formed, skipped, failed and damaged counts, and any incomplete sources.
 
 #### Scenario: Run summary on completion
 - **WHEN** a scan of the small corpus completes
@@ -113,4 +113,15 @@ A file that a decoder could not read SHALL be reported by the run (its errors li
 
 #### Scenario: Damaged RAW file still reported under the default filter
 - **WHEN** a folder with a truncated CR2 fixture is scanned with the default log filter
-- **THEN** the run reports the file with its reason and the summary counts it, although no rawler warning is printed
+- **THEN** the run lists the file among its errors, its placeholder reason is "could not be read", and the summary counts 1 error and 1 damaged file, although no rawler warning is printed
+
+### Requirement: Damaged files noticed in the run summary
+The run summary SHALL count the present files of the run's sources catalogued as could not be read, from one catalog aggregate at the end of the run, so an unchanged rescan still shows them. When the count is above 0 the dashboard SHALL show a warning notice to keep the original until they are checked, with a way to show those files.
+
+#### Scenario: Damaged files counted again on an unchanged rescan
+- **WHEN** a source holding one cut CR2 is scanned and then rescanned unchanged
+- **THEN** the first summary counts 1 error and 1 damaged file, and the second counts 0 errors and still 1 damaged file
+
+#### Scenario: Dashboard warns about damaged files
+- **WHEN** the dashboard shows a run whose summary counts 2 damaged files
+- **THEN** it shows a damaged count of 2 and a warning notice, and choosing Show opens the Library filtered to those 2 files
