@@ -85,23 +85,59 @@ pub enum CleanupError {
     NotDiscardable { id: i64, why: String },
     #[error("cleanup run {id} cannot be narrowed: {why}")]
     NotNarrowable { id: i64, why: String },
-    #[error(
-        "{files} analysed files bearing on this cleanup were catalogued by an earlier version and are not re-checked \
-         yet (burst frame numbers, RAW files cut short), so their groups are not trusted: rescan the source (and any \
-         source sharing groups with it) first"
-    )]
-    RescanFirst { files: u64 },
+    #[error("{}", rescan_first_text(*files, paths))]
+    RescanFirst {
+        files: u64,
+        /// The first [`RESCAN_FIRST_PATHS`] of them, absolute.
+        paths: Vec<PathBuf>,
+    },
     #[error("the catalog is open read-only (another PhotoSquirrel process owns it)")]
     ReadOnly,
 }
 
 pub type Result<T, E = CleanupError> = std::result::Result<T, E>;
 
+/// Files a [`CleanupError::RescanFirst`] names at most.
+pub const RESCAN_FIRST_PATHS: usize = 10;
+
+fn rescan_first_text(files: u64, paths: &[PathBuf]) -> String {
+    let mut s = format!(
+        "{files} analysed files bearing on this cleanup were catalogued by an earlier version and are not re-checked \
+         yet (burst frame numbers, RAW files cut short), so their groups are not trusted: rescan the source (and any \
+         source sharing groups with it) first"
+    );
+    if !paths.is_empty() {
+        s.push_str(
+            ". A file that stays listed after a rescan could not be read, or its source was not connected: \
+             check it. Waiting: ",
+        );
+        let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        s.push_str(&names.join(", "));
+        let more = files.saturating_sub(paths.len() as u64);
+        if more > 0 {
+            s.push_str(&format!(" and {more} more"));
+        }
+    }
+    s
+}
+
 /// The catalog half of the journal for one run: each record is committed before it returns.
 #[derive(Debug, Clone)]
 pub struct CatalogJournal {
     catalog: Arc<Catalog>,
     run: i64,
+}
+
+/// [`CleanupError::RescanFirst`] for the files `stale` (ids among `files`), naming the first ones.
+fn rescan_first(
+    ex: &crate::export::Exports<'_>,
+    files: &[ps_export::FileFacts],
+    stale: &[FileId],
+) -> Result<CleanupError> {
+    Ok(CleanupError::RescanFirst {
+        files: stale.len() as u64,
+        paths: ex.paths_of(files, &stale[..stale.len().min(RESCAN_FIRST_PATHS)])?,
+    })
 }
 
 impl CleanupJournal for CatalogJournal {
@@ -518,9 +554,9 @@ impl<'a> Cleanups<'a> {
             f.source == source && folder.as_ref().is_none_or(|dir| f.rel_path.is_within(dir))
         };
         // ADR-0108: groups formed before frame identity are not trusted for a move.
-        let stale = ex.rescan_needed(&files, &[&in_scope])?[0];
-        if stale > 0 {
-            return Err(CleanupError::RescanFirst { files: stale });
+        let stale = ex.rescan_needed_files(&files, &[&in_scope])?.remove(0);
+        if !stale.is_empty() {
+            return Err(rescan_first(&ex, &files, &stale)?);
         }
         let mut stats: HashMap<FileId, StatFingerprint> = HashMap::new();
         self.catalog().read().for_each_file(|f| {
@@ -829,12 +865,14 @@ impl<'a> Cleanups<'a> {
                 .collect();
             let ex = self.svc.exports();
             let (files, _, _) = ex.dispositions(&library, false)?;
-            let stale = ex.rescan_needed(
-                &files,
-                &[&|f: &ps_export::FileFacts| planned.contains(&f.file)],
-            )?[0];
-            if stale > 0 {
-                return Err(CleanupError::RescanFirst { files: stale });
+            let stale = ex
+                .rescan_needed_files(
+                    &files,
+                    &[&|f: &ps_export::FileFacts| planned.contains(&f.file)],
+                )?
+                .remove(0);
+            if !stale.is_empty() {
+                return Err(rescan_first(&ex, &files, &stale)?);
             }
         }
         let ledger = r.ledger(run.library_id)?;

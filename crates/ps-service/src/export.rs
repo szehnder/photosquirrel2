@@ -617,10 +617,23 @@ impl<'a> Exports<'a> {
         files: &[FileFacts],
         scopes: &[&dyn Fn(&FileFacts) -> bool],
     ) -> Result<Vec<u64>> {
+        Ok(self
+            .rescan_needed_files(files, scopes)?
+            .iter()
+            .map(|s| s.len() as u64)
+            .collect())
+    }
+
+    /// The files [`Self::rescan_needed`] counts, per scope, in id order.
+    pub fn rescan_needed_files(
+        &self,
+        files: &[FileFacts],
+        scopes: &[&dyn Fn(&FileFacts) -> bool],
+    ) -> Result<Vec<Vec<FileId>>> {
         let r = self.catalog().read();
         let stale: HashSet<FileId> = r.files_awaiting_meta_reread()?.into_iter().collect();
         if stale.is_empty() {
-            return Ok(vec![0; scopes.len()]);
+            return Ok(vec![Vec::new(); scopes.len()]);
         }
         let groups = r.group_memberships()?;
         Ok(scopes
@@ -637,7 +650,28 @@ impl<'a> Exports<'a> {
                         bearing.extend(members.iter().filter(|m| stale.contains(m)));
                     }
                 }
-                bearing.len() as u64
+                let mut v: Vec<FileId> = bearing.into_iter().collect();
+                v.sort_unstable();
+                v
+            })
+            .collect())
+    }
+
+    /// The absolute paths of `ids` among `files` (a file not among them, or of an unknown source, is left out).
+    pub fn paths_of(&self, files: &[FileFacts], ids: &[FileId]) -> Result<Vec<PathBuf>> {
+        let roots: HashMap<_, _> = self
+            .catalog()
+            .read()
+            .sources()?
+            .into_iter()
+            .map(|s| (s.id, path_from_bytes(&s.root)))
+            .collect();
+        let by_id: HashMap<FileId, &FileFacts> = files.iter().map(|f| (f.file, f)).collect();
+        Ok(ids
+            .iter()
+            .filter_map(|id| {
+                let f = by_id.get(id)?;
+                Some(f.rel_path.under(roots.get(&f.source)?))
             })
             .collect())
     }

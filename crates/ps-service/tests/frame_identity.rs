@@ -291,7 +291,7 @@ fn scenario_cleanup_stale_groups_refused_before_the_rescan() {
     assert!(source_report(&svc).rescan_needed > 0);
     let refused = |e: ps_service::cleanup::CleanupError| {
         assert!(
-            matches!(e, ps_service::cleanup::CleanupError::RescanFirst { files } if files > 0),
+            matches!(e, ps_service::cleanup::CleanupError::RescanFirst { files, .. } if files > 0),
             "{e}"
         );
         assert!(e.to_string().contains("rescan"), "{e}");
