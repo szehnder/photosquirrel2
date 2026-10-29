@@ -116,4 +116,5 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0110](0110-gallery-scroll-budget-includes-placeholder-tiles.md) | The gallery scroll budget is measured with 30% placeholder tiles (amends 0026) |
 | [0111](0111-video-placeholder-rows-are-marked-from-the-thumbnail-store.md) | Video placeholder rows of older catalogs are marked from the thumbnail store at open (migration 25, `catalog_task`; amends 0109) |
 | [0112](0112-file-ids-are-used-only-on-filesystems-that-keep-them.md) | File ids are used only on filesystems that keep them: no file index on FAT/exFAT, FAT whole-hour shifts unchanged, `ids=` in the device hint (amends 0007) |
+| [0115](0115-a-raw-file-cut-short-is-damaged-and-damaged-files-are-counted.md) | A RAW file cut short is damaged; damaged files are counted and flagged; cleanup keeps them (amends 0109, 0023, 0024) |
 | [0116](0116-fuseblk-is-classified-by-its-device-and-fat-shifts-reach-26-hours.md) | A `fuseblk` mount is classified by its device's filesystem (ntfs-3g keeps ids); FAT whole-hour shifts reach 26 h (amends 0112) |
