@@ -117,3 +117,52 @@ loupe shows the converted large preview (D2) and the filmstrip the converted thu
 - [A wrong "not sRGB" answer over-saturates a preview] -> only explicit evidence converts (ICC, R03, DNG tag,
   Canon tag); "uncalibrated" alone does not.
 - [Old renamed Adobe RGB files stay muted] -> documented; recorded on their next analysis.
+
+## Deviations (as built)
+
+- **The colour comes from the probe inside `ps-media`.** `thumbnail_from_image` takes a `&ColourSource`;
+  `make_thumbnail`, `analyze_still_held` and `make_large_preview` build it from the probe they already receive
+  (`ColourSource::of(bytes, probe)`), so their signatures did not change, and `decode_preview` and
+  `decode_raw_preview` report nothing new: a JPEG's embedded preview and a RAW's preview both take the file's (the
+  container's) answer, which is the probe's. The TIFF one-pass path passes `ColourSource::srgb()`.
+- **ICC profiles are classified by what they do.** Besides a description containing "sRGB", a profile whose
+  transform to sRGB moves none of 125 samples (five levels per channel) by more than 2 code values is sRGB, and one
+  that agrees the same way with moxcms' Adobe RGB or Display P3 is named so (the inspector says "Display P3", not
+  "Embedded profile: Display P3"). The conversion still uses the embedded profile itself. A grey or CMYK profile does
+  not apply to the RGB the decoders hand over and is ignored silently; a rejected or incomplete one (missing chunk,
+  beyond the probe window) is ignored with a probe warning.
+- **The profile cache is keyed by the profile bytes** (compared, 8 most recent), not their BLAKE3: `ps-media` has no
+  BLAKE3 dependency, and the effect is the same.
+- **DNG `PreviewColorSpace` 4 (ProPhoto) is not mapped**: only 2 (sRGB) and 3 (Adobe RGB) are evidence; other values
+  fall through to EXIF. CR3 (`CMT2` Exif and Interop, `CMT3` maker note) and RAF (its JPEG's EXIF) read the same tags,
+  beyond D1's list.
+- **The colour space lives in `file.colour` only**, not in `Metadata.fields.colour_space`: the inspector reads the
+  column (`ItemDetail.colour_space`), and the re-check writes the column only, so the metadata JSON and the dedup
+  stamp never change for it. Formats whose profiles are not read yet (HEIC, AVIF, TIFF, PNG, WebP, videos) record
+  `srgb`, the colour they are shown in; the follow-up that reads their profiles needs its own one-time re-check
+  (selected by format).
+- **No writer command replaces the thumbnail.** The scanner stores the new thumbnail through the thumbnail store
+  (`ThumbStore::put`), as ADR-0117's "could not be read" placeholder is stored; the catalog gets
+  `Command::SetColour`, which stamps every row of the content (`None` writes `unchecked`).
+- **The re-check rides on the one-time header re-read** of ADR-0105/0117 (`Todo.colour_check` beside
+  `meta_reread`), so a `_` RAW due both is opened once: the head read is the probe window (256 KB) instead of the
+  structure check's 64 KB, and `meta_version` and `colour` are stamped independently
+  (`a_raw_due_both_checks_is_opened_once`). The diff also checks the `_` name and the format (JPEG or RAW) besides
+  the NULL colour, so no other row can ever be read for it, and leaves placeholder rows out (no thumbnail to
+  recolour; a placeholder that a newer decoder fills in is analysed and records its colour then). A file not in sRGB
+  is read whole once (the decode-memory budget is taken), its BLAKE3 identity compared with the catalog's (other
+  content under an unchanged fingerprint: `unchecked`, its stored thumbnail untouched) and its thumbnail made by
+  `make_thumbnail` (the embedded preview, else a 384 px decode) in the I/O lane, not as a CPU job: it happens once per
+  file. A RAW found cut by the same read, a file over 64 MB (or with a sampled identity), and a file whose thumbnail
+  cannot be made again record their colour and keep their thumbnail. A read error is reported once and leaves the
+  row NULL for the next rescan.
+- **The counts** are `DiffCounts.colour_checked` and `recoloured` (in the run summary JSON), printed by the CLI
+  ("N files checked once for their colour space ..., M recoloured"); the app's dashboard does not show them.
+- **Migration 26** also leaves rows never analysed NULL (their analysis writes the colour) and marks analysed rows
+  that are not thumbed (`stage` 2) `unchecked`; a changed file's `colour` is cleared with its other analysis results.
+- **The bench case** is a fourth file, a 12 MP Canon Adobe RGB JPEG, in `analysis-decode-thumb`'s own test
+  (`scenario_thumbnails_decode_within_per_file_budget`), not a separate budget: 35.0 ms median for it, 35.39 ms for
+  the budget (baseline 37.46).
+- **Goldens:** `ps-media/tests/data/colour/` holds eight thumbnails (an untagged 1000x750 photo and the green patch,
+  each without and with an embedded sRGB profile, from both the thumbnail and the analysis path), written by
+  `ps-media` at 2212ccf before any change of this one (`PHOTOSQUIRREL_WRITE_COLOUR_GOLDENS=1`).

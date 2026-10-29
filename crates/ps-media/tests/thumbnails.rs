@@ -357,14 +357,23 @@ fn corrupt_inputs_fail_without_panicking() {
     }
 }
 
-/// 12 MP JPEG analysis decode + grid thumbnail, single-threaded: median <= 100 ms (ADR-0026 derived).
+/// 12 MP JPEG analysis decode + grid thumbnail, single-threaded: median <= 100 ms (ADR-0026 derived). One of the four
+/// files is a Canon Adobe RGB JPEG, whose thumbnail is converted to sRGB (ADR-0113).
 #[test]
 fn scenario_thumbnails_decode_within_per_file_budget() {
-    let files: Vec<Vec<u8>> = (0..3).map(|s| fx::jpeg(4000, 3000, s, 90)).collect();
+    let mut files: Vec<Vec<u8>> = (0..3).map(|s| fx::jpeg(4000, 3000, s, 90)).collect();
+    files.push(ps_fixtures::colour::with_exif(
+        &fx::jpeg(4000, 3000, 3, 90),
+        0xFFFF,
+        Some("R03"),
+        Some(2),
+    ));
     let probes: Vec<ProbeRecord> = files.iter().map(|f| probe(f)).collect();
+    assert_eq!(probes[3].colour, ps_model::ColourSpace::AdobeRgb);
     let mut times = Vec::new();
+    let mut adobe = Vec::new();
     for round in 0..4 {
-        for (f, p) in files.iter().zip(&probes) {
+        for (i, (f, p)) in files.iter().zip(&probes).enumerate() {
             let t = Instant::now();
             let (_, thumb, _) =
                 ps_media::analyze_still(f, p, &ps_media::Decoders::none()).expect("analyze");
@@ -372,11 +381,19 @@ fn scenario_thumbnails_decode_within_per_file_budget() {
             assert_eq!(thumb.width, 384);
             if round > 0 {
                 times.push(el.as_secs_f64() * 1000.0);
+                if i == 3 {
+                    adobe.push(el.as_secs_f64() * 1000.0);
+                }
             }
         }
     }
     times.sort_by(f64::total_cmp);
+    adobe.sort_by(f64::total_cmp);
     let median = times[times.len() / 2];
+    println!(
+        "analysis-decode-thumb of the Adobe RGB file: median {:.2} ms",
+        adobe[adobe.len() / 2]
+    );
     println!("measure analysis-decode-thumb={median:.2} ms");
     assert!(median <= 100.0, "median {median:.2} ms exceeds 100 ms");
 }

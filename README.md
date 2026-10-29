@@ -126,8 +126,11 @@ PhotoSquirrel behave as if no decoder were found.
   decodes to more than 4 GB (about 30000x24000 at 16-bit RGB) and has no smaller resolution level stored gets a
   placeholder thumbnail and is de-duplicated by content only. Colour profiles are not applied, and floating-point
   values above 1.0 are clipped.
-- **Adobe RGB photos** (Canon `_MG_` files and others recorded in Adobe RGB) are shown without colour
-  conversion, so their previews look slightly muted; the files themselves are exported unchanged.
+- **Colour profiles of HEIC, AVIF, TIFF, PNG and WebP photos are not applied yet**, so a wide-gamut iPhone HEIC
+  (Display P3) or a TIFF with an embedded profile looks slightly muted. Adobe RGB JPEGs and RAW previews (Canon
+  `_MG_` files), and JPEGs with an embedded profile, are shown converted to sRGB. In a catalog from 0.3.0 or earlier,
+  an Adobe RGB file renamed by an import tool (no longer starting with `_`) keeps its muted thumbnail until it is
+  analysed again. The files themselves are always exported unchanged.
 - **FAT and exFAT drives** (most SD cards and many USB sticks) record file times only to 2 seconds, and on FAT a
   time-zone change can shift them by whole hours (up to 26), which a rescan takes as no change. So a photo replaced
   on the card by another one of exactly the same size is not noticed by a rescan if its time is within the same

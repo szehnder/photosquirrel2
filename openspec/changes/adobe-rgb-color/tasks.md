@@ -37,8 +37,10 @@ Ships in 0.3.x (ROADMAP row 31), after `stable-ids-on-fat`. Takes **ADR-0113** a
 
 ## 6. Budgets and docs
 
-- [ ] 6.1 Bench: an Adobe RGB 12 MP case in `analysis-decode-thumb`. Verify: `cargo xtask bench --check`, with `analysis-decode-thumb`, `scan-analysis-12mp` and `gallery-scroll-p95` within budget and within 15% of baseline.
-- [ ] 6.2 README: remove the Adobe RGB limitation; say HEIC and TIFF profiles are not applied yet. The 0.3.x release-notes line. Verify: `grep -n 'Adobe RGB' README.md`.
+- [x] 6.1 Bench: an Adobe RGB 12 MP case in `analysis-decode-thumb`. Verify: `cargo xtask bench --check`, with `analysis-decode-thumb`, `scan-analysis-12mp` and `gallery-scroll-p95` within budget and within 15% of baseline.
+  Done: a 12 MP Canon Adobe RGB JPEG is the fourth file of `scenario_thumbnails_decode_within_per_file_budget` (its own median 35.0 ms). `cargo xtask bench --check --only analysis-decode-thumb --only scan-analysis-12mp --only rescan-nochange-100k`: 35.39 ms (budget 100, baseline 37.46), 4.41 ms (6.67, baseline 4.833), 0.41 s (4, baseline 0.408), all 3 met and within 15% of baseline. `gallery-scroll-p95` needs a visible focused window and is left to the owner (the grid paints stored JPEGs; nothing on its path changed).
+- [x] 6.2 README: remove the Adobe RGB limitation; say HEIC and TIFF profiles are not applied yet. The 0.3.x release-notes line. Verify: `grep -n 'Adobe RGB' README.md`.
+  Done: the known-limitations bullet now says HEIC, AVIF, TIFF, PNG and WebP profiles are not applied yet, that Adobe RGB JPEGs, RAW previews and profiled JPEGs are converted, and that renamed Adobe RGB files of an old catalog wait for their next analysis; `grep -n 'Adobe RGB' README.md` shows only that bullet (lines 130, 132). Release notes: a "What's new since 0.3.0" entry.
 
 ## 7. Verification
 

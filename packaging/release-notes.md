@@ -44,6 +44,14 @@ to their resized or re-exported JPEG copies.
 
 ### What's new since 0.3.0
 
+- **Adobe RGB and wide-gamut photos look right.** Canon `_MG_` JPEGs and the previews of their CR2s, recorded in
+  Adobe RGB, no longer look flat next to their `IMG_` neighbours: thumbnails, the filmstrip and the loupe are
+  converted to sRGB, as are JPEGs with an embedded colour profile (an iPhone's Display P3 JPEG). The inspector names
+  the colour space ("Colour: Adobe RGB (1998)"). Duplicate grouping does not change: matching still looks at the
+  photo as recorded. The first rescan after updating reads the first 256 KB of each catalogued file whose name
+  starts with `_` once, and makes the thumbnail again of those in Adobe RGB (reading them once in full); nothing else
+  is read. Large previews are made again the first time they are viewed. Files are exported unchanged, as always.
+  HEIC, AVIF, TIFF, PNG and WebP colour profiles are not applied yet.
 - **A RAW file cut short, for example by a card pulled while writing, is shown as damaged and counted, not as
   "not supported yet".** The scan summary, the run summary and the completion report ("100% accounted for, 1
   damaged") name such files and say to keep the original card until you have checked them; they are still
