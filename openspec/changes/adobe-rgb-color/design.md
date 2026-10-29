@@ -169,3 +169,8 @@ loupe shows the converted large preview (D2) and the filmstrip the converted thu
   on x86_64 Linux, where they were written, and within 2 code values on other targets (their SIMD decode and resize
   paths may differ by one); on every target the test also compares the thumbnails with the conversion hook off, which
   must be byte-identical.
+- **CI disk.** The first push filled the GitHub Linux runner's disk during `cargo xtask ci` (ENOSPC in the cleanup
+  and Excluded tests, run 40870465972; macOS, Windows and the libheif 1.12 job passed). The new tests now live in
+  existing test binaries where no process-wide hook is involved (the media colour tests in `thumbnails.rs`, the
+  service test in `library.rs`, the inspector scenarios in `gallery.rs`), and the Linux job removes preinstalled
+  SDKs it never uses (dotnet, Android, GHC, CodeQL) before building.

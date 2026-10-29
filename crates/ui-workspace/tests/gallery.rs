@@ -1351,3 +1351,91 @@ fn scenario_photo_inspector_month_precision_date_shown_as_a_month(cx: &mut TestA
         "no day or time: {shown}"
     );
 }
+
+/// The inspector's colour space row (adobe-rgb-color, ADR-0113): an Adobe RGB photo names its colour space in the
+/// File section and the loupe's preview is converted to sRGB; an untagged JPEG shows no row.
+mod colour_spaces {
+    use super::*;
+    use ps_fixtures::colour as cfx;
+    use ps_model::library::Preview;
+
+    const ADOBE: &str = "_MG_0001.JPG";
+    const UNTAGGED: &str = "IMG_0002.JPG";
+
+    /// A card with the Canon Adobe RGB JPEG fixture and an untagged JPEG, scanned into a fresh data directory.
+    fn scanned() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("card");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(ADOBE), cfx::adobe_rgb_jpeg(cfx::GREEN)).unwrap();
+        std::fs::write(root.join(UNTAGGED), cfx::untagged_jpeg([200, 120, 40])).unwrap();
+        let data = tmp.path().join("data");
+        let scan =
+            ps_service::scan::ScanService::open(&data, ps_service::scan::ScanOptions::default())
+                .unwrap();
+        let s = scan.add_source(&root).unwrap();
+        scan.start(&[s.source.id]).unwrap();
+        scan.wait().unwrap();
+        (tmp, data)
+    }
+
+    fn item(backend: &CatalogBackend, name: &str) -> ItemId {
+        let cat = backend.catalog().unwrap();
+        let src = cat.read().sources().unwrap()[0].id;
+        let rec = cat
+            .read()
+            .file(&ps_catalog::FileKey::new(
+                src,
+                ps_model::RelPath::from_bytes(name.as_bytes().to_vec()).unwrap(),
+            ))
+            .unwrap()
+            .unwrap();
+        ItemId::try_from(rec.id).unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn scenario_photo_inspector_adobe_rgb_photo_names_its_colour_space(cx: &mut TestAppContext) {
+        let (_tmp, data) = scanned();
+        let (backend, _shell, mut cx) = open_app(cx, &data);
+        let lib = library(&mut cx);
+        wait_list(&lib, &mut cx);
+        let id = item(&backend, ADOBE);
+        let insp = select(&lib, id, &mut cx);
+        let d = cx.update(|_, cx| insp.read(cx).detail().cloned().unwrap());
+        assert_eq!(d.colour_space.as_deref(), Some("Adobe RGB (1998)"));
+        assert_eq!(
+            label_of("inspector-colour", &mut cx).as_deref(),
+            Some("Adobe RGB (1998)")
+        );
+        // The loupe shows the large preview the backend makes: converted from Adobe RGB, as the reference conversion
+        // of the patch's [40, 170, 61] gives [0, 172, 46] (ps-media's colour tests); unconverted it would stay near
+        // the source.
+        let Preview::Jpeg(jpeg) = backend.library().preview(id).unwrap() else {
+            panic!("no preview");
+        };
+        let (img, _) = ps_media::decode::decode_jpeg(&jpeg, 1).unwrap();
+        let [r, g, b] = img.pixel(img.width / 2, img.height / 2);
+        assert!(
+            r <= 8 && (168..=176).contains(&g) && (40..=52).contains(&b),
+            "{:?}",
+            [r, g, b]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn scenario_photo_inspector_srgb_photo_shows_no_colour_row(cx: &mut TestAppContext) {
+        let (_tmp, data) = scanned();
+        let (backend, _shell, mut cx) = open_app(cx, &data);
+        let lib = library(&mut cx);
+        wait_list(&lib, &mut cx);
+        let id = item(&backend, UNTAGGED);
+        let insp = select(&lib, id, &mut cx);
+        let d = cx.update(|_, cx| insp.read(cx).detail().cloned().unwrap());
+        assert_eq!(d.colour_space, None);
+        assert!(
+            label_of("inspector-dimensions", &mut cx).is_some(),
+            "the File section is shown"
+        );
+        assert_eq!(label_of("inspector-colour", &mut cx), None, "no colour row");
+    }
+}
