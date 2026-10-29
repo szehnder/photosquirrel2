@@ -61,8 +61,9 @@ pub struct FileFacts {
     /// Moved into its source's quarantine folder by a cleanup run (ADR-0034): the quarantine path, relative
     /// to the source root.
     pub quarantined: Option<RelPath>,
-    /// Catalogued as could not be read (cut short or corrupt, ADR-0115): its disposition follows the rules
-    /// (it is copied as is), the report flags it, and cleanup never moves it.
+    /// Present and catalogued as could not be read (cut short or corrupt, ADR-0115): its disposition follows the
+    /// rules (it is copied as is), the report flags it, and cleanup never moves it. A damaged file gone from its
+    /// source is not counted (its disposition is missing), as in the run summary's damaged count.
     pub damaged: bool,
 }
 

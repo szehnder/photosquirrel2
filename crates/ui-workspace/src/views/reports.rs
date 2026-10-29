@@ -324,7 +324,7 @@ fn damaged_row(sid: SourceId, n: u64, colors: &Colors, cx: &App) -> AnyElement {
         .child(
             Icon::new(IconName::TriangleAlert)
                 .size(Tokens::icon_sm())
-                .text_color(colors.warning),
+                .text_color(colors.tone_text(colors.warning)),
         )
         .child(
             div()
@@ -350,10 +350,16 @@ fn damaged_row(sid: SourceId, n: u64, colors: &Colors, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// The per-folder table's badge column: wide enough for "100% accounted for, 2 damaged" at the badge's size.
+fn folder_badge_width() -> Rems {
+    Tokens::size(232.0)
+}
+
 fn badge(c: &CompletionCounts, rescan_needed: u64, id: String, colors: &Colors) -> AnyElement {
     // Damaged files keep the badge's words (owner's choice, ADR-0115) but draw it in the warning colour.
     let ok = c.fully_accounted() && rescan_needed == 0 && c.damaged == 0;
     let label = confirmed_badge_label(c, rescan_needed);
+    let tone = if ok { colors.success } else { colors.warning };
     h_flex()
         .id(SharedString::from(id))
         .test_support()
@@ -364,11 +370,9 @@ fn badge(c: &CompletionCounts, rescan_needed: u64, id: String, colors: &Colors) 
         .h(Tokens::size(22.0))
         .items_center()
         .rounded_full()
-        .bg(Colors::tint(
-            if ok { colors.success } else { colors.warning },
-            0.14,
-        ))
-        .text_color(if ok { colors.success } else { colors.warning })
+        .bg(Colors::chip_bg(tone))
+        // The tone moved until it reads as text on its chip (the light theme's amber is too pale as is).
+        .text_color(colors.tone_text(tone))
         .text_size(Tokens::text_xs())
         .font_weight(FontWeight::SEMIBOLD)
         .child(
@@ -994,7 +998,7 @@ fn folder_table(
                         .child("FOLDER"),
                 )
                 .children(columns.iter().map(|d| head(disposition_label(*d))))
-                .child(div().w(Tokens::size(150.0)).flex_none()),
+                .child(div().w(folder_badge_width()).flex_none()),
         );
     // Folders with something left to do first; ids keep the folder's index.
     let mut order: Vec<usize> = (0..folders.len()).collect();
@@ -1076,7 +1080,7 @@ fn folder_table(
         }
         row = row.child(
             div()
-                .w(Tokens::size(150.0))
+                .w(folder_badge_width())
                 .flex_none()
                 .flex()
                 .justify_end()

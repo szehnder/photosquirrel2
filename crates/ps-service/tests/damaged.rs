@@ -251,3 +251,19 @@ fn outdated_raw_placeholder_sentence_promises_a_second_look() {
          it can look at this file again."
     );
 }
+
+/// One rule for "damaged" (gate review L2): present files catalogued as could not be read. A damaged file gone from
+/// its source is counted in neither the run summary nor the report.
+#[test]
+fn a_damaged_file_gone_from_its_source_is_not_counted() {
+    let s = exported_card();
+    std::fs::remove_file(s.card.join(CR2)).unwrap();
+    s.svc.start(&[]).unwrap();
+    let run = s.svc.wait().unwrap();
+    assert_eq!(run.damaged, 0, "the run summary counts present files");
+    let c = s.svc.exports().completion(Some(&s.library), false).unwrap();
+    let src = &c.report.sources[0];
+    assert_eq!(src.counts.damaged, 0, "nor does the report");
+    assert!(src.damaged_files.is_empty());
+    assert_eq!(c.totals.damaged, 0);
+}

@@ -220,3 +220,26 @@ fn scenario_completion_report_reports_view_drills_into_damaged_files(cx: &mut Te
     assert_eq!(want.len(), 1, "the cut CR2");
     library_shows(&mut cx, &want, d.card);
 }
+
+/// Clear (the chip row's "Clear AI and status filters") also drops the source restriction Show set.
+#[gpui_kit::test]
+fn clear_filters_drops_the_source_restriction(cx: &mut TestAppContext) {
+    let d = scanned(1, false);
+    let (backend, shell, mut cx) = open_app(cx, &d.data);
+    show(&shell, ViewId::Sources, &mut cx);
+    wait_long(&mut cx, "the notice", |cx| {
+        exists("summary-damaged-notice", cx)
+    });
+    click("summary-damaged-show", &mut cx);
+    let want = damaged_items(&backend, d.card);
+    library_shows(&mut cx, &want, d.card);
+    click("library-clear-filters", &mut cx);
+    wait_long(&mut cx, "the cleared filters", |cx| {
+        cx.update(|_, cx| {
+            LibraryHub::library(cx).is_some_and(|l| {
+                let f = &l.read(cx).filters;
+                f.sources.is_none() && f.no_preview.is_none()
+            })
+        })
+    });
+}

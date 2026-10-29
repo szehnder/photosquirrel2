@@ -1247,6 +1247,7 @@ impl LibraryView {
             next.insight = InsightCriteria::default();
             next.dispositions.clear();
             next.no_preview = None;
+            next.sources = None;
             next
         };
         row = row.child(

@@ -527,9 +527,11 @@ impl<'a> Exports<'a> {
                 missing: f.missing_since_ms.is_some(),
                 user_excluded: excluded.contains(&f.id),
                 quarantined: quarantined.of(&f.key, &f.stat),
-                damaged: f
-                    .preview
-                    .is_some_and(|p| p.reason == ps_model::PreviewReason::Unreadable),
+                // The run summary's rule (`ps_catalog::previews::DAMAGED_WHERE`): present files only. A damaged file
+                // gone from its source is reported as missing; the keep-the-original hint has nothing to keep.
+                damaged: f.missing_since_ms.is_none()
+                    && f.preview
+                        .is_some_and(|p| p.reason == ps_model::PreviewReason::Unreadable),
             });
         })?;
         let mut groups: Vec<GroupFacts> = r

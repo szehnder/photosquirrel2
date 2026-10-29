@@ -67,6 +67,7 @@ fn scenario_scan_progress_run_summary_on_completion() {
     assert_eq!(o.skipped, summary.stages.skipped);
     assert_eq!(o.failed, summary.stages.failed);
     assert_eq!(o.bytes_read, summary.bytes_read);
+    assert_eq!((o.damaged, summary.damaged), (0, 0), "an intact corpus");
     let r = svc.engine().catalog().read();
     let count = |kind| {
         r.count(&Filter {
@@ -88,4 +89,32 @@ fn scenario_scan_progress_run_summary_on_completion() {
     // The full error listing matches the stored error count.
     let errors = svc.run_errors(run, 10_000).expect("errors");
     assert_eq!(errors.len() as u64, o.errors);
+}
+
+/// The run summary's damaged count (ADR-0115) is the catalog's, in the service overview and the scan summary.
+#[test]
+fn run_summary_counts_damaged_files() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let (root, truth) = corpus(tmp.path());
+    let shot = ps_fixtures::dng::converted_burst_frame(61, 0, 0, 960);
+    let cut = ps_fixtures::dng::cut(&shot.cr2, ps_fixtures::dng::Cut::AfterPreview).expect("cut");
+    std::fs::write(root.join(&truth.drives[0]).join("IMG_CUT.CR2"), cut).expect("write");
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).expect("open");
+    let ids: Vec<_> = truth
+        .drives
+        .iter()
+        .map(|d| svc.add_source(&root.join(d)).expect("add").source.id)
+        .collect();
+    let run = svc.start(&[]).expect("start");
+    let summary = svc.wait().expect("summary");
+    let o = svc.run_overview(run).expect("overview");
+    assert_eq!((o.damaged, summary.damaged), (1, 1), "the cut CR2");
+    assert_eq!(
+        svc.engine()
+            .catalog()
+            .read()
+            .damaged_count(&ids)
+            .expect("damaged"),
+        1
+    );
 }
