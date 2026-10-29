@@ -16,6 +16,10 @@ jobs:
   linux:
     name: Linux (full CI)
     runs-on: ubuntu-24.04
+    # A durable disk margin: line tables only in the test builds' debug info (file and line in backtraces, no
+    # variable info) roughly halves the size of every test binary, so a growing workspace does not refill the disk.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       # `cargo xtask ci` builds every test binary of the workspace (the GPUI ones are about 1 GB each) and the
       # adobe-rgb-color run filled the runner's disk: remove preinstalled SDKs this job never uses (about 20 GB).
