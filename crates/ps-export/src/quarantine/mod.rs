@@ -8,8 +8,9 @@
 //!   are present, readable and not user-excluded, with the library copy that makes them safe. Planning only
 //!   reads; the plan is stored in the catalog (`cleanup_run`, `cleanup_move`) by the service.
 //! - [`run`]: for each planned move, immediately before it: the library copy exists and re-hashes to its
-//!   ledger hash ([`crate::library::check_copy`] in verify mode, cached per library file within a run), the
-//!   source still has its catalogued stat fingerprint and re-hashes to its catalogued identity, the quarantine
+//!   ledger hash ([`crate::library::check_copy`] in verify mode, cached per library file within a run) and is not
+//!   a RAW cut short (ADR-0117), the source still has its catalogued stat fingerprint, re-hashes to its catalogued
+//!   identity and, for a RAW, shows no cut ([`run::cut_raw`]), the quarantine
 //!   folder is a real folder on the same device; then the write-ahead journal (catalog intent, then
 //!   `journal.jsonl` intent, both durable), the no-replace rename ([`fsops::move_no_replace`]) and `done` in
 //!   both journals. Any failed check skips the file with the reason.
@@ -133,6 +134,9 @@ pub enum SkipReason {
     /// It is damaged (could not be read: cut short or corrupt, ADR-0115): its exact copy is in the library, but the
     /// original medium may still hold the rest of it for a recovery tool, so it is kept.
     Damaged,
+    /// The library copy that makes it safe is a RAW file cut short (ADR-0117, checked before the move): it covers
+    /// nothing, so the file is kept.
+    CoveringDamaged(String),
 }
 
 impl SkipReason {
@@ -165,6 +169,9 @@ impl SkipReason {
                 "better than the keeper you chose: this copy is kept".into()
             }
             SkipReason::Damaged => "damaged: keep the original for recovery".into(),
+            SkipReason::CoveringDamaged(why) => format!(
+                "kept: the library copy that makes it safe is damaged ({why}); nothing was changed"
+            ),
         }
     }
 }

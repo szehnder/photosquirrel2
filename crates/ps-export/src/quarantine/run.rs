@@ -73,6 +73,39 @@ fn io_text(op: &str, p: &Path, e: &io::Error) -> String {
     format!("{op} {}: {e}", p.display())
 }
 
+/// The RAW structure check of the file at `path` (ADR-0117), read-only: its first bytes and its directories by
+/// bounded targeted reads ([`ps_media::raw_check::check_by_reads`]). `Ok(None)` for a file that is not a RAW or
+/// shows no cut. The catalog may call a RAW intact that is cut (one catalogued by a version before ADR-0115 and
+/// not rescanned since, or larger than the analysis buffer), so a run checks again before it relies on one.
+pub(super) fn cut_raw(path: &Path) -> io::Result<Option<ps_media::raw_check::Truncation>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = ps_media::open_read_only(path)?;
+    let size = f.metadata()?.len();
+    let mut head = Vec::new();
+    (&mut f)
+        .take(ps_media::raw_check::STRUCTURE_HEAD as u64)
+        .read_to_end(&mut head)?;
+    let probe = ps_media::probe_bytes(&head, size, Some(path));
+    if !probe.format.is_some_and(ps_model::Format::is_raw) {
+        return Ok(None);
+    }
+    let mut fetch = |off: u64, len: usize| -> io::Result<Vec<u8>> {
+        f.seek(SeekFrom::Start(off))?;
+        let mut v = Vec::new();
+        (&mut f).take(len as u64).read_to_end(&mut v)?;
+        Ok(v)
+    };
+    Ok(ps_media::raw_check::check_by_reads(
+        &head,
+        size,
+        &probe,
+        &mut fetch,
+        ps_model::limits::ANALYSIS_BUFFER_MAX_BYTES,
+    )?
+    .cut()
+    .cloned())
+}
+
 /// Recompute the identity of the file at `path` like the catalog computed it: the full BLAKE3, or the sampled
 /// identity for sampled ones (ADR-0011). Opened read-only.
 pub(super) fn identity_of(path: &Path, kind: ContentIdKind, size: u64) -> io::Result<ContentId> {
@@ -169,6 +202,8 @@ pub fn run(
     let probe = FsLibrary::new(cfg.library_root);
     // Library copies re-hashed once per run.
     let mut checked: HashMap<RelPath, Option<CopyCheck>> = HashMap::new();
+    // Library copies checked for a cut once per run (ADR-0117): `Some(why)` when one is cut short.
+    let mut cut_copies: HashMap<RelPath, Option<String>> = HashMap::new();
     let run_dir_rel = run_dir_rel(cfg.run);
     let mut journal: Option<Journal> = None;
     let mut report = RunReport::default();
@@ -219,6 +254,7 @@ pub fn run(
                 &ledger,
                 &probe,
                 &mut checked,
+                &mut cut_copies,
                 &run_dir_rel,
                 &mut journal,
                 catalog,
@@ -269,6 +305,7 @@ fn move_one(
     ledger: &HashMap<&RelPath, &LedgerEntry>,
     probe: &FsLibrary,
     checked: &mut HashMap<RelPath, Option<CopyCheck>>,
+    cut_copies: &mut HashMap<RelPath, Option<String>>,
     run_dir_rel: &RelPath,
     journal: &mut Option<Journal>,
     catalog: &mut dyn CleanupJournal,
@@ -324,6 +361,37 @@ fn move_one(
         Ok(md) => md,
         Err(r) => return skip(m, r, journal, catalog),
     };
+    // 2b. A RAW cut short stays where it is (ADR-0115, ADR-0117), even when the catalog calls it intact.
+    match cut_raw(&source) {
+        Ok(None) => {}
+        Ok(Some(_)) => return skip(m, SkipReason::Damaged, journal, catalog),
+        Err(e) => {
+            return skip(
+                m,
+                SkipReason::Io(io_text("check", &source, &e)),
+                journal,
+                catalog,
+            );
+        }
+    }
+    // 2c. The library copy is not a RAW cut short (ADR-0117): a cut copy covers nothing, whatever the catalog says.
+    let copy_cut = cut_copies
+        .entry(m.covering_library_path.clone())
+        .or_insert_with(|| {
+            let path = m.covering_library_path.under(cfg.library_root);
+            match cut_raw(&path) {
+                Ok(cut) => cut.map(|t| t.message()),
+                Err(e) => Some(io_text("check", &path, &e)),
+            }
+        });
+    if let Some(why) = copy_cut {
+        return skip(
+            m,
+            SkipReason::CoveringDamaged(why.clone()),
+            journal,
+            catalog,
+        );
+    }
     // 3. The quarantine folder: real folders inside the source, on the file's volume, target free.
     let target = m.quarantine_rel_path.under(root);
     let target_parent_rel: PathBuf = m
