@@ -1005,3 +1005,94 @@ fn a_cut_raw_or_a_cut_covering_copy_is_never_moved() {
     assert!(rel("DCIM/IMG_0034.JPG").under(&root).exists());
     assert!(!rel("DCIM/OTHER_SMALL.JPG").under(&root).exists(), "moved");
 }
+
+/// Gives the library copy away once, when the source is checked (after the copy re-hashed fine): the structure
+/// check of the copy then cannot read it.
+struct CopyVanishes {
+    copy: PathBuf,
+    away: PathBuf,
+}
+
+impl QuarantineHooks for CopyVanishes {
+    fn file_ids(&self, path: &Path) -> ps_model::IdStability {
+        if self.copy.exists() {
+            fs::rename(&self.copy, &self.away).unwrap();
+        }
+        NoQuarantineHooks.file_ids(path)
+    }
+}
+
+/// A covering library copy that cannot be read for the pre-move structure check is an I/O skip, not a damaged copy
+/// (ADR-0117): nothing says the copy is cut.
+#[test]
+fn a_covering_copy_gone_before_its_structure_check_is_an_io_skip() {
+    let dir = scratch("q-copy-gone");
+    let root = dir.path().join("drive");
+    let lib = dir.path().join("library");
+    let shot = ps_fixtures::dng::converted_burst_frame(93, 0, 0, 960);
+    let lp = lib.join("2019/IMG_0034.CR2");
+    fs::create_dir_all(lp.parent().unwrap()).unwrap();
+    fs::write(&lp, &shot.cr2).unwrap();
+    let ledger = vec![LedgerEntry {
+        content: ps_hash::identity_from_buffer(&shot.cr2),
+        full_hash: Some(*blake3::hash(&shot.cr2).as_bytes()),
+        file: FileId(100),
+        library_rel_path: rel("2019/IMG_0034.CR2"),
+        size: shot.cr2.len() as u64,
+        state: LedgerState::Done,
+        profile: ExportProfile::Lightroom,
+        at_ms: 0,
+        library_mtime_ns: Some(mtime_ns(&lp)),
+        kind: LedgerKind::File,
+    }];
+    let p = "DCIM/IMG_0034.JPG";
+    let src = rel(p).under(&root);
+    fs::create_dir_all(src.parent().unwrap()).unwrap();
+    fs::write(&src, &shot.jpeg).unwrap();
+    set_mtime(&src, 1_600_000_000);
+    let md = fs::metadata(&src).unwrap();
+    let moves = vec![CleanupMove {
+        file: FileId(1),
+        rel_path: rel(p),
+        quarantine_rel_path: quarantine::quarantine_rel_path(RUN, &rel(p)),
+        size: shot.jpeg.len() as u64,
+        mtime_ns: mtime_ns(&src),
+        file_index: ino(&md),
+        content: ps_hash::identity_from_buffer(&shot.jpeg),
+        disposition: Disposition::Covered,
+        covering_library_path: rel("2019/IMG_0034.CR2"),
+        state: MoveState::Planned,
+        note: None,
+        at_ms: None,
+    }];
+    let holds = Default::default();
+    let cfg = RunConfig {
+        run: RUN,
+        uid: UID,
+        source_root: &root,
+        library_root: &lib,
+        ledger: &ledger,
+        holds: &holds,
+        recheck: None,
+    };
+    let hooks = CopyVanishes {
+        copy: lp.clone(),
+        away: dir.path().join("away.CR2"),
+    };
+    let mut j = MemJournal::default();
+    let r = quarantine::run(
+        &cfg,
+        &moves,
+        &mut j,
+        &hooks,
+        &AtomicBool::new(false),
+        &RunProgress::default(),
+    )
+    .unwrap();
+    assert_eq!(r.moved, 0, "{r:?}");
+    match &r.skipped[0].reason {
+        SkipReason::Io(why) => assert!(why.starts_with("check "), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(src.exists(), "kept");
+}

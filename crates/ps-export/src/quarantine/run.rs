@@ -203,7 +203,7 @@ pub fn run(
     // Library copies re-hashed once per run.
     let mut checked: HashMap<RelPath, Option<CopyCheck>> = HashMap::new();
     // Library copies checked for a cut once per run (ADR-0117): `Some(why)` when one is cut short.
-    let mut cut_copies: HashMap<RelPath, Option<String>> = HashMap::new();
+    let mut cut_copies: HashMap<RelPath, Option<SkipReason>> = HashMap::new();
     let run_dir_rel = run_dir_rel(cfg.run);
     let mut journal: Option<Journal> = None;
     let mut report = RunReport::default();
@@ -305,7 +305,7 @@ fn move_one(
     ledger: &HashMap<&RelPath, &LedgerEntry>,
     probe: &FsLibrary,
     checked: &mut HashMap<RelPath, Option<CopyCheck>>,
-    cut_copies: &mut HashMap<RelPath, Option<String>>,
+    cut_copies: &mut HashMap<RelPath, Option<SkipReason>>,
     run_dir_rel: &RelPath,
     journal: &mut Option<Journal>,
     catalog: &mut dyn CleanupJournal,
@@ -375,22 +375,18 @@ fn move_one(
         }
     }
     // 2c. The library copy is not a RAW cut short (ADR-0117): a cut copy covers nothing, whatever the catalog says.
+    // A copy that cannot be read for the check (gone or failing since step 1) is an I/O skip, not a damaged one.
     let copy_cut = cut_copies
         .entry(m.covering_library_path.clone())
         .or_insert_with(|| {
             let path = m.covering_library_path.under(cfg.library_root);
             match cut_raw(&path) {
-                Ok(cut) => cut.map(|t| t.message()),
-                Err(e) => Some(io_text("check", &path, &e)),
+                Ok(cut) => cut.map(|t| SkipReason::CoveringDamaged(t.message())),
+                Err(e) => Some(SkipReason::Io(io_text("check", &path, &e))),
             }
         });
-    if let Some(why) = copy_cut {
-        return skip(
-            m,
-            SkipReason::CoveringDamaged(why.clone()),
-            journal,
-            catalog,
-        );
+    if let Some(reason) = copy_cut {
+        return skip(m, reason.clone(), journal, catalog);
     }
     // 3. The quarantine folder: real folders inside the source, on the file's volume, target free.
     let target = m.quarantine_rel_path.under(root);

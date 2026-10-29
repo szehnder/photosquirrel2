@@ -20,6 +20,14 @@ fn write(root: &Path, rel: &str, bytes: &[u8]) {
     std::fs::write(&p, bytes).unwrap();
 }
 
+/// One test at a time: the hook is process-wide.
+static HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn hook() -> std::sync::MutexGuard<'static, ()> {
+    HOOK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Turns the structure check off while alive, back on when dropped.
 struct Legacy;
 
@@ -37,17 +45,28 @@ impl Drop for Legacy {
 }
 
 const CR2: &str = "DCIM/100CANON/IMG_0034.CR2";
-const JPG: &str = "DCIM/100CANON/IMG_0034.JPG";
+const SMALL: &str = "Shared/IMG_0034_small.jpg";
 const COPY: &str = "Backup/IMG_0034.CR2";
 const OTHER: &str = "DCIM/100CANON/IMG_0100.JPG";
 
+/// A copy of `jpeg` at half its size (a shared or e-mailed copy): the same image, smaller.
+fn half_size(jpeg: &[u8]) -> Vec<u8> {
+    let (img, _) = ps_media::decode::decode_jpeg(jpeg, u32::MAX).unwrap();
+    let (w, h) = (img.width / 2, img.height / 2);
+    let rgb = ps_fixtures::tiff_image::resize_rgb(&img.data, img.width, img.height, w, h);
+    ps_fixtures::media::encode_jpeg(&rgb, w, h, 85)
+}
+
 #[test]
 fn scenario_cleanup_cleanup_checks_a_raw_for_a_cut_before_moving() {
+    let _h = hook();
     let tmp = tempfile::tempdir().unwrap();
     let card = tmp.path().join("card");
-    let shot = ps_fixtures::dng::converted_burst_frame(81, 0, 0, 960);
+    let shot = ps_fixtures::dng::converted_burst_frame(81, 0, 0, 2400);
     write(&card, CR2, &cut(&shot.cr2, Cut::AfterPreview).unwrap());
-    write(&card, JPG, &shot.jpeg);
+    // No camera JPEG: a half-size copy of it, which the RAW outranks as keeper on every platform, so its only
+    // covering copy is the cut CR2's library copy.
+    write(&card, SMALL, &half_size(&shot.jpeg));
     write(&card, COPY, &cut(&shot.cr2, Cut::AfterPreview).unwrap());
     write(&card, OTHER, &ps_fixtures::media::jpeg(800, 600, 91, 85));
     let library = tmp.path().join("Library");
@@ -94,12 +113,9 @@ fn scenario_cleanup_cleanup_checks_a_raw_for_a_cut_before_moving() {
         .map(|(p, _)| p)
         .collect();
     assert!(
-        !covered_by_cr2.is_empty(),
-        "a file is covered by the cut CR2's library copy: {covering:?}"
+        covered_by_cr2.iter().any(|p| p.as_str() == SMALL),
+        "the half-size JPEG is covered by the cut CR2's library copy: {covering:?}"
     );
-    // Whether the camera JPEG is covered by the CR2's copy or exported itself depends on the keeper rule's inputs,
-    // which differ by platform decoder; the engine test `a_cut_raw_or_a_cut_covering_copy_is_never_moved` pins the
-    // covered case.
     let before: Vec<Vec<u8>> = [CR2, COPY]
         .iter()
         .map(|p| std::fs::read(card.join(p)).unwrap())
@@ -122,7 +138,12 @@ fn scenario_cleanup_cleanup_checks_a_raw_for_a_cut_before_moving() {
         .collect();
     assert_eq!(skipped.get(CR2), Some(&SkipReason::Damaged), "{skipped:?}");
     assert_eq!(skipped.get(COPY), Some(&SkipReason::Damaged), "{skipped:?}");
-    for p in covered_by_cr2.iter().filter(|p| !p.ends_with(".CR2")) {
+    let covered_jpegs: Vec<&&String> = covered_by_cr2
+        .iter()
+        .filter(|p| !p.ends_with(".CR2"))
+        .collect();
+    assert!(!covered_jpegs.is_empty(), "{covering:?}");
+    for p in covered_jpegs {
         match skipped.get(p.as_str()) {
             Some(SkipReason::CoveringDamaged(why)) => assert!(why.contains("cut short"), "{why}"),
             other => panic!("{p}: {other:?}"),
@@ -143,4 +164,59 @@ fn scenario_cleanup_cleanup_checks_a_raw_for_a_cut_before_moving() {
     for p in &covered_by_cr2 {
         assert!(card.join(p.as_str()).exists(), "{p} stays");
     }
+}
+
+/// While a RAW waits for its one-time structure check, cleanup names the files it waits for; once one copy is
+/// checked, an identical copy on a source that is not connected stops holding it back (second review L3).
+#[test]
+fn rescan_first_names_the_files_and_identical_copies_share_the_check() {
+    let _h = hook();
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    let backup = tmp.path().join("backup");
+    let shot = ps_fixtures::dng::converted_burst_frame(83, 0, 0, 960);
+    write(&card, CR2, &shot.cr2);
+    write(&card, OTHER, &ps_fixtures::media::jpeg(800, 600, 93, 85));
+    write(&backup, "IMG_0034.CR2", &shot.cr2);
+    let library = tmp.path().join("Library");
+    let data = tmp.path().join("data");
+    let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
+    let card_id = svc.add_source(&card).unwrap().source.id;
+    svc.add_source(&backup).unwrap();
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    svc.exports()
+        .run(
+            &library,
+            profile_settings("google").unwrap(),
+            &Default::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    drop(svc);
+    // As 0.3.0 left it: no row checked for a cut.
+    let c = rusqlite_open(&data);
+    c.execute_batch("UPDATE file SET meta_version = 1").unwrap();
+    drop(c);
+    let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
+    let e = svc.cleanups().plan(card_id, None, None).unwrap_err();
+    match &e {
+        ps_service::cleanup::CleanupError::RescanFirst { files, paths } => {
+            assert_eq!(*files, 2, "the card's CR2 and its copy in the backup: {e}");
+            assert_eq!(paths.len(), 2, "{paths:?}");
+        }
+        other => panic!("{other}"),
+    }
+    let text = e.to_string();
+    assert!(text.contains("IMG_0034.CR2"), "{text}");
+    assert!(text.contains("rescan"), "{text}");
+
+    // Only the card is rescanned: its CR2 is checked, and its identical copy on the backup with it.
+    svc.start(&[card_id]).unwrap();
+    svc.wait().unwrap();
+    svc.cleanups().plan(card_id, None, None).unwrap();
+}
+
+fn rusqlite_open(data: &Path) -> rusqlite::Connection {
+    rusqlite::Connection::open(ps_catalog::db::catalog_path(data)).unwrap()
 }
