@@ -14,12 +14,13 @@
 //! - CR3: a top-level box whose declared size ends past the file (a `size = 0` box runs to the end: not
 //!   evidence), and the samples of each `moov` track (`stco`/`co64` chunk offsets with their `stsz` sizes), so a
 //!   file cut exactly at a box boundary, before or inside `mdat`, is found too.
-//! - RW2 (and Leica's RWL) with Panasonic's "RAW 1" compression: the sensor data from `RawDataOffset`, whose size
-//!   follows from the sensor's width and height (the file records no length).
+//! - RW2 (and Leica's RWL) with Panasonic's "RAW 1" compression and a fixed packing (`RawFormat` 1-7 or none): the
+//!   sensor data from `RawDataOffset`, whose least size follows from the sensor's width and height (the file records
+//!   no length); `RawFormat` 8 (variable-size Huffman strips, GH6 and later): each strip its tables record.
 //! - RAF: the header's JPEG, CFA header and CFA ranges.
 //!
-//! Other RAW formats (MRW, X3F, CRW) and layouts (other Panasonic compressions, the Sony DSLR-A100's ARW, whose
-//! sensor data is located through Minolta's private records) get no check.
+//! Other RAW formats (MRW, X3F, CRW) and layouts (other Panasonic compressions and `RawFormat` values, the Sony
+//! DSLR-A100's ARW, whose sensor data is located through Minolta's private records) get no check.
 //!
 //! [`truncation`] judges the whole file in memory (the analysis). [`check_by_reads`] judges a file from its first
 //! bytes plus bounded targeted reads of its directories (TIFF IFDs, CR3 box headers and `moov`), the one-time
@@ -157,6 +158,14 @@ pub fn check_loaded<E>(
     fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
     whole_max: u64,
 ) -> Result<Structure, E> {
+    let mut rw2;
+    let segments = if raw == RawFormat::Rw2 {
+        rw2 = segments.to_vec();
+        rw2_segments(head, &mut rw2, file_size, fetch)?;
+        rw2.as_slice()
+    } else {
+        segments
+    };
     let found = judge(raw, View::new(head, segments), file_size);
     if found != Structure::Unknown || file_size > whole_max {
         return Ok(found);
@@ -340,29 +349,118 @@ fn tiff(t: &Tiff<'_>, worst: &mut Worst) {
     }
 }
 
-/// Panasonic's "RAW 1" compression (its tag 0x000B = 34316, every RW2 and RWL of the sample set up to 2026): the sensor data starts at
-/// `RawDataOffset` (0x0118) and holds 16 bytes per 14 pixels of `SensorWidth` x `SensorHeight` (0x0002, 0x0003), with
-/// no length tag (its strip byte count is 0). Cameras pad the data to 16 KB blocks; the minimum without padding is
-/// what counts. Other Panasonic compressions get no check.
+/// Panasonic's "RAW 1" compression (its tag 0x000B = 34316) with a fixed packing (`RawFormat`, tag 0x002D, 1 to 7
+/// or absent): the sensor data starts at `RawDataOffset` (0x0118) and holds at least 16 bytes per 14 pixels of
+/// `SensorWidth` x `SensorHeight` (0x0002, 0x0003; 14 per 16 bytes is the densest packing), with no length tag (its
+/// strip byte count is 0). Cameras pad the data to 16 KB blocks; the minimum without padding is what counts.
+/// `RawFormat` 8 has its strips checked ([`panasonic_v8`]); other formats and compressions get no check.
 fn panasonic(t: &Tiff<'_>, worst: &mut Worst) {
     let (ifds, _) = t.walk();
     let Some(ifd0) = ifds.iter().find(|i| i.kind == IfdKind::Chain(0)) else {
         return;
     };
     let get = |tag: u16| ifd0.get(tag).and_then(|e| t.uint(e)).map(u64::from);
+    match get(0x002D) {
+        // RawFormat 8 (GH6, G9 II, S5 II/IIX, GH7, S1R II, ...): Huffman-coded strips of variable size, each
+        // recorded (its own check; these files carry no 0x000B).
+        Some(8) => return panasonic_v8(t, ifd0, worst),
+        // Formats 1-7 (and files without the tag) pack at most 14 pixels in 16 bytes; others get no check.
+        Some(1..=7) | None => {}
+        Some(_) => return,
+    }
     if get(0x000B) != Some(34316) {
         return;
     }
     let (Some(offset), Some(w), Some(h)) = (get(0x0118), get(0x0002), get(0x0003)) else {
         return;
     };
-    let pixels = w.saturating_mul(h);
-    if offset > 0 && pixels > 0 {
-        worst.range(
-            offset.saturating_add(pixels.div_ceil(14) * 16),
-            "image data",
-        );
+    // A size that overflows is no evidence (a hostile or garbled header).
+    let Some(needed) = w
+        .checked_mul(h)
+        .and_then(|pixels| pixels.div_ceil(14).checked_mul(16))
+        .and_then(|bytes| offset.checked_add(bytes))
+    else {
+        return;
+    };
+    if offset > 0 && needed > offset {
+        worst.range(needed, "image data");
     }
+}
+
+/// Panasonic `RawFormat` 8 (rawler's `v8decompressor`): IFD0's `CF2StripByteOffsets` (0x0044) and
+/// `CF2StripDataSize` (0x0046), each a little-endian u16 count then u32 values (absolute byte offsets, sizes in
+/// bits). Each strip ends at its offset plus its size in bytes.
+fn panasonic_v8(t: &Tiff<'_>, ifd0: &IfdView, worst: &mut Worst) {
+    let (Some(o), Some(d)) = (ifd0.get(PANA_V8_OFFSETS), ifd0.get(PANA_V8_SIZES)) else {
+        return;
+    };
+    let (Some(o), Some(d)) = (t.value_bytes(o), t.value_bytes(d)) else {
+        worst.unknown = true;
+        return;
+    };
+    let list = |b: &[u8]| -> Vec<u64> {
+        let n = b
+            .get(..2)
+            .map_or(0, |c| usize::from(u16::from_le_bytes([c[0], c[1]])));
+        (0..n)
+            .map_while(|i| {
+                b.get(2 + i * 4..6 + i * 4)
+                    .map(|v| u64::from(u32::from_le_bytes([v[0], v[1], v[2], v[3]])))
+            })
+            .collect()
+    };
+    for (off, bits) in list(o).into_iter().zip(list(d)) {
+        if off > 0 && bits > 0 {
+            worst.range(off.saturating_add(bits.div_ceil(8)), "image data");
+        }
+    }
+}
+
+/// Panasonic `RawFormat` 8's strip tags ([`panasonic_v8`]).
+const PANA_V8_OFFSETS: u16 = 0x0044;
+const PANA_V8_SIZES: u16 = 0x0046;
+
+/// Largest Panasonic strip table fetched (a camera's is 50 bytes).
+const PANA_V8_MAX_BYTES: u64 = 64 * 1024;
+
+/// The RW2 strip tables of [`panasonic_v8`] beyond `head` and `segments`, fetched (the directory load does not
+/// fetch the values of private tags).
+fn rw2_segments<E>(
+    head: &[u8],
+    segments: &mut Vec<Segment>,
+    file_size: u64,
+    fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
+) -> Result<(), E> {
+    let wanted: Vec<(u64, u64)> = {
+        let Some(t) = Tiff::parse_view(View::new(head, segments)) else {
+            return Ok(());
+        };
+        let (ifds, _) = t.walk();
+        let Some(ifd0) = ifds.iter().find(|i| i.kind == IfdKind::Chain(0)) else {
+            return Ok(());
+        };
+        if ifd0.get(0x002D).and_then(|e| t.uint(e)) != Some(8) {
+            return Ok(());
+        }
+        [PANA_V8_OFFSETS, PANA_V8_SIZES]
+            .iter()
+            .filter_map(|tag| ifd0.get(*tag))
+            .filter(|e| t.value_bytes(e).is_none())
+            .filter_map(|e| {
+                let at = u64::from(t.value_offset(e)?);
+                let len = u64::try_from(crate::tiff::type_size(e.typ)?)
+                    .ok()?
+                    .checked_mul(u64::from(e.count))?;
+                (len <= PANA_V8_MAX_BYTES && at.saturating_add(len) <= file_size)
+                    .then_some((at, len))
+            })
+            .collect()
+    };
+    for (at, len) in wanted {
+        let bytes = fetch(at, usize::try_from(len).unwrap_or(0))?;
+        segments.push(Segment { offset: at, bytes });
+    }
+    Ok(())
 }
 
 /// What an IFD's strips or tiles hold: the sensor data (CFA, linear raw, Canon's raw slices, uncompressed or
@@ -419,14 +517,14 @@ fn cr3(view: View<'_>, worst: &mut Worst) {
             },
         );
         if &kind == b"moov" && moov.is_none() {
-            moov = Some((pos + header, end.min(size)));
+            moov = Some((pos.saturating_add(header), end.min(size)));
         }
         pos = end;
     }
     if let Some((body, end)) = moov {
         let body_bytes = usize::try_from(body)
             .ok()
-            .zip(usize::try_from(end - body).ok())
+            .zip(usize::try_from(end.saturating_sub(body)).ok())
             .and_then(|(b, l)| view.get(b, l));
         match body_bytes {
             Some(b) => cr3_tracks(b, worst),
@@ -513,11 +611,10 @@ fn cr3_segments<E>(
         let end = pos.saturating_add(len);
         if &kind == b"moov" {
             let body_end = end.min(file_size);
-            let body = pos + header;
-            if body_end - body <= MOOV_MAX_BYTES
-                && !View::new(head, &segments).has(body, body_end - body)
-            {
-                let bytes = fetch(body, usize::try_from(body_end - body).unwrap_or(0))?;
+            let body = pos.saturating_add(header);
+            let body_len = body_end.saturating_sub(body);
+            if body_len <= MOOV_MAX_BYTES && !View::new(head, &segments).has(body, body_len) {
+                let bytes = fetch(body, usize::try_from(body_len).unwrap_or(0))?;
                 segments.push(Segment {
                     offset: body,
                     bytes,
@@ -792,6 +889,118 @@ mod tests {
         other[2].3 = 34826;
         let o = tiff_bytes(0x55, &other, true, 400 - 86);
         assert_eq!(truncation(&o, &probe_full(&o, rw2)), None);
+    }
+
+    #[test]
+    fn panasonic_fixed_packings_are_checked_and_unknown_formats_are_not() {
+        // RawFormat (0x002D) 8 is Huffman-coded in variable-size strips: smaller than the fixed packings' bound.
+        let with_format = |f: u32, padding: usize| {
+            let entries = [
+                (0x0002, 3, 1, 28),
+                (0x0003, 3, 1, 10),
+                (0x000B, 3, 1, 34316),
+                (0x002D, 3, 1, f),
+                (0x0111, 4, 1, u32::MAX),
+                (0x0117, 4, 1, 0),
+                (0x0118, 4, 1, 200),
+            ];
+            tiff_bytes(0x55, &entries, true, padding)
+        };
+        let rw2 = Format::Raw(RawFormat::Rw2);
+        // 8 without its strip tables, and unknown formats: no evidence.
+        for f in [8, 9, 0x7FFF] {
+            let b = with_format(f, 300 - 98);
+            assert_eq!(truncation(&b, &probe_full(&b, rw2)), None, "RawFormat {f}");
+        }
+        for f in [1, 4, 7] {
+            let b = with_format(f, 300 - 98);
+            let t = truncation(&b, &probe_full(&b, rw2)).expect("a fixed packing is checked");
+            assert_eq!((t.needed, t.what), (520, "image data"), "RawFormat {f}");
+        }
+    }
+
+    /// Panasonic RawFormat 8: the strips its `CF2StripByteOffsets`/`CF2StripDataSize` tables record (u16 count,
+    /// u32 values, sizes in bits), found by the whole-file check and by targeted reads.
+    #[test]
+    fn panasonic_raw_format_8_needs_its_strips() {
+        // Header + 5 entries = 74 bytes, then the two 10-byte tables, then strips 100..200 and 200..501.
+        let entries = [
+            (0x0002, 3, 1, 28),
+            (0x0003, 3, 1, 10),
+            (0x002D, 3, 1, 8),
+            (0x0044, 7, 10, 74),
+            (0x0046, 7, 10, 84),
+        ];
+        let mut whole = tiff_bytes(0x55, &entries, true, 520 - 74);
+        let table = |a: u32, b: u32| {
+            let mut t = 2u16.to_le_bytes().to_vec();
+            t.extend_from_slice(&a.to_le_bytes());
+            t.extend_from_slice(&b.to_le_bytes());
+            t
+        };
+        whole[74..84].copy_from_slice(&table(100, 200));
+        whole[84..94].copy_from_slice(&table(800, 2401));
+        let rw2 = Format::Raw(RawFormat::Rw2);
+        assert_eq!(truncation(&whole, &probe_full(&whole, rw2)), None);
+        let cut = &whole[..400];
+        let p = probe_full(cut, rw2);
+        let t = truncation(cut, &p).unwrap();
+        assert_eq!((t.needed, t.what), (501, "image data"));
+        let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+            let off = usize::try_from(off).unwrap_or(usize::MAX).min(cut.len());
+            Ok(cut[off..cut.len().min(off.saturating_add(len))].to_vec())
+        };
+        // The tables lie beyond a head of 74 bytes: fetched, never the whole file.
+        let s = check_by_reads(&cut[..74], cut.len() as u64, &p, &mut fetch, 0).unwrap();
+        assert_eq!(s.cut().map(|t| t.needed), Some(501), "{s:?}");
+        let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+            let off = usize::try_from(off).unwrap_or(usize::MAX).min(whole.len());
+            Ok(whole[off..whole.len().min(off.saturating_add(len))].to_vec())
+        };
+        let p = probe_full(&whole, rw2);
+        let s = check_by_reads(&whole[..74], whole.len() as u64, &p, &mut fetch, 0).unwrap();
+        assert_eq!(s, Structure::Complete);
+    }
+
+    #[test]
+    fn hostile_sizes_are_no_evidence_and_never_panic() {
+        // A sensor of u32::MAX x u32::MAX: the needed size overflows, so it is no evidence.
+        let entries = [
+            (0x0002, 4, 1, u32::MAX),
+            (0x0003, 4, 1, u32::MAX),
+            (0x000B, 3, 1, 34316),
+            (0x0111, 4, 1, u32::MAX),
+            (0x0117, 4, 1, 0),
+            (0x0118, 4, 1, u32::MAX),
+        ];
+        let rw2 = Format::Raw(RawFormat::Rw2);
+        let b = tiff_bytes(0x55, &entries, true, 64);
+        let p = probe_full(&b, rw2);
+        assert_eq!(truncation(&b, &p), None);
+        let whole = b.clone();
+        let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+            let off = usize::try_from(off).unwrap_or(usize::MAX).min(whole.len());
+            Ok(whole[off..whole.len().min(off.saturating_add(len))].to_vec())
+        };
+        let s = check_by_reads(&b[..16], b.len() as u64, &p, &mut fetch, 0).unwrap();
+        assert!(s.cut().is_none(), "{s:?}");
+        // A CR3 whose `moov` declares a 64-bit size of u64::MAX: its end saturates, the file is cut, nothing
+        // overflows (the whole-file judgement and the targeted reads alike).
+        let mut c = cr3_with_track(0, 0, None);
+        c.extend_from_slice(&1u32.to_be_bytes());
+        c.extend_from_slice(b"moov");
+        c.extend_from_slice(&u64::MAX.to_be_bytes());
+        c.extend_from_slice(&[0u8; 8]);
+        let cr3 = Format::Raw(RawFormat::Cr3);
+        let p = probe_full(&c, cr3);
+        assert!(truncation(&c, &p).is_some());
+        let whole = c.clone();
+        let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+            let off = usize::try_from(off).unwrap_or(usize::MAX).min(whole.len());
+            Ok(whole[off..whole.len().min(off.saturating_add(len))].to_vec())
+        };
+        let s = check_by_reads(&c[..24], c.len() as u64, &p, &mut fetch, 0).unwrap();
+        assert!(s.cut().is_some(), "{s:?}");
     }
 
     /// A minimal CR3 whose one track has a sample of `len` bytes at `off`: `ftyp`, `moov` (trak/mdia/minf/stbl
