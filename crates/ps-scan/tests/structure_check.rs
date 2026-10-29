@@ -146,9 +146,10 @@ fn scenario_incremental_rescan_rescan_finds_a_raw_cut_after_its_intact_preview()
     // Only the two CR2s were opened, read-only, and only their first bytes and directories were read.
     let read = env.instr.bytes_per_file();
     assert_eq!(read.len(), 2, "{read:?}");
+    let root = env.root(id);
     for rel in [CUT_CR2, INTACT_CR2] {
-        let n = read[&under(&card.root, rel)];
-        let size = std::fs::metadata(under(&card.root, rel)).unwrap().len();
+        let n = read[&under(&root, rel)];
+        let size = std::fs::metadata(under(&root, rel)).unwrap().len();
         assert!(
             n <= ps_media::raw_check::STRUCTURE_HEAD as u64 + 16 * 1024,
             "{rel}: {n} of {size} bytes"
@@ -231,7 +232,7 @@ fn a_version_0_row_gets_both_checks_from_one_read() {
     let read = env.instr.bytes_per_file();
     assert_eq!(read.len(), 2, "{read:?}");
     assert!(
-        read[&under(&card.root, CUT_CR2)] <= ps_media::PROBE_LIMIT as u64,
+        read[&under(&env.root(id), CUT_CR2)] <= ps_media::PROBE_LIMIT as u64,
         "the probe window and its directories"
     );
     let raw = &env.files(id)[CUT_CR2];

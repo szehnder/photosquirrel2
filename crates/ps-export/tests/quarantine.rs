@@ -906,3 +906,102 @@ fn a_constraints_change_mid_run_rederives_the_remaining_holds() {
         assert_eq!(j.of(FileId(2)), MoveState::Skipped);
     }
 }
+
+/// The pre-move structure check (ADR-0117): a RAW source cut short is kept as damaged, and a file whose covering
+/// library copy is a RAW cut short is kept, whatever the plan says; a file covered by an intact copy is moved.
+#[test]
+fn a_cut_raw_or_a_cut_covering_copy_is_never_moved() {
+    use ps_fixtures::dng::{Cut, cut};
+    let dir = scratch("q-cut-raw");
+    let root = dir.path().join("drive");
+    let lib = dir.path().join("library");
+    let shot = ps_fixtures::dng::converted_burst_frame(91, 0, 0, 960);
+    let cut_cr2 = cut(&shot.cr2, Cut::AfterPreview).unwrap();
+    let other = ps_fixtures::media::jpeg(640, 480, 92, 85);
+    // (library path, bytes)
+    let copies = [("2019/IMG_0034.CR2", &cut_cr2), ("2019/OTHER.JPG", &other)];
+    let mut ledger = Vec::new();
+    for (i, (p, b)) in copies.iter().enumerate() {
+        let lp = lib.join(p);
+        fs::create_dir_all(lp.parent().unwrap()).unwrap();
+        fs::write(&lp, b).unwrap();
+        ledger.push(LedgerEntry {
+            content: ps_hash::identity_from_buffer(b),
+            full_hash: Some(*blake3::hash(b).as_bytes()),
+            file: FileId(100 + i as i64),
+            library_rel_path: rel(p),
+            size: b.len() as u64,
+            state: LedgerState::Done,
+            profile: ExportProfile::Lightroom,
+            at_ms: 0,
+            library_mtime_ns: Some(mtime_ns(&lp)),
+            kind: LedgerKind::File,
+        });
+    }
+    // (source path, bytes, covering library path)
+    let sources = [
+        ("DCIM/IMG_0034.CR2", &cut_cr2, "2019/IMG_0034.CR2"),
+        ("DCIM/IMG_0034.JPG", &shot.jpeg, "2019/IMG_0034.CR2"),
+        ("DCIM/OTHER_SMALL.JPG", &shot.jpeg, "2019/OTHER.JPG"),
+    ];
+    let mut moves = Vec::new();
+    for (i, (p, b, covering)) in sources.iter().enumerate() {
+        let src = rel(p).under(&root);
+        fs::create_dir_all(src.parent().unwrap()).unwrap();
+        fs::write(&src, b).unwrap();
+        set_mtime(&src, 1_600_000_000 + i as i64);
+        let md = fs::metadata(&src).unwrap();
+        moves.push(CleanupMove {
+            file: FileId(i as i64 + 1),
+            rel_path: rel(p),
+            quarantine_rel_path: quarantine::quarantine_rel_path(RUN, &rel(p)),
+            size: b.len() as u64,
+            mtime_ns: mtime_ns(&src),
+            file_index: ino(&md),
+            content: ps_hash::identity_from_buffer(b),
+            disposition: if i == 0 {
+                Disposition::Exported
+            } else {
+                Disposition::Covered
+            },
+            covering_library_path: rel(covering),
+            state: MoveState::Planned,
+            note: None,
+            at_ms: None,
+        });
+    }
+    let holds = Default::default();
+    let cfg = RunConfig {
+        run: RUN,
+        uid: UID,
+        source_root: &root,
+        library_root: &lib,
+        ledger: &ledger,
+        holds: &holds,
+        recheck: None,
+    };
+    let mut j = MemJournal::default();
+    let r = quarantine::run(
+        &cfg,
+        &moves,
+        &mut j,
+        &NoQuarantineHooks,
+        &AtomicBool::new(false),
+        &RunProgress::default(),
+    )
+    .unwrap();
+    let skipped: BTreeMap<String, SkipReason> = r
+        .skipped
+        .iter()
+        .map(|s| (s.rel_path.display().into_owned(), s.reason.clone()))
+        .collect();
+    assert_eq!(r.moved, 1, "{skipped:?}");
+    assert_eq!(skipped["DCIM/IMG_0034.CR2"], SkipReason::Damaged);
+    match &skipped["DCIM/IMG_0034.JPG"] {
+        SkipReason::CoveringDamaged(why) => assert!(why.contains("cut short"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(rel("DCIM/IMG_0034.CR2").under(&root).exists());
+    assert!(rel("DCIM/IMG_0034.JPG").under(&root).exists());
+    assert!(!rel("DCIM/OTHER_SMALL.JPG").under(&root).exists(), "moved");
+}
