@@ -1373,6 +1373,29 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
 /// `frame_id` column and the version. Everything else the analysis stored stays. Only analysed rows are written.
 /// A RAW structure check (ADR-0117) writes the version only, and a file found cut short its damaged stamp.
 fn set_meta_reread(c: &Connection, r: &MetaReread) -> rusqlite::Result<usize> {
+    let n = set_meta_reread_row(c, r)?;
+    if n > 0 && r.version >= ps_model::META_LOGIC_VERSION {
+        // Identical bytes have an identical structure (ADR-0117): every present copy with the same full content id
+        // is checked too, so an unreadable or offline copy of a checked file does not hold cleanup back. Rows whose
+        // frame identity was never read keep their version (their own facts are not merged here).
+        c.prepare_cached(
+            "UPDATE file SET meta_version = ?3
+             WHERE content_id = (SELECT content_id FROM file WHERE source_id = ?1 AND rel_path = ?2
+                                   AND identity_kind = 0)
+               AND identity_kind = 0 AND stage = 3 AND metadata IS NOT NULL AND missing_since IS NULL
+               AND meta_version >= ?4 AND meta_version < ?3",
+        )?
+        .execute(params![
+            r.key.source.0,
+            r.key.path.as_bytes(),
+            i64::from(r.version),
+            i64::from(ps_model::FRAME_META_VERSION)
+        ])?;
+    }
+    Ok(n)
+}
+
+fn set_meta_reread_row(c: &Connection, r: &MetaReread) -> rusqlite::Result<usize> {
     if let Some(p) = r.damaged {
         c.prepare_cached(
             "UPDATE file SET phash = NULL, dhash = NULL, hash_version = NULL,

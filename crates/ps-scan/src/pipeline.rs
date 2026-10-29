@@ -1156,62 +1156,84 @@ fn process_file(
         };
         drop(file);
         let key = FileKey::new(src.id, t.path.clone());
+        // `Err(())`: found cut, but the placeholder could not be stored; the structure check stays due.
         let damaged = match &structure {
-            ps_media::raw_check::Structure::Cut(cut) => cut_found(ctx, idx, &t, &key, &probe, cut),
+            ps_media::raw_check::Structure::Cut(cut) => cut_found(ctx, idx, &t, &key, &probe, cut)
+                .map(Some)
+                .ok_or(()),
             ps_media::raw_check::Structure::Unknown => {
                 log::info!(
                     "{}: its directories lie beyond the structure check's bounds and it is too large to read whole; \
                      not judged",
                     t.path
                 );
-                None
+                Ok(None)
             }
-            ps_media::raw_check::Structure::Complete => None,
+            ps_media::raw_check::Structure::Complete => Ok(None),
         };
-        match facts {
+        let reread = |frame_id, maker_notes, camera_original, version, merge_facts, damaged| {
+            Command::MetaReread(vec![ps_catalog::MetaReread {
+                key: key.clone(),
+                frame_id,
+                maker_notes,
+                camera_original,
+                version,
+                merge_facts,
+                damaged,
+            }])
+        };
+        match (facts, damaged) {
             // A frame value beyond the bounds: not stamped, so the row is not taken for "no frame identity"; a later
             // full analysis (a change or a refresh) reads it, and cleanup waits for it (ADR-0108).
-            Some(None) => {
+            (Some(None), Ok(None) | Err(())) => {
                 log::info!(
                     "{}: frame values lie beyond the re-read's bounds; left for a full analysis",
                     t.path
                 );
-                if damaged.is_some() {
-                    ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
-                        key,
-                        frame_id: None,
-                        maker_notes: false,
-                        camera_original: false,
-                        version: 0,
-                        merge_facts: false,
-                        damaged,
-                    }]));
-                }
             }
-            Some(Some(facts)) => {
-                ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
-                    key,
-                    frame_id: facts.frame_id,
-                    maker_notes: facts.maker_notes,
-                    camera_original: facts.camera_original,
-                    version: ps_model::META_LOGIC_VERSION,
-                    merge_facts: true,
-                    damaged,
-                }]));
+            // Cut short: it has no hashes, so it joins no burst by look and its frame identity cannot matter; stamped
+            // current, so it is not re-checked (and reported) on every rescan.
+            (Some(None), Ok(Some(stamp))) => {
+                ctx.submit(reread(
+                    None,
+                    false,
+                    false,
+                    ps_model::META_LOGIC_VERSION,
+                    false,
+                    Some(stamp),
+                ));
                 ctx.progress.frame_reread(idx);
             }
-            None => {
-                ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
-                    key,
-                    frame_id: None,
-                    maker_notes: false,
-                    camera_original: false,
-                    version: ps_model::META_LOGIC_VERSION,
-                    merge_facts: false,
-                    damaged,
-                }]));
+            // The frame facts are current; the structure check stays due when its placeholder was not stored.
+            (Some(Some(facts)), damaged) => {
+                let version = if damaged.is_ok() {
+                    ps_model::META_LOGIC_VERSION
+                } else {
+                    ps_model::FRAME_META_VERSION
+                };
+                ctx.submit(reread(
+                    facts.frame_id,
+                    facts.maker_notes,
+                    facts.camera_original,
+                    version,
+                    true,
+                    damaged.ok().flatten(),
+                ));
                 ctx.progress.frame_reread(idx);
             }
+            (None, Ok(damaged)) => {
+                ctx.submit(reread(
+                    None,
+                    false,
+                    false,
+                    ps_model::META_LOGIC_VERSION,
+                    false,
+                    damaged,
+                ));
+                ctx.progress.frame_reread(idx);
+            }
+            // Found cut, its placeholder not stored: the row keeps its version, so the next rescan checks it again.
+            (None, Err(())) => {}
         }
         ctx.progress.file_done(idx);
         ctx.progress.set_dir(idx, reader, None);
@@ -1562,7 +1584,8 @@ fn reread_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, e: &io::Error) {
         path: t.path.clone(),
         stage: t.stage,
         message: format!(
-            "could not be read for its frame number ({}); it keeps its analysis and is re-read next time",
+            "could not be read for its one-time header check (burst frame number, RAW file cut short) ({}); it \
+             keeps its analysis and is checked again by the next rescan",
             io_message(e)
         ),
     });

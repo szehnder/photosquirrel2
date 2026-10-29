@@ -257,3 +257,157 @@ fn a_fresh_catalog_never_rechecks() {
     assert_eq!(again.diff.frame_reread, 0);
     assert_eq!(env.instr.total_bytes(), 0);
 }
+
+/// A cut RAW found by the structure check whose "could not be read" placeholder cannot be stored (the thumbnail
+/// store refuses the write) keeps its metadata version, its hashes and its group, and the next rescan checks it
+/// again (second review M-a).
+#[test]
+fn a_cut_raw_whose_placeholder_cannot_be_stored_is_checked_again() {
+    let _h = hook();
+    let _s = shared();
+    let card = card();
+    let (mut env, id) = catalog_of_0_3_0(&card.root);
+    env.close();
+    let thumbs = env.dir.join(ps_catalog::THUMBS_FILE);
+    let c = rusqlite::Connection::open(&thumbs).expect("thumbs.db");
+    c.execute_batch(
+        "CREATE TRIGGER refuse BEFORE INSERT ON thumb BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .expect("trigger");
+    drop(c);
+    env.reopen(ScanOptions::default());
+    env.instr.reset();
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!(s.damaged, 0, "not stored, not counted");
+    let raw = &env.files(id)[CUT_CR2];
+    assert_eq!(raw.meta_version, 1, "kept: the check stays due");
+    assert!(raw.hashes.is_some() && raw.preview.is_none(), "{raw:?}");
+    assert!(
+        env.readers()
+            .files_awaiting_meta_reread()
+            .unwrap()
+            .contains(&raw.id),
+        "cleanup still waits for it"
+    );
+    // The intact CR2 was stamped.
+    assert_eq!(
+        env.files(id)[INTACT_CR2].meta_version,
+        ps_model::META_LOGIC_VERSION
+    );
+
+    env.close();
+    let c = rusqlite::Connection::open(&thumbs).expect("thumbs.db");
+    c.execute_batch("DROP TRIGGER refuse;").expect("drop");
+    drop(c);
+    env.reopen(ScanOptions::default());
+    env.instr.reset();
+    let again = env.scan(&[id]);
+    completed(&again);
+    assert_eq!(
+        (again.diff.frame_reread, again.damaged, again.errors),
+        (1, 1, 1)
+    );
+    let raw = &env.files(id)[CUT_CR2];
+    assert_eq!(raw.meta_version, ps_model::META_LOGIC_VERSION);
+    assert!(raw.hashes.is_none());
+}
+
+/// Point the Exif IFD's maker note (0x927C) of a little-endian TIFF past the end of the file, so the frame
+/// re-read cannot complete its facts.
+fn maker_note_out_of_file(b: &mut [u8]) {
+    let u16_at = |b: &[u8], o: usize| u16::from_le_bytes([b[o], b[o + 1]]) as usize;
+    let u32_at =
+        |b: &[u8], o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
+    let entry = |b: &[u8], ifd: usize, tag: usize| {
+        (0..u16_at(b, ifd))
+            .map(|i| ifd + 2 + 12 * i)
+            .find(|&e| u16_at(b, e) == tag)
+    };
+    let ifd0 = u32_at(b, 4);
+    let exif = u32_at(b, entry(b, ifd0, 0x8769).expect("an Exif IFD") + 8);
+    let note = entry(b, exif, 0x927C).expect("a maker note");
+    let past = (b.len() + 4096) as u32;
+    b[note + 8..note + 12].copy_from_slice(&past.to_le_bytes());
+}
+
+/// A row of metadata version 0 that is cut short and whose frame facts cannot be completed is stamped current
+/// without facts (it has no hashes, so it joins no burst by look): the next rescan opens nothing and reports no
+/// new error (second review L2).
+#[test]
+fn a_cut_version_0_row_without_frame_facts_is_checked_once() {
+    let _h = hook();
+    let _s = shared();
+    let card = card();
+    let path = under(&card.root, CUT_CR2);
+    let mut b = std::fs::read(&path).unwrap();
+    maker_note_out_of_file(&mut b);
+    std::fs::write(&path, &b).unwrap();
+    let (mut env, id) = catalog_of_0_3_0(&card.root);
+    env.close();
+    let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&env.dir)).expect("db");
+    c.execute(
+        "UPDATE file SET meta_version = 0 WHERE rel_path = CAST(?1 AS BLOB)",
+        [CUT_CR2],
+    )
+    .expect("version 0");
+    drop(c);
+    env.reopen(ScanOptions::default());
+    assert!(env.files(id)[CUT_CR2].hashes.is_some(), "as 0.3.0 left it");
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!((s.damaged, s.errors), (1, 1));
+    let raw = &env.files(id)[CUT_CR2];
+    assert_eq!(raw.meta_version, ps_model::META_LOGIC_VERSION);
+    assert!(raw.hashes.is_none());
+    assert!(
+        !env.readers()
+            .files_awaiting_meta_reread()
+            .unwrap()
+            .contains(&raw.id)
+    );
+    env.instr.reset();
+    let again = env.scan(&[id]);
+    completed(&again);
+    assert_eq!(again.diff.frame_reread, 0);
+    assert_eq!(env.instr.open_count(), 0, "no file opened");
+    assert_eq!((again.errors, again.damaged), (0, 1));
+}
+
+/// A checked RAW stamps every present copy with the same full content id (identical bytes, identical structure):
+/// a copy that cannot be read, or whose source is not connected, does not keep cleanup waiting (second review L3).
+#[test]
+fn a_checked_raw_stamps_its_identical_copies() {
+    let _h = hook();
+    let _s = shared();
+    let card = card();
+    let backup = card._tmp.path().join("backup");
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::copy(under(&card.root, INTACT_CR2), backup.join("IMG_0035.CR2")).unwrap();
+    let mut env = env_with(ScanOptions::default());
+    let id = env.add(&card.root);
+    let b = env.add(&backup);
+    {
+        let _legacy = Legacy::on();
+        completed(&env.scan(&[id, b]));
+    }
+    env.close();
+    let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&env.dir)).expect("db");
+    c.execute_batch("UPDATE file SET meta_version = 1")
+        .expect("as 0.3.0");
+    drop(c);
+    env.reopen(ScanOptions::default());
+    let copy = &env.files(b)["IMG_0035.CR2"];
+    assert!(
+        env.readers()
+            .files_awaiting_meta_reread()
+            .unwrap()
+            .contains(&copy.id)
+    );
+    // Only the card is rescanned (the backup is not connected).
+    completed(&env.scan(&[id]));
+    let copy = &env.files(b)["IMG_0035.CR2"];
+    assert_eq!(copy.meta_version, ps_model::META_LOGIC_VERSION, "stamped");
+    let waiting = env.readers().files_awaiting_meta_reread().unwrap();
+    assert!(waiting.is_empty(), "{waiting:?}");
+}
