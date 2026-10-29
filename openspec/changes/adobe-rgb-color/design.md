@@ -117,6 +117,11 @@ loupe shows the converted large preview (D2) and the filmstrip the converted thu
 - [A wrong "not sRGB" answer over-saturates a preview] -> only explicit evidence converts (ICC, R03, DNG tag,
   Canon tag); "uncalibrated" alone does not.
 - [Old renamed Adobe RGB files stay muted] -> documented; recorded on their next analysis.
+- [A running app keeps showing a recoloured thumbnail's old texture] -> the gallery's texture cache is keyed by
+  `ThumbKey` (the content id), which a recolour does not change, and a live refresh re-reads summaries but does not
+  drop uploaded textures; the converted thumbnail appears once the texture is evicted or the app restarts. The same
+  holds for ADR-0117's placeholders. Not worth a reload path for a one-time re-check (the loupe's large preview, keyed
+  anew, is converted at once).
 
 ## Deviations (as built)
 
@@ -143,13 +148,15 @@ loupe shows the converted large preview (D2) and the filmstrip the converted thu
   (selected by format).
 - **No writer command replaces the thumbnail.** The scanner stores the new thumbnail through the thumbnail store
   (`ThumbStore::put`), as ADR-0117's "could not be read" placeholder is stored; the catalog gets
-  `Command::SetColour`, which stamps every row of the content (`None` writes `unchecked`).
+  `Command::SetColour`, which stamped every row of the content (`None` wrote `unchecked`; since the gate-review
+  fixes a `ColourStamp` says whether the copies take it).
 - **The re-check rides on the one-time header re-read** of ADR-0105/0117 (`Todo.colour_check` beside
   `meta_reread`), so a `_` RAW due both is opened once: the head read is the probe window (256 KB) instead of the
   structure check's 64 KB, and `meta_version` and `colour` are stamped independently
   (`a_raw_due_both_checks_is_opened_once`). The diff also checks the `_` name and the format (JPEG or RAW) besides
   the NULL colour, so no other row can ever be read for it, and leaves placeholder rows out (no thumbnail to
-  recolour; a placeholder that a newer decoder fills in is analysed and records its colour then). A file not in sRGB
+  recolour; a placeholder that a newer decoder fills in by a re-decode records the colour its new thumbnail was
+  converted from, through `Command::SetColour`, see the gate-review fixes below). A file not in sRGB
   is read whole once (the decode-memory budget is taken), its BLAKE3 identity compared with the catalog's (other
   content under an unchanged fingerprint: `unchecked`, its stored thumbnail untouched) and its thumbnail made by
   `make_thumbnail` (the embedded preview, else a 384 px decode) in the I/O lane, not as a CPU job: it happens once per
@@ -174,3 +181,26 @@ loupe shows the converted large preview (D2) and the filmstrip the converted thu
   existing test binaries where no process-wide hook is involved (the media colour tests in `thumbnails.rs`, the
   service test in `library.rs`, the inspector scenarios in `gallery.rs`), and the Linux job removes preinstalled
   SDKs it never uses (dotnet, Android, GHC, CodeQL) before building.
+- **Gate-review fixes (task 7.7, ADR-0118).**
+  - *What the re-check reads.* A RAW with a usable embedded preview is re-checked from its probe window and that
+    preview's byte range only (`thumb::raw_preview_range`, `thumb::raw_thumbnail_from_preview`, the same thumbnail
+    `make_thumbnail` makes from the whole file); the unchanged stat fingerprint stands for the content, as on every
+    rescan, and the re-probed format must match the catalog's. JPEGs, and RAWs without a usable preview, are still
+    read whole with the BLAKE3 identity compared. A fixture CR2 with 8 MB of sensor data: 8,681,890 bytes read before,
+    555,025 after (262,144 probe window + 292,881 preview); its `_MG_` JPEG neighbour 644,574 both times (whole).
+  - *Byte budget.* `diff::colour_check_budget`: a JPEG candidate at its size, a RAW at its probe window plus an eighth
+    of the file; each check corrects the source's `bytes_to_read` by what it read (`Progress::rebudget`), so after
+    the run `bytes_to_read` equals `bytes_read`. `DiffCounts.colour_bytes` counts the checks' bytes; the CLI prints
+    "N files checked once for their colour space (read-only); M not in sRGB had their previews remade (X read)".
+  - *Colour states.* `ps_model::StoredColour`: a space; `unconverted:<space>` when the thumbnail was kept (a RAW found
+    cut, over 64 MB or a sampled identity, a preview or decode that failed), shown as "Adobe RGB (1998), preview not
+    converted"; `unchecked`. `Command::SetColour(Vec<ColourStamp>)` stamps the key's row and, with `copies`, every row
+    of its content; an identity mismatch stamps its own row `unchecked` only and is reported as a run error.
+  - *Re-decodes.* `Redecode::Filled` carries the probe's colour, written for the content's rows.
+  - *Hash upgrade.* `upgrade_hashes` skips contents whose colour records a converted preview
+    (`Readers::converted_preview_contents`, `HashUpgradeReport.left_for_analysis`); the diff analyses an unchanged
+    thumbed row again when its hash version is stale and its colour is not `srgb` (counted in `reanalyzed`).
+  - *Profiles.* The description is stored without control characters and cut to 64 characters; a profile is sRGB
+    only when its transform says so (the name is no longer evidence; the result is cached with the profile bytes).
+  - *CI.* The Linux job sets `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, a durable disk margin (smaller test
+    binaries; backtraces keep files and lines).
