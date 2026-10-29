@@ -247,6 +247,42 @@ impl Note<'_> {
     }
 }
 
+impl Note<'_> {
+    /// A one-SHORT entry of the note's directory (`ColorSpace` 0x00B4, ADR-0113).
+    fn short(&self, wanted: u16) -> Option<u16> {
+        let n = usize::from(u16_at(self.bytes, 0, self.endian)?);
+        if n == 0 || n > MAX_NOTE_ENTRIES {
+            return None;
+        }
+        (0..n).find_map(|i| {
+            let pos = 2 + i * 12;
+            let tag = u16_at(self.bytes, pos, self.endian)?;
+            let typ = u16_at(self.bytes, pos + 2, self.endian)?;
+            let count = u32_at(self.bytes, pos + 4, self.endian)?;
+            (tag == wanted && typ == 3 && count >= 1).then_some(())?;
+            u16_at(self.value(pos, typ, 1)?, 0, self.endian)
+        })
+    }
+}
+
+/// The colour space a Canon maker note records (tag 0x00B4: 1 sRGB, 2 Adobe RGB; ADR-0113), from the Exif IFD's
+/// maker-note entry `e` of `t`. `None` when the note is not in `t`'s bytes or records none.
+pub(crate) fn canon_colour_space(t: &Tiff<'_>, e: &crate::tiff::Entry) -> Option<u16> {
+    let note = Note {
+        bytes: t.value_bytes(e)?,
+        base: u64::from(t.value_offset(e)?),
+        endian: t.endian,
+    };
+    note.short(0x00B4)
+}
+
+/// The colour space recorded by a bare Canon maker-note directory at the start of `bytes` (a CR3's `CMT3` box
+/// holds it as a TIFF whose IFD0 is the note).
+pub(crate) fn canon_colour_space_in_ifd(t: &Tiff<'_>, ifd: &crate::tiff::IfdView) -> Option<u16> {
+    let e = ifd.get(0x00B4).filter(|e| e.typ == 3 && e.count >= 1)?;
+    t.uint(e).and_then(|v| u16::try_from(v).ok())
+}
+
 /// `dir * 10000 + index` when both are in a camera's range (folders 100-999, files 0001-9999).
 fn plausible(dir: u32, index: u32) -> Option<u32> {
     ((100..=999).contains(&dir) && (1..=9999).contains(&index)).then(|| dir * 10_000 + index)

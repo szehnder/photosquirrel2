@@ -1716,8 +1716,12 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
     } else if let Some(decoded) = decoded {
         // Decoded in one pass by the reader (ADR-0086); a decode error keeps the identity, with a placeholder.
         match decoded.and_then(|d| {
-            let thumb =
-                ps_media::thumb::thumbnail_from_image(&d.image, ps_model::ThumbKind::Image)?;
+            // TIFF profiles are not read yet (ADR-0113): shown as sRGB.
+            let thumb = ps_media::thumb::thumbnail_from_image(
+                &d.image,
+                ps_model::ThumbKind::Image,
+                &ps_media::ColourSource::srgb(),
+            )?;
             Ok((d, thumb))
         }) {
             Ok((d, thumb)) => (still_hashes(&d.image), thumb),

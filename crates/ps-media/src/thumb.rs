@@ -7,6 +7,7 @@ use ps_model::{
     ThumbnailRecord,
 };
 
+use crate::colour::ColourSource;
 use crate::decode::{self, DecodeError, DecodeSource, Decoded, RgbImage};
 use crate::decoders::Decoders;
 
@@ -160,12 +161,16 @@ pub fn dominant_colour(img: &RgbImage) -> [u8; 3] {
     rgb.map(linear_to_srgb)
 }
 
-/// A thumbnail record from an already-oriented image (resized to 384 px long edge, never upscaled).
+/// A thumbnail record from an already-oriented image (resized to 384 px long edge, never upscaled), converted from
+/// `colour` to sRGB after the resize (ADR-0113: `img` itself, the analysis image, is never converted). The dominant
+/// colour is taken from the converted thumbnail.
 pub fn thumbnail_from_image(
     img: &RgbImage,
     kind: ThumbKind,
+    colour: &ColourSource,
 ) -> Result<ThumbnailRecord, DecodeError> {
-    let t = decode::resize_to_long_edge(img, THUMB_LONG_EDGE);
+    let mut t = decode::resize_to_long_edge(img, THUMB_LONG_EDGE);
+    crate::colour::to_srgb(&mut t, colour);
     let jpeg = encode_jpeg(&t, THUMB_QUALITY)?;
     Ok(ThumbnailRecord {
         kind,
@@ -244,17 +249,18 @@ pub fn make_thumbnail(
     probe: &ProbeRecord,
     decoders: &Decoders,
 ) -> Result<(ThumbnailRecord, ThumbOrigin), DecodeError> {
+    let colour = ColourSource::of(bytes, probe);
     if usable_preview(probe)
         && let Some(d) = decode::decode_preview(bytes, probe, THUMB_LONG_EDGE, decoders)
     {
         return Ok((
-            thumbnail_from_image(&d.image, ThumbKind::Image)?,
+            thumbnail_from_image(&d.image, ThumbKind::Image, &colour)?,
             ThumbOrigin::EmbeddedPreview,
         ));
     }
     match decode::decode_scaled(bytes, probe, THUMB_LONG_EDGE, decoders) {
         Ok(d) => Ok((
-            thumbnail_from_image(&d.image, ThumbKind::Image)?,
+            thumbnail_from_image(&d.image, ThumbKind::Image, &colour)?,
             origin_of(&d),
         )),
         Err(e) => match placeholder_for_error(probe, None, &e) {
@@ -310,18 +316,20 @@ pub fn analyze_still_held(
         stop,
         hold,
     )?;
+    let colour = ColourSource::of(bytes, probe);
     if usable_preview(probe)
         && probe.format != Some(Format::Heic)
         && let Some(p) = decode::decode_preview(bytes, probe, THUMB_LONG_EDGE, decoders)
     {
-        let t = thumbnail_from_image(&p.image, ThumbKind::Image)?;
+        let t = thumbnail_from_image(&p.image, ThumbKind::Image, &colour)?;
         return Ok((analysis, t, ThumbOrigin::EmbeddedPreview));
     }
-    let t = thumbnail_from_image(&analysis.image, ThumbKind::Image)?;
+    let t = thumbnail_from_image(&analysis.image, ThumbKind::Image, &colour)?;
     Ok((analysis, t, ThumbOrigin::Analysis))
 }
 
-/// A 2048 px (long edge) JPEG preview, generated on demand (ADR-0016). Returns JPEG bytes and dimensions.
+/// A 2048 px (long edge) JPEG preview, generated on demand (ADR-0016), converted to sRGB after the resize
+/// (ADR-0113). Returns JPEG bytes and dimensions.
 pub fn make_large_preview(
     bytes: &[u8],
     probe: &ProbeRecord,
@@ -329,7 +337,8 @@ pub fn make_large_preview(
     decoders: &Decoders,
 ) -> Result<(Vec<u8>, u32, u32), DecodeError> {
     let d = decode::decode_scaled(bytes, probe, long_edge, decoders)?;
-    let r = decode::resize_to_long_edge(&d.image, long_edge);
+    let mut r = decode::resize_to_long_edge(&d.image, long_edge);
+    crate::colour::to_srgb(&mut r, &ColourSource::of(bytes, probe));
     Ok((encode_jpeg(&r, 85)?, r.width, r.height))
 }
 
@@ -357,7 +366,7 @@ pub fn video_thumbnail(
         && let Ok(jpeg) =
             crate::poster::poster_frame(tool, source_path, crate::poster::DEFAULT_TIMEOUT)
         && let Ok((img, _)) = decode::decode_jpeg(&jpeg, THUMB_LONG_EDGE)
-        && let Ok(t) = thumbnail_from_image(&img, ThumbKind::PosterFrame)
+        && let Ok(t) = thumbnail_from_image(&img, ThumbKind::PosterFrame, &ColourSource::srgb())
     {
         return t;
     }

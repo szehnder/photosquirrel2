@@ -4,12 +4,15 @@ Ships in 0.3.x (ROADMAP row 31), after `stable-ids-on-fat`. Takes **ADR-0113** a
 
 ## 1. Decision
 
-- [ ] 1.1 Write ADR-0113 "Previews are converted to sRGB; hashes are not" (D1-D4; amends 0016 and 0012; the direct `moxcms` dependency), accepted, with an index row. Confirm migration 26 is free. Verify: the index lists it; `ls crates/ps-catalog/migrations` ends at 0025.
+- [x] 1.1 Write ADR-0113 "Previews are converted to sRGB; hashes are not" (D1-D4; amends 0016 and 0012; the direct `moxcms` dependency), accepted, with an index row. Confirm migration 26 is free. Verify: the index lists it; `ls crates/ps-catalog/migrations` ends at 0025.
+  Done: ADR-0113 accepted with an index row (0113 and 0114 were free; 0114 stays `video-posters-after-ffmpeg`'s); `ls crates/ps-catalog/migrations` ended at 0025_video_placeholders.sql.
 
 ## 2. Fixtures and detection
 
-- [ ] 2.1 `ps-fixtures` colour writers (D6): R03 JPEG, Display P3 ICC JPEG, Canon colour-space CR2-style file, DNG with `PreviewColorSpace` 3, sRGB-profile JPEG. Verify: the generator stays deterministic for a seed; the corpus presets do not use them (corpus unchanged).
-- [ ] 2.2 `ps_model::ColourSpace`, `ProbeRecord.colour` (serde default), and detection in `probe.rs`, `jpeg.rs`, `frame.rs` and the DNG preview IFD, in D1's order, inside the existing probe reads. Verify: detection unit tests per source and order; `scenario_media_probe_*` and the byte-counting probe tests unchanged (no extra read).
+- [x] 2.1 `ps-fixtures` colour writers (D6): R03 JPEG, Display P3 ICC JPEG, Canon colour-space CR2-style file, DNG with `PreviewColorSpace` 3, sRGB-profile JPEG. Verify: the generator stays deterministic for a seed; the corpus presets do not use them (corpus unchanged).
+  Done: `ps_fixtures::colour` (`adobe_rgb_jpeg`, `exif_jpeg`, `icc_jpeg`/`with_icc` with `display_p3_icc`, `srgb_icc`, `adobe_rgb_icc`, `pro_photo_icc`, `canon_cr2`/`canon_adobe_rgb_cr2`, `dng_preview_colour`); `writers_are_deterministic` passes; no corpus module calls them (the corpus gate in 7.2 is the end check).
+- [x] 2.2 `ps_model::ColourSpace`, `ProbeRecord.colour` (serde default), and detection in `probe.rs`, `jpeg.rs`, `frame.rs` and the DNG preview IFD, in D1's order, inside the existing probe reads. Verify: detection unit tests per source and order; `scenario_media_probe_*` and the byte-counting probe tests unchanged (no extra read).
+  Done: `colour::tests::detection_order`, `detection_by_source_and_order`, `dng_preview_colour_space_decides`, `malformed_profile_is_ignored_with_a_warning`, `colour_detection_reads_no_more_than_the_probe_window`; every ps-media test binary green (media_probe 31, the counting-reader probe tests unchanged). CR3 (`CMT2`/`CMT3`) and RAF read the same tags.
 
 ## 3. Conversion
 

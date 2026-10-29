@@ -33,6 +33,7 @@ imagesize.workspace = true
 rawler.workspace = true
 rav1d.workspace = true
 libc.workspace = true
+moxcms.workspace = true
 
 chrono = { workspace = true, optional = true }
 log = { workspace = true, optional = true }

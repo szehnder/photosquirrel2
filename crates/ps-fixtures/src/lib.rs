@@ -5,6 +5,7 @@
 //! the [`Truth`] it also writes as `truth.json`. [`eval::Score`] scores a grouping result against it.
 
 pub mod camera;
+pub mod colour;
 pub mod dng;
 pub mod eval;
 pub mod expected;

@@ -6250,6 +6250,7 @@ version = "0.3.0"
 dependencies = [
  "blake3",
  "image",
+ "moxcms",
  "nom-exif",
  "png 0.18.1",
  "ps-media",
@@ -6310,6 +6311,7 @@ dependencies = [
  "jpeg-decoder",
  "libc",
  "log",
+ "moxcms",
  "mozjpeg",
  "mozjpeg-sys",
  "nom-exif",

@@ -54,6 +54,8 @@ rawler = "0.8"
 # through ps-media's `avif-asm` feature.
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 libc = "0.2"
+# ICC parsing and colour transforms for previews (ADR-0113): pure Rust, the 0.8 series `image` 0.25 already uses.
+moxcms = "0.8"
 # The system libheif, loaded at run time on Linux (ADR-0089); already in the lock through gpui.
 libloading = "0.8"
 

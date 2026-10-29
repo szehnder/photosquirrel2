@@ -8,6 +8,7 @@ pub mod apple;
 pub mod av1;
 pub mod bmff;
 pub mod classify;
+pub mod colour;
 pub mod date;
 pub mod decode;
 pub mod decoders;
@@ -27,6 +28,7 @@ pub mod util;
 pub mod video;
 
 pub use classify::{FolderHints, class_facts, classify, classify_facts, classify_with};
+pub use colour::{ColourSource, to_srgb};
 pub use date::{
     DATE_LOGIC_VERSION, DateContext, EmbeddedDates, FixedZone, LocalZone, RuleZone,
     resolve_capture_date,

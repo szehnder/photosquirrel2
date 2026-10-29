@@ -31,6 +31,9 @@ pub struct JpegScan {
     pub sof: Option<Sof>,
     /// Offset and length of the TIFF block inside the first `APP1 Exif` segment.
     pub exif_tiff: Option<(usize, usize)>,
+    /// `APP2 ICC_PROFILE` chunks before the image data, in file order: (sequence number, chunk count, payload
+    /// offset, payload length). A payload may run past `buf` (beyond the probe window).
+    pub icc: Vec<IccChunk>,
     /// Quantization tables by id (0-3), values in zigzag order.
     pub dqt: [Option<[u16; 64]>; 4],
     /// Offset of the first SOS marker.
@@ -39,6 +42,20 @@ pub struct JpegScan {
     pub eoi_found: bool,
     pub issue: Option<JpegIssue>,
 }
+
+/// One `APP2 ICC_PROFILE` chunk ([`JpegScan::icc`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IccChunk {
+    /// 1-based position of the chunk in the profile.
+    pub seq: u8,
+    /// Number of chunks the profile has.
+    pub count: u8,
+    pub offset: usize,
+    pub len: usize,
+}
+
+/// At most this many ICC chunks are kept (a profile of 255 full chunks is about 16 MB).
+const MAX_ICC_CHUNKS: usize = 255;
 
 fn is_sof(m: u8) -> bool {
     matches!(m, 0xC0..=0xCF) && !matches!(m, 0xC4 | 0xC8 | 0xCC)
@@ -118,6 +135,19 @@ pub fn scan(buf: &[u8], file_size: u64) -> JpegScan {
         match m {
             0xE1 if s.exif_tiff.is_none() && seg.starts_with(b"Exif\0") && seg.len() > 6 => {
                 s.exif_tiff = Some((body + 6, len - 2 - 6));
+            }
+            0xE2 if seg.starts_with(b"ICC_PROFILE\0")
+                && len >= 2 + 14
+                && s.icc.len() < MAX_ICC_CHUNKS =>
+            {
+                if let (Some(&seq), Some(&count)) = (seg.get(12), seg.get(13)) {
+                    s.icc.push(IccChunk {
+                        seq,
+                        count,
+                        offset: body + 14,
+                        len: len - 2 - 14,
+                    });
+                }
             }
             0xDB => parse_dqt(seg, &mut s.dqt),
             m if is_sof(m) && s.sof.is_none() => {

@@ -203,6 +203,13 @@ pub struct ProbeRecord {
     pub warnings: Vec<String>,
     /// Bytes of the file the probe examined (<= 262,144).
     pub bytes_examined: u64,
+    /// The colour space of the still's pixels (ADR-0113); sRGB when the file records nothing.
+    #[serde(default)]
+    pub colour: crate::ColourSpace,
+    /// The absolute ranges of the payloads of the embedded ICC profile's `APP2` chunks, in sequence order (a JPEG
+    /// whose profile is not sRGB); empty otherwise.
+    #[serde(default)]
+    pub icc: Vec<ByteRange>,
 }
 
 impl ProbeRecord {
@@ -225,6 +232,8 @@ impl ProbeRecord {
             error: None,
             warnings: Vec::new(),
             bytes_examined: 0,
+            colour: crate::ColourSpace::Srgb,
+            icc: Vec::new(),
         }
     }
 

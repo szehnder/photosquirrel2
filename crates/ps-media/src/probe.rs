@@ -568,6 +568,8 @@ pub(crate) struct ExifFacts {
     pub camera: CameraSignals,
     pub orientation: Option<u16>,
     pub exif_pixel_dims: Option<Dimensions>,
+    /// The colour-space tags (ADR-0113).
+    pub colour: crate::colour::ColourTags,
 }
 
 pub(crate) fn exif_facts(t: &Tiff<'_>, ifds: &[IfdView]) -> ExifFacts {
@@ -576,8 +578,20 @@ pub(crate) fn exif_facts(t: &Tiff<'_>, ifds: &[IfdView]) -> ExifFacts {
     let mut subsec = None;
     let mut offset = None;
     let (mut px, mut py) = (None, None);
+    let mut note = None;
     for ifd in ifds {
+        if !matches!(ifd.kind, IfdKind::Exif | IfdKind::Gps | IfdKind::Interop)
+            && f.colour.dng_preview.is_none()
+            && let Some(e) = ifd.get(0xC71A)
+        {
+            f.colour.dng_preview = t.uint(e);
+        }
         match ifd.kind {
+            IfdKind::Interop => {
+                if let Some(e) = ifd.get(0x0001) {
+                    f.colour.r03 |= t.ascii(e).is_some_and(|v| v.trim() == "R03");
+                }
+            }
             IfdKind::Chain(0) => {
                 for e in &ifd.entries {
                     match e.tag {
@@ -596,7 +610,11 @@ pub(crate) fn exif_facts(t: &Tiff<'_>, ifds: &[IfdView]) -> ExifFacts {
                         0x9291 => subsec = t.ascii(e),
                         0x9011 => offset = t.ascii(e),
                         0x829A | 0x829D | 0x8827 => f.camera.has_exposure = true,
-                        0x927C => f.camera.has_maker_notes = e.count > 0,
+                        0x927C => {
+                            f.camera.has_maker_notes = e.count > 0;
+                            note = Some(e);
+                        }
+                        0xA001 => f.colour.exif = t.uint(e),
                         0xA002 => px = t.uint(e),
                         0xA003 => py = t.uint(e),
                         _ => {}
@@ -605,6 +623,14 @@ pub(crate) fn exif_facts(t: &Tiff<'_>, ifds: &[IfdView]) -> ExifFacts {
             }
             _ => {}
         }
+    }
+    if let Some(e) = note
+        && f.camera
+            .make
+            .as_deref()
+            .is_some_and(|m| m.to_ascii_lowercase().starts_with("canon"))
+    {
+        f.colour.canon = crate::frame::canon_colour_space(t, e);
     }
     f.camera.date_time_original = dto.as_deref().and_then(parse_exif_datetime).map(|mut c| {
         c.millis = subsec.as_deref().and_then(parse_subsec).unwrap_or(0);
@@ -722,6 +748,7 @@ fn probe_jpeg(buf: &[u8], file_size: u64, base: u64, rec: &mut ProbeRecord) {
     if let Some(sof) = s.sof {
         rec.stored = Some(Dimensions::new(u32::from(sof.width), u32::from(sof.height)));
     }
+    let mut tags = crate::colour::ColourTags::default();
     if let Some((off, len)) = s.exif_tiff {
         let end = (off + len).min(buf.len());
         rec.exif_range = Some(ByteRange {
@@ -732,6 +759,7 @@ fn probe_jpeg(buf: &[u8], file_size: u64, base: u64, rec: &mut ProbeRecord) {
             let (ifds, bad) = t.walk();
             let facts = exif_facts(&t, &ifds);
             apply_exif(rec, &facts);
+            tags = facts.colour.clone();
             if bad {
                 rec.warnings
                     .push("EXIF block has an invalid IFD offset".into());
@@ -747,6 +775,18 @@ fn probe_jpeg(buf: &[u8], file_size: u64, base: u64, rec: &mut ProbeRecord) {
             rec.warnings
                 .push("EXIF block is not a valid TIFF structure".into());
         }
+    }
+    // The colour space (ADR-0113): a JPEG's own profile first; a preview inside a RAW container (`base` > 0) takes
+    // the container's tags only.
+    let icc = if base == 0 {
+        jpeg_profile(buf, &s, rec)
+    } else {
+        None
+    };
+    tags.dng_preview = None;
+    rec.colour = crate::colour::decide(icc, &tags);
+    if rec.colour.is_srgb() {
+        rec.icc.clear();
     }
     if let Some(issue) = s.issue {
         rec.error = Some(match issue {
@@ -764,6 +804,43 @@ fn probe_jpeg(buf: &[u8], file_size: u64, base: u64, rec: &mut ProbeRecord) {
             kind: ProbeErrorKind::Truncated,
             message: "truncated JPEG: no frame header".into(),
         });
+    }
+}
+
+/// The colour space a JPEG's embedded ICC profile stands for, when it has one in the probe window that applies; its
+/// payload ranges go to `rec.icc`. A profile that is malformed, rejected or beyond the window is ignored with a
+/// warning.
+fn jpeg_profile(
+    buf: &[u8],
+    s: &jpeg::JpegScan,
+    rec: &mut ProbeRecord,
+) -> Option<ps_model::ColourSpace> {
+    let ranges = match crate::colour::icc_ranges(&s.icc, 0) {
+        Ok(r) => r?,
+        Err(m) => {
+            rec.warnings.push(format!("{m}; colours shown as sRGB"));
+            return None;
+        }
+    };
+    let mut icc = Vec::new();
+    for r in &ranges {
+        let Some(b) = r.slice(buf) else {
+            rec.warnings
+                .push("the ICC profile lies beyond the probe window; colours shown as sRGB".into());
+            return None;
+        };
+        icc.extend_from_slice(b);
+    }
+    match crate::colour::profile_space(&icc) {
+        Ok(Some(space)) => {
+            rec.icc = ranges;
+            Some(space)
+        }
+        Ok(None) => None,
+        Err(m) => {
+            rec.warnings.push(format!("{m}; colours shown as sRGB"));
+            None
+        }
     }
 }
 
@@ -950,6 +1027,10 @@ fn probe_tiff(view: View<'_>, file_size: u64, format: Format, rec: &mut ProbeRec
         rec.has_alpha = ifd0.get(0x0152).is_some();
     }
     rec.preview = best_preview(tiff_previews(&t, &ifds, 0, file_size, is_raw));
+    // A RAW's preview takes the container's colour space (ADR-0113); TIFF profiles are not read yet.
+    if is_raw {
+        rec.colour = crate::colour::decide(None, &facts.colour);
+    }
 }
 
 fn probe_raf(buf: &[u8], file_size: u64, rec: &mut ProbeRecord) {
@@ -974,6 +1055,7 @@ fn probe_raf(buf: &[u8], file_size: u64, rec: &mut ProbeRecord) {
         probe_jpeg(j, u64::from(len), abs, &mut inner);
     }
     rec.camera = inner.camera;
+    rec.colour = inner.colour;
     rec.orientation = inner.orientation;
     rec.exif_range = inner.exif_range;
     rec.stored = inner.stored;
@@ -1007,6 +1089,7 @@ fn probe_cr3(buf: &[u8], rec: &mut ProbeRecord) {
             }
             let mut camera = CameraSignals::default();
             let mut orientation = None;
+            let mut tags = crate::colour::ColourTags::default();
             for c in bmff::children(buf, uuid, 16) {
                 let Some(t) = Tiff::parse(c.body(buf)) else {
                     continue;
@@ -1031,6 +1114,8 @@ fn probe_cr3(buf: &[u8], rec: &mut ProbeRecord) {
                         orientation = f.orientation;
                     }
                     b"CMT2" => {
+                        tags.exif = f.colour.exif;
+                        tags.r03 = f.colour.r03;
                         camera.date_time_original = f.camera.date_time_original;
                         camera.has_exposure = f.camera.has_exposure;
                         camera.has_maker_notes = f.camera.has_maker_notes;
@@ -1038,9 +1123,23 @@ fn probe_cr3(buf: &[u8], rec: &mut ProbeRecord) {
                             rec.stored = Some(d);
                         }
                     }
+                    b"CMT3" => {
+                        tags.canon = relabeled
+                            .iter()
+                            .find(|i| i.kind == IfdKind::Chain(0))
+                            .and_then(|i| crate::frame::canon_colour_space_in_ifd(&t, i));
+                    }
                     _ => {}
                 }
             }
+            let canon = camera
+                .make
+                .as_deref()
+                .is_some_and(|m| m.to_ascii_lowercase().starts_with("canon"));
+            if !canon {
+                tags.canon = None;
+            }
+            rec.colour = crate::colour::decide(None, &tags);
             apply_exif(
                 rec,
                 &ExifFacts {
