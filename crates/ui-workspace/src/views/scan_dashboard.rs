@@ -676,10 +676,11 @@ pub fn redated_text(n: u64) -> String {
     )
 }
 
-/// "40 files re-read for frame numbers (header only); 5 groups split" (ADR-0105).
+/// "40 files re-read for frame numbers and cut RAW files (header only); 5 groups split" (ADR-0105, ADR-0117).
 pub fn frame_reread_text(files: u64, split: u64) -> String {
     format!(
-        "{} {} re-read for frame numbers (header only, read-only); {} {} split into separate photos",
+        "{} {} re-read for frame numbers and cut RAW files (header only, read-only); {} {} split into separate \
+         photos",
         format_count(files),
         if files == 1 { "file" } else { "files" },
         format_count(split),

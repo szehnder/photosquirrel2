@@ -616,10 +616,7 @@ impl<'a> Exports<'a> {
         scopes: &[&dyn Fn(&FileFacts) -> bool],
     ) -> Result<Vec<u64>> {
         let r = self.catalog().read();
-        let stale: HashSet<FileId> = r
-            .files_below_meta_version(ps_model::META_LOGIC_VERSION)?
-            .into_iter()
-            .collect();
+        let stale: HashSet<FileId> = r.files_awaiting_meta_reread()?.into_iter().collect();
         if stale.is_empty() {
             return Ok(vec![0; scopes.len()]);
         }

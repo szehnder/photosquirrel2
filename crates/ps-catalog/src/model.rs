@@ -101,6 +101,13 @@ pub struct MetaReread {
     pub camera_original: bool,
     /// The metadata-rules version the facts were read under.
     pub version: u8,
+    /// Whether the frame facts above were read (false: a RAW structure check only, ADR-0117; the stored metadata is
+    /// left as it is).
+    pub merge_facts: bool,
+    /// The RAW structure check found the file cut short (ADR-0117): its "could not be read" placeholder stamp. Every
+    /// thumbed row of the same content loses its perceptual hashes and takes the stamp, so it cannot join or
+    /// outrank another file by look (ADR-0115); the dedup stamp changes, so the next regroup takes them up.
+    pub damaged: Option<ps_model::PreviewStamp>,
 }
 
 impl ProbeResult {

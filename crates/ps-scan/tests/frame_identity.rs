@@ -204,10 +204,17 @@ fn scenario_incremental_rescan_old_catalog_splits_merged_burst_frames_on_rescan(
     assert!(f35.iter().all(|p| p.contains("IMG_0035")), "{f35:?}");
     // The stored metadata now records the frames.
     let files = env.files(id);
+    assert!(files.values().all(|r| !ps_model::meta_reread_due(
+        r.format,
+        r.preview.is_some(),
+        r.meta_version
+    )));
     assert!(
         files
             .values()
-            .all(|r| r.meta_version == ps_model::META_LOGIC_VERSION)
+            .filter(|r| r.format.is_some_and(ps_model::Format::is_raw))
+            .all(|r| r.meta_version == ps_model::META_LOGIC_VERSION),
+        "a RAW re-read for frame identity is checked for a cut in the same read"
     );
 }
 

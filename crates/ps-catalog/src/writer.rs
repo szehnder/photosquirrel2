@@ -74,7 +74,8 @@ pub enum Command {
     Redate(Vec<Redate>),
     /// Frame identities re-read from the header of unchanged RAW rows (ADR-0105): merged into the stored
     /// metadata with `frame_id` and `meta_version`; the dedup stamp changes, so the next regroup takes them up.
-    /// Rows without metadata are left alone.
+    /// Rows without metadata are left alone. A RAW structure check (ADR-0117) stamps the version and, for a file
+    /// found cut short, drops the hashes of its content and stores its "could not be read" stamp.
     MetaReread(Vec<MetaReread>),
     /// Analysis results with stage `analyzed`. The file must have been probed.
     Analyzed(Vec<(FileKey, Box<AnalysisResult>)>),
@@ -1370,7 +1371,34 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
 /// A header re-read for frame identity (ADR-0105): the frame identity, maker notes and the camera-original signal
 /// merged into the stored metadata (or-ed: the full analysis may have seen more than the header shows), the
 /// `frame_id` column and the version. Everything else the analysis stored stays. Only analysed rows are written.
+/// A RAW structure check (ADR-0117) writes the version only, and a file found cut short its damaged stamp.
 fn set_meta_reread(c: &Connection, r: &MetaReread) -> rusqlite::Result<usize> {
+    if let Some(p) = r.damaged {
+        c.prepare_cached(
+            "UPDATE file SET phash = NULL, dhash = NULL, hash_version = NULL,
+                 preview_gen = ?3, preview_reason = ?4
+             WHERE stage = 3 AND content_id = (
+                 SELECT content_id FROM file WHERE source_id = ?1 AND rel_path = ?2)",
+        )?
+        .execute(params![
+            r.key.source.0,
+            r.key.path.as_bytes(),
+            i64::from(p.generation),
+            p.reason.as_str()
+        ])?;
+    }
+    if !r.merge_facts {
+        return c
+            .prepare_cached(
+                "UPDATE file SET meta_version = max(meta_version, ?3)
+                 WHERE source_id = ?1 AND rel_path = ?2 AND metadata IS NOT NULL",
+            )?
+            .execute(params![
+                r.key.source.0,
+                r.key.path.as_bytes(),
+                i64::from(r.version)
+            ]);
+    }
     let stored: Option<String> = c
         .prepare_cached(
             "SELECT metadata FROM file

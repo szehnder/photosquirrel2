@@ -293,14 +293,14 @@ fn stacked(c: &CompletionCounts, colors: &Colors) -> Div {
         }))
 }
 
-/// [`badge_label`], flagged while `rescan_needed` files wait for the frame-identity re-read (ADR-0108).
+/// [`badge_label`], flagged while `rescan_needed` files wait for the one-time header re-read (ADR-0108, ADR-0117).
 pub fn confirmed_badge_label(c: &CompletionCounts, rescan_needed: u64) -> String {
     let label = badge_label(c);
     if rescan_needed == 0 {
         return label;
     }
     format!(
-        "{label} · not confirmed: rescan first ({} files analysed before frame numbers were read)",
+        "{label} · not confirmed: rescan first ({} files analysed by an earlier version)",
         format_count(rescan_needed)
     )
 }

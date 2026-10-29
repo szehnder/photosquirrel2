@@ -168,8 +168,9 @@ pub struct DiffCounts {
     /// because the failure was transient or the decoder backend changed (ADR-0098).
     #[serde(default)]
     pub decode_retries: u64,
-    /// Unchanged RAW files analysed before frame identity existed whose header this run re-read for frame numbers
-    /// (read-only, at most the probe window; counted in `unchanged` too; ADR-0105).
+    /// Unchanged files an earlier version analysed whose header this run re-read once: RAW files (and Canon camera
+    /// JPEGs) for frame numbers (at most the probe window; ADR-0105), RAW files with preview pixels for a cut
+    /// (their directories; ADR-0117). Read-only; counted in `unchanged` too.
     #[serde(default)]
     pub frame_reread: u64,
     /// Unchanged placeholders made by an older decoder generation than this version's for their format: decoded

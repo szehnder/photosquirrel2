@@ -86,8 +86,9 @@ pub enum CleanupError {
     #[error("cleanup run {id} cannot be narrowed: {why}")]
     NotNarrowable { id: i64, why: String },
     #[error(
-        "{files} analysed files bearing on this cleanup were catalogued before frame numbers were read, so their \
-         groups may still hold two burst frames: rescan the source (and any source sharing groups with it) first"
+        "{files} analysed files bearing on this cleanup were catalogued by an earlier version and are not re-checked \
+         yet (burst frame numbers, RAW files cut short), so their groups are not trusted: rescan the source (and any \
+         source sharing groups with it) first"
     )]
     RescanFirst { files: u64 },
     #[error("the catalog is open read-only (another PhotoSquirrel process owns it)")]
@@ -820,10 +821,7 @@ impl<'a> Cleanups<'a> {
             return Err(CleanupError::LibraryOffline(library));
         }
         // ADR-0108: groups formed before frame identity are not trusted for a move (a plan made before the upgrade).
-        if !r
-            .files_below_meta_version(ps_model::META_LOGIC_VERSION)?
-            .is_empty()
-        {
+        if !r.files_awaiting_meta_reread()?.is_empty() {
             let planned: HashSet<FileId> = moves
                 .iter()
                 .filter(|m| m.state == MoveState::Planned)

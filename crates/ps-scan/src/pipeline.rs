@@ -252,6 +252,7 @@ fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput
             redecode: Some(identity),
             prior_failure: None,
             meta_reread: false,
+            structure_only: false,
             read_path: None,
         };
         out.counts.unchanged += 1;
@@ -1101,11 +1102,17 @@ fn process_file(
     };
 
     // A header re-read for frame identity (ADR-0105): the probe window, read-only, plus bounded targeted reads of
-    // directories and frame values beyond it (ADR-0108); the facts are merged into the stored metadata. No decode,
-    // no hashing, nothing else changes.
+    // directories and frame values beyond it (ADR-0108); the facts are merged into the stored metadata. A RAW with
+    // preview pixels is also checked for a cut over the same reads (ADR-0117); a row whose frame identity is current
+    // reads only the structure check's head and its directories. No decode, no hashing.
     if t.meta_reread {
-        let mut head = Vec::with_capacity((size as usize).min(ps_media::PROBE_LIMIT));
-        let read = read_into(&mut r, &mut head, ps_media::PROBE_LIMIT).and_then(|()| {
+        let want = if t.structure_only {
+            ps_media::raw_check::STRUCTURE_HEAD
+        } else {
+            ps_media::PROBE_LIMIT
+        };
+        let mut head = Vec::with_capacity((size as usize).min(want));
+        let read = read_into(&mut r, &mut head, want).and_then(|()| {
             let probe = ps_media::probe_bytes(&head, size, Some(rel.as_path()));
             let mut fetch = |off: u64, len: usize| -> io::Result<Vec<u8>> {
                 r.seek(SeekFrom::Start(off))?;
@@ -1113,21 +1120,29 @@ fn process_file(
                 (&mut r).take(len as u64).read_to_end(&mut v)?;
                 Ok(v)
             };
-            ps_media::reread_frame_facts(&head, size, &probe, &mut fetch)
-        });
-        let facts = match read {
-            Ok(Some(facts)) => facts,
-            Ok(None) => {
-                // A frame value beyond the bounds: not stamped, so the row is not taken for "no frame identity"; a
-                // later full analysis (a change or a refresh) reads it, and cleanup waits for it (ADR-0108).
-                log::info!(
-                    "{}: frame values lie beyond the re-read's bounds; left for a full analysis",
-                    t.path
-                );
-                ctx.progress.file_done(idx);
-                ctx.progress.set_dir(idx, reader, None);
-                return;
+            if t.structure_only {
+                ps_media::raw_check::check_by_reads(
+                    &head,
+                    size,
+                    &probe,
+                    &mut fetch,
+                    ANALYSIS_BUFFER_MAX_BYTES,
+                )
+                .map(|structure| (None, structure, probe))
+            } else {
+                ps_media::reread_header(
+                    &head,
+                    size,
+                    &probe,
+                    &mut fetch,
+                    true,
+                    ANALYSIS_BUFFER_MAX_BYTES,
+                )
+                .map(|h| (Some(h.facts), h.structure, probe))
             }
+        });
+        let (facts, structure, probe) = match read {
+            Ok(found) => found,
             Err(e) => {
                 if !is_cancel(&e) {
                     if ctx.root_available(idx) {
@@ -1140,14 +1155,64 @@ fn process_file(
             }
         };
         drop(file);
-        ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
-            key: FileKey::new(src.id, t.path.clone()),
-            frame_id: facts.frame_id,
-            maker_notes: facts.maker_notes,
-            camera_original: facts.camera_original,
-            version: ps_model::META_LOGIC_VERSION,
-        }]));
-        ctx.progress.frame_reread(idx);
+        let key = FileKey::new(src.id, t.path.clone());
+        let damaged = match &structure {
+            ps_media::raw_check::Structure::Cut(cut) => cut_found(ctx, idx, &t, &key, &probe, cut),
+            ps_media::raw_check::Structure::Unknown => {
+                log::info!(
+                    "{}: its directories lie beyond the structure check's bounds and it is too large to read whole; \
+                     not judged",
+                    t.path
+                );
+                None
+            }
+            ps_media::raw_check::Structure::Complete => None,
+        };
+        match facts {
+            // A frame value beyond the bounds: not stamped, so the row is not taken for "no frame identity"; a later
+            // full analysis (a change or a refresh) reads it, and cleanup waits for it (ADR-0108).
+            Some(None) => {
+                log::info!(
+                    "{}: frame values lie beyond the re-read's bounds; left for a full analysis",
+                    t.path
+                );
+                if damaged.is_some() {
+                    ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
+                        key,
+                        frame_id: None,
+                        maker_notes: false,
+                        camera_original: false,
+                        version: 0,
+                        merge_facts: false,
+                        damaged,
+                    }]));
+                }
+            }
+            Some(Some(facts)) => {
+                ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
+                    key,
+                    frame_id: facts.frame_id,
+                    maker_notes: facts.maker_notes,
+                    camera_original: facts.camera_original,
+                    version: ps_model::META_LOGIC_VERSION,
+                    merge_facts: true,
+                    damaged,
+                }]));
+                ctx.progress.frame_reread(idx);
+            }
+            None => {
+                ctx.submit(Command::MetaReread(vec![ps_catalog::MetaReread {
+                    key,
+                    frame_id: None,
+                    maker_notes: false,
+                    camera_original: false,
+                    version: ps_model::META_LOGIC_VERSION,
+                    merge_facts: false,
+                    damaged,
+                }]));
+                ctx.progress.frame_reread(idx);
+            }
+        }
         ctx.progress.file_done(idx);
         ctx.progress.set_dir(idx, reader, None);
         return;
@@ -1454,8 +1519,41 @@ fn reread_gone(ctx: &RunCtx, idx: usize, t: &Todo) {
         maker_notes: false,
         camera_original: false,
         version: ps_model::META_LOGIC_VERSION,
+        merge_facts: false,
+        damaged: None,
     }]));
     ctx.progress.file_done(idx);
+}
+
+/// A RAW the one-time structure check found cut short (ADR-0117): its content's thumbnail becomes the "could not
+/// be read" placeholder, and it is reported like the analysis reports a cut RAW (ADR-0115). Returns the stamp the
+/// catalog stores with the hashes dropped; `None` when the thumbnail could not be stored (the row keeps its
+/// version, so the next rescan checks it again).
+fn cut_found(
+    ctx: &RunCtx,
+    idx: usize,
+    t: &Todo,
+    key: &FileKey,
+    probe: &ProbeRecord,
+    cut: &ps_media::raw_check::Truncation,
+) -> Option<ps_model::PreviewStamp> {
+    let identity = ctx.catalog.read().file(key).ok().flatten()?.identity?;
+    let e = DecodeError::Failed(cut.message());
+    let mut thumb = placeholder_of(probe, None, &e);
+    let stamp = stamp(ctx, &mut thumb, probe.format)?;
+    if let Err(err) = ctx.thumbs.put_many([(&identity, &thumb)]) {
+        log::warn!("{}: could not store its placeholder ({err})", t.path);
+        return None;
+    }
+    ctx.progress.error(RecentError {
+        source: ctx.sources[idx].id,
+        path: t.path.clone(),
+        stage: t.stage,
+        message: format!(
+            "could not be read ({e}); it is catalogued with a placeholder and exported as is"
+        ),
+    });
+    Some(stamp)
 }
 
 fn reread_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, e: &io::Error) {

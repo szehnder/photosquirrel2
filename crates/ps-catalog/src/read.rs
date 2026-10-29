@@ -72,19 +72,34 @@ impl Readers {
         f(&self.conns[i].lock())
     }
 
-    /// Analysed rows whose stored metadata predates the metadata rules `version` (ADR-0105): the rows a rescan still
-    /// re-reads for frame identity. Empty on a catalog older than migration 23 (opened read-only).
-    pub fn files_below_meta_version(&self, version: u8) -> Result<Vec<FileId>> {
+    /// Analysed rows whose stored metadata predates the rules they need ([`ps_model::meta_reread_due`]): the rows a
+    /// rescan still re-reads for frame identity (ADR-0105, any row below version 1) or checks for a cut (ADR-0117,
+    /// a present RAW-format row with preview pixels below [`ps_model::META_LOGIC_VERSION`]; a missing one cannot be
+    /// re-read, and cleanup checks a RAW's structure itself before a move). Empty on a catalog older than
+    /// migration 23 (opened read-only).
+    pub fn files_awaiting_meta_reread(&self) -> Result<Vec<FileId>> {
         if self.schema_version()? < crate::db::FRAME_IDENTITY_MIGRATION.version {
             return Ok(Vec::new());
         }
+        let structure = if self.schema_version()? >= crate::db::PREVIEW_GEN_MIGRATION.version {
+            "OR (meta_version < ?2 AND format LIKE 'raw:%' AND preview_reason IS NULL
+                 AND missing_since IS NULL)"
+        } else {
+            "OR (meta_version < ?2 AND format LIKE 'raw:%' AND missing_since IS NULL)"
+        };
         self.with(|c| {
-            let mut stmt = c.prepare_cached(
+            let mut stmt = c.prepare_cached(&format!(
                 "SELECT id FROM file
-                 WHERE meta_version < ?1 AND stage = 3 AND content_id IS NOT NULL",
-            )?;
+                 WHERE stage = 3 AND content_id IS NOT NULL AND (meta_version < ?1 {structure})"
+            ))?;
             let ids = stmt
-                .query_map([i64::from(version)], |r| Ok(FileId(r.get(0)?)))?
+                .query_map(
+                    [
+                        i64::from(ps_model::FRAME_META_VERSION),
+                        i64::from(ps_model::META_LOGIC_VERSION),
+                    ],
+                    |r| Ok(FileId(r.get(0)?)),
+                )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(ids)
         })

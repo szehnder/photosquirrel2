@@ -449,7 +449,7 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
     if s.diff.frame_reread > 0 {
         let split = s.grouping.as_ref().map_or(0, |g| g.groups_split);
         println!(
-            "{} re-read for frame numbers (header only, read-only), {} split",
+            "{} re-read for frame numbers and cut RAW files (header only, read-only), {} split",
             files(s.diff.frame_reread),
             if split == 1 {
                 "1 group".to_owned()

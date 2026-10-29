@@ -27,10 +27,14 @@
 //!   from `discovered` when it has no dimensions, is larger than the analysis buffer or is a video. A placeholder
 //!   at the current generation (a variant not supported, data that could not be read) is not read.
 //! - **re-read for frame identity**: an unchanged, analysed row analysed before frame identity existed
-//!   (`meta_version` below [`ps_model::META_LOGIC_VERSION`]: RAW-format rows and the Canon camera files of their
-//!   capture seconds, catalog migration 23) has its probe window read again (at most [`ps_media::PROBE_LIMIT`]
-//!   bytes, read-only, no decode, no hashing) and its frame identity merged into the stored metadata, once
-//!   (ADR-0105). A file in the quarantine folder is read there.
+//!   (`meta_version` 0: RAW-format rows and the Canon camera files of their capture seconds, catalog migration 23)
+//!   has its probe window read again (at most [`ps_media::PROBE_LIMIT`] bytes, read-only, no decode, no hashing)
+//!   and its frame identity merged into the stored metadata, once (ADR-0105). A file in the quarantine folder is
+//!   read there.
+//! - **re-checked for a cut**: an unchanged RAW-format row with preview pixels stored before the structure check
+//!   (`meta_version` 1, ADR-0117) has its first [`ps_media::raw_check::STRUCTURE_HEAD`] bytes and its directories
+//!   read (bounded targeted reads), once; a row found cut short loses its hashes and gets the "could not be read"
+//!   placeholder. A row of metadata version 0 gets both checks from one read.
 //! - **needs refresh**: an unchanged, finished file probed before classification facts were stored (catalog
 //!   migration 13) is counted; only with [`ScanOptions::refresh_analysis`](crate::ScanOptions) is its probe
 //!   data read again (at most [`ps_media::PROBE_LIMIT`] bytes, read-only) to re-classify it (ADR-0071).
@@ -74,9 +78,13 @@ pub struct Todo {
     /// A re-decode of a file whose decode failed with the decoder present (ADR-0098): that failure, so a new one
     /// counts its attempts on.
     pub prior_failure: Option<ps_model::DecodeFailure>,
-    /// A header re-read of an unchanged RAW row analysed before frame identity (ADR-0105): read the probe window
-    /// only (read-only, no decode, no hashing) and merge its frame identity into the stored metadata.
+    /// A header re-read of an unchanged row an earlier version analysed ([`ps_model::meta_reread_due`]): before frame
+    /// identity (ADR-0105), read the probe window and merge its frame identity into the stored metadata; for a RAW
+    /// with preview pixels, also check its structure for a cut (ADR-0117). Read-only, no decode, no hashing.
     pub meta_reread: bool,
+    /// With `meta_reread`: the stored frame identity is current (metadata version 1), so only the RAW structure is
+    /// checked, from the file's first [`ps_media::raw_check::STRUCTURE_HEAD`] bytes and its directories.
+    pub structure_only: bool,
     /// Where to read the file when it is not at `path`: a frame-identity re-read of a file a cleanup run moved
     /// into the source's quarantine folder (ADR-0105). The catalog row stays at `path`.
     pub read_path: Option<RelPath>,
@@ -132,13 +140,25 @@ fn catalogued_without_dimensions(r: &ps_catalog::FileRecord, stat: &StatFingerpr
         && stat.size > ps_media::PROBE_LIMIT as u64
 }
 
-/// An analysed row whose stored metadata predates the current metadata rules ([`ps_model::META_LOGIC_VERSION`],
-/// ADR-0105). Catalog migration 23 marks current every row but the RAW-format ones and the Canon camera files of the
-/// same capture second as one; rows analysed since are current.
+/// An analysed row whose stored metadata predates the metadata rules it needs ([`ps_model::meta_reread_due`]):
+/// frame identity (ADR-0105; catalog migration 23 marks current every row but the RAW-format ones and the Canon
+/// camera files of the same capture second as one), or, for a RAW with preview pixels, the structure check
+/// (ADR-0117). Rows analysed since are current.
 fn needs_frame_reread(r: &ps_catalog::FileRecord) -> bool {
     r.stage == Stage::Thumbed
-        && r.meta_version < ps_model::META_LOGIC_VERSION
         && r.identity.is_some()
+        && ps_model::meta_reread_due(r.format, r.preview.is_some(), r.meta_version)
+}
+
+/// The bytes a header re-read of `r` reads at most up front: the probe window for frame identity, the structure
+/// check's head otherwise (directories beyond it are fetched by bounded targeted reads).
+fn reread_head(r: &ps_catalog::FileRecord) -> u64 {
+    let head = if r.meta_version >= ps_model::FRAME_META_VERSION {
+        ps_media::raw_check::STRUCTURE_HEAD
+    } else {
+        ps_media::PROBE_LIMIT
+    };
+    r.stat.size.min(head as u64)
 }
 
 /// A thumbed placeholder an older decoder generation made (ADR-0109): this version may decode it now. Rows waiting
@@ -228,9 +248,10 @@ pub fn diff(
                             redecode: None,
                             prior_failure: None,
                             meta_reread: true,
+                            structure_only: r.meta_version >= ps_model::FRAME_META_VERSION,
                             read_path: Some(q),
                         });
-                        out.bytes_to_process += r.stat.size.min(ps_media::PROBE_LIMIT as u64);
+                        out.bytes_to_process += reread_head(r);
                     }
                 } else {
                     out.counts.missing += 1;
@@ -269,6 +290,7 @@ pub fn diff(
                     redecode: None,
                     prior_failure: None,
                     meta_reread: false,
+                    structure_only: false,
                     read_path: None,
                 };
                 match rec {
@@ -405,10 +427,10 @@ pub fn diff(
                             if needs_frame_reread(r) && !redecoding && !refreshing {
                                 out.todo.push(Todo {
                                     meta_reread: true,
+                                    structure_only: r.meta_version >= ps_model::FRAME_META_VERSION,
                                     ..todo(r.stage, false)
                                 });
-                                out.bytes_to_process +=
-                                    w.stat.size.min(ps_media::PROBE_LIMIT as u64);
+                                out.bytes_to_process += reread_head(r);
                             }
                             if r.date_version < DATE_LOGIC_VERSION && r.capture_provenance.is_some()
                             {

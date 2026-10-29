@@ -489,10 +489,11 @@ pub fn superseded_label(n: u64) -> String {
     }
 }
 
-/// What a report says about a source whose groups wait for the frame-identity re-read (ADR-0108).
-pub const RESCAN_NEEDED_HINT: &str = "analysed before frame numbers were read: their groups may still hold two burst \
-     frames, so this is not confirmed and cleanup waits. Rescan the source (and any source sharing groups with it) \
-     first.";
+/// What a report says about a source whose groups wait for the one-time header re-read (frame identity, ADR-0108;
+/// the RAW structure check, ADR-0117).
+pub const RESCAN_NEEDED_HINT: &str = "analysed by an earlier version and not re-checked yet: their groups may still \
+     hold two burst frames or a RAW file cut short, so this is not confirmed and cleanup waits. Rescan the source \
+     (and any source sharing groups with it) first.";
 
 /// What to do about superseded files, for reports.
 pub const SUPERSEDED_HINT: &str = "the library holds only a lesser copy of these photos; `export run --upgrade` \
