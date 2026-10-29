@@ -209,6 +209,8 @@ pub struct FilterBar {
     pub dispositions: Vec<Disposition>,
     /// Only items without a preview, of this reason and format when given (ADR-0109).
     pub no_preview: Option<ps_model::NoPreviewFilter>,
+    /// Only items of these sources (the damaged files of a run or a report's source, ADR-0115).
+    pub sources: Option<Vec<ps_model::SourceId>>,
 }
 
 impl FilterBar {
@@ -314,6 +316,11 @@ impl FilterBar {
             next.no_preview = None;
             out.push(("no-preview".to_owned(), no_preview_label(np), next));
         }
+        if let Some(sources) = &self.sources {
+            let mut next = self.clone();
+            next.sources = None;
+            out.push(("sources".to_owned(), sources_label(sources.len()), next));
+        }
         out
     }
 
@@ -324,6 +331,7 @@ impl FilterBar {
                 camera_model: self.camera.clone(),
                 has_gps: self.gps,
                 no_preview: self.no_preview.clone(),
+                sources: self.sources.clone(),
                 ..library_filter()
             },
             sort: self.sort,
@@ -369,6 +377,15 @@ pub fn no_preview_label(np: &ps_model::NoPreviewFilter) -> String {
         s.push_str(f.label());
     }
     s
+}
+
+/// The chip of a source restriction: "On 1 source", "On 3 sources".
+pub fn sources_label(n: usize) -> String {
+    if n == 1 {
+        "On 1 source".to_owned()
+    } else {
+        format!("On {n} sources")
+    }
 }
 
 /// The notice's text: "37 TIFF files can get previews now" (formats with fillable placeholders, most first);
@@ -624,6 +641,22 @@ impl LibraryView {
         self.set_filters(f, cx);
     }
 
+    /// Show only the damaged files of `sources` (could not be read, ADR-0115): the No preview filter for that
+    /// reason on those sources (every source when empty), on an otherwise unfiltered Library (the run summary's and
+    /// the Reports view's Show).
+    pub fn show_damaged(&mut self, sources: Vec<ps_model::SourceId>, cx: &mut Context<'_, Self>) {
+        let f = FilterBar {
+            sort: self.filters.sort,
+            no_preview: Some(ps_model::NoPreviewFilter {
+                reason: Some(ps_model::PreviewReason::Unreadable),
+                format: None,
+            }),
+            sources: (!sources.is_empty()).then_some(sources),
+            ..FilterBar::default()
+        };
+        self.set_filters(f, cx);
+    }
+
     /// While the shell reports activity (a scan, Fill in previews), re-query every 2 s keeping the top item in
     /// place; when the activity ends (or a watched Fill in previews job ended between two polls), re-query once
     /// more and read the placeholder counts again.
@@ -746,7 +779,8 @@ impl LibraryView {
             && f.gps.is_none()
             && f.insight == InsightCriteria::default()
             && f.dispositions.is_empty()
-            && f.no_preview.is_none();
+            && f.no_preview.is_none()
+            && f.sources.is_none();
         let files = match (f.stacks_off, unfiltered, f.kind) {
             (false, true, None) => cx.try_global::<LibraryTotals>().map_or(0, |t| t.files),
             _ => 0,

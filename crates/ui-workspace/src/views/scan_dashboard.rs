@@ -415,7 +415,8 @@ fn summary_card(
                     cx,
                 ))
                 .child(kit::stat("summary-skipped", "skipped", format_count(o.skipped), cx))
-                .child(kit::stat("summary-failed", "failed", format_count(o.failed), cx)),
+                .child(kit::stat("summary-failed", "failed", format_count(o.failed), cx))
+                .child(kit::stat("summary-damaged", "damaged", format_count(o.damaged), cx)),
         )
         .when(!incomplete.is_empty(), |d| {
             d.child(
@@ -457,6 +458,7 @@ fn summary_card(
                     .child(text),
             )
         })
+        .children(damaged_notice(o, cx))
         .children(undecoded_notices(m, o, cx))
         .when(o.needs_refresh > 0, |d| {
             let mon = m.entity.clone();
@@ -494,6 +496,76 @@ fn summary_card(
             )
         })
         .into_any_element()
+}
+
+/// "2 damaged files could not be read ..." (ADR-0115): what the run summary's warning says.
+pub fn damaged_text(n: u64) -> String {
+    let (files, they, them) = if n == 1 {
+        ("1 damaged file".to_owned(), "It is", "it")
+    } else {
+        (
+            format!("{} damaged files", format_count(n)),
+            "They are",
+            "them",
+        )
+    };
+    format!(
+        "{files} could not be read (cut short or corrupt). {they} catalogued and copied as is; keep the original \
+         card or drive until you have checked {them}."
+    )
+}
+
+/// The run summary's warning about damaged files on the run's sources, with Show (the Library filtered to them).
+fn damaged_notice(o: &RunOverview, cx: &App) -> Option<AnyElement> {
+    if o.damaged == 0 {
+        return None;
+    }
+    let colors = *ui_theme::colors(cx);
+    let text = damaged_text(o.damaged);
+    let sources = o.sources.clone();
+    Some(
+        h_flex()
+            .w_full()
+            .gap(Tokens::space(2.0))
+            .items_center()
+            .p(Tokens::space(2.5))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(Colors::tint(colors.warning, 0.10))
+            .child(
+                Icon::new(IconName::TriangleAlert)
+                    .size(Tokens::icon_sm())
+                    .text_color(colors.warning),
+            )
+            .child(
+                div()
+                    .id("summary-damaged-notice")
+                    .test_support()
+                    .aria_label(SharedString::from(text.clone()))
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text)
+                    .child(text),
+            )
+            .child(kit::button(
+                "summary-damaged-show",
+                "Show",
+                Some(IconName::Images),
+                Tone::Secondary,
+                kit::on(move |_, window, cx| show_damaged(sources.clone(), window, cx)),
+                cx,
+            ))
+            .into_any_element(),
+    )
+}
+
+/// Open the Library on the damaged files of `sources` (every source when empty), from a click inside a view.
+pub fn show_damaged(sources: Vec<SourceId>, window: &mut Window, cx: &mut App) {
+    if let Some(shell) = crate::shell::Shell::for_window(window, cx) {
+        window.defer(cx, move |window, cx| {
+            shell.update(cx, |s, cx| s.show_damaged(sources, window, cx));
+        });
+    }
 }
 
 /// "3 HEIC photos have no preview" (one line per format still waiting for a decoder, ADR-0091).

@@ -122,6 +122,8 @@ struct State {
     stop_at_ms: Option<u64>,
     /// Files waiting for a decoder, reported by the summary.
     undecoded: Vec<ps_model::Undecoded>,
+    /// Damaged files the summary reports (ADR-0115).
+    damaged: u64,
 }
 
 /// A deterministic, I/O-free scan engine.
@@ -166,6 +168,7 @@ impl FakeScanService {
                 started_at_ms: 0,
                 stop_at_ms: None,
                 undecoded: Vec::new(),
+                damaged: 0,
             }),
             snapshots: AtomicU64::new(0),
         }
@@ -593,12 +596,18 @@ impl FakeScanService {
             frame_reread: 0,
             groups_split: 0,
             undecoded: s.undecoded.clone(),
+            damaged: s.damaged,
         })
     }
 
     /// Files waiting for a decoder that the simulated run's summary reports (scripted screenshots).
     pub fn set_undecoded(&self, u: Vec<ps_model::Undecoded>) {
         self.lock().undecoded = u;
+    }
+
+    /// Damaged files the simulated run's summary reports (headless tests, scripted screenshots).
+    pub fn set_damaged(&self, n: u64) {
+        self.lock().damaged = n;
     }
 }
 

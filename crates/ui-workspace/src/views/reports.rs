@@ -305,8 +305,54 @@ pub fn confirmed_badge_label(c: &CompletionCounts, rescan_needed: u64) -> String
     )
 }
 
+/// "1 damaged file: copied as is, but ..." (ADR-0115): the source's damaged files, with Show (the Library on
+/// them).
+pub fn damaged_text(n: u64) -> String {
+    format!(
+        "{}: {}.",
+        ps_service::library::damaged_label(n).replacen(&n.to_string(), &format_count(n), 1),
+        ps_service::library::DAMAGED_HINT
+    )
+}
+
+fn damaged_row(sid: SourceId, n: u64, colors: &Colors, cx: &App) -> AnyElement {
+    let text = damaged_text(n);
+    h_flex()
+        .w_full()
+        .gap(Tokens::space(2.0))
+        .items_center()
+        .child(
+            Icon::new(IconName::TriangleAlert)
+                .size(Tokens::icon_sm())
+                .text_color(colors.warning),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!("report-damaged-{}", sid.0)))
+                .test_support()
+                .aria_label(SharedString::from(text.clone()))
+                .flex_1()
+                .min_w_0()
+                .text_size(Tokens::text_sm())
+                .text_color(colors.text)
+                .child(text),
+        )
+        .child(kit::button(
+            SharedString::from(format!("report-damaged-show-{}", sid.0)),
+            "Show",
+            Some(IconName::Images),
+            Tone::Secondary,
+            kit::on(move |_, window, cx| {
+                crate::views::scan_dashboard::show_damaged(vec![sid], window, cx)
+            }),
+            cx,
+        ))
+        .into_any_element()
+}
+
 fn badge(c: &CompletionCounts, rescan_needed: u64, id: String, colors: &Colors) -> AnyElement {
-    let ok = c.fully_accounted() && rescan_needed == 0;
+    // Damaged files keep the badge's words (owner's choice, ADR-0115) but draw it in the warning colour.
+    let ok = c.fully_accounted() && rescan_needed == 0 && c.damaged == 0;
     let label = confirmed_badge_label(c, rescan_needed);
     h_flex()
         .id(SharedString::from(id))
@@ -740,6 +786,9 @@ impl Render for ReportsView {
                             )
                         }),
                 );
+            if s.counts.damaged > 0 {
+                card = card.child(damaged_row(sid, s.counts.damaged, &colors, cx));
+            }
             if open {
                 let columns: Vec<Disposition> = Disposition::ALL
                     .into_iter()

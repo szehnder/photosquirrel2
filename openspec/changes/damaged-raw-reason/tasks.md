@@ -34,8 +34,8 @@ Ships in 0.3.x (ROADMAP row 33, priority 1). **ADR-0115**, **no migration** (`fi
 
 ## 5. App
 
-- [ ] 5.1 `RunOverview.damaged`; the dashboard's damaged stat and warning notice with Show (D6); `FakeScans` gets a setter like `set_undecoded`. Verify: `scenario_scan_progress_dashboard_warns_about_damaged_files` (headless `#[gpui_kit::test]`); `cargo xtask tokens`.
-- [ ] 5.2 Reports view damaged line and drill-down (D7). Verify: `scenario_completion_report_reports_view_drills_into_damaged_files` (headless).
+- [x] 5.1 `RunOverview.damaged`; the dashboard's damaged stat and warning notice with Show (D6); `FakeScans` gets a setter like `set_undecoded`. Verify: `scenario_scan_progress_dashboard_warns_about_damaged_files` (headless `#[gpui_kit::test]`); `cargo xtask tokens`. Done: `RunOverview.damaged` (one aggregate, both branches), `FakeScanService::set_damaged`, the "damaged" stat, the warning notice and Show (Library on the No preview "could not be read" filter for the run's sources, `FilterBar.sources`); `ui-workspace/tests/damaged.rs` scenario passes ("damaged 2", Show lists exactly the 2 cut CR2s of the card, not the other source's); `cargo xtask tokens` OK.
+- [x] 5.2 Reports view damaged line and drill-down (D7). Verify: `scenario_completion_report_reports_view_drills_into_damaged_files` (headless). Done: the source card's damaged line and Show; the badge reads "100% accounted for, 1 damaged" in the warning colour; the scenario passes (the gallery lists exactly the cut CR2).
 - [x] 5.3 The outdated-placeholder sentence of the "Why no preview?" dialog (D8). Verify: a `ps-service` test on a generation-0 RAW placeholder's `PreviewHelp.sentence`; `grep -rn "an older version could not, so" crates` finds nothing. Done: new sentence; `outdated_raw_placeholder_sentence_promises_a_second_look` (a generation-0 CR2 placeholder); the grep finds nothing.
 - [ ] 5.4 Screenshot review: the dashboard summary and the Reports view with a fixture catalog holding cut CR2s (`cargo xtask screenshot`, light and dark), fixture data only. Verify: PNGs under `target/` reviewed; no colour or size literals.
 

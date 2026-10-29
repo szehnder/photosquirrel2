@@ -490,6 +490,20 @@ impl Shell {
         }
     }
 
+    /// Open the Library on the damaged files of `sources` (ADR-0115): the run summary's and the Reports view's
+    /// "Show".
+    pub fn show_damaged(
+        &mut self,
+        sources: Vec<ps_model::SourceId>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.show_library(LibraryMode::Grid, window, cx);
+        if let Some(lib) = crate::views::library::LibraryHub::library(cx) {
+            lib.update(cx, |l, cx| l.show_damaged(sources, cx));
+        }
+    }
+
     pub fn toggle_panel(&mut self, side: Side, window: &mut Window, cx: &mut Context<'_, Self>) {
         match side {
             Side::Navigator => self.layout.navigator_open = !self.layout.navigator_open,

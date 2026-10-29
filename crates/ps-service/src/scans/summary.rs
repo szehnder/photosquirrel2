@@ -49,6 +49,9 @@ pub struct RunOverview {
     /// Files of the run's sources still waiting for a decoder, per format, with the decoder's availability now
     /// and the reason and fix when it is missing (one aggregate query when the summary is read).
     pub undecoded: Vec<ps_model::Undecoded>,
+    /// Present files of the run's sources catalogued as could not be read (damaged, ADR-0115), from one aggregate
+    /// when the summary is read, so an unchanged rescan still shows them.
+    pub damaged: u64,
 }
 
 /// One stored per-file error of a run.
@@ -93,6 +96,7 @@ impl ScanService {
             .map(|e| (e - rec.started_at_ms).max(0) as u64)
             .unwrap_or(0);
         let catalog_groups = || r.group_totals().map(|(g, _, _)| g).unwrap_or(0);
+        let damaged = r.damaged_count(&rec.sources)?;
         Ok(match report.summary {
             Some(s) => RunOverview {
                 run,
@@ -124,6 +128,7 @@ impl ScanService {
                 frame_reread: s.diff.frame_reread,
                 groups_split: s.grouping.as_ref().map_or(0, |g| g.groups_split),
                 undecoded: self.undecoded(&rec.sources).unwrap_or_default(),
+                damaged,
             },
             None => RunOverview {
                 run,
@@ -152,6 +157,7 @@ impl ScanService {
                 frame_reread: 0,
                 groups_split: 0,
                 undecoded: self.undecoded(&rec.sources).unwrap_or_default(),
+                damaged,
             },
         })
     }
