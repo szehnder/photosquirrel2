@@ -400,6 +400,22 @@ fn foreground_as(
     Ok(())
 }
 
+/// The summary's line about damaged files (ADR-0115): catalogued and copied as is, keep the original.
+pub fn damaged_line(n: u64) -> Option<String> {
+    (n > 0).then(|| {
+        let (files, it) = if n == 1 {
+            ("1 damaged file".to_owned(), "it")
+        } else {
+            (format!("{n} damaged files"), "them")
+        };
+        format!(
+            "{files} could not be read (cut short or corrupt). {} catalogued and copied as is; keep the original \
+             card or drive until you have checked {it}. List: `photosquirrel-cli report`",
+            if n == 1 { "It is" } else { "They are" }
+        )
+    })
+}
+
 fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
     println!(
         "run {run} {}: {} files processed ({} read) in {}; {} new, {} changed, {} unchanged, {} missing, {} \
@@ -415,6 +431,9 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
         s.diff.quarantined,
         s.errors
     );
+    if let Some(l) = damaged_line(s.damaged) {
+        println!("{l}");
+    }
     if s.diff.redated > 0 {
         println!(
             "{} capture dates updated by the current date rules (folder names, local days; no file read)",

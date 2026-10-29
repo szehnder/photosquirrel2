@@ -1,5 +1,6 @@
 //! Scenarios of `quiet-decoder-logs`: rawler's per-file warnings hidden by the default log filter, shown again by
-//! `RUST_LOG`, and a damaged RAW file still reported by the run whatever the filter. Drives the built binary.
+//! `RUST_LOG`, and a damaged RAW file still reported by the run whatever the filter (since `damaged-raw-reason`:
+//! as "could not be read", an error and a damaged file, ADR-0115). Drives the built binary.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::Path;
@@ -116,18 +117,31 @@ fn scenario_scan_progress_damaged_raw_file_still_reported_under_the_default_filt
     let (data, o) = scan(card.path(), None, true);
     let err = stderr(&o);
     assert!(!err.contains("rawler"), "{err}");
-    // The run took the file in and finished.
+    // The run took the file in and finished, and counts it as an error and a damaged file (ADR-0115).
     let summary = json_line(&o, "summary");
     assert_eq!(summary["data"]["status"], "completed", "{summary}");
     assert_eq!(summary["data"]["processed"], 1, "{summary}");
     assert_eq!(summary["data"]["diff"]["new"], 1, "{summary}");
+    assert_eq!(summary["data"]["errors"], 1, "{summary}");
+    assert_eq!(summary["data"]["damaged"], 1, "{summary}");
+    // The run lists it among its errors (its last snapshot carries them).
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    let last = out
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "snapshot")
+        .last()
+        .unwrap_or_else(|| panic!("no snapshot: {out}"));
+    let listed = last["data"]["recent_errors"].to_string();
+    assert!(listed.contains("IMG_0034.CR2"), "{last}");
+    assert!(listed.contains("cut short"), "{last}");
     // Its outcome, a placeholder with the reason, comes from PhotoSquirrel's own result.
     let st = ok(data.path(), None, &["--json", "previews", "status"]);
     let v: Value = serde_json::from_slice(&st.stdout).unwrap();
     let rows = v["data"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["format"], "raw:cr2", "{rows:?}");
-    assert_eq!(rows[0]["reason"], "unsupported_variant", "{rows:?}");
+    assert_eq!(rows[0]["reason"], "unreadable", "{rows:?}");
     assert_eq!(rows[0]["count"], 1, "{rows:?}");
     let text = String::from_utf8_lossy(&ok(data.path(), None, &["previews", "status"]).stdout)
         .into_owned();
@@ -135,6 +149,12 @@ fn scenario_scan_progress_damaged_raw_file_still_reported_under_the_default_filt
     // The same scan with rawler's warnings shown: the log has more to say, the outcome is the same.
     let (data, o) = scan(card.path(), Some("rawler=warn"), true);
     assert!(stderr(&o).contains("WARN  rawler"), "{}", stderr(&o));
+    let summary = json_line(&o, "summary");
+    assert_eq!(
+        (&summary["data"]["errors"], &summary["data"]["damaged"]),
+        (&Value::from(1), &Value::from(1)),
+        "{summary}"
+    );
     let st = ok(data.path(), None, &["--json", "previews", "status"]);
     let again: Value = serde_json::from_slice(&st.stdout).unwrap();
     assert_eq!(again["data"], v["data"]);

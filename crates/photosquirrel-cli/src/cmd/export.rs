@@ -381,6 +381,8 @@ struct CountsOut {
     pending_in_quarantine: u64,
     /// Of those, the ones a regroup moved out of the group their library copy covers (ADR-0105).
     pending_regrouped: u64,
+    /// Files catalogued as could not be read (damaged, ADR-0115), whatever their disposition.
+    damaged: u64,
     fully_accounted: bool,
 }
 
@@ -396,6 +398,7 @@ fn counts(c: &CompletionCounts) -> CountsOut {
             .collect(),
         pending_in_quarantine: c.pending_in_quarantine,
         pending_regrouped: c.pending_regrouped,
+        damaged: c.damaged,
         fully_accounted: c.fully_accounted(),
     }
 }
@@ -417,6 +420,8 @@ struct SourceOut {
     /// Analysed files bearing on the source that wait for the frame-identity re-read (ADR-0108): the badge is not
     /// confirmed and cleanup is refused until a rescan.
     rescan_needed: u64,
+    /// Every damaged file of the source (ADR-0115), relative to its root.
+    damaged_files: Vec<String>,
     folders: Option<Vec<FolderOut>>,
 }
 
@@ -461,6 +466,11 @@ fn report_out(
                     s.badge.label()
                 },
                 rescan_needed: s.rescan_needed,
+                damaged_files: s
+                    .damaged_files
+                    .iter()
+                    .map(|p| p.display().into_owned())
+                    .collect(),
                 folders: folders.then(|| {
                     s.folders
                         .iter()
@@ -492,6 +502,9 @@ fn report_out(
     })
 }
 
+/// Damaged files the text report lists per source (`--json` lists every one).
+const DAMAGED_LISTED: usize = 20;
+
 fn print_report(o: &ReportOut) {
     println!(
         "against library {}{}",
@@ -521,6 +534,19 @@ fn print_report(o: &ReportOut) {
                 s.rescan_needed,
                 ps_export::RESCAN_NEEDED_HINT
             );
+        }
+        if s.counts.damaged > 0 {
+            println!(
+                "    {}: {}",
+                ps_export::damaged_label(s.counts.damaged),
+                ps_export::DAMAGED_HINT
+            );
+            for p in s.damaged_files.iter().take(DAMAGED_LISTED) {
+                println!("      {p}");
+            }
+            if s.damaged_files.len() > DAMAGED_LISTED {
+                println!("      and {} more", s.damaged_files.len() - DAMAGED_LISTED);
+            }
         }
         if f["superseded"] > 0 {
             println!(

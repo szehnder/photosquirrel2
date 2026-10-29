@@ -109,6 +109,9 @@ pub fn print_fill_summary(run: ScanRunId, s: &RunSummary, f: &FillSummary) {
         f.failed,
         f.still_waiting
     );
+    if let Some(l) = super::scan::damaged_line(s.damaged) {
+        println!("{l}");
+    }
     if f.skipped_offline > 0 {
         println!("connect the offline sources and run `photosquirrel-cli previews fill` again");
     }
