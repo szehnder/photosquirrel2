@@ -12,3 +12,10 @@ The RAW decoder generation SHALL be 1, so the first rescan of a source or Fill i
 #### Scenario: Re-read unknown camera is not an error
 - **WHEN** a source holding an unknown-camera CR2 placeholder of generation 0 is rescanned unchanged
 - **THEN** the file is read once, its reason stays a variant not supported at generation 1, and the run reports 0 errors
+
+### Requirement: RAW files with previews checked once for a cut
+The first rescan of a source after the update SHALL check each unchanged RAW row that an earlier version stored with preview pixels for a cut, once, reading only its first 64 KB and its directories. A file found cut SHALL lose its hashes, get the "could not be read" placeholder, be regrouped and counted as damaged. Missing sources SHALL wait until they are scanned.
+
+#### Scenario: Rescan finds a RAW cut after its intact preview
+- **WHEN** a 0.3.0 catalog holds a CR2 cut after its intact preview, with a thumbnail and hashes, grouped with its camera JPEG, and the source is rescanned
+- **THEN** the CR2 is damaged, out of the JPEG's group, the JPEG is a keeper, damaged is 1, only directory bytes of the CR2s are read, and a second rescan reads nothing
