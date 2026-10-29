@@ -92,6 +92,10 @@ fn scope_sql(scope: &FillScope, sql: &mut String, args: &mut Vec<Value>) {
     }
 }
 
+/// The condition of a present file catalogued as damaged ([`Readers::damaged_count`]), answered from the partial
+/// index `file_preview`.
+pub const DAMAGED_WHERE: &str = "preview_reason = 'unreadable' AND missing_since IS NULL";
+
 /// Source ids inline (integers only).
 fn sources_sql(sources: &[SourceId], sql: &mut String) {
     if !sources.is_empty() {
@@ -202,6 +206,21 @@ impl Readers {
                 out.push(file_record(r)?);
             }
             Ok(out)
+        })
+    }
+
+    /// Present files of `sources` (every source when empty) catalogued as could not be read (damaged:
+    /// `preview_reason = 'unreadable'`, ADR-0115), whatever their format: one aggregate over the partial index
+    /// `file_preview`. 0 on a catalog older than migration 24 (opened read-only).
+    pub fn damaged_count(&self, sources: &[SourceId]) -> Result<u64> {
+        if self.schema_version()? < crate::db::PREVIEW_GEN_MIGRATION.version {
+            return Ok(0);
+        }
+        let mut sql = format!("SELECT count(*) FROM file WHERE {DAMAGED_WHERE}");
+        sources_sql(sources, &mut sql);
+        self.with(|c| {
+            Ok(c.prepare_cached(&sql)?
+                .query_row([], |r| r.get::<_, i64>(0))? as u64)
         })
     }
 

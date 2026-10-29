@@ -407,8 +407,18 @@ fn summarize(ctx: &RunCtx, status: RunStatus, elapsed: Duration) -> RunSummary {
         retries_exhausted: ctx.retries_exhausted.load(Ordering::Relaxed),
         grouping: None,
         undecoded: undecoded(ctx),
+        damaged: damaged(ctx),
         fill: None,
     }
+}
+
+/// The present files of the run's sources catalogued as damaged at the end of the run (ADR-0115): one aggregate.
+fn damaged(ctx: &RunCtx) -> u64 {
+    let ids: Vec<SourceId> = ctx.sources.iter().map(|s| s.id).collect();
+    ctx.catalog.read().damaged_count(&ids).unwrap_or_else(|e| {
+        log::error!("scan run {}: damaged count: {e}", ctx.run);
+        0
+    })
 }
 
 /// The files of the run's sources still waiting for a decoder (ADR-0091), per format and decoder, with the
@@ -644,10 +654,15 @@ enum Redecode {
     /// recorded for the next rescan's retry rule (ADR-0098), and a new placeholder saying why, stamped with this
     /// run's generation (ADR-0109; none when the decode did not complete for a reason that says nothing about the
     /// file).
+    ///
+    /// The flag says whether to report it as a run error: always, except a RAW that is not damaged (ADR-0115: an
+    /// unknown camera or a RAW without a preview read again after the generation bump stays a variant not
+    /// supported, as in the analysis); HEIC and AVIF re-decodes are always reported (ADR-0095, ADR-0098).
     Undecodable(
         String,
         Option<ps_model::DecodeFailure>,
         Option<(ThumbnailRecord, ps_model::PreviewStamp)>,
+        bool,
     ),
 }
 
@@ -1629,7 +1644,23 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
                     None => unreachable!("a placeholder for every missing decoder"),
                 }
             }
-            Err(e @ DecodeError::NoRawPreview) => (None, placeholder_of(&probe, capture, &e)),
+            // A RAW decode error of any kind keeps the file, with or without probe dimensions (ADR-0115): its
+            // identity, metadata and a placeholder that says why, never hashed (so a cut RAW cannot join or
+            // outrank its camera JPEG), exported as is. Only a damaged file (`Failed`: cut short, or a damaged
+            // preview) is reported; an unknown camera or a RAW without a preview is a variant not supported.
+            Err(e) if probe.format.is_some_and(ps_model::Format::is_raw) => {
+                if matches!(e, DecodeError::Failed(_)) {
+                    ctx.progress.error(RecentError {
+                        source: ctx.sources[idx].id,
+                        path: path.clone(),
+                        stage: Stage::Thumbed,
+                        message: format!(
+                            "could not be read ({e}); it is catalogued with a placeholder and exported as is"
+                        ),
+                    });
+                }
+                (None, placeholder_of(&probe, capture, &e))
+            }
             // A HEIC or AVIF the decoder rejects (truncated, corrupt, or larger than the decode cap) keeps its
             // identity and metadata with a placeholder, as without a decoder: catalogued, de-duplicated by exact
             // content and exported (ADR-0095, as a re-decode does, ADR-0091). Reported, never `unreadable`.
@@ -1830,10 +1861,13 @@ fn analyze_redecode(
                     let p = stamp(ctx, &mut t, probe.format)?;
                     Some((t, p))
                 });
+            let report = !probe.format.is_some_and(ps_model::Format::is_raw)
+                || matches!(e, DecodeError::Failed(_));
             Redecode::Undecodable(
                 e.to_string(),
                 failure_record(ctx, probe, &e, prior),
                 placeholder,
+                report,
             )
         }
     };
@@ -2028,8 +2062,9 @@ fn persist_redecode(
             ctx.filled.fetch_add(1, Ordering::Relaxed);
         }
         Redecode::StillMissing => {}
-        Redecode::Undecodable(why, failure, placeholder) => {
+        Redecode::Undecodable(why, failure, placeholder, report) => {
             ctx.fill_failed.fetch_add(1, Ordering::Relaxed);
+
             // The placeholder now says why, at this run's generation: not read again until the file or the
             // generation changes (ADR-0109). Stored pixels (another copy of the same content decoded) are never
             // replaced by a placeholder, as in `persist_batch`: the row then shows them.
@@ -2048,12 +2083,16 @@ fn persist_redecode(
                 Some(f) => Command::DecodeFailed(vec![(key, f)]),
                 None => Command::ClearDecoderMissing(vec![key]),
             });
-            ctx.progress.error(RecentError {
-                source: src.id,
-                path,
-                stage: Stage::Thumbed,
-                message: format!("could not be decoded ({why}); it keeps its exact-copy analysis"),
-            });
+            if report {
+                ctx.progress.error(RecentError {
+                    source: src.id,
+                    path,
+                    stage: Stage::Thumbed,
+                    message: format!(
+                        "could not be decoded ({why}); it keeps its exact-copy analysis"
+                    ),
+                });
+            }
         }
     }
     ctx.progress.file_done(idx);

@@ -427,3 +427,75 @@ fn migration_25_records_the_video_task_only_when_needed() {
     );
     assert!(cat.read().unmarked_video_rows().unwrap().is_empty());
 }
+
+/// `damaged_count` (damaged-raw-reason, ADR-0115): present files catalogued as could not be read, whatever their
+/// format, per source; one aggregate answered from the partial index `file_preview`.
+#[test]
+fn damaged_count_reads_the_partial_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog.db");
+    drop(Catalog::open_file(&path, Default::default()).unwrap());
+    let c = Connection::open(&path).unwrap();
+    for s in [1, 2] {
+        c.execute(
+            "INSERT INTO source (id, root_path, added_at) VALUES (?1, CAST(?2 AS BLOB), 100)",
+            params![s, format!("/mnt/card{s}")],
+        )
+        .unwrap();
+    }
+    // (source, name, format, reason, missing)
+    let rows: [(i64, &str, &str, Option<&str>, bool); 6] = [
+        (1, "IMG_1.CR2", "raw:cr2", Some("unreadable"), false),
+        (1, "IMG_2.JPG", "jpeg", Some("unreadable"), false),
+        (
+            1,
+            "IMG_3.CR2",
+            "raw:cr2",
+            Some("unsupported_variant"),
+            false,
+        ),
+        (1, "IMG_4.CR2", "raw:cr2", Some("unreadable"), true),
+        (1, "IMG_5.JPG", "jpeg", None, false),
+        (2, "IMG_6.CR2", "raw:cr2", Some("unreadable"), false),
+    ];
+    for (i, (src, name, format, reason, missing)) in rows.iter().enumerate() {
+        c.execute(
+            "INSERT INTO file (id, source_id, rel_path, name, size, mtime_ns, stage, class, reasons, format,
+                               media_kind, kflags, content_id, identity_kind, preview_gen, preview_reason,
+                               missing_since)
+             VALUES (?1, ?2, ?3, ?3, 10, 1, 3, 0, '[]', ?4, 0, 0, ?5, 0, ?6, ?7, ?8)",
+            params![
+                i as i64 + 1,
+                src,
+                name.as_bytes(),
+                format,
+                [i as u8 + 1; 32].to_vec(),
+                reason.map(|_| 1i64),
+                reason,
+                missing.then_some(5i64)
+            ],
+        )
+        .unwrap();
+    }
+    let plan: Vec<String> = c
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN SELECT count(*) FROM file WHERE {} AND source_id IN (1)",
+            ps_catalog::previews::DAMAGED_WHERE
+        ))
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(plan.iter().any(|l| l.contains("file_preview")), "{plan:?}");
+    drop(c);
+    let cat = Catalog::open_file(&path, Default::default()).unwrap();
+    let r = cat.read();
+    assert_eq!(
+        r.damaged_count(&[ps_model::SourceId(1)]).unwrap(),
+        2,
+        "present only"
+    );
+    assert_eq!(r.damaged_count(&[ps_model::SourceId(2)]).unwrap(), 1);
+    assert_eq!(r.damaged_count(&[]).unwrap(), 3, "every source");
+}

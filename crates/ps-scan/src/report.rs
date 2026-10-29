@@ -51,6 +51,11 @@ pub struct RunSummary {
     /// query, never per-file events (ADR-0019).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub undecoded: Vec<ps_model::Undecoded>,
+    /// Present files of the run's sources catalogued as could not be read (damaged, ADR-0115) at the end of the
+    /// run, whatever the format: from one aggregate over the catalog, so an unchanged rescan still counts them
+    /// (`errors` counts this run's errors only). 0 in `stats` stored before it existed.
+    #[serde(default)]
+    pub damaged: u64,
     /// A Fill in previews job's outcome (ADR-0109); absent for scans.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<ps_model::FillSummary>,
