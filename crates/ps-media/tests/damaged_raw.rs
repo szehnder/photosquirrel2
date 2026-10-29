@@ -6,7 +6,7 @@
 use ps_fixtures::dng::{Cut, cut, raw_ranges};
 use ps_media::decode::{DecodeError, RawlerOutcome, decode_raw_preview, raw_error, rawler_preview};
 use ps_media::decoders::GENERATIONS;
-use ps_media::raw_check::{size_text, truncation};
+use ps_media::raw_check::{STRUCTURE_HEAD, Structure, check_by_reads, size_text, truncation};
 use ps_media::{Decoders, analyze_still, make_thumbnail, probe_bytes};
 use ps_model::{DecodeFamily, PlaceholderReason, ThumbKind};
 
@@ -284,7 +284,26 @@ fn rawler_outcomes_of_the_fixtures() {
     }
 }
 
-/// Task 1.3, run by hand over a folder of real camera files (read-only): no complete RAW is judged cut short.
+/// The structure check by targeted reads ([`check_by_reads`], ADR-0117) over the whole file `b`: the result, and
+/// the bytes and reads it took (the head included).
+fn by_reads(b: &[u8]) -> (Structure, u64, u32) {
+    let pr = probe(b);
+    let head = &b[..b.len().min(STRUCTURE_HEAD)];
+    let (mut bytes, mut reads) = (head.len() as u64, 1u32);
+    let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+        let start = (off as usize).min(b.len());
+        let end = start.saturating_add(len).min(b.len());
+        bytes += (end - start) as u64;
+        reads += 1;
+        Ok(b[start..end].to_vec())
+    };
+    let s = check_by_reads(head, b.len() as u64, &pr, &mut fetch, 64 * 1024 * 1024).unwrap();
+    (s, bytes, reads)
+}
+
+/// Task 1.3, run by hand over a folder of real camera files (read-only): no complete RAW is judged cut short, by
+/// the analysis's check or the targeted-read check, and copies cut short (in memory) are found by
+/// both (half its size, and 64 KB short). Prints the cost of the targeted-read check per file.
 /// `PHOTOSQUIRREL_SAMPLE_DIR=/path cargo test -p ps-media --test damaged_raw -- --ignored --nocapture`.
 #[test]
 #[ignore = "needs PHOTOSQUIRREL_SAMPLE_DIR with real camera files"]
@@ -294,8 +313,10 @@ fn real_raws_are_never_damaged() {
         eprintln!("PHOTOSQUIRREL_SAMPLE_DIR not set; skipping");
         return;
     };
-    let (mut files, mut raws, mut found) = (0, 0, Vec::new());
-    for p in walk(&dir) {
+    let (mut files, mut raws, mut found, mut missed) = (0, 0, Vec::new(), Vec::new());
+    let mut paths = walk(&dir);
+    paths.sort();
+    for p in paths {
         files += 1;
         let Ok(b) = ps_media::read_all(&p) else {
             continue;
@@ -308,10 +329,41 @@ fn real_raws_are_never_damaged() {
         if let Some(t) = truncation(&b, &pr) {
             found.push(format!("{}: {}", p.display(), t.message()));
         }
+        let (s, bytes, reads) = by_reads(&b);
+        if let Structure::Cut(t) = &s {
+            found.push(format!("{} (by reads): {}", p.display(), t.message()));
+        }
+        // Cut to half its size, and 64 KB short of its end (a card pulled at the last write).
+        let half = &b[..b.len() / 2];
+        let near = &b[..b.len().saturating_sub(64 * 1024)];
+        let cut_full =
+            truncation(half, &probe(half)).is_some() && truncation(near, &probe(near)).is_some();
+        let cut_reads = by_reads(half).0.cut().is_some() && by_reads(near).0.cut().is_some();
+        eprintln!(
+            "{:<70} {:>5?} {:>9} bytes {:>3} reads; {:>6.2}% of {:>10}; check {:?}; cuts found: {} / {}",
+            p.file_name().unwrap_or_default().to_string_lossy(),
+            pr.format.map(|f| f.label()).unwrap_or("?"),
+            bytes,
+            reads,
+            bytes as f64 * 100.0 / b.len() as f64,
+            b.len(),
+            match s {
+                Structure::Complete => "complete",
+                Structure::Cut(_) => "CUT",
+                Structure::Unknown => "unknown",
+            },
+            cut_full,
+            cut_reads,
+        );
+        if !(cut_full && cut_reads) {
+            missed.push(format!("{}: a cut copy not found", p.display()));
+        }
     }
     eprintln!(
-        "{files} files, {raws} RAW files, {} judged cut short",
-        found.len()
+        "{files} files, {raws} RAW files, {} judged cut short, {} cut copies missed",
+        found.len(),
+        missed.len()
     );
+    eprintln!("missed: {missed:#?}");
     assert!(found.is_empty(), "{found:#?}");
 }

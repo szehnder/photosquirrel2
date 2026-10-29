@@ -30,7 +30,7 @@ pub use decoder::*;
 pub use disposition::*;
 pub use exclusion::*;
 pub use export::*;
-pub use frame::{FrameId, META_LOGIC_VERSION};
+pub use frame::{FRAME_META_VERSION, FrameId, META_LOGIC_VERSION, meta_reread_due};
 pub use fs_ids::{FsIds, IdStability};
 pub use ids::*;
 pub use insight::*;

@@ -1,22 +1,34 @@
-//! Evidence that a RAW file was cut short (`damaged-raw-reason`, ADR-0115), judged by our own code from the file's
-//! structure over the whole file in memory: a directory, strip, tile or embedded JPEG that the file records but that
-//! ends past its end. rawler's errors cannot tell a cut file from a parse quirk, and when the embedded preview
-//! decodes rawler is never asked, so a cut sensor strip behind an intact preview would never be seen.
+//! Evidence that a RAW file was cut short (`damaged-raw-reason`, ADR-0115, ADR-0117), judged by our own code from the
+//! file's structure: a directory, strip, tile, embedded JPEG or media box that the file records but that ends past
+//! its end. rawler's errors cannot tell a cut file from a parse quirk, and when the embedded preview decodes rawler
+//! is never asked, so a cut sensor strip behind an intact preview would never be seen.
 //!
 //! What counts, and only that (a false negative is the priority-1 bug, a false positive only mislabels a file that
 //! is still catalogued and exported as is):
 //! - TIFF-based RAWs (CR2, NEF, ARW, DNG, ORF, RW2, PEF, ...): IFD0's chain, SubIFDs (0x014A) and the Exif IFD
-//!   pointer (0x8769) past the end; `StripOffsets`/`StripByteCounts`, `TileOffsets`/`TileByteCounts` and
-//!   `JPEGInterchangeFormat`/`Length` ranges (both tags present, a count of 0 ignored) that end past it. Maker notes
-//!   and the values of every other tag are never evidence (real cameras write private tags with odd counts).
-//! - CR3: a top-level box whose declared size ends past the file (a `size = 0` box runs to the end: not evidence).
+//!   pointer (0x8769) past the end, or a directory whose entries run past it (its trailing 4-byte next pointer may
+//!   be missing at the very end: some writers end the file with the last table); `StripOffsets`/`StripByteCounts`,
+//!   `TileOffsets`/`TileByteCounts` and `JPEGInterchangeFormat`/`Length` ranges (both tags present, a count of 0
+//!   ignored) that end past it. Maker notes and the values of every other tag are never evidence (real cameras
+//!   write private tags with odd counts).
+//! - CR3: a top-level box whose declared size ends past the file (a `size = 0` box runs to the end: not
+//!   evidence), and the samples of each `moov` track (`stco`/`co64` chunk offsets with their `stsz` sizes), so a
+//!   file cut exactly at a box boundary, before or inside `mdat`, is found too.
+//! - RW2 (and Leica's RWL) with Panasonic's "RAW 1" compression: the sensor data from `RawDataOffset`, whose size
+//!   follows from the sensor's width and height (the file records no length).
 //! - RAF: the header's JPEG, CFA header and CFA ranges.
 //!
-//! Other RAW formats (MRW, X3F, CRW) get no check.
+//! Other RAW formats (MRW, X3F, CRW) and layouts (other Panasonic compressions, the Sony DSLR-A100's ARW, whose
+//! sensor data is located through Minolta's private records) get no check.
+//!
+//! [`truncation`] judges the whole file in memory (the analysis). [`check_by_reads`] judges a file from its first
+//! bytes plus bounded targeted reads of its directories (TIFF IFDs, CR3 box headers and `moov`), the one-time
+//! re-check of rows an earlier version catalogued (ADR-0117) and the cleanup's pre-move check: a few kilobytes per
+//! file, never a full read unless a bound stops the targeted reads.
 
 use ps_model::{Format, ProbeRecord, RawFormat};
 
-use crate::tiff::{IfdKind, IfdView, Tiff, u16_at, u32_at};
+use crate::tiff::{IfdKind, IfdView, Segment, Tiff, View, be_u32, be_u64, u16_at, u32_at};
 
 /// A RAW file cut short: it ends at `file_size` but its `what` needs bytes up to `needed`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,34 +67,147 @@ pub fn size_text(n: u64) -> String {
     }
 }
 
+/// What a structure check found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Structure {
+    /// Every range the check looks at lies inside the file (or the format has no check).
+    Complete,
+    /// Cut short.
+    Cut(Truncation),
+    /// A range the check needs was not read (a bound of the targeted reads stopped it) and nothing found so far is
+    /// evidence.
+    Unknown,
+}
+
+impl Structure {
+    pub fn cut(&self) -> Option<&Truncation> {
+        match self {
+            Structure::Cut(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
 /// The evidence that `bytes`, the whole RAW file `probe` describes, was cut short; `None` when there is none, when
 /// `bytes` is not the whole file (a partial buffer is never judged) or for a format without a check.
 pub fn truncation(bytes: &[u8], probe: &ProbeRecord) -> Option<Truncation> {
     let file_size = bytes.len() as u64;
-    if file_size != probe.file_size {
+    if file_size != probe.file_size || !ps_model::frame::structure_check_enabled() {
         return None;
     }
     let Some(Format::Raw(raw)) = probe.format else {
         return None;
     };
+    match judge(raw, View::new(bytes, &[]), file_size) {
+        Structure::Cut(t) => Some(t),
+        Structure::Complete | Structure::Unknown => None,
+    }
+}
+
+/// Bytes [`check_by_reads`] wants of a file's start when nothing else needs more (the directories of a CR2, NEF or
+/// ARW usually lie in it; others are fetched).
+pub const STRUCTURE_HEAD: usize = 64 * 1024;
+
+/// Largest CR3 `moov` box [`check_by_reads`] fetches (its track tables; a camera's is a few tens of kilobytes).
+const MOOV_MAX_BYTES: u64 = 1024 * 1024;
+
+/// CR3 top-level boxes walked at most.
+const MAX_BOXES: usize = 64;
+
+/// The structure of the RAW file `probe` describes, of `file_size` bytes, from its first bytes `head` and bounded
+/// targeted reads through `fetch(offset, len)` (read-only): the TIFF directories within the ADR-0084 bounds
+/// ([`crate::tiff::load_directories`]), CR3 box headers and `moov`, or the RAF header, never the image data. When a
+/// bound leaves a range unknown and the file is at most `whole_max` bytes, the whole file is read once and judged
+/// like the analysis does. [`Structure::Complete`] for a format without a check or that is not a RAW.
+pub fn check_by_reads<E>(
+    head: &[u8],
+    file_size: u64,
+    probe: &ProbeRecord,
+    fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
+    whole_max: u64,
+) -> Result<Structure, E> {
+    let Some(Format::Raw(raw)) = probe.format else {
+        return Ok(Structure::Complete);
+    };
+    if !ps_model::frame::structure_check_enabled() {
+        return Ok(Structure::Complete);
+    }
+    if head.len() as u64 >= file_size {
+        let whole = &head[..usize::try_from(file_size).unwrap_or(head.len())];
+        return Ok(full(raw, whole));
+    }
+    let segments = match raw {
+        RawFormat::Cr3 => cr3_segments(head, file_size, fetch)?,
+        RawFormat::Raf | RawFormat::Crw | RawFormat::X3f => Vec::new(),
+        _ if Tiff::parse(head).is_some() => {
+            crate::tiff::load_directories(head, file_size, fetch)?.segments
+        }
+        _ => Vec::new(),
+    };
+    check_loaded(raw, head, &segments, file_size, fetch, whole_max)
+}
+
+/// [`check_by_reads`] over directories already fetched (`segments`, at absolute offsets): judged, and read whole
+/// once when the result is [`Structure::Unknown`] and the file is at most `whole_max` bytes.
+pub fn check_loaded<E>(
+    raw: RawFormat,
+    head: &[u8],
+    segments: &[Segment],
+    file_size: u64,
+    fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
+    whole_max: u64,
+) -> Result<Structure, E> {
+    let found = judge(raw, View::new(head, segments), file_size);
+    if found != Structure::Unknown || file_size > whole_max {
+        return Ok(found);
+    }
+    let whole = fetch(0, usize::try_from(file_size).unwrap_or(usize::MAX))?;
+    Ok(if whole.len() as u64 == file_size {
+        full(raw, &whole)
+    } else {
+        Structure::Unknown
+    })
+}
+
+/// The judgement of a whole file in memory: nothing can be unknown there.
+fn full(raw: RawFormat, bytes: &[u8]) -> Structure {
+    match judge(raw, View::new(bytes, &[]), bytes.len() as u64) {
+        Structure::Unknown => Structure::Complete,
+        s => s,
+    }
+}
+
+/// Judge the file of `file_size` bytes known through `view`.
+fn judge(raw: RawFormat, view: View<'_>, file_size: u64) -> Structure {
     let mut worst = Worst::new(file_size);
     match raw {
-        RawFormat::Cr3 => cr3(bytes, &mut worst),
-        RawFormat::Raf => raf(bytes, &mut worst),
+        RawFormat::Cr3 => cr3(view, &mut worst),
+        RawFormat::Raf => match view.get(0, 108) {
+            Some(h) => raf(h, &mut worst),
+            None => worst.unknown = true,
+        },
         RawFormat::Crw | RawFormat::X3f => {}
         _ => {
-            if let Some(t) = Tiff::parse(bytes) {
-                tiff(&t, bytes, &mut worst);
+            if let Some(t) = Tiff::parse_view(view) {
+                tiff(&t, &mut worst);
+                if raw == RawFormat::Rw2 {
+                    panasonic(&t, &mut worst);
+                }
             }
         }
     }
-    worst.found
+    match (worst.found, worst.unknown) {
+        (Some(t), _) => Structure::Cut(t),
+        (None, true) => Structure::Unknown,
+        (None, false) => Structure::Complete,
+    }
 }
 
-/// The range that ends furthest past the end of the file.
+/// The range that ends furthest past the end of the file, and whether a range was not known.
 struct Worst {
     file_size: u64,
     found: Option<Truncation>,
+    unknown: bool,
 }
 
 impl Worst {
@@ -90,6 +215,7 @@ impl Worst {
         Self {
             file_size,
             found: None,
+            unknown: false,
         }
     }
 
@@ -108,61 +234,61 @@ impl Worst {
 /// At most this many strip or tile ranges per IFD are checked (a 100 MP DNG has a few thousand tiles).
 const MAX_RANGES: usize = 1 << 20;
 
-/// Every value of an integer entry (SHORT, LONG, LONG8, IFD, IFD8), up to [`MAX_RANGES`]; `Err(end)` when the value
-/// array itself lies past the end of the file, ending at `end`.
-fn values(t: &Tiff<'_>, e: &crate::tiff::Entry) -> Result<Vec<u64>, u64> {
+/// Every value of an integer entry (SHORT, LONG, LONG8, IFD, IFD8), up to [`MAX_RANGES`]: `Ok(None)` when the
+/// value array lies inside the file but was not read, `Err(end)` when it lies past the end of the file, ending at
+/// `end`.
+fn values(t: &Tiff<'_>, e: &crate::tiff::Entry, file_size: u64) -> Result<Option<Vec<u64>>, u64> {
     let Some(size) = crate::tiff::type_size(e.typ) else {
-        return Ok(Vec::new());
+        return Ok(Some(Vec::new()));
     };
     if !matches!(e.typ, 3 | 4 | 13 | 16 | 18) {
-        return Ok(Vec::new());
+        return Ok(Some(Vec::new()));
     }
     let n = (e.count as usize).min(MAX_RANGES);
     let total = size as u64 * u64::from(e.count);
     let Some(b) = t.value_bytes(e) else {
-        // Out of line, past the end (an inline value is always inside the directory).
+        // Out of line (an inline value is always inside the directory): past the end, or not read.
         let at = t.value_offset(e).map_or(0, u64::from);
-        return Err(at.saturating_add(total));
+        let end = at.saturating_add(total);
+        return if end > file_size { Err(end) } else { Ok(None) };
     };
     let endian = t.endian;
-    Ok((0..n)
-        .filter_map(|i| match size {
-            2 => u16_at(b, i * 2, endian).map(u64::from),
-            4 => u32_at(b, i * 4, endian).map(u64::from),
-            _ => {
-                let (lo, hi) = (u32_at(b, i * 8, endian)?, u32_at(b, i * 8 + 4, endian)?);
-                Some(match endian {
-                    crate::tiff::Endian::Little => u64::from(lo) | (u64::from(hi) << 32),
-                    crate::tiff::Endian::Big => (u64::from(lo) << 32) | u64::from(hi),
-                })
-            }
-        })
-        .collect())
+    Ok(Some(
+        (0..n)
+            .filter_map(|i| match size {
+                2 => u16_at(b, i * 2, endian).map(u64::from),
+                4 => u32_at(b, i * 4, endian).map(u64::from),
+                _ => {
+                    let (lo, hi) = (u32_at(b, i * 8, endian)?, u32_at(b, i * 8 + 4, endian)?);
+                    Some(match endian {
+                        crate::tiff::Endian::Little => u64::from(lo) | (u64::from(hi) << 32),
+                        crate::tiff::Endian::Big => (u64::from(lo) << 32) | u64::from(hi),
+                    })
+                }
+            })
+            .collect(),
+    ))
 }
 
-/// The end of the IFD table at `offset` (count, entries and the next pointer).
-fn table_end(bytes: &[u8], endian: crate::tiff::Endian, offset: u64) -> u64 {
-    let n = usize::try_from(offset)
-        .ok()
-        .and_then(|o| u16_at(bytes, o, endian))
-        .map_or(0, u64::from);
-    offset.saturating_add(2 + 12 * n + 4)
-}
-
-fn tiff(t: &Tiff<'_>, bytes: &[u8], worst: &mut Worst) {
-    let size = bytes.len() as u64;
+fn tiff(t: &Tiff<'_>, worst: &mut Worst) {
+    let size = worst.file_size;
+    // An IFD the file points to: its count and entries must be inside. The 4-byte next pointer after the entries is
+    // not required: a table that ends the file without it reads as "no next IFD" everywhere.
     let pointer = |worst: &mut Worst, at: u64| {
-        if at >= size {
+        if at < 8 {
+            return;
+        }
+        if at.saturating_add(2) > size {
             worst.range(at.saturating_add(2), "directory");
-        } else {
-            // The count is inside; the table (count, entries, next pointer) must be too.
-            let end = table_end(bytes, t.endian, at);
-            let end = if u16_at(bytes, at as usize, t.endian).is_none() {
-                at + 2
-            } else {
-                end
-            };
-            worst.range(end, "directory");
+            return;
+        }
+        let count = usize::try_from(at)
+            .ok()
+            .and_then(|o| t.data.get(o, 2))
+            .and_then(|b| u16_at(b, 0, t.endian));
+        match count {
+            Some(n) => worst.range(at + 2 + 12 * u64::from(n), "directory"),
+            None => worst.unknown = true,
         }
     };
     pointer(worst, u64::from(t.ifd0));
@@ -178,8 +304,9 @@ fn tiff(t: &Tiff<'_>, bytes: &[u8], worst: &mut Worst) {
         }
         for e in &ifd.entries {
             if matches!(e.tag, 0x8769 | 0x014A) {
-                match values(t, e) {
-                    Ok(v) => v.into_iter().take(8).for_each(|p| pointer(worst, p)),
+                match values(t, e, size) {
+                    Ok(Some(v)) => v.into_iter().take(8).for_each(|p| pointer(worst, p)),
+                    Ok(None) => worst.unknown = true,
                     Err(end) => worst.range(end, "directory"),
                 }
             }
@@ -193,17 +320,14 @@ fn tiff(t: &Tiff<'_>, bytes: &[u8], worst: &mut Worst) {
             let (Some(o), Some(l)) = (ifd.get(otag), ifd.get(ltag)) else {
                 continue;
             };
-            let offs = match values(t, o) {
-                Ok(v) => v,
-                Err(end) => {
+            let (offs, lens) = match (values(t, o, size), values(t, l, size)) {
+                (Err(end), _) | (_, Err(end)) => {
                     worst.range(end, "directory");
                     continue;
                 }
-            };
-            let lens = match values(t, l) {
-                Ok(v) => v,
-                Err(end) => {
-                    worst.range(end, "directory");
+                (Ok(Some(o)), Ok(Some(l))) => (o, l),
+                _ => {
+                    worst.unknown = true;
                     continue;
                 }
             };
@@ -213,6 +337,31 @@ fn tiff(t: &Tiff<'_>, bytes: &[u8], worst: &mut Worst) {
                 }
             }
         }
+    }
+}
+
+/// Panasonic's "RAW 1" compression (its tag 0x000B = 34316, every RW2 and RWL of the sample set up to 2026): the sensor data starts at
+/// `RawDataOffset` (0x0118) and holds 16 bytes per 14 pixels of `SensorWidth` x `SensorHeight` (0x0002, 0x0003), with
+/// no length tag (its strip byte count is 0). Cameras pad the data to 16 KB blocks; the minimum without padding is
+/// what counts. Other Panasonic compressions get no check.
+fn panasonic(t: &Tiff<'_>, worst: &mut Worst) {
+    let (ifds, _) = t.walk();
+    let Some(ifd0) = ifds.iter().find(|i| i.kind == IfdKind::Chain(0)) else {
+        return;
+    };
+    let get = |tag: u16| ifd0.get(tag).and_then(|e| t.uint(e)).map(u64::from);
+    if get(0x000B) != Some(34316) {
+        return;
+    }
+    let (Some(offset), Some(w), Some(h)) = (get(0x0118), get(0x0002), get(0x0003)) else {
+        return;
+    };
+    let pixels = w.saturating_mul(h);
+    if offset > 0 && pixels > 0 {
+        worst.range(
+            offset.saturating_add(pixels.div_ceil(14) * 16),
+            "image data",
+        );
     }
 }
 
@@ -228,21 +377,161 @@ fn what_of(t: &Tiff<'_>, ifd: &IfdView) -> &'static str {
     }
 }
 
-fn cr3(bytes: &[u8], worst: &mut Worst) {
-    for b in crate::bmff::top_level(bytes) {
-        let what = if &b.kind == b"mdat" {
-            "image data"
-        } else {
-            "directory"
+/// One top-level box header at `pos`: (type, header length, declared size); `None` when the view lacks it, the
+/// size is 0 (to the end) or malformed.
+fn box_at(view: View<'_>, pos: u64) -> Result<Option<([u8; 4], u64, u64)>, ()> {
+    let p = usize::try_from(pos).map_err(|_| ())?;
+    let h = view.get(p, 8).ok_or(())?;
+    let mut kind = [0u8; 4];
+    kind.copy_from_slice(&h[4..8]);
+    let (header, size) = match be_u32(h, 0).ok_or(())? {
+        0 => return Ok(None),
+        1 => (16, view.get(p + 8, 8).and_then(|b| be_u64(b, 0)).ok_or(())?),
+        s => (8, u64::from(s)),
+    };
+    Ok((size >= header).then_some((kind, header, size)))
+}
+
+fn cr3(view: View<'_>, worst: &mut Worst) {
+    let size = worst.file_size;
+    let mut pos = 0u64;
+    let mut moov = None;
+    for _ in 0..MAX_BOXES {
+        // Fewer than 8 bytes left: no further box (trailing bytes are not evidence).
+        if pos.saturating_add(8) > size {
+            break;
+        }
+        let (kind, header, len) = match box_at(view, pos) {
+            Ok(Some(b)) => b,
+            Ok(None) => break,
+            Err(()) => {
+                worst.unknown = true;
+                break;
+            }
         };
-        worst.range(b.end(), what);
+        let end = pos.saturating_add(len);
+        worst.range(
+            end,
+            if &kind == b"mdat" {
+                "image data"
+            } else {
+                "directory"
+            },
+        );
+        if &kind == b"moov" && moov.is_none() {
+            moov = Some((pos + header, end.min(size)));
+        }
+        pos = end;
+    }
+    if let Some((body, end)) = moov {
+        let body_bytes = usize::try_from(body)
+            .ok()
+            .zip(usize::try_from(end - body).ok())
+            .and_then(|(b, l)| view.get(b, l));
+        match body_bytes {
+            Some(b) => cr3_tracks(b, worst),
+            None => worst.unknown = true,
+        }
     }
 }
 
-fn raf(bytes: &[u8], worst: &mut Worst) {
-    use crate::tiff::be_u32;
+/// The samples of every track in a CR3 `moov` body: each chunk offset (`stco`/`co64`) with its sample size
+/// (`stsz`), when every chunk holds one sample (Canon's layout); otherwise the chunk offsets alone.
+fn cr3_tracks(moov: &[u8], worst: &mut Worst) {
+    use crate::bmff::{boxes, children, find, find_path};
+    let top = boxes(moov, 0, moov.len());
+    for trak in top.iter().filter(|b| &b.kind == b"trak") {
+        let Some(stbl) = find_path(
+            moov,
+            std::slice::from_ref(trak),
+            &[b"trak", b"mdia", b"minf", b"stbl"],
+        ) else {
+            continue;
+        };
+        let kids = children(moov, &stbl, 0);
+        let sizes: Vec<u64> = find(&kids, b"stsz").map_or_else(Vec::new, |b| {
+            let body = b.body(moov);
+            let (Some(fixed), Some(count)) = (be_u32(body, 4), be_u32(body, 8)) else {
+                return Vec::new();
+            };
+            let count = (count as usize).min(MAX_BOXES);
+            if fixed != 0 {
+                vec![u64::from(fixed); count]
+            } else {
+                (0..count)
+                    .map_while(|i| be_u32(body, 12 + i * 4).map(u64::from))
+                    .collect()
+            }
+        });
+        let offsets: Vec<u64> = if let Some(b) = find(&kids, b"co64") {
+            let body = b.body(moov);
+            let n = be_u32(body, 4).map_or(0, |n| (n as usize).min(MAX_BOXES));
+            (0..n).map_while(|i| be_u64(body, 8 + i * 8)).collect()
+        } else if let Some(b) = find(&kids, b"stco") {
+            let body = b.body(moov);
+            let n = be_u32(body, 4).map_or(0, |n| (n as usize).min(MAX_BOXES));
+            (0..n)
+                .map_while(|i| be_u32(body, 8 + i * 4).map(u64::from))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let one_each = sizes.len() == offsets.len();
+        for (i, off) in offsets.iter().enumerate() {
+            let len = if one_each { sizes[i] } else { 1 };
+            if *off > 0 && len > 0 {
+                worst.range(off.saturating_add(len), "image data");
+            }
+        }
+    }
+}
+
+/// The CR3 directory bytes beyond `head`: each top-level box header and the `moov` box (at most
+/// [`MOOV_MAX_BYTES`]).
+fn cr3_segments<E>(
+    head: &[u8],
+    file_size: u64,
+    fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
+) -> Result<Vec<Segment>, E> {
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut pos = 0u64;
+    for _ in 0..MAX_BOXES {
+        if pos.saturating_add(8) > file_size {
+            break;
+        }
+        if !View::new(head, &segments).has(pos, 16.min(file_size - pos)) {
+            let bytes = fetch(pos, 16)?;
+            if bytes.len() < 8 {
+                break;
+            }
+            segments.push(Segment { offset: pos, bytes });
+        }
+        let (kind, header, len) = match box_at(View::new(head, &segments), pos) {
+            Ok(Some(b)) => b,
+            _ => break,
+        };
+        let end = pos.saturating_add(len);
+        if &kind == b"moov" {
+            let body_end = end.min(file_size);
+            let body = pos + header;
+            if body_end - body <= MOOV_MAX_BYTES
+                && !View::new(head, &segments).has(body, body_end - body)
+            {
+                let bytes = fetch(body, usize::try_from(body_end - body).unwrap_or(0))?;
+                segments.push(Segment {
+                    offset: body,
+                    bytes,
+                });
+            }
+        }
+        pos = end;
+    }
+    Ok(segments)
+}
+
+fn raf(h: &[u8], worst: &mut Worst) {
     for (at, what) in [(84, "preview"), (92, "directory"), (100, "image data")] {
-        let (Some(off), Some(len)) = (be_u32(bytes, at), be_u32(bytes, at + 4)) else {
+        let (Some(off), Some(len)) = (be_u32(h, at), be_u32(h, at + 4)) else {
             continue;
         };
         if off > 0 && len > 0 {
@@ -394,5 +683,216 @@ mod tests {
         assert_eq!((t.needed, t.what), ((lo + ll) as u64, "preview"));
         let eighth = &lens[..lens.len() / 8];
         assert!(truncation(eighth, &p(eighth)).is_some(), "the first eighth");
+    }
+
+    /// [`check_by_reads`] over `b` from its first `head` bytes, counting what it fetched: (result, bytes, reads).
+    fn by_reads(b: &[u8], head: usize, whole_max: u64) -> (Structure, u64, u32) {
+        let pr = probe_full(b, probe_buffer(b, None).format.unwrap_or(Format::Tiff));
+        let h = &b[..b.len().min(head)];
+        let (mut bytes, mut reads) = (0u64, 0u32);
+        let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+            let start = (off as usize).min(b.len());
+            let end = start.saturating_add(len).min(b.len());
+            bytes += (end - start) as u64;
+            reads += 1;
+            Ok(b[start..end].to_vec())
+        };
+        let s = check_by_reads(h, b.len() as u64, &pr, &mut fetch, whole_max).unwrap();
+        (s, bytes, reads)
+    }
+
+    #[test]
+    fn targeted_reads_agree_with_the_whole_file() {
+        use ps_fixtures::dng::{Cut, cut};
+        let full = ps_fixtures::dng::converted_burst_frame(5, 0, 0, 960).cr2;
+        let lens = ps_fixtures::dng::cr2_unknown_lens(11);
+        let mut files = vec![full.clone(), lens.clone()];
+        files.extend(cut(&full, Cut::InPreview));
+        files.extend(cut(&full, Cut::AfterPreview));
+        files.extend(cut(&lens, Cut::InPreview));
+        for b in &files {
+            let whole = truncation(b, &probe_buffer(b, None));
+            // A head of 64 bytes: every directory comes from targeted reads.
+            for head in [64, STRUCTURE_HEAD] {
+                let (s, bytes, _) = by_reads(b, head, 0);
+                assert_eq!(s.cut(), whole.as_ref(), "head {head}");
+                assert!(s != Structure::Unknown);
+                assert!(
+                    bytes <= crate::tiff::DIRECTORY_READ_MAX_BYTES,
+                    "{bytes} bytes fetched"
+                );
+            }
+        }
+    }
+
+    /// A little-endian TIFF with IFD0 at 8 holding `entries` (tag, type, count, value), its next pointer left out
+    /// when `next` is false, then `tail` bytes of data.
+    fn tiff_bytes(
+        magic: u16,
+        entries: &[(u16, u16, u32, u32)],
+        next: bool,
+        tail: usize,
+    ) -> Vec<u8> {
+        let mut b = vec![b'I', b'I'];
+        b.extend_from_slice(&magic.to_le_bytes());
+        b.extend_from_slice(&8u32.to_le_bytes());
+        b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, typ, count, value) in entries {
+            b.extend_from_slice(&tag.to_le_bytes());
+            b.extend_from_slice(&typ.to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            b.extend_from_slice(&value.to_le_bytes());
+        }
+        if next {
+            b.extend_from_slice(&0u32.to_le_bytes());
+        }
+        b.extend(std::iter::repeat_n(0u8, tail));
+        b
+    }
+
+    #[test]
+    fn a_last_directory_without_its_next_pointer_is_not_a_cut() {
+        let raw = Format::Raw(RawFormat::Nef);
+        // Data first (strip 8..), then a SubIFD table that ends the file without its 4-byte next pointer.
+        let mut b = tiff_bytes(42, &[(0x0100, 4, 1, 16), (0x014A, 4, 1, 0)], true, 64);
+        let sub = b.len() as u32;
+        b[8 + 2 + 12 + 8..8 + 2 + 12 + 12].copy_from_slice(&sub.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&0x0100u16.to_le_bytes());
+        b.extend_from_slice(&4u16.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&16u32.to_le_bytes());
+        assert_eq!(truncation(&b, &probe_full(&b, raw)), None, "entries inside");
+        // The entries themselves run past the end: cut.
+        let short = &b[..b.len() - 3];
+        let t = truncation(short, &probe_full(short, raw)).unwrap();
+        assert_eq!((t.needed, t.what), (b.len() as u64, "directory"));
+    }
+
+    #[test]
+    fn panasonic_raw_1_needs_its_sensor_data() {
+        // SensorWidth 28 x SensorHeight 10 = 280 pixels: 20 packets of 16 bytes = 320 bytes from RawDataOffset 200.
+        let entries = [
+            (0x0002, 3, 1, 28),
+            (0x0003, 3, 1, 10),
+            (0x000B, 3, 1, 34316),
+            (0x0111, 4, 1, u32::MAX),
+            (0x0117, 4, 1, 0),
+            (0x0118, 4, 1, 200),
+        ];
+        let rw2 = Format::Raw(RawFormat::Rw2);
+        let whole = tiff_bytes(0x55, &entries, true, 520 - 86);
+        assert_eq!(whole.len(), 520);
+        assert_eq!(truncation(&whole, &probe_full(&whole, rw2)), None);
+        let cut = &whole[..400];
+        let t = truncation(cut, &probe_full(cut, rw2)).unwrap();
+        assert_eq!((t.needed, t.what), (520, "image data"));
+        // Another compression: no check.
+        let mut other = entries;
+        other[2].3 = 34826;
+        let o = tiff_bytes(0x55, &other, true, 400 - 86);
+        assert_eq!(truncation(&o, &probe_full(&o, rw2)), None);
+    }
+
+    /// A minimal CR3 whose one track has a sample of `len` bytes at `off`: `ftyp`, `moov` (trak/mdia/minf/stbl
+    /// with `stsz` and `co64`), then `mdat` of `mdat_len` bytes when given.
+    fn cr3_with_track(off: u64, len: u32, mdat_len: Option<u32>) -> Vec<u8> {
+        fn boxed(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let mut b = ((8 + body.len()) as u32).to_be_bytes().to_vec();
+            b.extend_from_slice(kind);
+            b.extend_from_slice(body);
+            b
+        }
+        let mut stsz = vec![0u8; 4];
+        stsz.extend_from_slice(&len.to_be_bytes());
+        stsz.extend_from_slice(&1u32.to_be_bytes());
+        let mut co64 = vec![0u8; 4];
+        co64.extend_from_slice(&1u32.to_be_bytes());
+        co64.extend_from_slice(&off.to_be_bytes());
+        let stbl = [boxed(b"stsz", &stsz), boxed(b"co64", &co64)].concat();
+        let trak = boxed(
+            b"trak",
+            &boxed(b"mdia", &boxed(b"minf", &boxed(b"stbl", &stbl))),
+        );
+        let mut b = boxed(b"ftyp", b"crx \0\0\0\x01crx ");
+        b.extend(boxed(b"moov", &trak));
+        if let Some(n) = mdat_len {
+            b.extend(boxed(b"mdat", &vec![7u8; n as usize]));
+        }
+        b
+    }
+
+    #[test]
+    fn cr3_cut_at_a_box_boundary_is_found_by_its_tracks() {
+        let cr3 = Format::Raw(RawFormat::Cr3);
+        let head = cr3_with_track(0, 0, None).len() as u64;
+        // The sample lies in mdat, 8 bytes after its header.
+        let whole = cr3_with_track(head + 8, 300, Some(300));
+        assert_eq!(truncation(&whole, &probe_full(&whole, cr3)), None);
+        // Cut right after moov: no box runs past the end, but the track's sample does.
+        let at_boundary = &whole[..head as usize];
+        let t = truncation(at_boundary, &probe_full(at_boundary, cr3)).unwrap();
+        assert_eq!((t.needed, t.what), (head + 8 + 300, "image data"));
+        // By targeted reads from a 16-byte head: the same, from the box headers and moov.
+        let pr = probe_full(at_boundary, cr3);
+        let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+            let s = (off as usize).min(at_boundary.len());
+            Ok(at_boundary[s..(s + len).min(at_boundary.len())].to_vec())
+        };
+        let s = check_by_reads(&at_boundary[..16], head, &pr, &mut fetch, 0).unwrap();
+        assert_eq!(s.cut().map(|t| t.needed), Some(head + 8 + 300));
+        let pr = probe_full(&whole, cr3);
+        let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+            let s = (off as usize).min(whole.len());
+            Ok(whole[s..(s + len).min(whole.len())].to_vec())
+        };
+        let s = check_by_reads(&whole[..16], whole.len() as u64, &pr, &mut fetch, 0).unwrap();
+        assert_eq!(s, Structure::Complete);
+    }
+
+    #[test]
+    fn an_unknown_range_reads_the_file_whole_only_when_small_enough() {
+        // A strip array of 200,000 offsets (800 KB) is beyond what the directory reads fetch.
+        let n = 200_000u32;
+        let mut b = tiff_bytes(42, &[(0x0111, 4, n, 0), (0x0117, 4, n, 0)], true, 0);
+        let offs = b.len() as u32;
+        b.extend(std::iter::repeat_n(0u8, n as usize * 4));
+        let lens = b.len() as u32;
+        b.extend(std::iter::repeat_n(0u8, n as usize * 4));
+        b[8 + 2 + 8..8 + 2 + 12].copy_from_slice(&offs.to_le_bytes());
+        b[8 + 2 + 12 + 8..8 + 2 + 24].copy_from_slice(&lens.to_le_bytes());
+        // Every strip: 1 byte at the end of the file.
+        let end = b.len() as u32;
+        for i in 0..n as usize {
+            b[offs as usize + i * 4..offs as usize + i * 4 + 4].copy_from_slice(&end.to_le_bytes());
+            b[lens as usize + i * 4] = 1;
+        }
+        let complete = b.len();
+        b.push(0);
+        let nef = Format::Raw(RawFormat::Nef);
+        assert_eq!(truncation(&b, &probe_full(&b, nef)), None);
+        let (s, _, _) = by_reads_as(&b, nef, 0);
+        assert_eq!(s, Structure::Unknown, "not judged within the bounds");
+        let (s, bytes, _) = by_reads_as(&b, nef, u64::MAX);
+        assert_eq!(s, Structure::Complete);
+        assert!(bytes >= b.len() as u64, "read whole");
+        let cut = &b[..complete];
+        let (s, ..) = by_reads_as(cut, nef, u64::MAX);
+        assert_eq!(s.cut().map(|t| t.needed), Some(complete as u64 + 1));
+    }
+
+    fn by_reads_as(b: &[u8], format: Format, whole_max: u64) -> (Structure, u64, u32) {
+        let pr = probe_full(b, format);
+        let h = &b[..64];
+        let (mut bytes, mut reads) = (0u64, 0u32);
+        let mut fetch = |off: u64, len: usize| -> Result<Vec<u8>, ()> {
+            let start = (off as usize).min(b.len());
+            let end = start.saturating_add(len).min(b.len());
+            bytes += (end - start) as u64;
+            reads += 1;
+            Ok(b[start..end].to_vec())
+        };
+        let s = check_by_reads(h, b.len() as u64, &pr, &mut fetch, whole_max).unwrap();
+        (s, bytes, reads)
     }
 }

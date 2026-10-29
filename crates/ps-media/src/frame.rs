@@ -310,22 +310,74 @@ pub fn reread_frame_facts<E>(
     probe: &ProbeRecord,
     fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
 ) -> Result<Option<FrameFacts>, E> {
-    if !ps_model::frame::frame_identity_enabled() || probe.kind() != Some(MediaKind::Image) {
-        return Ok(Some(FrameFacts::default()));
-    }
+    Ok(reread_header(head, file_size, probe, fetch, false, 0)?.facts)
+}
+
+/// What a one-time header re-read found ([`reread_header`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeaderReread {
+    /// The frame facts ([`reread_frame_facts`]); `None` when they cannot be complete within the bounds.
+    pub facts: Option<FrameFacts>,
+    /// The RAW structure check ([`crate::raw_check::check_by_reads`]) when asked for; `Complete` otherwise.
+    pub structure: crate::raw_check::Structure,
+}
+
+/// [`reread_frame_facts`] and, with `structure`, the RAW structure check of ADR-0117 over the same directory reads
+/// (one load of the TIFF directories serves both; a file of at most `whole_max` bytes is read whole only when a
+/// bound leaves the structure unknown).
+pub fn reread_header<E>(
+    head: &[u8],
+    file_size: u64,
+    probe: &ProbeRecord,
+    fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
+    structure: bool,
+    whole_max: u64,
+) -> Result<HeaderReread, E> {
+    use crate::raw_check::{Structure, check_by_reads, check_loaded};
+    let raw = match probe.format {
+        Some(ps_model::Format::Raw(r)) if structure => Some(r),
+        _ => None,
+    };
+    let enabled =
+        ps_model::frame::frame_identity_enabled() && probe.kind() == Some(MediaKind::Image);
     let tiff_based = head.starts_with(b"II*\0") || head.starts_with(b"MM\0*");
     if !tiff_based || (head.len() as u64) >= file_size {
         // The whole file, or an EXIF block (JPEG APP1, at most 64 KB near the start) the probe found in the window.
-        if probe.exif_range.is_some_and(|r| r.slice(head).is_none()) {
-            return Ok(None);
-        }
-        return Ok(Some(read_frame_facts(head, probe)));
+        let facts = if !enabled {
+            Some(FrameFacts::default())
+        } else if probe.exif_range.is_some_and(|r| r.slice(head).is_none()) {
+            None
+        } else {
+            Some(read_frame_facts(head, probe))
+        };
+        let structure = match raw {
+            Some(_) => check_by_reads(head, file_size, probe, fetch, whole_max)?,
+            None => Structure::Complete,
+        };
+        return Ok(HeaderReread { facts, structure });
     }
     let loaded = crate::tiff::load_directories(head, file_size, fetch)?;
-    if !loaded.complete {
-        return Ok(None);
-    }
-    let mut segments = loaded.segments;
+    let structure = match raw {
+        Some(r) => check_loaded(r, head, &loaded.segments, file_size, fetch, whole_max)?,
+        None => Structure::Complete,
+    };
+    let facts = if !enabled {
+        Some(FrameFacts::default())
+    } else if !loaded.complete {
+        None
+    } else {
+        tiff_facts(head, file_size, loaded.segments, fetch)?
+    };
+    Ok(HeaderReread { facts, structure })
+}
+
+/// The frame facts of a TIFF-based file from its loaded directories, fetching the frame values they lack.
+fn tiff_facts<E>(
+    head: &[u8],
+    file_size: u64,
+    mut segments: Vec<Segment>,
+    fetch: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, E>,
+) -> Result<Option<FrameFacts>, E> {
     let wanted = match crate::util::contain(|| {
         let t = Tiff::parse_view(View::new(head, &segments))?;
         frame_value_misses(&t, file_size)

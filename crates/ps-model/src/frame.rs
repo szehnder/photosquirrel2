@@ -10,9 +10,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 
 /// The version of the metadata rules the stored metadata of a file was read under (catalog `file.meta_version`,
-/// migration 23). 1: frame identity and maker notes in `DNGPrivateData` (ADR-0105). A rescan re-reads the header
-/// of unchanged RAW-format rows below it.
-pub const META_LOGIC_VERSION: u8 = 1;
+/// migration 23). 1: frame identity and maker notes in `DNGPrivateData` (ADR-0105). 2: the structure of a RAW file
+/// was checked for a cut (ADR-0117): a RAW-format row with real preview pixels stored by an earlier version may hide
+/// a file cut after its intact embedded preview. A rescan re-reads the header of unchanged rows below the version
+/// they need ([`meta_reread_due`]).
+pub const META_LOGIC_VERSION: u8 = 2;
+
+/// The first metadata version, frame identity (ADR-0105): what every row needs.
+pub const FRAME_META_VERSION: u8 = 1;
+
+/// Whether an analysed row of `format` stored at metadata version `meta_version` is due a one-time header re-read:
+/// below [`FRAME_META_VERSION`] (frame identity, ADR-0105), or a RAW-format row with real preview pixels
+/// (`placeholder` false) below [`META_LOGIC_VERSION`] (the structure check, ADR-0117). Version 2 changes nothing
+/// for other rows, so they stay current at 1; a RAW placeholder was either judged by this version's decode or is
+/// re-read in full by the RAW decoder generation bump (ADR-0115).
+pub fn meta_reread_due(format: Option<crate::Format>, placeholder: bool, meta_version: u8) -> bool {
+    meta_version < FRAME_META_VERSION
+        || (meta_version < META_LOGIC_VERSION
+            && !placeholder
+            && format.is_some_and(crate::Format::is_raw))
+}
 
 /// What a file records about its frame. Each part compares only with the same part of another file.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -130,9 +147,52 @@ pub fn set_frame_identity_enabled(enabled: bool) {
     FRAME_IDENTITY.store(enabled, Ordering::Relaxed);
 }
 
+#[cfg(feature = "test-hooks")]
+static STRUCTURE_CHECK: AtomicBool = AtomicBool::new(true);
+
+/// Whether a RAW file's structure is checked for a cut (ADR-0115): always, except in tests that catalog a cut file
+/// the way builds before ADR-0115 did, with the `test-hooks` feature.
+#[cfg(feature = "test-hooks")]
+pub fn structure_check_enabled() -> bool {
+    STRUCTURE_CHECK.load(Ordering::Relaxed)
+}
+
+/// Whether a RAW file's structure is checked for a cut (ADR-0115): always in a build without the `test-hooks`
+/// feature.
+#[cfg(not(feature = "test-hooks"))]
+pub const fn structure_check_enabled() -> bool {
+    true
+}
+
+/// Test hook (feature `test-hooks`, enabled only from dev-dependencies): turn the RAW structure check off
+/// (`ps_media::raw_check`) to write a catalog as 0.3.0 did, where a RAW cut after its intact preview had preview
+/// pixels and hashes. Process-wide: only for a test binary of its own.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub fn set_structure_check_enabled(enabled: bool) {
+    STRUCTURE_CHECK.store(enabled, Ordering::Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn which_rows_are_due_a_header_re_read() {
+        use crate::{Format, RawFormat};
+        let cr2 = Some(Format::Raw(RawFormat::Cr2));
+        let jpeg = Some(Format::Jpeg);
+        // Version 0: everything (frame identity).
+        assert!(meta_reread_due(jpeg, false, 0));
+        assert!(meta_reread_due(cr2, true, 0));
+        // Version 1: only a RAW with preview pixels (the structure check).
+        assert!(meta_reread_due(cr2, false, 1));
+        assert!(!meta_reread_due(cr2, true, 1), "a RAW placeholder");
+        assert!(!meta_reread_due(jpeg, false, 1));
+        assert!(!meta_reread_due(None, false, 1));
+        // Current.
+        assert!(!meta_reread_due(cr2, false, META_LOGIC_VERSION));
+    }
 
     #[test]
     fn stems_labels_and_differences() {
