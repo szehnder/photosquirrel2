@@ -720,6 +720,7 @@ fn videos_from_older_catalogs_show_why_they_have_no_preview(cx: &mut TestAppCont
     c.execute_batch(
         "UPDATE file SET preview_gen = NULL, preview_reason = NULL WHERE format = 'mov';
          DROP TABLE catalog_task;
+         ALTER TABLE file DROP COLUMN colour;
          PRAGMA user_version = 24;",
     )
     .unwrap();

@@ -139,6 +139,9 @@ pub struct AnalysisResult {
     /// The thumbnail stored with this analysis is a placeholder: its generation and reason
     /// (`file.preview_gen`, `file.preview_reason`, ADR-0109); `None` clears them.
     pub preview: Option<ps_model::PreviewStamp>,
+    /// The colour space the probe read (`file.colour`, ADR-0113); `None` leaves the column NULL (a row a rescan
+    /// re-checks when it is a thumbed `_`-named JPEG or RAW).
+    pub colour: Option<ps_model::ColourSpace>,
 }
 
 impl AnalysisResult {
@@ -245,6 +248,9 @@ pub struct FileRecord {
     /// Its placeholder's decoder generation and reason (catalog migration 24, ADR-0109); `None` with a real
     /// thumbnail.
     pub preview: Option<ps_model::PreviewStamp>,
+    /// `file.colour` (catalog migration 26, ADR-0113): a [`ps_model::ColourSpace::storage`] text,
+    /// [`ps_model::COLOUR_UNCHECKED`], or `None` (not analysed yet, or due the one-time colour re-check).
+    pub colour: Option<String>,
 }
 
 /// One recorded failure of a file (`file_error` row).

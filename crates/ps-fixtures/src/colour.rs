@@ -86,6 +86,23 @@ pub fn exif_jpeg(
     interop: Option<&str>,
     canon_note: Option<u16>,
 ) -> Vec<u8> {
+    with_exif(
+        &encode_jpeg(&patch(PATCH.0, PATCH.1, rgb), 95),
+        colour_space,
+        interop,
+        canon_note,
+    )
+}
+
+/// `encoded` (a JPEG as an encoder writes it) as a Canon camera JPEG: its JFIF APP0 replaced by an EXIF block with
+/// `ColorSpace` = `colour_space`, `InteropIndex` = `interop` and a Canon maker note recording `ColorSpace` =
+/// `canon_note` when given.
+pub fn with_exif(
+    encoded: &[u8],
+    colour_space: u16,
+    interop: Option<&str>,
+    canon_note: Option<u16>,
+) -> Vec<u8> {
     let mut ifd0 = Ifd::new();
     ifd0.ascii(0x010F, "Canon")
         .ascii(0x0110, "Canon EOS 5D Mark III")
@@ -96,10 +113,7 @@ pub fn exif_jpeg(
             exif_ifd(colour_space, interop, canon_note.map(canon_colour_note)),
         );
     let tiff = write_tiff(&ifd0, Endian::Little);
-    camera_jpeg(
-        &encode_jpeg(&patch(PATCH.0, PATCH.1, rgb), 95),
-        &app1_exif(&tiff),
-    )
+    camera_jpeg(encoded, &app1_exif(&tiff))
 }
 
 /// Largest ICC payload of one `APP2` segment (65,535 - 2 length bytes - 14 header bytes).
@@ -171,10 +185,15 @@ pub fn pro_photo_icc(description: &str) -> Vec<u8> {
 /// `rgb` (Adobe RGB values) with no EXIF of its own, the Exif IFD `ColorSpace` 0xFFFF without an Interop IFD, and
 /// the Canon maker note `ColorSpace` (0x00B4) = `canon_note`, so only the maker note tells the colour space.
 pub fn canon_cr2(rgb: [u8; 3], canon_note: u16) -> Vec<u8> {
-    let preview = patch_jpeg(rgb);
+    canon_cr2_of(&patch_jpeg(rgb), PATCH, canon_note)
+}
+
+/// [`canon_cr2`] around any preview JPEG of `dims` (without EXIF of its own).
+pub fn canon_cr2_of(preview_jpeg: &[u8], dims: (u32, u32), canon_note: u16) -> Vec<u8> {
+    let preview = preview_jpeg.to_vec();
     let mut ifd0 = Ifd::new();
-    ifd0.long(0x0100, PATCH.0)
-        .long(0x0101, PATCH.1)
+    ifd0.long(0x0100, dims.0)
+        .long(0x0101, dims.1)
         .short(0x0103, 6)
         .ascii(0x010F, "Canon")
         .ascii(0x0110, "Canon EOS 5D Mark III")

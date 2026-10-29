@@ -446,6 +446,14 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
             s.diff.reanalyzed
         );
     }
+    if s.diff.colour_checked > 0 {
+        println!(
+            "{} checked once for their colour space (header only, read-only), {} recoloured (Adobe RGB and other \
+             wide-gamut previews converted to sRGB)",
+            files(s.diff.colour_checked),
+            s.diff.recoloured
+        );
+    }
     if s.diff.frame_reread > 0 {
         let split = s.grouping.as_ref().map_or(0, |g| g.groups_split);
         println!(

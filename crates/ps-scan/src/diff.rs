@@ -88,6 +88,10 @@ pub struct Todo {
     /// Where to read the file when it is not at `path`: a frame-identity re-read of a file a cleanup run moved
     /// into the source's quarantine folder (ADR-0105). The catalog row stays at `path`.
     pub read_path: Option<RelPath>,
+    /// The one-time colour re-check of a row analysed before colour spaces were read ([`needs_colour_check`],
+    /// ADR-0113): the probe window is read (shared with a `meta_reread` of the same row); a file not in sRGB is then
+    /// read whole and its thumbnail made again. No hashing beyond the identity check, nothing regrouped.
+    pub colour_check: bool,
 }
 
 /// The diff of one source.
@@ -148,6 +152,19 @@ fn needs_frame_reread(r: &ps_catalog::FileRecord) -> bool {
     r.stage == Stage::Thumbed
         && r.identity.is_some()
         && ps_model::meta_reread_due(r.format, r.preview.is_some(), r.meta_version)
+}
+
+/// A thumbed `_`-named JPEG or RAW still with a real thumbnail whose colour space was never read: catalog migration
+/// 26 leaves `file.colour` NULL for exactly these (DCF names an Adobe RGB file `_MG_1234`), and every analysis writes
+/// it (ADR-0113). The name and format are checked here too, so no other row is ever read for its colour.
+fn needs_colour_check(r: &ps_catalog::FileRecord) -> bool {
+    r.stage == Stage::Thumbed
+        && r.identity.is_some()
+        && r.colour.is_none()
+        && r.preview.is_none()
+        && r.format
+            .is_some_and(|f| f == ps_model::Format::Jpeg || f.is_raw())
+        && r.key.path.file_name().first() == Some(&b'_')
 }
 
 /// The bytes a header re-read of `r` reads at most up front: the probe window for frame identity, the structure
@@ -250,6 +267,7 @@ pub fn diff(
                             meta_reread: true,
                             structure_only: r.meta_version >= ps_model::FRAME_META_VERSION,
                             read_path: Some(q),
+                            colour_check: false,
                         });
                         out.bytes_to_process += reread_head(r);
                     }
@@ -292,6 +310,7 @@ pub fn diff(
                     meta_reread: false,
                     structure_only: false,
                     read_path: None,
+                    colour_check: false,
                 };
                 match rec {
                     None => {
@@ -423,14 +442,23 @@ pub fn diff(
                                 }
                             }
                             // Frame identity (ADR-0105): an analysed RAW row read before it existed has its header
-                            // re-read once. A row already queued for other work waits for the next rescan.
-                            if needs_frame_reread(r) && !redecoding && !refreshing {
+                            // re-read once; the colour re-check (ADR-0113) shares that read when both are due. A row
+                            // already queued for other work waits for the next rescan.
+                            let meta = needs_frame_reread(r);
+                            let colour = needs_colour_check(r);
+                            if (meta || colour) && !redecoding && !refreshing {
                                 out.todo.push(Todo {
-                                    meta_reread: true,
-                                    structure_only: r.meta_version >= ps_model::FRAME_META_VERSION,
+                                    meta_reread: meta,
+                                    structure_only: meta
+                                        && r.meta_version >= ps_model::FRAME_META_VERSION,
+                                    colour_check: colour,
                                     ..todo(r.stage, false)
                                 });
-                                out.bytes_to_process += reread_head(r);
+                                out.bytes_to_process += if colour {
+                                    r.stat.size.min(ps_media::PROBE_LIMIT as u64)
+                                } else {
+                                    reread_head(r)
+                                };
                             }
                             if r.date_version < DATE_LOGIC_VERSION && r.capture_provenance.is_some()
                             {

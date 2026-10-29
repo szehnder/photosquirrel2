@@ -78,6 +78,8 @@ struct Diff {
     decode_retries: AtomicU64,
     frame_reread: AtomicU64,
     outdated_previews: AtomicU64,
+    colour_checked: AtomicU64,
+    recoloured: AtomicU64,
 }
 
 impl Diff {
@@ -101,6 +103,8 @@ impl Diff {
             decode_retries: self.decode_retries.load(Ordering::Relaxed),
             frame_reread: self.frame_reread.load(Ordering::Relaxed),
             outdated_previews: self.outdated_previews.load(Ordering::Relaxed),
+            colour_checked: self.colour_checked.load(Ordering::Relaxed),
+            recoloured: self.recoloured.load(Ordering::Relaxed),
         }
     }
 
@@ -123,8 +127,9 @@ impl Diff {
             .store(d.decode_retries, Ordering::Relaxed);
         self.outdated_previews
             .store(d.outdated_previews, Ordering::Relaxed);
-        // `refreshed`, `redecoded` and `frame_reread` count during the run (Progress::refreshed,
-        // Progress::redecoded, Progress::frame_reread), after the diff.
+        // `refreshed`, `redecoded`, `frame_reread`, `colour_checked` and `recoloured` count during the run
+        // (Progress::refreshed, Progress::redecoded, Progress::frame_reread, Progress::colour_checked), after the
+        // diff.
     }
 }
 
@@ -346,6 +351,16 @@ impl Progress {
             .diff
             .frame_reread
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A file's colour space was read for the one-time colour re-check (ADR-0113); `recoloured` when it was not
+    /// sRGB and its thumbnail was made again.
+    pub fn colour_checked(&self, idx: usize, recoloured: bool) {
+        let d = &self.sources[idx].diff;
+        d.colour_checked.fetch_add(1, Ordering::Relaxed);
+        if recoloured {
+            d.recoloured.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// A re-decode filled in a waiting file's preview and hashes (ADR-0091).

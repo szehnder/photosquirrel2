@@ -79,6 +79,7 @@ fn row(source: ps_model::SourceId, i: u64) -> Option<FileRow> {
                 decoder_missing: None,
                 decode_failure: None,
                 preview: None,
+                colour: Some(ps_model::ColourSpace::Srgb),
                 hashes: Some(PerceptualHash {
                     phash: mix(i ^ 1),
                     dhash: mix(i ^ 2),

@@ -54,6 +54,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     FRAME_IDENTITY_MIGRATION,
     PREVIEW_GEN_MIGRATION,
     VIDEO_PLACEHOLDER_MIGRATION,
+    COLOUR_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -213,6 +214,22 @@ pub const VIDEO_PLACEHOLDER_MIGRATION: Migration = Migration {
     name: "video_placeholders",
     sql: include_str!("../migrations/0025_video_placeholders.sql"),
 };
+/// Migration 26 (ADR-0113: `file.colour`; analysed rows marked 'unchecked' except the thumbed `_`-named JPEG and RAW
+/// stills, which the next rescan re-checks once).
+pub const COLOUR_MIGRATION: Migration = Migration {
+    version: 26,
+    name: "colour",
+    sql: include_str!("../migrations/0026_colour.sql"),
+};
+/// SQL that puts a catalog back where migration 26 leaves one written before colour spaces were read (ADR-0113): no
+/// colour recorded, then the migration's own marking statement, so tests that rebuild an old catalog cannot drift
+/// from it.
+#[doc(hidden)]
+pub fn colour_reset_sql() -> String {
+    let sql = COLOUR_MIGRATION.sql;
+    let at = sql.find("UPDATE file SET colour").unwrap_or(sql.len());
+    format!("UPDATE file SET colour = NULL;\n{}", &sql[at..])
+}
 /// SQL that puts a catalog back where migration 23 leaves one written before frame identity (ADR-0105): no frame
 /// ids, every row current except those the migration keeps for the re-read. It reuses the migration's own
 /// marking statement, so tests that rebuild an old catalog cannot drift from it.

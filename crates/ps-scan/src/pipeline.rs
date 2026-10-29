@@ -253,6 +253,7 @@ fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput
             prior_failure: None,
             meta_reread: false,
             structure_only: false,
+            colour_check: false,
             read_path: None,
         };
         out.counts.unchanged += 1;
@@ -1105,8 +1106,10 @@ fn process_file(
     // directories and frame values beyond it (ADR-0108); the facts are merged into the stored metadata. A RAW with
     // preview pixels is also checked for a cut over the same reads (ADR-0117); a row whose frame identity is current
     // reads only the structure check's head and its directories. No decode, no hashing.
-    if t.meta_reread {
-        let want = if t.structure_only {
+    // The one-time colour re-check (ADR-0113) shares the read: it needs the probe window; a file not in sRGB is then
+    // read whole (before the file is closed) and its thumbnail made again.
+    if t.meta_reread || t.colour_check {
+        let want = if t.structure_only && !t.colour_check {
             ps_media::raw_check::STRUCTURE_HEAD
         } else {
             ps_media::PROBE_LIMIT
@@ -1114,6 +1117,9 @@ fn process_file(
         let mut head = Vec::with_capacity((size as usize).min(want));
         let read = read_into(&mut r, &mut head, want).and_then(|()| {
             let probe = ps_media::probe_bytes(&head, size, Some(rel.as_path()));
+            if !t.meta_reread {
+                return Ok((None, ps_media::raw_check::Structure::Complete, probe));
+            }
             let mut fetch = |off: u64, len: usize| -> io::Result<Vec<u8>> {
                 r.seek(SeekFrom::Start(off))?;
                 let mut v = Vec::with_capacity(len.min(CHUNK));
@@ -1154,10 +1160,25 @@ fn process_file(
                 return;
             }
         };
-        drop(file);
         let key = FileKey::new(src.id, t.path.clone());
+        // A RAW found cut gets the "could not be read" placeholder below: its colour is recorded, nothing remade.
+        let colour = if t.colour_check {
+            let cut = matches!(structure, ps_media::raw_check::Structure::Cut(_));
+            match colour_recheck(
+                ctx, idx, reader, &busy, &t, &key, &probe, head, size, cut, &mut r,
+            ) {
+                Some(c) => Some(c),
+                // Cancelled, or the source went away: nothing is written.
+                None if t.meta_reread => None,
+                None => return,
+            }
+        } else {
+            None
+        };
+        drop(file);
         // `Err(())`: found cut, but the placeholder could not be stored; the structure check stays due.
         let damaged = match &structure {
+            _ if !t.meta_reread => Ok(None),
             ps_media::raw_check::Structure::Cut(cut) => cut_found(ctx, idx, &t, &key, &probe, cut)
                 .map(Some)
                 .ok_or(()),
@@ -1182,58 +1203,63 @@ fn process_file(
                 damaged,
             }])
         };
-        match (facts, damaged) {
-            // A frame value beyond the bounds: not stamped, so the row is not taken for "no frame identity"; a later
-            // full analysis (a change or a refresh) reads it, and cleanup waits for it (ADR-0108).
-            (Some(None), Ok(None) | Err(())) => {
-                log::info!(
-                    "{}: frame values lie beyond the re-read's bounds; left for a full analysis",
-                    t.path
-                );
+        if t.meta_reread {
+            match (facts, damaged) {
+                // A frame value beyond the bounds: not stamped, so the row is not taken for "no frame identity"; a later
+                // full analysis (a change or a refresh) reads it, and cleanup waits for it (ADR-0108).
+                (Some(None), Ok(None) | Err(())) => {
+                    log::info!(
+                        "{}: frame values lie beyond the re-read's bounds; left for a full analysis",
+                        t.path
+                    );
+                }
+                // Cut short: it has no hashes, so it joins no burst by look and its frame identity cannot matter; stamped
+                // current, so it is not re-checked (and reported) on every rescan.
+                (Some(None), Ok(Some(stamp))) => {
+                    ctx.submit(reread(
+                        None,
+                        false,
+                        false,
+                        ps_model::META_LOGIC_VERSION,
+                        false,
+                        Some(stamp),
+                    ));
+                    ctx.progress.frame_reread(idx);
+                }
+                // The frame facts are current; the structure check stays due when its placeholder was not stored.
+                (Some(Some(facts)), damaged) => {
+                    let version = if damaged.is_ok() {
+                        ps_model::META_LOGIC_VERSION
+                    } else {
+                        ps_model::FRAME_META_VERSION
+                    };
+                    ctx.submit(reread(
+                        facts.frame_id,
+                        facts.maker_notes,
+                        facts.camera_original,
+                        version,
+                        true,
+                        damaged.ok().flatten(),
+                    ));
+                    ctx.progress.frame_reread(idx);
+                }
+                (None, Ok(damaged)) => {
+                    ctx.submit(reread(
+                        None,
+                        false,
+                        false,
+                        ps_model::META_LOGIC_VERSION,
+                        false,
+                        damaged,
+                    ));
+                    ctx.progress.frame_reread(idx);
+                }
+                // Found cut, its placeholder not stored: the row keeps its version, so the next rescan checks it again.
+                (None, Err(())) => {}
             }
-            // Cut short: it has no hashes, so it joins no burst by look and its frame identity cannot matter; stamped
-            // current, so it is not re-checked (and reported) on every rescan.
-            (Some(None), Ok(Some(stamp))) => {
-                ctx.submit(reread(
-                    None,
-                    false,
-                    false,
-                    ps_model::META_LOGIC_VERSION,
-                    false,
-                    Some(stamp),
-                ));
-                ctx.progress.frame_reread(idx);
-            }
-            // The frame facts are current; the structure check stays due when its placeholder was not stored.
-            (Some(Some(facts)), damaged) => {
-                let version = if damaged.is_ok() {
-                    ps_model::META_LOGIC_VERSION
-                } else {
-                    ps_model::FRAME_META_VERSION
-                };
-                ctx.submit(reread(
-                    facts.frame_id,
-                    facts.maker_notes,
-                    facts.camera_original,
-                    version,
-                    true,
-                    damaged.ok().flatten(),
-                ));
-                ctx.progress.frame_reread(idx);
-            }
-            (None, Ok(damaged)) => {
-                ctx.submit(reread(
-                    None,
-                    false,
-                    false,
-                    ps_model::META_LOGIC_VERSION,
-                    false,
-                    damaged,
-                ));
-                ctx.progress.frame_reread(idx);
-            }
-            // Found cut, its placeholder not stored: the row keeps its version, so the next rescan checks it again.
-            (None, Err(())) => {}
+        }
+        if let Some(c) = colour {
+            c.submit(ctx, idx, &key);
         }
         ctx.progress.file_done(idx);
         ctx.progress.set_dir(idx, reader, None);
@@ -1578,6 +1604,124 @@ fn cut_found(
     Some(stamp)
 }
 
+/// What the one-time colour re-check of a row analysed before colour spaces were read found (ADR-0113).
+enum Recheck {
+    /// sRGB, or a colour space whose thumbnail is kept as it is (a RAW found cut, a file too large to read whole
+    /// here, a thumbnail that could not be made again): recorded only.
+    Recorded(ps_model::ColourSpace),
+    /// Not sRGB: the thumbnail of its content was made again, converted to sRGB.
+    Recoloured(ps_model::ColourSpace),
+    /// Other content under the unchanged fingerprint: 'unchecked' (the stored content's thumbnail is not touched).
+    Unchecked,
+    /// The file could not be read whole, or the new thumbnail not stored: nothing is written, so the next rescan
+    /// checks it again.
+    Retry,
+}
+
+impl Recheck {
+    fn submit(self, ctx: &RunCtx, idx: usize, key: &FileKey) {
+        let (colour, recoloured) = match self {
+            Recheck::Recorded(c) => (Some(c), false),
+            Recheck::Recoloured(c) => (Some(c), true),
+            Recheck::Unchecked => (None, false),
+            Recheck::Retry => return,
+        };
+        ctx.submit(Command::SetColour(vec![(key.clone(), colour)]));
+        ctx.progress.colour_checked(idx, recoloured);
+    }
+}
+
+/// The one-time colour re-check (ADR-0113) of the file `r` reads, whose probe window is `head`: its colour space
+/// from the probe; when it is not sRGB the rest of the file is read (the reader is positioned after `head`), the
+/// identity checked against the catalog's, and the thumbnail of that content made again and stored. Perceptual
+/// hashes, metadata and the dedup stamp are not touched. `None` when the run was cancelled or the source lost.
+#[allow(clippy::too_many_arguments)]
+fn colour_recheck(
+    ctx: &RunCtx,
+    idx: usize,
+    reader: usize,
+    busy: &Busy<'_>,
+    t: &Todo,
+    key: &FileKey,
+    probe: &ProbeRecord,
+    head: Vec<u8>,
+    size: u64,
+    cut: bool,
+    r: &mut Controlled<'_>,
+) -> Option<Recheck> {
+    let space = probe.colour.clone();
+    if space.is_srgb() || cut {
+        return Some(Recheck::Recorded(space));
+    }
+    let identity = match ctx.catalog.read().file(key) {
+        Ok(Some(f)) => f.identity,
+        _ => return Some(Recheck::Retry),
+    };
+    let Some(identity) = identity.filter(|i| i.kind == ps_model::ContentIdKind::Full) else {
+        return Some(Recheck::Recorded(space));
+    };
+    if size > ANALYSIS_BUFFER_MAX_BYTES {
+        log::info!(
+            "{}: recorded in {space:?} but too large to make its thumbnail again here; converted when it is analysed \
+             again",
+            t.path
+        );
+        return Some(Recheck::Recorded(space));
+    }
+    let _permit = ctx
+        .budget
+        .acquire(size, (idx, reader), &|| busy.checkpoint())
+        .ok()?;
+    let mut buf = head;
+    let read = r
+        .seek(SeekFrom::Start(buf.len() as u64))
+        .and_then(|_| read_rest(r, &mut buf, size));
+    if let Err(e) = read {
+        if is_cancel(&e) {
+            return None;
+        }
+        if !ctx.root_available(idx) {
+            ctx.lose(idx);
+            return None;
+        }
+        ctx.progress.error(RecentError {
+            source: ctx.sources[idx].id,
+            path: t.path.clone(),
+            stage: t.stage,
+            message: format!(
+                "could not be read for its one-time colour check ({}); its preview is checked again by the next \
+                 rescan",
+                io_message(&e)
+            ),
+        });
+        return Some(Recheck::Retry);
+    }
+    if ps_hash::identity_from_buffer(&buf) != identity {
+        log::info!(
+            "{}: content changed under an unchanged fingerprint; its colour is left unchecked",
+            t.path
+        );
+        return Some(Recheck::Unchecked);
+    }
+    let full = ps_media::probe_buffer(&buf, Some(t.path.to_path_buf().as_path()));
+    match ps_media::thumb::make_thumbnail(&buf, &full, &ctx.opts.decoders) {
+        Ok((thumb, origin)) if origin != ps_media::thumb::ThumbOrigin::Placeholder => {
+            if let Err(e) = ctx.thumbs.put(&identity, &thumb) {
+                log::warn!("{}: could not store its recoloured thumbnail ({e})", t.path);
+                return Some(Recheck::Retry);
+            }
+            Some(Recheck::Recoloured(space))
+        }
+        _ => {
+            log::info!(
+                "{}: in {space:?}, but its thumbnail could not be made again; the stored one is kept",
+                t.path
+            );
+            Some(Recheck::Recorded(space))
+        }
+    }
+}
+
 fn reread_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, e: &io::Error) {
     ctx.progress.error(RecentError {
         source: ctx.sources[idx].id,
@@ -1854,6 +1998,8 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
             hashes,
             metadata,
             preview,
+            // The colour space the thumbnail was converted from (ADR-0113).
+            colour: Some(probe.colour.clone()),
         }),
         thumb,
     })

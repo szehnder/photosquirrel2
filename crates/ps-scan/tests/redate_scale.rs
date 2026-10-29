@@ -112,6 +112,7 @@ fn row(source: ps_model::SourceId, i: u64) -> FileRow {
                 decoder_missing: None,
                 decode_failure: None,
                 preview: None,
+                colour: Some(ps_model::ColourSpace::Srgb),
                 hashes: None,
                 metadata: Metadata {
                     fields: MediaMetadata {

@@ -77,6 +77,10 @@ pub enum Command {
     /// Rows without metadata are left alone. A RAW structure check (ADR-0117) stamps the version and, for a file
     /// found cut short, drops the hashes of its content and stores its "could not be read" stamp.
     MetaReread(Vec<MetaReread>),
+    /// The one-time colour re-check of an unchanged row (ADR-0113): `file.colour` of every row with the same content
+    /// as the file at the key (identical bytes record an identical colour space); `None` writes
+    /// [`ps_model::COLOUR_UNCHECKED`]. Nothing grouping reads changes, so the dedup stamp does not move.
+    SetColour(Vec<(FileKey, Option<ps_model::ColourSpace>)>),
     /// Analysis results with stage `analyzed`. The file must have been probed.
     Analyzed(Vec<(FileKey, Box<AnalysisResult>)>),
     /// Stage `thumbed`: the thumbnail is in `thumbs.db`. The file must be analyzed.
@@ -164,6 +168,7 @@ impl Command {
             Command::Reclassify(_) => "reclassify",
             Command::Redate(_) => "redate",
             Command::MetaReread(_) => "meta_reread",
+            Command::SetColour(_) => "set_colour",
             Command::Analyzed(_) => "analyzed",
             Command::Thumbed(_) => "thumbed",
             Command::Failed(_) => "failed",
@@ -783,6 +788,13 @@ impl WriterThread {
                     });
                 }
             }
+            Command::SetColour(rows) => {
+                for (k, colour) in &rows {
+                    self.row(name, Some(k), |c| {
+                        expect_one(set_colour(c, k, colour.as_ref())?, "unknown or unanalysed file")
+                    });
+                }
+            }
             Command::Analyzed(rows) => {
                 for (k, a) in &rows {
                     self.row(name, Some(k), |c| {
@@ -1019,6 +1031,7 @@ const ANALYSIS_COLUMNS: &[(&str, &str)] = &[
     ("meta_version", "0"),
     ("preview_gen", "NULL"),
     ("preview_reason", "NULL"),
+    ("colour", "NULL"),
 ];
 const PROBE_COLUMNS: &[(&str, &str)] = &[
     ("class", "NULL"),
@@ -1113,7 +1126,7 @@ const ANALYZED_SQL: &str = "UPDATE file SET stage = 2,
         camera_model = ?12, has_gps = ?13, metadata = ?14,
         width = coalesce(?15, width), height = coalesce(?16, height),
         capture_precision = ?17, date_version = ?18, decoder_missing = ?19, decode_failure = ?20,
-        frame_id = ?21, meta_version = ?22, preview_gen = ?23, preview_reason = ?24
+        frame_id = ?21, meta_version = ?22, preview_gen = ?23, preview_reason = ?24, colour = ?25
     WHERE source_id = ?1 AND rel_path = ?2 AND class IS NOT NULL";
 
 /// All columns at once, for rows that arrive with results and are new (the common synthetic/import case).
@@ -1124,10 +1137,10 @@ static INSERT_FULL_SQL: LazyLock<String> = LazyLock::new(|| {
         content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_offset_min,
         capture_provenance, capture_undated, camera_model, has_gps, metadata, kflags, first_seen,
         class_facts, classifier_hash, capture_precision, date_version, decoder_missing, decode_failure,
-        frame_id, meta_version, preview_gen, preview_reason, exclusion)
+        frame_id, meta_version, preview_gen, preview_reason, colour, exclusion)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
             ?21, ?22, ?23, ?24, ?25, ?8 | (coalesce(?11, 0) << 3), ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
-            ?34, ?35, ?36, {})
+            ?34, ?35, ?36, ?37, {})
     ON CONFLICT (source_id, rel_path) DO NOTHING",
         exclusion_sql("?8", "?10", "?9", "?3")
     )
@@ -1255,6 +1268,7 @@ fn insert_full(
         i64::from(ps_model::META_LOGIC_VERSION),
         a.preview.map(|p| i64::from(p.generation)),
         a.preview.map(|p| p.reason.as_str()),
+        a.colour.as_ref().map(ps_model::ColourSpace::storage),
     ])
 }
 
@@ -1365,7 +1379,37 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
         i64::from(ps_model::META_LOGIC_VERSION),
         a.preview.map(|p| i64::from(p.generation)),
         a.preview.map(|p| p.reason.as_str()),
+        a.colour.as_ref().map(ps_model::ColourSpace::storage),
     ])
+}
+
+/// `file.colour` of the row at `k` and of every other row with its content (ADR-0113). Returns the rows written at
+/// `k` (0 or 1).
+fn set_colour(
+    c: &Connection,
+    k: &FileKey,
+    colour: Option<&ps_model::ColourSpace>,
+) -> rusqlite::Result<usize> {
+    let text = colour.map_or_else(
+        || ps_model::COLOUR_UNCHECKED.to_owned(),
+        ps_model::ColourSpace::storage,
+    );
+    let n = c
+        .prepare_cached(
+            "UPDATE file SET colour = ?3
+             WHERE source_id = ?1 AND rel_path = ?2 AND content_id IS NOT NULL",
+        )?
+        .execute(params![k.source.0, k.path.as_bytes(), text])?;
+    if n > 0 {
+        c.prepare_cached(
+            "UPDATE file SET colour = ?3
+             WHERE (content_id, identity_kind) = (SELECT content_id, identity_kind FROM file
+                                                  WHERE source_id = ?1 AND rel_path = ?2)
+               AND colour IS NOT ?3",
+        )?
+        .execute(params![k.source.0, k.path.as_bytes(), text])?;
+    }
+    Ok(n)
 }
 
 /// A header re-read for frame identity (ADR-0105): the frame identity, maker notes and the camera-original signal

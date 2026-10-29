@@ -110,6 +110,7 @@ pub fn analysis_of(i: u64) -> AnalysisResult {
         decoder_missing: None,
         decode_failure: None,
         preview: None,
+        colour: Some(ps_model::ColourSpace::Srgb),
         hashes: Some(PerceptualHash {
             phash: mix(i ^ 1),
             dhash: mix(i ^ 2),

@@ -44,10 +44,11 @@ impl std::fmt::Debug for Readers {
 pub(crate) const FILE_COLUMNS: &str = "id, source_id, rel_path, size, mtime_ns, file_index, stage, class, reasons, format,
     width, height, content_id, identity_kind, phash, dhash, hash_version, capture_ts, capture_undated,
     camera_model, has_gps, attempts, missing_since, first_seen, capture_offset_min, capture_provenance,
-    capture_precision, date_version, decoder_missing, decode_failure, meta_version, preview_gen, preview_reason";
+    capture_precision, date_version, decoder_missing, decode_failure, meta_version, preview_gen, preview_reason,
+    colour";
 
 /// Number of columns in [`FILE_COLUMNS`]: the index of the first column a query appends after them.
-pub(crate) const FILE_COLUMN_COUNT: usize = 33;
+pub(crate) const FILE_COLUMN_COUNT: usize = 34;
 
 impl Readers {
     pub(crate) fn open(path: &Path, size: usize) -> Result<Readers> {
@@ -772,6 +773,7 @@ pub(crate) fn file_record(r: &Row<'_>) -> Result<FileRecord> {
             }),
             _ => None,
         },
+        colour: r.get(33)?,
     })
 }
 

@@ -177,6 +177,13 @@ pub struct DiffCounts {
     /// again, once (counted in `unchanged` too; ADR-0109).
     #[serde(default)]
     pub outdated_previews: u64,
+    /// Unchanged thumbed `_`-named JPEG and RAW files an earlier version analysed whose colour space this run read
+    /// once (the probe window, read-only; ADR-0113). Counted in `unchanged` too.
+    #[serde(default)]
+    pub colour_checked: u64,
+    /// Of `colour_checked`, the files not in sRGB whose thumbnail this run made again, converted to sRGB.
+    #[serde(default)]
+    pub recoloured: u64,
 }
 
 impl DiffCounts {
@@ -199,6 +206,8 @@ impl DiffCounts {
         self.decode_retries += o.decode_retries;
         self.frame_reread += o.frame_reread;
         self.outdated_previews += o.outdated_previews;
+        self.colour_checked += o.colour_checked;
+        self.recoloured += o.recoloured;
     }
 
     /// Unchanged files that still keep a class decided before facts were stored, after this run.
