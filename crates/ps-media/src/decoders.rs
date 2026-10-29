@@ -144,6 +144,8 @@ impl Decoders {
 ///
 /// - TIFF 1: `tiff-support` (directories beyond the probe window, strip-wise decoding, large files in one pass).
 /// - HEIF 1, AVIF 1: `heic-system-decoders` (the system HEIC decoder, the bundled AV1 decoder).
+/// - RAW 1: `damaged-raw-reason` (a RAW file cut short is damaged, not "not supported": the reason is corrected,
+///   ADR-0115).
 /// - every other family 0.
 pub const GENERATIONS: ps_model::Generations = ps_model::Generations::from_pairs(&[
     (ps_model::DecodeFamily::Jpeg, 0),
@@ -152,7 +154,7 @@ pub const GENERATIONS: ps_model::Generations = ps_model::Generations::from_pairs
     (ps_model::DecodeFamily::Heif, 1),
     (ps_model::DecodeFamily::Avif, 1),
     (ps_model::DecodeFamily::Webp, 0),
-    (ps_model::DecodeFamily::Raw, 0),
+    (ps_model::DecodeFamily::Raw, 1),
     (ps_model::DecodeFamily::VideoPoster, 0),
 ]);
 
@@ -321,7 +323,7 @@ mod generation_tests {
     use ps_model::DecodeFamily as F;
 
     /// The decoder generations of this build. When a change makes files of a family decodable that were not
-    /// before, bump that family here and in [`super::GENERATIONS`], and note it in `docs/decoder-generations.md`
+    /// before, or corrects the placeholder reason its decoder gives (ADR-0115), bump that family here and in [`super::GENERATIONS`], and note it in `docs/decoder-generations.md`
     /// (ADR-0109): placeholders of older generations are then filled in by Fill in previews and the next rescan.
     #[test]
     fn decoder_generations_of_this_build() {
@@ -332,7 +334,7 @@ mod generation_tests {
             (F::Heif, 1),
             (F::Avif, 1),
             (F::Webp, 0),
-            (F::Raw, 0),
+            (F::Raw, 1),
             (F::VideoPoster, 0),
         ];
         for (family, generation) in expected {

@@ -437,31 +437,110 @@ pub fn decode_generic(bytes: &[u8]) -> Result<RgbImage, DecodeError> {
     .unwrap_or_else(|| Err(DecodeError::Failed("image decoder failure".into())))
 }
 
-/// Decode a RAW file's best embedded preview, never the sensor data. Uses the probe's preview location
-/// first, then rawler's preview extraction. Unoriented.
+/// What rawler made of a RAW file ([`decode_raw_preview`]): every outcome kept apart, none collapsed into another
+/// (ADR-0115).
+#[derive(Debug)]
+pub enum RawlerOutcome {
+    /// A preview (or thumbnail) image.
+    Image(image::DynamicImage),
+    /// rawler does not know the camera (`RawlerError::Unsupported`).
+    UnknownCamera { make: String, model: String },
+    /// A decoder, and neither a preview nor a thumbnail in the file.
+    NoPreview,
+    /// Any other rawler error, or a panic inside rawler (caught), with its message.
+    Failed(String),
+}
+
+/// What rawler makes of `bytes`.
+pub fn rawler_preview(bytes: &[u8]) -> RawlerOutcome {
+    contain(|| {
+        let src = rawler::rawsource::RawSource::new_from_slice(bytes);
+        let dec = match rawler::get_decoder(&src) {
+            Ok(d) => d,
+            Err(rawler::RawlerError::Unsupported { make, model, .. }) => {
+                return RawlerOutcome::UnknownCamera { make, model };
+            }
+            Err(e) => return RawlerOutcome::Failed(e.to_string()),
+        };
+        let params = rawler::decoders::RawDecodeParams::default();
+        let preview = match dec.preview_image(&src, &params) {
+            Ok(Some(i)) => return RawlerOutcome::Image(i),
+            Ok(None) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        match dec.thumbnail_image(&src, &params) {
+            Ok(Some(i)) => RawlerOutcome::Image(i),
+            Ok(None) => preview.map_or(RawlerOutcome::NoPreview, RawlerOutcome::Failed),
+            Err(e) => RawlerOutcome::Failed(preview.unwrap_or_else(|| e.to_string())),
+        }
+    })
+    .unwrap_or_else(|| RawlerOutcome::Failed("the RAW decoder stopped on this file".into()))
+}
+
+/// The error of a RAW decode without an image (ADR-0115, D2 order): a damaged embedded JPEG (`jpeg_error`, the
+/// probe's preview lay inside the file and failed to decode) is `Failed`; then rawler's outcome: an unknown camera
+/// and any other rawler failure are `Unsupported` (nothing shows the file is damaged), no preview is
+/// `NoRawPreview`.
+pub fn raw_error(jpeg_error: Option<DecodeError>, rawler: RawlerOutcome) -> DecodeError {
+    if let Some(e) = jpeg_error {
+        return match e {
+            DecodeError::Failed(m) => {
+                DecodeError::Failed(format!("its embedded preview could not be read ({m})"))
+            }
+            other => other,
+        };
+    }
+    match rawler {
+        RawlerOutcome::Image(_) => DecodeError::Failed("unreachable: an image".into()),
+        RawlerOutcome::UnknownCamera { make, model } => {
+            let model = model.trim();
+            let make = make.trim();
+            let camera = if model
+                .to_ascii_lowercase()
+                .starts_with(&make.to_ascii_lowercase())
+            {
+                model.to_owned()
+            } else {
+                format!("{make} {model}").trim().to_owned()
+            };
+            DecodeError::Unsupported(format!("RAW files from this camera ({camera})"))
+        }
+        RawlerOutcome::NoPreview => DecodeError::NoRawPreview,
+        RawlerOutcome::Failed(m) => DecodeError::Unsupported(format!(
+            "RAW files whose preview this version cannot extract: {m}"
+        )),
+    }
+}
+
+/// Decode a RAW file's best embedded preview, never the sensor data (ADR-0115), unoriented:
+/// 1. the whole file in `bytes` records data past its end ([`crate::raw_check::truncation`]): `Failed` with the
+///    cut-short message, even when the preview would decode (the photo is the sensor data);
+/// 2. the probe's preview decodes: the image;
+/// 3. else rawler's preview or thumbnail;
+/// 4. else [`raw_error`]: a damaged in-file preview is `Failed`, an unknown camera and other rawler failures
+///    `Unsupported`, no preview `NoRawPreview`.
 pub fn decode_raw_preview(
     bytes: &[u8],
     probe: &ProbeRecord,
     min_long: u32,
 ) -> Result<(RgbImage, u32), DecodeError> {
+    if let Some(t) = crate::raw_check::truncation(bytes, probe) {
+        return Err(DecodeError::Failed(t.message()));
+    }
+    let mut jpeg_error = None;
     if let Some(p) = probe.preview
         && let Some(j) = p.range.slice(bytes)
         && j.starts_with(&[0xFF, 0xD8])
-        && let Ok(r) = decode_jpeg(j, min_long)
     {
-        return Ok(r);
+        match decode_jpeg(j, min_long) {
+            Ok(r) => return Ok(r),
+            Err(e) => jpeg_error = Some(e),
+        }
     }
-    let img = contain(|| -> Option<image::DynamicImage> {
-        let src = rawler::rawsource::RawSource::new_from_slice(bytes);
-        let dec = rawler::get_decoder(&src).ok()?;
-        let params = rawler::decoders::RawDecodeParams::default();
-        dec.preview_image(&src, &params)
-            .ok()
-            .flatten()
-            .or_else(|| dec.thumbnail_image(&src, &params).ok().flatten())
-    })
-    .flatten()
-    .ok_or(DecodeError::NoRawPreview)?;
+    let img = match rawler_preview(bytes) {
+        RawlerOutcome::Image(i) => i,
+        other => return Err(raw_error(jpeg_error, other)),
+    };
     let rgb = img.to_rgb8();
     let (w, h) = rgb.dimensions();
     Ok((
@@ -653,7 +732,8 @@ fn check_pixels(probe: &ProbeRecord) -> Result<(), DecodeError> {
 }
 
 /// Decode the probe's embedded preview (JPEG previews, or HEIC thumbnails through the decoder registry),
-/// oriented. `None` when there is no decodable preview.
+/// oriented. `None` when there is no decodable preview, and for a RAW file cut short (its preview may be whole,
+/// but the photo is the sensor data: [`decode_raw_preview`] says why, ADR-0115).
 pub fn decode_preview(
     bytes: &[u8],
     probe: &ProbeRecord,
@@ -662,6 +742,11 @@ pub fn decode_preview(
 ) -> Option<Decoded> {
     let p = probe.preview?;
     if !p.decodable {
+        return None;
+    }
+    if probe.format.is_some_and(Format::is_raw)
+        && crate::raw_check::truncation(bytes, probe).is_some()
+    {
         return None;
     }
     let (image, denom, orient) = match p.source {

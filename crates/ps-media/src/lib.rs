@@ -19,6 +19,7 @@ pub mod poster;
 pub mod preview_cache;
 pub mod probe;
 pub mod quality;
+pub mod raw_check;
 pub mod thumb;
 pub mod tiff;
 pub mod tiff_decode;

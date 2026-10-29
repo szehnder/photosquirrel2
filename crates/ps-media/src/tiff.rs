@@ -68,7 +68,7 @@ pub struct Entry {
     field_pos: usize,
 }
 
-fn type_size(typ: u16) -> Option<usize> {
+pub(crate) fn type_size(typ: u16) -> Option<usize> {
     Some(match typ {
         1 | 2 | 6 | 7 => 1,
         3 | 8 => 2,
@@ -253,7 +253,7 @@ impl<'a> Tiff<'a> {
     }
 
     /// Offset of the next IFD in the chain after the IFD at `offset`.
-    fn next_ifd(&self, ifd: &IfdView) -> Option<u32> {
+    pub(crate) fn next_ifd(&self, ifd: &IfdView) -> Option<u32> {
         let off = usize::try_from(ifd.offset).ok()?;
         let n = usize::from(self.u16(off)?);
         let next = self.u32(off + 2 + n * 12)?;

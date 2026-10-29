@@ -13,7 +13,10 @@ test beside it) in **any change that makes files of that family decodable that w
 - a new layout, compression, colour model, bit depth or sample format (a TIFF predictor, 16-bit PNG, CMYK JPEG);
 - a lifted size or memory limit (files that got "files this large" placeholders);
 - a new or newly bundled decoder (the AV1 decoder for AVIF, the system HEIC decoder);
-- a probe fix that finds dimensions or data an earlier version missed (TIFF directories beyond the probe window).
+- a probe fix that finds dimensions or data an earlier version missed (TIFF directories beyond the probe window);
+- a change that corrects a family's placeholder reason, because the re-read writes the corrected reason
+  ([ADR-0115](adr/0115-a-raw-file-cut-short-is-damaged-and-damaged-files-are-counted.md): a RAW file cut short was
+  "not supported" and is "could not be read" now).
 
 Do not bump for speed-ups, quality changes or fixes to files that already decoded: every placeholder of the family
 is read again once after a bump.
@@ -28,7 +31,7 @@ is read again once after a bump.
 | HEIF | HEIC, HEIF | 1 | `heic-system-decoders` (0.3.0) |
 | AVIF | AVIF | 1 | `heic-system-decoders` (0.3.0) |
 | WebP | WebP | 0 | |
-| RAW | RAW embedded previews | 0 | |
+| RAW | RAW embedded previews | 1 | `damaged-raw-reason` (0.3.x): cut-short RAWs are damaged, unknown cameras named |
 | Video poster | every video format | 0 | |
 
 Add a row here, with the change that bumped it, whenever a generation changes. A forgotten bump loses nothing: the

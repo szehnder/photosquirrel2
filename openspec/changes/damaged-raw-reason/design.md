@@ -232,3 +232,17 @@ damaged file's disposition in the report is unchanged; only cleanup leaves it in
 1. Keep the "100% accounted for" badge with ", N damaged" and the hint; cleanup never moves a damaged original
    (D10).
 2. Showing the intact embedded preview of a cut RAW, marked damaged, comes later as its own change (ROADMAP row 34).
+
+## Deviations (as built)
+
+- **`dng::cut` returns `Option<Vec<u8>>`, and `Cut::InPreview` cuts halfway through the preview** (D9 said "the
+  existing first-eighth cut"). `cr2_unknown_lens` has no sensor strip, so `Cut::AfterPreview` has nothing to cut
+  there (`None`); halfway through the preview is inside it for every writer, where a first eighth depends on the
+  file's layout. The CLI scenario keeps its first-eighth cut, which is also inside the preview.
+- **The `decode_preview` short cut checks truncation too.** `make_thumbnail` (and the thumbnail step of
+  `analyze_still`) decoded the probe's embedded preview without `decode_raw_preview`, so a CR2 cut after an intact
+  preview still got a thumbnail there. `decode::decode_preview` now returns `None` for a RAW with truncation
+  evidence, and the caller falls through to `decode_raw_preview`, which says why.
+- **D2.3 as rawler behaves:** rawler's own JPEG decoder is lenient, so for a known camera a garbled in-file preview
+  usually still comes back as a rawler image and is used (D2.3 applies only when rawler gives no image). The
+  `Failed` outcome is pinned with an unknown-camera file (`damaged_in_file_preview_is_failed`).

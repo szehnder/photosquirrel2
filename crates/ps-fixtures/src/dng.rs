@@ -374,3 +374,181 @@ fn cr2_unknown_lens_at(preview: &[u8], note_base: u32) -> Vec<u8> {
         .child(0x8769, ex);
     write_tiff(&ifd0, Endian::Little)
 }
+
+/// The model [`cr2_unknown_camera`] records: missing from rawler's camera table.
+pub const UNKNOWN_CAMERA_MODEL: &str = "Canon EOS R0 Prototype";
+
+/// A complete Canon CR2-like file from a camera rawler does not know ([`UNKNOWN_CAMERA_MODEL`]) without a usable
+/// embedded preview: IFD0 holds an uncompressed 64x48 RGB strip (not a JPEG, so the probe finds no preview), the
+/// Exif IFD a date and a Canon maker note (`damaged-raw-reason`: still "not supported", naming the camera).
+pub fn cr2_unknown_camera(seed: u64) -> Vec<u8> {
+    let (w, h) = (64u32, 48u32);
+    let mut strip = Vec::with_capacity((w * h * 3) as usize);
+    let mut s = seed | 1;
+    for _ in 0..w * h * 3 {
+        s = mix64(s);
+        strip.push((s % 251) as u8);
+    }
+    let mut ex = Ifd::new();
+    ex.ascii(0x9003, "2021:05:06 07:08:09")
+        .set(0x927C, Value::Undefined(camera_settings_note(0)));
+    let mut ifd0 = Ifd::new();
+    ifd0.long(0x0100, w)
+        .long(0x0101, h)
+        .set(0x0102, Value::Short(vec![8, 8, 8]))
+        .short(0x0103, 1)
+        .short(0x0106, 2)
+        .ascii(0x010F, "Canon")
+        .ascii(0x0110, UNKNOWN_CAMERA_MODEL)
+        .short(0x0115, 3)
+        .long(0x0116, h)
+        .ascii(0x0132, "2021:05:06 07:08:09")
+        .blob(0x0111, 0x0117, strip)
+        .child(0x8769, ex);
+    write_tiff(&ifd0, Endian::Little)
+}
+
+/// Where [`cut`] cuts a RAW written by this module (`damaged-raw-reason`, D9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cut {
+    /// Halfway through the embedded preview JPEG (IFD0's strip): the directories and the maker note are kept, the
+    /// preview is not whole.
+    InPreview,
+    /// Halfway through the sensor strip (the SubIFD's strip, written after the preview): the preview JPEG is whole,
+    /// the sensor data is not, as on a card pulled while the camera was writing the RAW data.
+    AfterPreview,
+}
+
+/// The (offset, length) of the single strip of the IFD at `ifd` of a classic TIFF written by [`write_tiff`] (inline
+/// LONG or SHORT values).
+fn strip_of(b: &[u8], little: bool, ifd: usize) -> Option<(usize, usize)> {
+    let u16_at = |o: usize| -> Option<u16> {
+        let s: [u8; 2] = b.get(o..o + 2)?.try_into().ok()?;
+        Some(if little {
+            u16::from_le_bytes(s)
+        } else {
+            u16::from_be_bytes(s)
+        })
+    };
+    let u32_at = |o: usize| -> Option<u32> {
+        let s: [u8; 4] = b.get(o..o + 4)?.try_into().ok()?;
+        Some(if little {
+            u32::from_le_bytes(s)
+        } else {
+            u32::from_be_bytes(s)
+        })
+    };
+    let n = usize::from(u16_at(ifd)?);
+    let value = |tag: u16| -> Option<usize> {
+        (0..n).find_map(|i| {
+            let e = ifd + 2 + 12 * i;
+            (u16_at(e)? == tag).then_some(())?;
+            let v = match u16_at(e + 2)? {
+                3 => u32::from(u16_at(e + 8)?),
+                _ => u32_at(e + 8)?,
+            };
+            usize::try_from(v).ok()
+        })
+    };
+    Some((value(0x0111)?, value(0x0117)?))
+}
+
+/// The preview range (IFD0's strip) and, when the RAW has one, the sensor strip range (the first SubIFD's).
+pub fn raw_ranges(bytes: &[u8]) -> Option<((usize, usize), Option<(usize, usize)>)> {
+    let little = match bytes.get(..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let at = |o: usize| -> Option<usize> {
+        let s: [u8; 4] = bytes.get(o..o + 4)?.try_into().ok()?;
+        usize::try_from(if little {
+            u32::from_le_bytes(s)
+        } else {
+            u32::from_be_bytes(s)
+        })
+        .ok()
+    };
+    let ifd0 = at(4)?;
+    let preview = strip_of(bytes, little, ifd0)?;
+    let n = {
+        let s: [u8; 2] = bytes.get(ifd0..ifd0 + 2)?.try_into().ok()?;
+        usize::from(if little {
+            u16::from_le_bytes(s)
+        } else {
+            u16::from_be_bytes(s)
+        })
+    };
+    let sub = (0..n).find_map(|i| {
+        let e = ifd0 + 2 + 12 * i;
+        let s: [u8; 2] = bytes.get(e..e + 2)?.try_into().ok()?;
+        let tag = if little {
+            u16::from_le_bytes(s)
+        } else {
+            u16::from_be_bytes(s)
+        };
+        (tag == 0x014A).then(|| at(e + 8)).flatten()
+    });
+    let sensor = sub.and_then(|s| strip_of(bytes, little, s));
+    Some((preview, sensor))
+}
+
+/// `bytes` (a RAW of this module: [`cr2_like`], [`dng`], [`cr2_unknown_lens`], ...) cut short as `how` says, as a
+/// card pulled while writing leaves it. `None` when the RAW has nothing to cut there: [`Cut::AfterPreview`] of a RAW
+/// without a sensor strip after its preview ([`cr2_unknown_lens`] has none).
+pub fn cut(bytes: &[u8], how: Cut) -> Option<Vec<u8>> {
+    let ((p_off, p_len), sensor) = raw_ranges(bytes)?;
+    let at = match how {
+        Cut::InPreview => p_off + p_len / 2,
+        Cut::AfterPreview => {
+            let (s_off, s_len) = sensor?;
+            if s_off < p_off + p_len || s_len < 2 {
+                return None;
+            }
+            s_off + s_len / 2
+        }
+    };
+    bytes.get(..at).map(<[u8]>::to_vec)
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+
+    fn cr2() -> Vec<u8> {
+        converted_burst_frame(5, 0, 0, 960).cr2
+    }
+
+    /// Task 1.1: the preview lies inside the `AfterPreview` cut and past the `InPreview` cut.
+    #[test]
+    fn cuts_keep_or_cut_the_preview() {
+        for (name, full) in [
+            ("cr2_like", cr2()),
+            ("cr2_unknown_lens", cr2_unknown_lens(11)),
+        ] {
+            let ((p_off, p_len), _) = raw_ranges(&full).expect(name);
+            let in_preview = cut(&full, Cut::InPreview).expect(name);
+            assert!(in_preview.len() > p_off, "{name}: directories kept");
+            assert!(in_preview.len() < p_off + p_len, "{name}: preview cut");
+            match cut(&full, Cut::AfterPreview) {
+                Some(after) => {
+                    assert!(after.len() >= p_off + p_len, "{name}: preview whole");
+                    assert!(after.len() < full.len(), "{name}: cut");
+                    assert_eq!(&after[..], &full[..after.len()]);
+                }
+                None => assert_eq!(name, "cr2_unknown_lens", "no sensor strip to cut"),
+            }
+        }
+        let full = cr2();
+        let ((p_off, p_len), sensor) = raw_ranges(&full).unwrap();
+        let (s_off, s_len) = sensor.unwrap();
+        assert!(
+            s_off >= p_off + p_len,
+            "the sensor strip follows the preview"
+        );
+        assert_eq!(
+            cut(&full, Cut::AfterPreview).unwrap().len(),
+            s_off + s_len / 2
+        );
+    }
+}
