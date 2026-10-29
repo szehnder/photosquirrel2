@@ -645,6 +645,7 @@ fn eligibility_and_plan_are_pure() {
         missing: false,
         user_excluded: false,
         quarantined: None,
+        damaged: false,
     };
     let disp = |i: i64, d: Disposition| FileDisposition {
         file: FileId(i),

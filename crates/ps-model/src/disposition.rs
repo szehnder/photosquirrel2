@@ -85,6 +85,11 @@ pub struct CompletionCounts {
     /// it covers: that copy is of another photo (burst frames told apart, ADR-0105).
     #[serde(default)]
     pub pending_regrouped: u64,
+    /// Files catalogued as could not be read (damaged: cut short or corrupt, ADR-0115), whatever their
+    /// disposition: copied as is, but the photo may be incomplete, so the report says to keep the original.
+    /// [`CompletionCounts::fully_accounted`] does not read it.
+    #[serde(default)]
+    pub damaged: u64,
 }
 
 impl CompletionCounts {
@@ -107,6 +112,7 @@ impl CompletionCounts {
         }
         self.pending_in_quarantine += o.pending_in_quarantine;
         self.pending_regrouped += o.pending_regrouped;
+        self.damaged += o.damaged;
     }
 
     pub fn files_of(&self, d: Disposition) -> u64 {

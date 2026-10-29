@@ -61,8 +61,17 @@ fn in_quarantine_label(c: &CompletionCounts) -> String {
     }
 }
 
-/// "100% accounted for" or what is outstanding (ADR-0023, same rule as `ps_export::Badge`).
+/// "100% accounted for" or what is outstanding (ADR-0023, same rule as `ps_export::Badge`), with ", N damaged"
+/// when the source has damaged files (ADR-0115).
 pub fn badge_label(c: &CompletionCounts) -> String {
+    let mut s = outstanding_label(c);
+    if c.damaged > 0 {
+        s.push_str(&format!(", {} damaged", format_count(c.damaged)));
+    }
+    s
+}
+
+fn outstanding_label(c: &CompletionCounts) -> String {
     let pending = c.files_of(Disposition::Pending);
     let unreadable = c.files_of(Disposition::Unreadable);
     let superseded = c.files_of(Disposition::Superseded);

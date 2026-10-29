@@ -200,7 +200,7 @@ pub struct CleanupPlan {
     /// The source is a network share: running needs [`RunOptions::network_confirmed`].
     pub network: bool,
     /// Files of the source (or folder) that would be eligible but are kept back, with why: copies better than
-    /// a keeper the user chose (ADR-0096). Never planned.
+    /// a keeper the user chose (ADR-0096) and damaged originals (ADR-0115). Never planned.
     pub held: Vec<Skipped>,
 }
 
@@ -543,6 +543,19 @@ impl<'a> Cleanups<'a> {
             })
             .map(|(f, _)| Skipped::of(f.file, f.rel_path.clone(), SkipReason::BetterThanKeeper))
             .collect();
+        // Damaged originals stay where they are (ADR-0115): the medium may still hold the rest of the photo.
+        held.extend(
+            files
+                .iter()
+                .zip(&dispositions)
+                .filter(|(f, d)| {
+                    in_scope(f)
+                        && f.damaged
+                        && !d.better_than_keeper
+                        && quarantine::eligible_but_damaged(f, d)
+                })
+                .map(|(f, _)| Skipped::of(f.file, f.rel_path.clone(), SkipReason::Damaged)),
+        );
         held.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         let rows: Vec<_> = files
             .into_iter()

@@ -61,6 +61,9 @@ pub struct FileFacts {
     /// Moved into its source's quarantine folder by a cleanup run (ADR-0034): the quarantine path, relative
     /// to the source root.
     pub quarantined: Option<RelPath>,
+    /// Catalogued as could not be read (cut short or corrupt, ADR-0115): its disposition follows the rules
+    /// (it is copied as is), the report flags it, and cleanup never moves it.
+    pub damaged: bool,
 }
 
 /// One duplicate group.
@@ -355,7 +358,11 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Badge {
-    FullyAccounted,
+    FullyAccounted {
+        /// Damaged files among them (ADR-0115): ", N damaged".
+        #[serde(default, skip_serializing_if = "is_zero")]
+        damaged: u64,
+    },
     Outstanding {
         pending: u64,
         unreadable: u64,
@@ -368,13 +375,20 @@ pub enum Badge {
         /// Of `in_quarantine`, the files a regroup moved out of the group their library copy covers (ADR-0105).
         #[serde(default)]
         regrouped: u64,
+        /// Damaged files (ADR-0115), whatever their disposition.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        damaged: u64,
     },
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Badge {
     pub fn of(c: &CompletionCounts) -> Badge {
         if c.fully_accounted() {
-            Badge::FullyAccounted
+            Badge::FullyAccounted { damaged: c.damaged }
         } else {
             Badge::Outstanding {
                 pending: c.files_of(Disposition::Pending),
@@ -382,19 +396,27 @@ impl Badge {
                 in_quarantine: c.pending_in_quarantine,
                 superseded: c.files_of(Disposition::Superseded),
                 regrouped: c.pending_regrouped,
+                damaged: c.damaged,
             }
         }
     }
 
+    /// Fully accounted for, with no damaged file ("100% accounted for" alone).
+    pub fn is_clean(self) -> bool {
+        self == Badge::FullyAccounted { damaged: 0 }
+    }
+
+    /// "100% accounted for", "2 pending, 1 unreadable"; ", N damaged" appended to either (ADR-0115).
     pub fn label(self) -> String {
-        match self {
-            Badge::FullyAccounted => "100% accounted for".into(),
+        let (mut s, damaged) = match self {
+            Badge::FullyAccounted { damaged } => ("100% accounted for".to_owned(), damaged),
             Badge::Outstanding {
                 pending,
                 unreadable,
                 in_quarantine,
                 superseded,
                 regrouped,
+                damaged,
             } => {
                 let mut parts = Vec::new();
                 if pending > 0 || superseded == 0 {
@@ -414,9 +436,26 @@ impl Badge {
                 if unreadable > 0 {
                     s.push_str(&format!(", {unreadable} unreadable"));
                 }
-                s
+                (s, damaged)
             }
+        };
+        if damaged > 0 {
+            s.push_str(&format!(", {damaged} damaged"));
         }
+        s
+    }
+}
+
+/// What a report says about a source's damaged files (ADR-0115), after "1 damaged file: ".
+pub const DAMAGED_HINT: &str = "copied as is, but the photo may be incomplete (cut short or corrupt). Keep the \
+     original card or drive until you have checked them: a recovery tool may still find the rest";
+
+/// "1 damaged file", "3 damaged files".
+pub fn damaged_label(n: u64) -> String {
+    if n == 1 {
+        "1 damaged file".into()
+    } else {
+        format!("{n} damaged files")
     }
 }
 
@@ -483,6 +522,8 @@ pub struct SourceReport {
     /// a file of it): until a rescan re-reads them its groups, and so the badge, are not confirmed (ADR-0108).
     /// Filled by the service; 0 here.
     pub rescan_needed: u64,
+    /// The damaged files of the source (ADR-0115), by path.
+    pub damaged_files: Vec<RelPath>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -520,10 +561,20 @@ pub fn report(
             e.1 += size;
         }
     };
+    let mut damaged: BTreeMap<SourceId, Vec<RelPath>> = BTreeMap::new();
     for (f, d) in files.iter().zip(dispositions) {
         let (src, folders) = per.entry(f.source).or_default();
         add(src, d, f.size);
-        add(folders.entry(f.rel_path.parent()).or_default(), d, f.size);
+        let folder = folders.entry(f.rel_path.parent()).or_default();
+        add(folder, d, f.size);
+        if f.damaged {
+            src.0.damaged += 1;
+            folder.0.damaged += 1;
+            damaged
+                .entry(f.source)
+                .or_default()
+                .push(f.rel_path.clone());
+        }
     }
     let sources = per
         .into_iter()
@@ -531,6 +582,11 @@ pub fn report(
             source,
             badge: Badge::of(&counts),
             rescan_needed: 0,
+            damaged_files: {
+                let mut v = damaged.remove(&source).unwrap_or_default();
+                v.sort();
+                v
+            },
             counts,
             excluded,
             folders: folders
@@ -563,7 +619,12 @@ mod tests {
 
     #[test]
     fn hints_have_single_spaces() {
-        for h in [REGROUPED_HINT, SUPERSEDED_HINT, RESCAN_NEEDED_HINT] {
+        for h in [
+            REGROUPED_HINT,
+            SUPERSEDED_HINT,
+            RESCAN_NEEDED_HINT,
+            DAMAGED_HINT,
+        ] {
             assert!(!h.contains("  "), "{h}");
         }
     }
@@ -584,6 +645,7 @@ mod tests {
             missing: true,
             user_excluded: false,
             quarantined: Some(rel(&format!(".photosquirrel-quarantine/1/a/{i}.jpg"))),
+            damaged: false,
         }
     }
 

@@ -250,9 +250,13 @@ fn scenario_completion_report_fully_accounted_badge() {
     let (d, checks) = derive(&e, false);
     let r = report(&e.m.files, &d, &checks);
     for s in &r.sources {
-        assert_eq!(s.badge, Badge::FullyAccounted);
+        assert_eq!(s.badge, Badge::FullyAccounted { damaged: 0 });
         assert_eq!(s.badge.label(), "100% accounted for");
-        assert!(s.folders.iter().all(|f| f.badge == Badge::FullyAccounted));
+        assert!(
+            s.folders
+                .iter()
+                .all(|f| f.badge == Badge::FullyAccounted { damaged: 0 })
+        );
     }
 }
 
@@ -281,11 +285,12 @@ fn scenario_completion_report_pending_blocks_badge() {
                     in_quarantine: 0,
                     superseded: 0,
                     regrouped: 0,
+                    damaged: 0,
                 }
             );
             assert_eq!(s.badge.label(), "1 pending");
         } else {
-            assert_eq!(s.badge, Badge::FullyAccounted);
+            assert_eq!(s.badge, Badge::FullyAccounted { damaged: 0 });
         }
     }
 }

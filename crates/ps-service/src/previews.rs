@@ -182,8 +182,8 @@ impl Library {
         };
         let sentence = if fillable && reason != PreviewReason::DecoderMissing {
             format!(
-                "This version of PhotoSquirrel reads {label} files that an older version could not, so a \
-                 preview can be made now."
+                "This version of PhotoSquirrel reads {label} files better than the version that made this \
+                 placeholder, so it can look at this file again."
             )
         } else if fillable {
             format!("A {label} decoder is available now, so a preview can be made.")

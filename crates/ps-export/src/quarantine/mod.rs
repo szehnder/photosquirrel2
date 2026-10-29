@@ -130,6 +130,9 @@ pub enum SkipReason {
     NoLongerSafe(String),
     /// It ranks above the keeper the user chose (ADR-0096): accounted for by that choice, but kept.
     BetterThanKeeper,
+    /// It is damaged (could not be read: cut short or corrupt, ADR-0115): its exact copy is in the library, but the
+    /// original medium may still hold the rest of it for a recovery tool, so it is kept.
+    Damaged,
 }
 
 impl SkipReason {
@@ -161,6 +164,7 @@ impl SkipReason {
             SkipReason::BetterThanKeeper => {
                 "better than the keeper you chose: this copy is kept".into()
             }
+            SkipReason::Damaged => "damaged: keep the original for recovery".into(),
         }
     }
 }
@@ -191,8 +195,14 @@ impl Skipped {
 }
 
 /// A file eligible for cleanup (ADR-0023, ADR-0024): exported or covered with a library copy, present,
-/// readable, analysed and not excluded by the user. Quarantined files are not eligible again.
+/// readable, analysed, not damaged (ADR-0115) and not excluded by the user. Quarantined files are not eligible
+/// again.
 pub fn eligible(f: &FileFacts, d: &FileDisposition) -> bool {
+    !f.damaged && eligible_but_damaged(f, d)
+}
+
+/// [`eligible`] without the damaged rule: a damaged file this holds for is kept back ([`SkipReason::Damaged`]).
+pub fn eligible_but_damaged(f: &FileFacts, d: &FileDisposition) -> bool {
     d.disposition.is_accounted_safe()
         && !d.better_than_keeper
         && d.library_path.is_some()
@@ -213,6 +223,10 @@ pub fn unsafe_now(
     covering: Option<&RelPath>,
 ) -> Option<SkipReason> {
     let no = |s: &str| Some(SkipReason::NoLongerSafe(s.to_owned()));
+    if f.damaged {
+        // Found damaged since planning, or before: the original stays (ADR-0115).
+        return Some(SkipReason::Damaged);
+    }
     if d.better_than_keeper {
         return Some(SkipReason::BetterThanKeeper);
     }

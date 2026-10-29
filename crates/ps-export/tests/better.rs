@@ -535,6 +535,7 @@ fn facts_of(f: &KeeperFile) -> FileFacts {
         missing: false,
         user_excluded: false,
         quarantined: None,
+        damaged: false,
     }
 }
 
@@ -602,6 +603,7 @@ fn scenario_completion_report_better_copy_not_in_the_library_is_not_accounted_fo
             in_quarantine: 0,
             superseded: 1,
             regrouped: 0,
+            damaged: 0,
         }
     );
     assert_eq!(
@@ -619,7 +621,7 @@ fn scenario_completion_report_better_copy_not_in_the_library_is_not_accounted_fo
     assert!(
         rep.sources
             .iter()
-            .all(|s| s.badge == ps_export::Badge::FullyAccounted)
+            .all(|s| s.badge == ps_export::Badge::FullyAccounted { damaged: 0 })
     );
 }
 

@@ -527,6 +527,9 @@ impl<'a> Exports<'a> {
                 missing: f.missing_since_ms.is_some(),
                 user_excluded: excluded.contains(&f.id),
                 quarantined: quarantined.of(&f.key, &f.stat),
+                damaged: f
+                    .preview
+                    .is_some_and(|p| p.reason == ps_model::PreviewReason::Unreadable),
             });
         })?;
         let mut groups: Vec<GroupFacts> = r
@@ -592,6 +595,7 @@ impl<'a> Exports<'a> {
         let mut totals = ps_model::CompletionCounts::default();
         for (f, x) in files.iter().zip(&d) {
             ps_export::count_disposition(&mut totals, x, f.size);
+            totals.damaged += u64::from(f.damaged);
         }
         Ok(Completion {
             library: lib,
