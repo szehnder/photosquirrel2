@@ -110,6 +110,16 @@ pub struct MetaReread {
     pub damaged: Option<ps_model::PreviewStamp>,
 }
 
+/// A `file.colour` stamp ([`crate::Command::SetColour`], ADR-0113).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColourStamp {
+    pub key: FileKey,
+    pub colour: ps_model::StoredColour,
+    /// Every row with the content of the row at `key` takes it too (identical bytes record an identical colour
+    /// space, and they share the stored thumbnail); false writes the row at `key` only.
+    pub copies: bool,
+}
+
 impl ProbeResult {
     pub fn media_kind(&self) -> Option<MediaKind> {
         self.format.map(Format::kind)

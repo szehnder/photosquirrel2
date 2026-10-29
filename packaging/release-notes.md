@@ -49,8 +49,9 @@ to their resized or re-exported JPEG copies.
   converted to sRGB, as are JPEGs with an embedded colour profile (an iPhone's Display P3 JPEG). The inspector names
   the colour space ("Colour: Adobe RGB (1998)"). Duplicate grouping does not change: matching still looks at the
   photo as recorded. The first rescan after updating reads the first 256 KB of each catalogued file whose name
-  starts with `_` once, and makes the thumbnail again of those in Adobe RGB (reading them once in full); nothing else
-  is read. Large previews are made again the first time they are viewed. Files are exported unchanged, as always.
+  starts with `_` once, and makes the thumbnail again of those in Adobe RGB: from a RAW's embedded preview (its
+  sensor data is not read), from a JPEG read once in full; nothing else is read. The scan summary says how much it
+  read. Large previews are made again the first time they are viewed. Files are exported unchanged, as always.
   HEIC, AVIF, TIFF, PNG and WebP colour profiles are not applied yet.
 - **A RAW file cut short, for example by a card pulled while writing, is shown as damaged and counted, not as
   "not supported yet".** The scan summary, the run summary and the completion report ("100% accounted for, 1

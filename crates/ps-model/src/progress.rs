@@ -150,8 +150,10 @@ pub struct DiffCounts {
     /// files still waiting for a refresh are `needs_refresh - refreshed` ([`DiffCounts::still_needs_refresh`]).
     #[serde(default)]
     pub refreshed: u64,
-    /// Unchanged plain TIFFs an earlier version catalogued as thumbed without dimensions (their directories were
-    /// beyond the probe window): analysed again, once (counted in `unchanged` too; ADR-0084).
+    /// Unchanged files analysed again, once (counted in `unchanged` too): plain TIFFs an earlier version catalogued
+    /// as thumbed without dimensions (their directories were beyond the probe window; ADR-0084), and rows whose
+    /// perceptual hashes are of an older version that the hash upgrade could not take from their thumbnail because it
+    /// was converted to sRGB (ADR-0113).
     #[serde(default)]
     pub reanalyzed: u64,
     /// Unchanged files analysed without the decoder their format needs, still waiting for it: not read
@@ -177,13 +179,17 @@ pub struct DiffCounts {
     /// again, once (counted in `unchanged` too; ADR-0109).
     #[serde(default)]
     pub outdated_previews: u64,
-    /// Unchanged thumbed `_`-named JPEG and RAW files an earlier version analysed whose colour space this run read
-    /// once (the probe window, read-only; ADR-0113). Counted in `unchanged` too.
+    /// Unchanged thumbed `_`-named JPEG and RAW files an earlier version analysed whose colour space this run checked
+    /// once, read-only (ADR-0113): the probe window of each, and for a file not in sRGB a RAW's embedded preview or
+    /// a JPEG whole, to make its preview again. Counted in `unchanged` too.
     #[serde(default)]
     pub colour_checked: u64,
     /// Of `colour_checked`, the files not in sRGB whose thumbnail this run made again, converted to sRGB.
     #[serde(default)]
     pub recoloured: u64,
+    /// The bytes the colour checks of `colour_checked` read.
+    #[serde(default)]
+    pub colour_bytes: u64,
 }
 
 impl DiffCounts {
@@ -208,6 +214,7 @@ impl DiffCounts {
         self.outdated_previews += o.outdated_previews;
         self.colour_checked += o.colour_checked;
         self.recoloured += o.recoloured;
+        self.colour_bytes += o.colour_bytes;
     }
 
     /// Unchanged files that still keep a class decided before facts were stored, after this run.

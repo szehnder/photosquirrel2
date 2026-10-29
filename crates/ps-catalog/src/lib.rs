@@ -38,8 +38,8 @@ pub use groups::{
     SuggestionRow,
 };
 pub use model::{
-    AnalysisResult, FileErrorRecord, FileFailure, FileKey, FileRecord, FileRow, MetaReread,
-    NewSource, ProbeResult, Reclassification, Redate, Results, RunRecord, SourceRecord,
+    AnalysisResult, ColourStamp, FileErrorRecord, FileFailure, FileKey, FileRecord, FileRow,
+    MetaReread, NewSource, ProbeResult, Reclassification, Redate, Results, RunRecord, SourceRecord,
 };
 pub use previews::WaitingRule;
 pub use read::{PAGE_SIZE, Readers};

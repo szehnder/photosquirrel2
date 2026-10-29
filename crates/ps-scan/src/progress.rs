@@ -80,6 +80,7 @@ struct Diff {
     outdated_previews: AtomicU64,
     colour_checked: AtomicU64,
     recoloured: AtomicU64,
+    colour_bytes: AtomicU64,
 }
 
 impl Diff {
@@ -105,6 +106,7 @@ impl Diff {
             outdated_previews: self.outdated_previews.load(Ordering::Relaxed),
             colour_checked: self.colour_checked.load(Ordering::Relaxed),
             recoloured: self.recoloured.load(Ordering::Relaxed),
+            colour_bytes: self.colour_bytes.load(Ordering::Relaxed),
         }
     }
 
@@ -353,11 +355,12 @@ impl Progress {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// A file's colour space was read for the one-time colour re-check (ADR-0113); `recoloured` when it was not
-    /// sRGB and its thumbnail was made again.
-    pub fn colour_checked(&self, idx: usize, recoloured: bool) {
+    /// A file's colour space was read for the one-time colour re-check (ADR-0113), which read `bytes`; `recoloured`
+    /// when it was not sRGB and its thumbnail was made again.
+    pub fn colour_checked(&self, idx: usize, recoloured: bool, bytes: u64) {
         let d = &self.sources[idx].diff;
         d.colour_checked.fetch_add(1, Ordering::Relaxed);
+        d.colour_bytes.fetch_add(bytes, Ordering::Relaxed);
         if recoloured {
             d.recoloured.fetch_add(1, Ordering::Relaxed);
         }
@@ -386,6 +389,21 @@ impl Progress {
     pub fn file_done(&self, idx: usize) {
         self.sources[idx].processed.fetch_add(1, Ordering::Relaxed);
         self.files_done.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A file of source `idx` was planned to take `planned` bytes of the run's total and took `actual` (the colour
+    /// re-check, ADR-0113, reads a RAW's preview whose length the diff could only estimate, and only the probe
+    /// window of a file found in sRGB): the total moves by the difference, so the progress and ETA stay honest.
+    pub fn rebudget(&self, idx: usize, planned: u64, actual: u64) {
+        let total = &self.sources[idx].bytes_to_read;
+        if actual >= planned {
+            total.fetch_add(actual - planned, Ordering::Relaxed);
+        } else {
+            let less = planned - actual;
+            let _ = total.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(less))
+            });
+        }
     }
 
     pub fn bytes_read(&self, idx: usize, n: u64) {

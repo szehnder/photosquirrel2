@@ -1228,11 +1228,12 @@ impl Library {
             capture_precision: capture.map(|d| d.precision),
             camera_make: f.camera_make.clone(),
             camera_model: f.camera_model.clone(),
-            // `file.colour` (ADR-0113): sRGB, unchecked and unknown show nothing.
+            // `file.colour` (ADR-0113): sRGB, unchecked and unknown show nothing; a colour space whose thumbnail was
+            // not converted says so.
             colour_space: r
                 .colour
                 .as_deref()
-                .and_then(ps_model::ColourSpace::from_storage)
+                .and_then(ps_model::StoredColour::from_storage)
                 .and_then(|c| c.label()),
             lens: f.lens_model.clone(),
             exposure,

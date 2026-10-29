@@ -770,5 +770,24 @@ mod colour_spaces {
         assert_eq!(d.colour_space.as_deref(), Some("Adobe RGB (1998)"));
         let u = ItemId::try_from(row(UNTAGGED).id).unwrap();
         assert_eq!(lib.detail(u).unwrap().unwrap().colour_space, None);
+
+        // A colour space whose stored thumbnail the one-time re-check could not make again: named, and said to be
+        // shown unconverted.
+        let cat = svc.engine().catalog();
+        cat.writer()
+            .submit(ps_catalog::Command::SetColour(vec![
+                ps_catalog::ColourStamp {
+                    key: r.key.clone(),
+                    colour: ps_model::StoredColour::Unconverted(ps_model::ColourSpace::AdobeRgb),
+                    copies: true,
+                },
+            ]))
+            .unwrap();
+        cat.writer().flush().unwrap();
+        let d = lib.detail(item).unwrap().unwrap();
+        assert_eq!(
+            d.colour_space.as_deref(),
+            Some("Adobe RGB (1998), preview not converted")
+        );
     }
 }

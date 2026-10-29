@@ -397,6 +397,33 @@ impl Readers {
         })
     }
 
+    /// The contents whose stored previews were converted to sRGB from another colour space: some row of the content
+    /// records it ([`ps_model::StoredColour::preview_converted`], ADR-0113). Their thumbnails are not the decode's own
+    /// pixels, so perceptual hashes are never recomputed from them.
+    pub fn converted_preview_contents(&self) -> Result<std::collections::HashSet<ContentId>> {
+        self.with(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT DISTINCT content_id, identity_kind, colour FROM file
+                 WHERE content_id IS NOT NULL AND colour IS NOT NULL AND colour != 'srgb'",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut out = std::collections::HashSet::new();
+            while let Some(r) = rows.next()? {
+                let colour: String = r.get(2)?;
+                if !ps_model::StoredColour::from_storage(&colour)
+                    .is_some_and(|s| s.preview_converted())
+                {
+                    continue;
+                }
+                let d: Vec<u8> = r.get(0)?;
+                let digest: [u8; 32] = d.try_into().map_err(|_| corrupt("content_id"))?;
+                let kind = codes::identity_kind_from(r.get::<_, Option<i64>>(1)?.unwrap_or(0));
+                out.insert(ContentId { digest, kind });
+            }
+            Ok(out)
+        })
+    }
+
     /// The error rows of a file, oldest first.
     pub fn file_errors(&self, id: FileId) -> Result<Vec<FileErrorRecord>> {
         self.with(|c| {

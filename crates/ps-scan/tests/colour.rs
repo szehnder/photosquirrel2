@@ -47,6 +47,8 @@ const SRGB_UNDERSCORE: &str = "DCIM/100CANON/_MG_0003.JPG";
 /// An Adobe RGB file renamed by an import tool: not re-checked (the owner's choice, D4).
 const ADOBE_RENAMED: &str = "DCIM/100CANON/IMG_0004.JPG";
 const SRGB_JPG: &str = "DCIM/100CANON/IMG_0005.JPG";
+/// The CR2's sensor data: far more than its preview, as in a camera's file.
+const CR2_SENSOR_BYTES: u32 = 8 * 1024 * 1024;
 
 struct Card {
     _tmp: tempfile::TempDir,
@@ -68,10 +70,11 @@ fn card() -> Card {
     );
     files.insert(
         ADOBE_CR2,
-        cfx::canon_cr2_of(
+        cfx::canon_cr2_with_sensor(
             &ps_fixtures::media::jpeg(1600, 1066, 32, 92),
             (1600, 1066),
             2,
+            CR2_SENSOR_BYTES,
         ),
     );
     files.insert(
@@ -173,20 +176,37 @@ fn scenario_thumbnails_rescan_recolours_old_adobe_rgb_thumbnails_only() {
     assert_eq!(s.diff.recoloured, 2);
     assert_eq!(s.errors, 0);
 
-    // Only the `_` files were opened, read-only; the sRGB one only within the probe window, the Adobe RGB ones whole.
+    // Only the `_` files were opened, read-only; the sRGB one only within the probe window, the Adobe RGB JPEG whole,
+    // the Adobe RGB CR2 its probe window and its embedded preview, not its sensor data.
     let read = env.instr.bytes_per_file();
     let root = env.root(id);
     assert_eq!(read.len(), 3, "{read:?}");
     assert!(env.instr.opens().iter().all(|o| !o.access.writes()));
     let n = read[&under(&root, SRGB_UNDERSCORE)];
     assert!(n <= ps_media::PROBE_LIMIT as u64, "{n} bytes");
-    for rel in [ADOBE_JPG, ADOBE_CR2] {
-        assert_eq!(
-            read[&under(&root, rel)],
-            card.files[rel].len() as u64,
-            "{rel}: read whole once"
-        );
-    }
+    assert_eq!(
+        read[&under(&root, ADOBE_JPG)],
+        card.files[ADOBE_JPG].len() as u64,
+        "the JPEG is read whole once"
+    );
+    let cr2 = &card.files[ADOBE_CR2];
+    let preview = ps_media::probe_buffer(cr2, None).preview.unwrap().range;
+    assert_eq!(
+        read[&under(&root, ADOBE_CR2)],
+        ps_media::PROBE_LIMIT as u64 + preview.len,
+        "the CR2's probe window and its preview ({} bytes of {})",
+        preview.len,
+        cr2.len()
+    );
+    assert!(cr2.len() as u64 > CR2_SENSOR_BYTES as u64);
+    // The run's byte total is what it read, so its progress and ETA were honest.
+    let snap = env.s().snapshot().unwrap();
+    assert_eq!(snap.bytes_to_read, snap.bytes_read, "{snap:?}");
+    assert_eq!(snap.bytes_read, read.values().sum::<u64>());
+    assert_eq!(
+        s.diff.colour_bytes, snap.bytes_read,
+        "the summary says what it read"
+    );
 
     // The Adobe RGB thumbnails are made again, converted; the others are untouched.
     for rel in [ADOBE_JPG, ADOBE_CR2] {
@@ -306,4 +326,227 @@ fn a_raw_due_both_checks_is_opened_once() {
     let again = env.scan(&[id]);
     assert_eq!((again.diff.frame_reread, again.diff.colour_checked), (0, 0));
     assert_eq!(env.instr.open_count(), 0);
+}
+
+/// A card of `files` (name, bytes), each written with the same modification time.
+fn card_of(files: &[(&str, &[u8])]) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tmp.path().join("card");
+    let w = ps_fixtures::DirWriter::new(&root).expect("writer");
+    for (rel, bytes) in files {
+        w.write(rel, bytes, 1_700_000_000).expect("write");
+    }
+    (tmp, root)
+}
+
+fn sql(env: &mut Env, statement: &str) {
+    env.close();
+    let c = rusqlite::Connection::open(ps_catalog::db::catalog_path(&env.dir)).expect("db");
+    c.execute_batch(statement).expect("sql");
+    drop(c);
+    env.reopen(ScanOptions::default());
+}
+
+/// Other bytes under an unchanged stat fingerprint: the JPEG's identity check catches it, the row alone is marked
+/// unchecked and the run reports it; a copy of the catalogued content keeps the colour it recorded.
+#[test]
+fn an_identity_mismatch_marks_only_its_own_row() {
+    let _h = hook();
+    let _s = shared();
+    let adobe = cfx::with_exif(
+        &ps_fixtures::media::jpeg(2400, 1600, 41, 92),
+        0xFFFF,
+        Some("R03"),
+        Some(2),
+    );
+    let (_tmp, root) = card_of(&[("IMG_0001.JPG", &adobe), ("_MG_0001.JPG", &adobe)]);
+    let (mut env, id) = catalog_before_the_change(&root);
+    // The copy not due the re-check had its colour recorded (by an analysis of this build, say).
+    sql(
+        &mut env,
+        "UPDATE file SET colour = 'adobe_rgb' WHERE name = CAST('IMG_0001.JPG' AS BLOB)",
+    );
+    let mut other = adobe.clone();
+    let mid = other.len() / 2;
+    for b in &mut other[mid..mid + 64] {
+        *b ^= 0x5A;
+    }
+    ps_fixtures::writer::rewrite_keeping_stat(&under(&env.root(id), "_MG_0001.JPG"), &other)
+        .unwrap();
+    let thumb_before = thumb(&env, id, "IMG_0001.JPG");
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!((s.diff.colour_checked, s.diff.recoloured), (1, 0));
+    assert_eq!(s.errors, 1, "reported");
+    let snap = env.s().snapshot().unwrap();
+    assert!(
+        snap.recent_errors[0]
+            .message
+            .contains("differ from the catalogued content"),
+        "{:?}",
+        snap.recent_errors
+    );
+    let files = env.files(id);
+    assert_eq!(
+        files["_MG_0001.JPG"].colour.as_deref(),
+        Some(COLOUR_UNCHECKED)
+    );
+    assert_eq!(
+        files["IMG_0001.JPG"].colour.as_deref(),
+        Some("adobe_rgb"),
+        "the other copy keeps its colour"
+    );
+    assert_eq!(
+        thumb(&env, id, "IMG_0001.JPG"),
+        thumb_before,
+        "thumbnail untouched"
+    );
+}
+
+/// A RAW whose preview no longer decodes (other bytes under the unchanged fingerprint): its colour space is recorded
+/// as not converted, the stored thumbnail kept, and the inspector can say so; the row is not re-checked again.
+#[test]
+fn a_preview_that_cannot_be_made_again_is_recorded_unconverted() {
+    let _h = hook();
+    let _s = shared();
+    let cr2 = cfx::canon_cr2_with_sensor(
+        &ps_fixtures::media::jpeg(1600, 1066, 42, 92),
+        (1600, 1066),
+        2,
+        1024 * 1024,
+    );
+    let (_tmp, root) = card_of(&[("_MG_0002.CR2", &cr2)]);
+    let (env, id) = catalog_before_the_change(&root);
+    let before = thumb(&env, id, "_MG_0002.CR2");
+    let range = ps_media::probe_buffer(&cr2, None).preview.unwrap().range;
+    let mut broken = cr2.clone();
+    for b in &mut broken[range.offset as usize + 2..range.end() as usize] {
+        *b = 0;
+    }
+    ps_fixtures::writer::rewrite_keeping_stat(&under(&env.root(id), "_MG_0002.CR2"), &broken)
+        .unwrap();
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!((s.diff.colour_checked, s.diff.recoloured), (1, 0));
+    let f = &env.files(id)["_MG_0002.CR2"];
+    assert_eq!(f.colour.as_deref(), Some("unconverted:adobe_rgb"));
+    assert_eq!(thumb(&env, id, "_MG_0002.CR2"), before, "kept");
+    assert_eq!(
+        ps_model::StoredColour::from_storage(f.colour.as_deref().unwrap())
+            .and_then(|c| c.label())
+            .as_deref(),
+        Some("Adobe RGB (1998), preview not converted")
+    );
+    env.instr.reset();
+    let again = env.scan(&[id]);
+    assert_eq!((again.diff.colour_checked, env.instr.open_count()), (0, 0));
+}
+
+/// The hash upgrade (ADR-0012) does not hash a thumbnail converted to sRGB (ADR-0113): such rows keep their old
+/// hash version and the next rescan analyses them again, from the decode; the others are upgraded from their
+/// thumbnails as before.
+#[test]
+fn the_hash_upgrade_leaves_converted_thumbnails_to_a_new_analysis() {
+    let _h = hook();
+    let _s = shared();
+    let adobe = cfx::with_exif(
+        &ps_fixtures::media::jpeg(1200, 800, 43, 92),
+        0xFFFF,
+        Some("R03"),
+        Some(2),
+    );
+    let srgb = cfx::with_exif(
+        &ps_fixtures::media::jpeg(1200, 800, 44, 92),
+        1,
+        None,
+        Some(1),
+    );
+    let (_tmp, root) = card_of(&[("_MG_0001.JPG", &adobe), ("IMG_0002.JPG", &srgb)]);
+    let mut env = env_with(ScanOptions::default());
+    let id = env.add(&root);
+    completed(&env.scan(&[id]));
+    let hashes: BTreeMap<String, _> = env
+        .files(id)
+        .into_iter()
+        .map(|(rel, f)| (rel, f.hashes.unwrap()))
+        .collect();
+    // Hashes of an older algorithm version.
+    sql(&mut env, "UPDATE file SET hash_version = 0");
+    let report = ps_scan::upgrade_hashes_current(env.s().catalog(), env.s().thumbs()).unwrap();
+    assert_eq!(
+        (report.stale, report.upgraded, report.left_for_analysis),
+        (2, 1, 1),
+        "{report:?}"
+    );
+    let files = env.files(id);
+    assert_eq!(
+        files["_MG_0001.JPG"].hashes.unwrap().version,
+        0,
+        "not hashed from its converted thumbnail"
+    );
+    assert_eq!(
+        files["IMG_0002.JPG"].hashes.unwrap().version,
+        ps_hash::PERCEPTUAL_HASH_VERSION
+    );
+    env.instr.reset();
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!(s.diff.reanalyzed, 1, "{:?}", s.diff);
+    let read = env.instr.bytes_per_file();
+    assert_eq!(read.len(), 1, "{read:?}");
+    let f = &env.files(id)["_MG_0001.JPG"];
+    assert_eq!(
+        f.hashes,
+        Some(hashes["_MG_0001.JPG"]),
+        "hashed again from the unconverted decode"
+    );
+    assert_eq!(f.colour.as_deref(), Some("adobe_rgb"));
+    // Done: nothing more to read.
+    env.instr.reset();
+    let again = env.scan(&[id]);
+    assert_eq!((again.diff.reanalyzed, env.instr.open_count()), (0, 0));
+}
+
+/// A RAW placeholder of an older decoder generation filled in by a re-decode (ADR-0109) records the colour its new
+/// thumbnail was converted from.
+#[test]
+fn a_filled_in_placeholder_records_its_colour() {
+    let _h = hook();
+    let _s = shared();
+    let cr2 = cfx::canon_cr2_of(
+        &ps_fixtures::media::jpeg(1600, 1066, 45, 92),
+        (1600, 1066),
+        2,
+    );
+    let (_tmp, root) = card_of(&[("_MG_0003.CR2", &cr2)]);
+    let mut env = env_with(ScanOptions::default());
+    let id = env.add(&root);
+    completed(&env.scan(&[id]));
+    // As an older version left it: a generation-0 placeholder, no hashes, the colour not read.
+    let r = env.files(id)["_MG_0003.CR2"].clone();
+    let probe = ps_media::probe_buffer(&cr2, None);
+    let mut ph = ps_media::thumb::placeholder(&probe, None, "preview unavailable");
+    if let Some(p) = ph.placeholder.as_mut() {
+        p.generation = 0;
+    }
+    env.s()
+        .thumbs()
+        .put_many([(&r.identity.unwrap(), &ph)])
+        .unwrap();
+    sql(
+        &mut env,
+        "UPDATE file SET phash = NULL, dhash = NULL, hash_version = NULL, preview_gen = 0,
+                         preview_reason = 'unreadable', colour = 'unchecked'",
+    );
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!(s.diff.redecoded, 1, "{:?}", s.diff);
+    let f = &env.files(id)["_MG_0003.CR2"];
+    assert_eq!(f.preview, None);
+    assert_eq!(f.colour.as_deref(), Some("adobe_rgb"));
+    assert_eq!(
+        thumb(&env, id, "_MG_0003.CR2"),
+        fresh_thumb(&cr2),
+        "converted"
+    );
 }

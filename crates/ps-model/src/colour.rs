@@ -22,6 +22,62 @@ pub enum ColourSpace {
 /// `file.colour` of a row analysed before colour spaces were read and not re-checked (migration 26).
 pub const COLOUR_UNCHECKED: &str = "unchecked";
 
+/// The prefix of `file.colour` for a row whose colour space is known but whose stored thumbnail was not converted
+/// (the one-time re-check could not make it again: a file over the in-memory limit, a sampled identity, a RAW found
+/// cut, a decode that failed), e.g. `unconverted:adobe_rgb`. A later change can select these rows to try again.
+pub const COLOUR_UNCONVERTED_PREFIX: &str = "unconverted:";
+
+/// What `file.colour` records (catalog migration 26, ADR-0113).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum StoredColour {
+    /// The colour space; the stored previews were made from it (converted to sRGB when it is not sRGB).
+    Space(ColourSpace),
+    /// The colour space is known, but the stored thumbnail was kept as it was, not converted.
+    Unconverted(ColourSpace),
+    /// Analysed before colour spaces were read, and not re-checked ([`COLOUR_UNCHECKED`]).
+    Unchecked,
+}
+
+impl StoredColour {
+    /// The `file.colour` text.
+    pub fn storage(&self) -> String {
+        match self {
+            StoredColour::Space(c) => c.storage(),
+            StoredColour::Unconverted(c) => format!("{COLOUR_UNCONVERTED_PREFIX}{}", c.storage()),
+            StoredColour::Unchecked => COLOUR_UNCHECKED.to_owned(),
+        }
+    }
+
+    /// The state a stored `file.colour` text names; `None` for unknown text.
+    pub fn from_storage(s: &str) -> Option<StoredColour> {
+        if s == COLOUR_UNCHECKED {
+            return Some(StoredColour::Unchecked);
+        }
+        match s.strip_prefix(COLOUR_UNCONVERTED_PREFIX) {
+            Some(rest) => ColourSpace::from_storage(rest).map(StoredColour::Unconverted),
+            None => ColourSpace::from_storage(s).map(StoredColour::Space),
+        }
+    }
+
+    /// The stored previews were converted from a colour space other than sRGB, so they are not the decode's own
+    /// pixels (perceptual hashes must not be taken from them; ADR-0113).
+    pub fn preview_converted(&self) -> bool {
+        matches!(self, StoredColour::Space(c) if !c.is_srgb())
+    }
+
+    /// What the inspector shows: [`ColourSpace::label`], and for a thumbnail that was not converted, that it was
+    /// not ("Adobe RGB (1998), preview not converted"). `None` for sRGB and unchecked.
+    pub fn label(&self) -> Option<String> {
+        match self {
+            StoredColour::Space(c) => c.label(),
+            StoredColour::Unconverted(c) => {
+                c.label().map(|l| format!("{l}, preview not converted"))
+            }
+            StoredColour::Unchecked => None,
+        }
+    }
+}
+
 impl ColourSpace {
     /// Pixels need no conversion for display.
     pub fn is_srgb(&self) -> bool {
@@ -109,6 +165,47 @@ mod tests {
         }
         assert_eq!(ColourSpace::from_storage(COLOUR_UNCHECKED), None);
         assert_eq!(ColourSpace::from_storage("nonsense"), None);
+        for s in [
+            StoredColour::Space(ColourSpace::DisplayP3),
+            StoredColour::Unconverted(ColourSpace::AdobeRgb),
+            StoredColour::Unconverted(ColourSpace::Profile {
+                description: "Wide".into(),
+            }),
+            StoredColour::Unchecked,
+        ] {
+            assert_eq!(StoredColour::from_storage(&s.storage()), Some(s));
+        }
+        assert_eq!(
+            StoredColour::Unconverted(ColourSpace::AdobeRgb).storage(),
+            "unconverted:adobe_rgb"
+        );
+        assert_eq!(StoredColour::from_storage("unconverted:nonsense"), None);
+    }
+
+    #[test]
+    fn an_unconverted_preview_says_so() {
+        assert_eq!(
+            StoredColour::Unconverted(ColourSpace::AdobeRgb)
+                .label()
+                .as_deref(),
+            Some("Adobe RGB (1998), preview not converted")
+        );
+        assert_eq!(
+            StoredColour::Space(ColourSpace::AdobeRgb)
+                .label()
+                .as_deref(),
+            Some("Adobe RGB (1998)")
+        );
+        assert_eq!(StoredColour::Unconverted(ColourSpace::Srgb).label(), None);
+        assert_eq!(StoredColour::Unchecked.label(), None);
+        assert!(StoredColour::Space(ColourSpace::DisplayP3).preview_converted());
+        for s in [
+            StoredColour::Space(ColourSpace::Srgb),
+            StoredColour::Unconverted(ColourSpace::AdobeRgb),
+            StoredColour::Unchecked,
+        ] {
+            assert!(!s.preview_converted(), "{s:?}");
+        }
     }
 
     #[test]

@@ -442,16 +442,17 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
     }
     if s.diff.reanalyzed > 0 {
         println!(
-            "{} TIFF files catalogued without dimensions by an earlier version analysed again",
-            s.diff.reanalyzed
+            "{} analysed again (TIFFs catalogued without dimensions by an earlier version, or perceptual hashes of an \
+             older version whose previews were converted to sRGB)",
+            files(s.diff.reanalyzed)
         );
     }
     if s.diff.colour_checked > 0 {
         println!(
-            "{} checked once for their colour space (header only, read-only), {} recoloured (Adobe RGB and other \
-             wide-gamut previews converted to sRGB)",
+            "{} checked once for their colour space (read-only); {} not in sRGB had their previews remade ({} read)",
             files(s.diff.colour_checked),
-            s.diff.recoloured
+            s.diff.recoloured,
+            bytes(s.diff.colour_bytes)
         );
     }
     if s.diff.frame_reread > 0 {

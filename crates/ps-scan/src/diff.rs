@@ -89,8 +89,9 @@ pub struct Todo {
     /// into the source's quarantine folder (ADR-0105). The catalog row stays at `path`.
     pub read_path: Option<RelPath>,
     /// The one-time colour re-check of a row analysed before colour spaces were read ([`needs_colour_check`],
-    /// ADR-0113): the probe window is read (shared with a `meta_reread` of the same row); a file not in sRGB is then
-    /// read whole and its thumbnail made again. No hashing beyond the identity check, nothing regrouped.
+    /// ADR-0113): the probe window is read (shared with a `meta_reread` of the same row); for a file not in sRGB a
+    /// RAW's embedded preview, or a JPEG whole (identity checked), is then read and its thumbnail made again.
+    /// Nothing regrouped.
     pub colour_check: bool,
 }
 
@@ -144,6 +145,17 @@ fn catalogued_without_dimensions(r: &ps_catalog::FileRecord, stat: &StatFingerpr
         && stat.size > ps_media::PROBE_LIMIT as u64
 }
 
+/// A thumbed row whose perceptual hashes are of another algorithm version and that the hash upgrade (which hashes
+/// stored thumbnails, ADR-0012) leaves alone because its thumbnail is not the unconverted decode: a colour other than
+/// sRGB (ADR-0113: converted, or a copy of converted content). It is analysed again, which hashes the decode.
+fn needs_rehash_by_analysis(r: &ps_catalog::FileRecord) -> bool {
+    r.stage == Stage::Thumbed
+        && r.missing_since_ms.is_none()
+        && r.colour.as_deref() != Some("srgb")
+        && r.hashes
+            .is_some_and(|h| h.version != ps_hash::PERCEPTUAL_HASH_VERSION)
+}
+
 /// An analysed row whose stored metadata predates the metadata rules it needs ([`ps_model::meta_reread_due`]):
 /// frame identity (ADR-0105; catalog migration 23 marks current every row but the RAW-format ones and the Canon
 /// camera files of the same capture second as one), or, for a RAW with preview pixels, the structure check
@@ -165,6 +177,20 @@ fn needs_colour_check(r: &ps_catalog::FileRecord) -> bool {
         && r.format
             .is_some_and(|f| f == ps_model::Format::Jpeg || f.is_raw())
         && r.key.path.file_name().first() == Some(&b'_')
+}
+
+/// The bytes the one-time colour re-check (ADR-0113) of a file of `format` and `size` is planned to read: a JPEG
+/// whole (decoding it needs all of it, and a `_`-named JPEG is usually Adobe RGB); a RAW its probe window and its
+/// embedded preview, whose length the catalog does not keep, estimated at an eighth of the file. The pipeline
+/// corrects the run's total by what each check actually read (`Progress::rebudget`), so progress and the ETA stay
+/// honest either way.
+pub(crate) fn colour_check_budget(format: Option<ps_model::Format>, size: u64) -> u64 {
+    let window = size.min(ps_media::PROBE_LIMIT as u64);
+    if format.is_some_and(ps_model::Format::is_raw) {
+        size.min(window + size / 8)
+    } else {
+        size
+    }
 }
 
 /// The bytes a header re-read of `r` reads at most up front: the probe window for frame identity, the structure
@@ -327,7 +353,10 @@ pub fn diff(
                         out.bytes_to_process += w.stat.size;
                         *out.stages.get_mut(Stage::Discovered) += 1;
                     }
-                    Some(r) if catalogued_without_dimensions(r, &w.stat) => {
+                    Some(r)
+                        if catalogued_without_dimensions(r, &w.stat)
+                            || needs_rehash_by_analysis(r) =>
+                    {
                         out.counts.unchanged += 1;
                         out.counts.reanalyzed += 1;
                         out.upserts.push(FileRow::discovered(key, w.stat));
@@ -455,7 +484,7 @@ pub fn diff(
                                     ..todo(r.stage, false)
                                 });
                                 out.bytes_to_process += if colour {
-                                    r.stat.size.min(ps_media::PROBE_LIMIT as u64)
+                                    colour_check_budget(r.format, r.stat.size)
                                 } else {
                                     reread_head(r)
                                 };

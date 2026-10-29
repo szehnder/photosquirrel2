@@ -645,10 +645,11 @@ enum Persist {
 
 /// How a re-decode ended.
 enum Redecode {
-    /// Preview and hashes filled in.
+    /// Preview and hashes filled in; the thumbnail was converted from `colour` (ADR-0113).
     Filled {
         hashes: Option<ps_model::PerceptualHash>,
         thumb: ThumbnailRecord,
+        colour: ps_model::ColourSpace,
     },
     /// The decoder is missing again: the file keeps waiting.
     StillMissing,
@@ -1258,8 +1259,8 @@ fn process_file(
                 (None, Err(())) => {}
             }
         }
-        if let Some(c) = colour {
-            c.submit(ctx, idx, &key);
+        if let Some((c, read)) = colour {
+            c.submit(ctx, idx, &t, &key, read);
         }
         ctx.progress.file_done(idx);
         ctx.progress.set_dir(idx, reader, None);
@@ -1606,35 +1607,76 @@ fn cut_found(
 
 /// What the one-time colour re-check of a row analysed before colour spaces were read found (ADR-0113).
 enum Recheck {
-    /// sRGB, or a colour space whose thumbnail is kept as it is (a RAW found cut, a file too large to read whole
-    /// here, a thumbnail that could not be made again): recorded only.
-    Recorded(ps_model::ColourSpace),
+    /// A colour state for the row and every copy of its content: sRGB, or a colour space whose thumbnail is kept as
+    /// it is ([`ps_model::StoredColour::Unconverted`]: a RAW found cut, a file too large to read whole here or with a
+    /// sampled identity, a thumbnail that could not be made again).
+    Recorded(ps_model::StoredColour),
     /// Not sRGB: the thumbnail of its content was made again, converted to sRGB.
     Recoloured(ps_model::ColourSpace),
-    /// Other content under the unchanged fingerprint: 'unchecked' (the stored content's thumbnail is not touched).
-    Unchecked,
-    /// The file could not be read whole, or the new thumbnail not stored: nothing is written, so the next rescan
-    /// checks it again.
+    /// Other bytes than the catalog's content under the unchanged fingerprint: this row alone is marked unchecked
+    /// (the copies keep what their own content recorded, the stored thumbnail is untouched) and the run reports it.
+    Mismatch,
+    /// The file could not be read, or the new thumbnail not stored: nothing is written, so the next rescan checks
+    /// it again.
     Retry,
 }
 
 impl Recheck {
-    fn submit(self, ctx: &RunCtx, idx: usize, key: &FileKey) {
-        let (colour, recoloured) = match self {
-            Recheck::Recorded(c) => (Some(c), false),
-            Recheck::Recoloured(c) => (Some(c), true),
-            Recheck::Unchecked => (None, false),
+    fn submit(self, ctx: &RunCtx, idx: usize, t: &Todo, key: &FileKey, read: u64) {
+        let (colour, copies, recoloured) = match self {
+            Recheck::Recorded(c) => (c, true, false),
+            Recheck::Recoloured(c) => (ps_model::StoredColour::Space(c), true, true),
+            Recheck::Mismatch => {
+                ctx.progress.error(RecentError {
+                    source: ctx.sources[idx].id,
+                    path: t.path.clone(),
+                    stage: t.stage,
+                    message: "its bytes differ from the catalogued content although its size and modification time \
+                              did not change; its colour is left unchecked and its preview as it was"
+                        .into(),
+                });
+                (ps_model::StoredColour::Unchecked, false, false)
+            }
             Recheck::Retry => return,
         };
-        ctx.submit(Command::SetColour(vec![(key.clone(), colour)]));
-        ctx.progress.colour_checked(idx, recoloured);
+        ctx.submit(Command::SetColour(vec![ps_catalog::ColourStamp {
+            key: key.clone(),
+            colour,
+            copies,
+        }]));
+        ctx.progress.colour_checked(idx, recoloured, read);
     }
 }
 
+/// Read `len` bytes at `offset` of the file `r` reads, reusing `head` (its first bytes) where the range lies in it.
+fn read_range(r: &mut Controlled<'_>, head: &[u8], offset: u64, len: u64) -> io::Result<Vec<u8>> {
+    let end = offset.saturating_add(len);
+    if end <= head.len() as u64 {
+        return Ok(head[offset as usize..end as usize].to_vec());
+    }
+    r.seek(SeekFrom::Start(offset))?;
+    let mut v = Vec::with_capacity(len.min(ANALYSIS_BUFFER_MAX_BYTES) as usize);
+    (&mut *r).take(len).read_to_end(&mut v)?;
+    if (v.len() as u64) < len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "file shrank while it was being read",
+        ));
+    }
+    Ok(v)
+}
+
 /// The one-time colour re-check (ADR-0113) of the file `r` reads, whose probe window is `head`: its colour space
-/// from the probe; when it is not sRGB the rest of the file is read (the reader is positioned after `head`), the
-/// identity checked against the catalog's, and the thumbnail of that content made again and stored. Perceptual
-/// hashes, metadata and the dedup stamp are not touched. `None` when the run was cancelled or the source lost.
+/// from the probe. When it is not sRGB the thumbnail of its content is made again, converted, and stored:
+/// - a RAW from its embedded preview alone (the probe's preview range): the sensor data is not read. The unchanged
+///   stat fingerprint stands for the content, as on every rescan (ADR-0007); the re-probed format must still be the
+///   catalogued one and the preview must decode;
+/// - any other file (a JPEG, a RAW without a usable preview) is read whole: decoding it needs all of it, and its
+///   BLAKE3 identity is compared with the catalog's, so a thumbnail is never stored under another content's id.
+///
+/// The run's byte total is corrected by what was read (`Progress::rebudget`), which is returned with the finding.
+/// Perceptual hashes, metadata and the dedup stamp are not touched. `None` when the run was cancelled or the source
+/// lost.
 #[allow(clippy::too_many_arguments)]
 fn colour_recheck(
     ctx: &RunCtx,
@@ -1648,35 +1690,47 @@ fn colour_recheck(
     size: u64,
     cut: bool,
     r: &mut Controlled<'_>,
+) -> Option<(Recheck, u64)> {
+    let planned = crate::diff::colour_check_budget(probe.format, size);
+    let mut read = head.len() as u64;
+    let found = colour_recheck_inner(
+        ctx, idx, reader, busy, t, key, probe, head, size, cut, r, &mut read,
+    )?;
+    ctx.progress.rebudget(idx, planned, read);
+    Some((found, read))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn colour_recheck_inner(
+    ctx: &RunCtx,
+    idx: usize,
+    reader: usize,
+    busy: &Busy<'_>,
+    t: &Todo,
+    key: &FileKey,
+    probe: &ProbeRecord,
+    head: Vec<u8>,
+    size: u64,
+    cut: bool,
+    r: &mut Controlled<'_>,
+    read: &mut u64,
 ) -> Option<Recheck> {
+    use ps_model::StoredColour;
     let space = probe.colour.clone();
-    if space.is_srgb() || cut {
-        return Some(Recheck::Recorded(space));
+    if space.is_srgb() {
+        return Some(Recheck::Recorded(StoredColour::Space(space)));
     }
-    let identity = match ctx.catalog.read().file(key) {
-        Ok(Some(f)) => f.identity,
+    if cut {
+        return Some(Recheck::Recorded(StoredColour::Unconverted(space)));
+    }
+    let row = match ctx.catalog.read().file(key) {
+        Ok(Some(f)) => f,
         _ => return Some(Recheck::Retry),
     };
-    let Some(identity) = identity.filter(|i| i.kind == ps_model::ContentIdKind::Full) else {
-        return Some(Recheck::Recorded(space));
+    let Some(identity) = row.identity else {
+        return Some(Recheck::Retry);
     };
-    if size > ANALYSIS_BUFFER_MAX_BYTES {
-        log::info!(
-            "{}: recorded in {space:?} but too large to make its thumbnail again here; converted when it is analysed \
-             again",
-            t.path
-        );
-        return Some(Recheck::Recorded(space));
-    }
-    let _permit = ctx
-        .budget
-        .acquire(size, (idx, reader), &|| busy.checkpoint())
-        .ok()?;
-    let mut buf = head;
-    let read = r
-        .seek(SeekFrom::Start(buf.len() as u64))
-        .and_then(|_| read_rest(r, &mut buf, size));
-    if let Err(e) = read {
+    let unreadable = |e: io::Error| -> Option<Recheck> {
         if is_cancel(&e) {
             return None;
         }
@@ -1694,32 +1748,82 @@ fn colour_recheck(
                 io_message(&e)
             ),
         });
-        return Some(Recheck::Retry);
+        Some(Recheck::Retry)
+    };
+    let store = |thumb: &ThumbnailRecord| -> Recheck {
+        match ctx.thumbs.put(&identity, thumb) {
+            Ok(()) => Recheck::Recoloured(space.clone()),
+            Err(e) => {
+                log::warn!("{}: could not store its recoloured thumbnail ({e})", t.path);
+                Recheck::Retry
+            }
+        }
+    };
+    // A RAW: its embedded preview only.
+    if let Some(range) = ps_media::thumb::raw_preview_range(probe)
+        && row.format == probe.format
+        && range.end() <= size
+    {
+        let preview = match read_range(r, &head, range.offset, range.len) {
+            Ok(p) => p,
+            Err(e) => return unreadable(e),
+        };
+        if range.end() > head.len() as u64 {
+            *read += range.len;
+        }
+        return Some(
+            match ps_media::thumb::raw_thumbnail_from_preview(&head, &preview, probe) {
+                Some(thumb) => store(&thumb),
+                None => {
+                    log::info!(
+                        "{}: in {space:?}, but its preview did not decode; the stored thumbnail is kept",
+                        t.path
+                    );
+                    Recheck::Recorded(StoredColour::Unconverted(space))
+                }
+            },
+        );
     }
-    if ps_hash::identity_from_buffer(&buf) != identity {
+    // Any other file: read whole, identity checked.
+    if identity.kind != ps_model::ContentIdKind::Full || size > ANALYSIS_BUFFER_MAX_BYTES {
         log::info!(
-            "{}: content changed under an unchanged fingerprint; its colour is left unchecked",
+            "{}: recorded in {space:?} but too large to make its thumbnail again here; converted when it is analysed \
+             again",
             t.path
         );
-        return Some(Recheck::Unchecked);
+        return Some(Recheck::Recorded(StoredColour::Unconverted(space)));
+    }
+    let _permit = ctx
+        .budget
+        .acquire(size, (idx, reader), &|| busy.checkpoint())
+        .ok()?;
+    let mut buf = head;
+    let start = buf.len() as u64;
+    let rest = r
+        .seek(SeekFrom::Start(start))
+        .and_then(|_| read_rest(r, &mut buf, size));
+    *read = buf.len() as u64;
+    if let Err(e) = rest {
+        return unreadable(e);
+    }
+    if ps_hash::identity_from_buffer(&buf) != identity {
+        return Some(Recheck::Mismatch);
     }
     let full = ps_media::probe_buffer(&buf, Some(t.path.to_path_buf().as_path()));
-    match ps_media::thumb::make_thumbnail(&buf, &full, &ctx.opts.decoders) {
-        Ok((thumb, origin)) if origin != ps_media::thumb::ThumbOrigin::Placeholder => {
-            if let Err(e) = ctx.thumbs.put(&identity, &thumb) {
-                log::warn!("{}: could not store its recoloured thumbnail ({e})", t.path);
-                return Some(Recheck::Retry);
+    Some(
+        match ps_media::thumb::make_thumbnail(&buf, &full, &ctx.opts.decoders) {
+            Ok((thumb, origin)) if origin != ps_media::thumb::ThumbOrigin::Placeholder => {
+                store(&thumb)
             }
-            Some(Recheck::Recoloured(space))
-        }
-        _ => {
-            log::info!(
-                "{}: in {space:?}, but its thumbnail could not be made again; the stored one is kept",
-                t.path
-            );
-            Some(Recheck::Recorded(space))
-        }
-    }
+            _ => {
+                log::info!(
+                    "{}: in {space:?}, but its thumbnail could not be made again; the stored one is kept",
+                    t.path
+                );
+                Recheck::Recorded(StoredColour::Unconverted(space))
+            }
+        },
+    )
 }
 
 fn reread_unreadable(ctx: &RunCtx, idx: usize, t: &Todo, e: &io::Error) {
@@ -2123,6 +2227,7 @@ fn analyze_redecode(
         Ok((decoded, thumb, _)) => Redecode::Filled {
             hashes: still_hashes(&decoded.image),
             thumb,
+            colour: probe.colour.clone(),
         },
         Err(DecodeError::Cancelled) => return None,
         Err(DecodeError::DecoderMissing(_)) => Redecode::StillMissing,
@@ -2309,7 +2414,11 @@ fn persist_redecode(
     let src = &ctx.sources[idx];
     let key = FileKey::new(src.id, path.clone());
     match outcome {
-        Redecode::Filled { hashes, thumb } => {
+        Redecode::Filled {
+            hashes,
+            thumb,
+            colour,
+        } => {
             if let Err(e) = ctx.thumbs.put_many([(&identity, &thumb)]) {
                 ctx.progress.error(RecentError {
                     source: src.id,
@@ -2322,6 +2431,12 @@ fn persist_redecode(
                 ctx.progress.file_done(idx);
                 return;
             }
+            // The colour the new thumbnail was made from, for every row sharing it (ADR-0113).
+            ctx.submit(Command::SetColour(vec![ps_catalog::ColourStamp {
+                key: key.clone(),
+                colour: ps_model::StoredColour::Space(colour),
+                copies: true,
+            }]));
             match hashes {
                 Some(h) => ctx.submit(Command::Redecoded(vec![(key, h)])),
                 None => {

@@ -6,8 +6,8 @@
 mod common;
 
 use common::*;
-use ps_catalog::{AnalysisResult, Catalog, Command, FileKey, FileRow, Results, db};
-use ps_model::{COLOUR_UNCHECKED, ColourSpace};
+use ps_catalog::{AnalysisResult, Catalog, ColourStamp, Command, FileKey, FileRow, Results, db};
+use ps_model::{COLOUR_UNCHECKED, ColourSpace, StoredColour};
 use rusqlite::{Connection, params};
 
 #[test]
@@ -139,19 +139,54 @@ fn analysis_writes_the_colour_and_the_re_check_stamps_every_copy() {
     // The re-check writes every row of the content, and only those.
     let other = FileKey::new(src, rel("IMG_0002.JPG"));
     write_analyzed(&cat, &other, 2, analysis_of(2));
-    cat.writer()
-        .submit(Command::SetColour(vec![(
-            keys[0].clone(),
-            Some(ColourSpace::DisplayP3),
-        )]))
-        .unwrap();
-    cat.writer().flush().unwrap();
+    let stamp = |k: &FileKey, colour, copies| {
+        cat.writer()
+            .submit(Command::SetColour(vec![ColourStamp {
+                key: k.clone(),
+                colour,
+                copies,
+            }]))
+            .unwrap();
+        cat.writer().flush().unwrap();
+    };
+    stamp(&keys[0], StoredColour::Space(ColourSpace::DisplayP3), true);
     assert_eq!(colour(&keys[0]).as_deref(), Some("display_p3"));
     assert_eq!(colour(&keys[1]).as_deref(), Some("display_p3"));
     assert_eq!(colour(&other).as_deref(), Some("srgb"));
+    stamp(
+        &keys[1],
+        StoredColour::Unconverted(ColourSpace::AdobeRgb),
+        true,
+    );
+    assert_eq!(colour(&keys[0]).as_deref(), Some("unconverted:adobe_rgb"));
+    assert_eq!(colour(&keys[1]).as_deref(), Some("unconverted:adobe_rgb"));
+}
+
+/// A file whose bytes are not its row's content (an identity mismatch under an unchanged fingerprint) is marked
+/// unchecked alone: the other copies keep the colour their own content recorded.
+#[test]
+fn an_unchecked_stamp_without_copies_writes_only_its_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cat = Catalog::open(tmp.path()).unwrap();
+    let src = add_source(&cat, "/mnt/a");
+    let mut a = analysis_of(1);
+    a.colour = Some(ColourSpace::AdobeRgb);
+    let keys: Vec<FileKey> = ["_MG_0001.JPG", "copy/_MG_0001.JPG"]
+        .iter()
+        .map(|n| FileKey::new(src, rel(n)))
+        .collect();
+    for k in &keys {
+        write_analyzed(&cat, k, 1, a.clone());
+    }
     cat.writer()
-        .submit(Command::SetColour(vec![(keys[1].clone(), None)]))
+        .submit(Command::SetColour(vec![ColourStamp {
+            key: keys[1].clone(),
+            colour: StoredColour::Unchecked,
+            copies: false,
+        }]))
         .unwrap();
     cat.writer().flush().unwrap();
-    assert_eq!(colour(&keys[0]).as_deref(), Some(COLOUR_UNCHECKED));
+    let colour = |k: &FileKey| cat.read().file(k).unwrap().unwrap().colour;
+    assert_eq!(colour(&keys[1]).as_deref(), Some(COLOUR_UNCHECKED));
+    assert_eq!(colour(&keys[0]).as_deref(), Some("adobe_rgb"), "untouched");
 }

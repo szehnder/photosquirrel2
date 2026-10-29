@@ -207,6 +207,46 @@ pub fn canon_cr2_of(preview_jpeg: &[u8], dims: (u32, u32), canon_note: u16) -> V
     write_tiff(&ifd0, Endian::Little)
 }
 
+/// [`canon_cr2_of`] with `sensor_bytes` of 16-bit sensor data in a SubIFD strip after the preview, so the file is
+/// as much larger than its preview as a camera's is (a test that counts the bytes a preview read takes).
+pub fn canon_cr2_with_sensor(
+    preview_jpeg: &[u8],
+    dims: (u32, u32),
+    canon_note: u16,
+    sensor_bytes: u32,
+) -> Vec<u8> {
+    let (rw, rh) = (1024u32, (sensor_bytes / 2048).max(1));
+    let mut strip = Vec::with_capacity((rw * rh * 2) as usize);
+    for i in 0..rw * rh {
+        strip.extend_from_slice(&(600 + (i % 97) as u16 * 100).to_le_bytes());
+    }
+    let mut raw = Ifd::new();
+    raw.long(0x00FE, 0)
+        .long(0x0100, rw)
+        .long(0x0101, rh)
+        .short(0x0102, 16)
+        .short(0x0103, 1)
+        .short(0x0106, 32803)
+        .short(0x0115, 1)
+        .long(0x0116, rh)
+        .blob(0x0111, 0x0117, strip);
+    let mut ifd0 = Ifd::new();
+    ifd0.long(0x0100, dims.0)
+        .long(0x0101, dims.1)
+        .short(0x0103, 6)
+        .ascii(0x010F, "Canon")
+        .ascii(0x0110, "Canon EOS 5D Mark III")
+        .short(0x0112, 1)
+        .ascii(0x0132, CAPTURE)
+        .blob(0x0111, 0x0117, preview_jpeg.to_vec())
+        .child(
+            0x8769,
+            exif_ifd(0xFFFF, None, Some(canon_colour_note(canon_note))),
+        )
+        .child(0x014A, raw);
+    write_tiff(&ifd0, Endian::Little)
+}
+
 /// [`canon_cr2`] recording Adobe RGB (maker-note colour space 2).
 pub fn canon_adobe_rgb_cr2(rgb: [u8; 3]) -> Vec<u8> {
     canon_cr2(rgb, 2)

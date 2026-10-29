@@ -28,7 +28,7 @@ use ps_model::{
 
 use crate::error::{CatalogError, Result, WriteError, WriteErrors};
 use crate::model::{
-    AnalysisResult, FileFailure, FileKey, FileRow, MetaReread, NewSource, ProbeResult,
+    AnalysisResult, ColourStamp, FileFailure, FileKey, FileRow, MetaReread, NewSource, ProbeResult,
     Reclassification, Redate, Results, codes, now_ms,
 };
 
@@ -77,10 +77,10 @@ pub enum Command {
     /// Rows without metadata are left alone. A RAW structure check (ADR-0117) stamps the version and, for a file
     /// found cut short, drops the hashes of its content and stores its "could not be read" stamp.
     MetaReread(Vec<MetaReread>),
-    /// The one-time colour re-check of an unchanged row (ADR-0113): `file.colour` of every row with the same content
-    /// as the file at the key (identical bytes record an identical colour space); `None` writes
-    /// [`ps_model::COLOUR_UNCHECKED`]. Nothing grouping reads changes, so the dedup stamp does not move.
-    SetColour(Vec<(FileKey, Option<ps_model::ColourSpace>)>),
+    /// `file.colour` stamps (ADR-0113): the one-time colour re-check of an unchanged row, a re-decode that filled in
+    /// a preview. The row at the key, and with [`ColourStamp::copies`] every row with its content. Nothing grouping
+    /// reads changes, so the dedup stamp does not move.
+    SetColour(Vec<ColourStamp>),
     /// Analysis results with stage `analyzed`. The file must have been probed.
     Analyzed(Vec<(FileKey, Box<AnalysisResult>)>),
     /// Stage `thumbed`: the thumbnail is in `thumbs.db`. The file must be analyzed.
@@ -789,9 +789,9 @@ impl WriterThread {
                 }
             }
             Command::SetColour(rows) => {
-                for (k, colour) in &rows {
-                    self.row(name, Some(k), |c| {
-                        expect_one(set_colour(c, k, colour.as_ref())?, "unknown or unanalysed file")
+                for s in &rows {
+                    self.row(name, Some(&s.key), |c| {
+                        expect_one(set_colour(c, s)?, "unknown or unanalysed file")
                     });
                 }
             }
@@ -1383,24 +1383,18 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
     ])
 }
 
-/// `file.colour` of the row at `k` and of every other row with its content (ADR-0113). Returns the rows written at
-/// `k` (0 or 1).
-fn set_colour(
-    c: &Connection,
-    k: &FileKey,
-    colour: Option<&ps_model::ColourSpace>,
-) -> rusqlite::Result<usize> {
-    let text = colour.map_or_else(
-        || ps_model::COLOUR_UNCHECKED.to_owned(),
-        ps_model::ColourSpace::storage,
-    );
+/// `file.colour` of the row at the stamp's key and, with [`ColourStamp::copies`], of every other row with its content
+/// (ADR-0113). Returns the rows written at the key (0 or 1).
+fn set_colour(c: &Connection, s: &ColourStamp) -> rusqlite::Result<usize> {
+    let k = &s.key;
+    let text = s.colour.storage();
     let n = c
         .prepare_cached(
             "UPDATE file SET colour = ?3
              WHERE source_id = ?1 AND rel_path = ?2 AND content_id IS NOT NULL",
         )?
         .execute(params![k.source.0, k.path.as_bytes(), text])?;
-    if n > 0 {
+    if n > 0 && s.copies {
         c.prepare_cached(
             "UPDATE file SET colour = ?3
              WHERE (content_id, identity_kind) = (SELECT content_id, identity_kind FROM file
