@@ -262,3 +262,28 @@ damaged file's disposition in the report is unchanged; only cleanup leaves it in
   `Shell::show_damaged`). The Reports view's damaged line opens the gallery, not the in-view drill-down list (which
   lists dispositions, and a damaged file's disposition is unchanged).
 - **ADR-0115 also amends ADR-0024** (D10, cleanup keeps damaged originals; `SkipReason::Damaged`).
+- **Gate review fixes (ADR-0117, amends 0115).**
+  - **Old catalogs' RAWs with previews (H1).** D4 re-reads only RAW placeholders, so a 0.3.0 CR2 cut after its intact
+    preview kept its pixels, hashes, group and keeper role. `META_LOGIC_VERSION` goes to 2 (no migration; 26 stays
+    `adobe-rgb-color`'s): `ps_model::meta_reread_due` makes every row below 1 and every RAW row with preview pixels
+    below 2 due a one-time header re-read on the next rescan of its source (offline sources wait). A version-1 row
+    reads its first 64 KB (`raw_check::STRUCTURE_HEAD`) and its directories (`raw_check::check_by_reads`: TIFF IFDs
+    and strip arrays within the ADR-0084 bounds, CR3 box headers and `moov`, the RAF header), a version-0 row both
+    checks from the frame re-read's one read (`ps_media::reread_header`); a file of at most 64 MB is read whole only
+    when a bound leaves a range unknown. A file found cut: the hashes of its content dropped, the "could not be read"
+    placeholder stored, one run error, regrouped (dedup stamp), counted in `damaged`. Cost: 64-76 KB and 1-4 reads per
+    RAW on 45 real files; 313 RAWs of the medium corpus in a 0.3.0 catalog: 20.5 MB, 0.3 s. Until the rescan,
+    `files_awaiting_meta_reread` keeps cleanup refusing (`RescanFirst`) and the report "not confirmed".
+  - **Cleanup checks a RAW before every move** (`quarantine::run`, defense in depth): a RAW source found cut is
+    skipped as `Damaged`; a file whose covering library copy is a RAW cut short is skipped as `CoveringDamaged`,
+    whatever the catalog says.
+  - **Evidence refined on real files (M1).** An IFD table's trailing next pointer may be missing at the very end of
+    the file (only its entries count). RW2/RWL with Panasonic "RAW 1" compression (tag 0x000B = 34316): the sensor
+    data from `RawDataOffset` needs ceil(w * h / 14) * 16 bytes (no length tag; without this a cut RW2 was never
+    found). CR3: each track's samples (`stco`/`co64` with `stsz`), so a cut at a box boundary is found. Strip ranges
+    keep no tolerance: none of the real files ran past its end (rawspeed's clamp is not needed for them).
+  - **One damaged rule (L2):** present files only, in the run summary and the report (`FileFacts.damaged` excludes
+    missing files: a file gone from its source has nothing to keep).
+  - **Blind spots (M2, release notes):** MRW, X3F, CRW, the Sony DSLR-A100's ARW and RW2 with other compressions have
+    no check; a RAW over 64 MB is not labelled damaged by a scan (no hashes anyway; cleanup still checks it); a cut
+    that removes only padding no directory records is no cut to the check (the 64 KB-short copies of 4 sample files).

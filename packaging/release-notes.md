@@ -48,8 +48,14 @@ to their resized or re-exported JPEG copies.
   "not supported yet".** The scan summary, the run summary and the completion report ("100% accounted for, 1
   damaged") name such files and say to keep the original card until you have checked them; they are still
   catalogued and copied as is, never grouped with their camera JPEG, and cleanup never moves them. A RAW from a
-  camera this version does not know says which camera. The first rescan after updating reads each RAW without a
-  preview once.
+  camera this version does not know says which camera. The first rescan after updating reads each RAW that has no
+  preview once in full, and checks each RAW that has one for a cut once, reading only its first 64 KB and its
+  directories (about 70 KB per file); a RAW found cut loses its preview and is separated from its camera JPEG. Until
+  a source is rescanned, cleanup asks you to rescan it first, and before every move it checks a RAW, and the
+  library copy that makes a file safe, for a cut again. Not checked for a cut: Minolta MRW, Sigma X3F, Canon CRW,
+  the Sony DSLR-A100's ARW and Panasonic RW2 files with a compression other than the usual one; a RAW over 64 MB is
+  not labelled damaged by a scan (it has no preview anyway; cleanup still checks it); and a cut that removes only
+  padding at the very end of a file is no cut to the check.
 - **Quieter command line:** a scan of a Canon card no longer prints a wall of "No lens definition found in
   database" lines from the RAW decoder; only its errors are shown. `RUST_LOG=warn,nom_exif=error,rawler=warn` brings
   its warnings back for a bug report.
