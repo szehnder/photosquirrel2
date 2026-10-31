@@ -160,7 +160,8 @@ loupe shows the converted large preview (D2) and the filmstrip the converted thu
   is read whole once (the decode-memory budget is taken), its BLAKE3 identity compared with the catalog's (other
   content under an unchanged fingerprint: `unchecked`, its stored thumbnail untouched) and its thumbnail made by
   `make_thumbnail` (the embedded preview, else a 384 px decode) in the I/O lane, not as a CPU job: it happens once per
-  file. A RAW found cut by the same read, a file over 64 MB (or with a sampled identity), and a file whose thumbnail
+  file. A RAW found cut by the ADR-0117 structure check on the same read (only when that header re-read is due too;
+  see the second-review fixes), a file over 64 MB (or with a sampled identity), and a file whose thumbnail
   cannot be made again record their colour and keep their thumbnail. A read error is reported once and leaves the
   row NULL for the next rescan.
 - **The counts** are `DiffCounts.colour_checked` and `recoloured` (in the run summary JSON), printed by the CLI
@@ -204,3 +205,40 @@ loupe shows the converted large preview (D2) and the filmstrip the converted thu
     only when its transform says so (the name is no longer evidence; the result is cached with the profile bytes).
   - *CI.* The Linux job sets `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, a durable disk margin (smaller test
     binaries; backtraces keep files and lines).
+- **Second-review fixes (task 7.8, ADR-0119).**
+  - *A RAW preview is trusted by its hashes (M-B).* The preview-made thumbnail is stored under the content id every
+    identical copy shares, so the stat fingerprint alone is not enough: the re-check decodes the preview as the
+    analysis does (unconverted, 512 px, `decode_preview_jpeg`), hashes it and requires pHash <= 6 and dHash <= 8 bits
+    from the row's hashes (the derivative thresholds, `same_shot`); otherwise `Recheck::Mismatch` (only that row
+    `unchecked`, a run error, the thumbnail untouched). A RAW without hashes of the current version takes the
+    whole-file identity path (or `unconverted:` beyond 64 MB). Test: `a_raw_replaced_by_another_shot_keeps_its_thumbnail`
+    (`rewrite_keeping_stat` with another valid CR2 of the same length; the copy's thumbnail is unchanged and the
+    sensor data still not read).
+  - *Only converted rows are re-analysed for a hash change (M-A).* `needs_rehash_by_analysis` now requires the row's
+    content in `Readers::converted_preview_contents` (read once per diff, only when a row with stale hashes turns up);
+    `NULL`, `unchecked`, `srgb` and `unconverted:` rows keep their stale hashes for `upgrade_hashes`. `upgrade_hashes`
+    still has no production caller: a change that bumps `PERCEPTUAL_HASH_VERSION` must run it at catalog open,
+    before scans (ADR-0119, ROADMAP note). Test: `a_stale_hash_version_re_reads_only_converted_rows`.
+  - *Stamps (L-a).* `set_colour` writes a converted space to every copy, sRGB and `unconverted:` only to copies whose
+    colour is `NULL` or `unchecked`. Test: `ps-catalog` `a_kept_or_srgb_stamp_never_marks_down_a_converted_copy`.
+  - *The preview read (L-b).* At most `ANALYSIS_BUFFER_MAX_BYTES` (a longer preview is recorded `unconverted:`,
+    `preview_fits`), with the decode-memory budget held for its length. Test: the unit test
+    `a_raw_preview_beyond_the_analysis_buffer_is_not_read` (a 64 MB preview fixture is not worth its disk).
+  - *Cut RAWs (L-c).* The colour re-check records a RAW `unconverted:` for a cut only when the structure check runs on
+    the same read (a `meta_version` below 2); a row at the current version was judged by its analysis or that check.
+    The wording above is corrected.
+  - *Byte accounting (L-d).* `Controlled` counts the bytes it reads per file; the reread branch corrects the run's
+    total by all of them (the head, the structure check's directory reads, the preview, a JPEG's rest) against the
+    diff's plan, now carried in `Todo.planned`, and `colour_bytes` reports the same figure; saturation kept. A preview
+    starting inside the probe window is read from the window's end (`read_range`), so no byte is read twice: the
+    fixture CR2 (preview at byte 400, 292,881 bytes) reads 293,281 bytes instead of 555,025. Tests: the main
+    re-check scenario (`preview.end()`), `a_raw_due_both_checks_is_opened_once` (`bytes_to_read == bytes_read ==
+    colour_bytes` with the directory reads).
+  - *Descriptions (L-e).* Whitespace runs (tabs, line breaks) become one space; other controls and Unicode format
+    characters (bidi controls, zero-width characters, the soft hyphen, tag characters; `Cf` by range, std has no
+    category table) are removed. Test: `colour::tests::descriptions_are_cleaned_and_cut`.
+  - *v4 sRGB (L-f).* An ICC v4 sRGB profile built of lookup tables only (`mAB` A2B0/A2B1 with the sRGB tone curve as
+    A curves and a 17-point CLUT of the primaries, no colorants, tone curves or CICP) is classified sRGB by the
+    125-sample check as it is; no tolerance change. A v4 *preference* profile whose perceptual table gamut-maps on
+    purpose (ICC's `sRGB_v4_ICC_preference`) is a rendering of its own and is converted with its own transform, as it
+    asks. Test: `colour::tests::a_v4_srgb_profile_of_lookup_tables_is_srgb`.
