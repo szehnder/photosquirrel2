@@ -381,7 +381,8 @@ enum PreviewsCommand {
         /// Only this format (heic, tiff, jpeg, avif, raw:cr2, ...).
         #[arg(long)]
         format: Option<String>,
-        /// Only this reason (decoder_missing, unsupported_variant, unreadable, no_poster_tool, sequence).
+        /// Only this reason (decoder_missing, unsupported_variant, unreadable, no_poster_tool, poster_failed,
+        /// sequence). `poster_failed` runs the poster-frame tool once more on each video whose poster frame failed.
         #[arg(long)]
         reason: Option<String>,
         /// Only these sources (repeatable; default all).

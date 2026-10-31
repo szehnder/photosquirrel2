@@ -141,3 +141,108 @@ fn scenario_cli_fill_one_format() {
     assert_eq!(bad.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown format"));
 }
+
+/// `previews fill --reason poster_failed` (ADR-0114): a video whose poster frame failed is not retried by a plain
+/// fill, and the explicit retry runs the tool once more on it. The tool is a fake `ffmpeg` first on `PATH`, logging
+/// every call (Unix only).
+#[cfg(unix)]
+#[test]
+fn previews_fill_retries_failed_posters() {
+    use std::os::unix::fs::PermissionsExt;
+    let photos = tempfile::tempdir().unwrap();
+    for i in 0..2i64 {
+        let m = ps_fixtures::media::movie(&ps_fixtures::media::MovieSpec {
+            creation_unix: Some(1_562_265_000 + i * 60),
+            ..ps_fixtures::media::MovieSpec::iphone()
+        });
+        std::fs::write(photos.path().join(format!("IMG_{i}.MOV")), m).unwrap();
+    }
+    let tools = tempfile::tempdir().unwrap();
+    let frame = tools.path().join("frame.jpg");
+    std::fs::write(&frame, ps_fixtures::media::jpeg(640, 360, 9, 85)).unwrap();
+    let log = tools.path().join("calls.log");
+    let ffmpeg = tools.path().join("ffmpeg");
+    let write_tool = |fail: bool| {
+        let body = if fail {
+            "case \"$src\" in *IMG_1.MOV) echo \"$src: moov atom not found\" >&2; exit 1;; esac\n"
+        } else {
+            ""
+        };
+        std::fs::write(
+            &ffmpeg,
+            format!(
+                "#!/bin/sh\nsrc=\nwhile [ $# -gt 0 ]; do [ \"$1\" = -i ] && src=$2; shift; done\necho \"$src\" >> \
+                 '{}'\n{body}cat '{}'\n",
+                log.display(),
+                frame.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    write_tool(true);
+    let calls = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let config = tempfile::tempdir().unwrap();
+    let path = format!(
+        "{}:{}",
+        tools.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let data = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| -> String {
+        let o = cli(data.path(), "none")
+            .env("PATH", &path)
+            .env("PHOTOSQUIRREL_CONFIG_DIR", config.path())
+            .args(args)
+            .output()
+            .expect("run cli");
+        assert!(
+            o.status.success(),
+            "{args:?}: {}\n{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    run(&["sources", "add", photos.path().to_str().unwrap()]);
+    run(&["scan"]);
+    assert_eq!(calls(), 2, "the scan ran ffmpeg once per video");
+    let status: Value =
+        serde_json::from_str(run(&["--json", "previews", "status"]).trim()).unwrap();
+    let rows = status["data"].as_array().unwrap().clone();
+    let failed = row(&rows, "mov", "poster_failed").unwrap_or_else(|| panic!("{rows:?}"));
+    assert_eq!(
+        (failed["count"].as_u64(), failed["fillable"].as_u64()),
+        (Some(1), Some(0))
+    );
+    let text = run(&["previews", "status"]);
+    assert!(text.contains("poster frame failed"), "{text}");
+    // A plain fill does not run the tool on it again.
+    let text = run(&["previews", "fill"]);
+    assert!(text.contains("0 previews filled in"), "{text}");
+    assert_eq!(calls(), 2);
+    // The explicit retry runs it once more (still failing).
+    run(&["previews", "fill", "--reason", "poster_failed"]);
+    assert_eq!(calls(), 3);
+    // After an ffmpeg update the retry gives it its frame.
+    write_tool(false);
+    let out = run(&["--json", "previews", "fill", "--reason", "poster_failed"]);
+    let summary: Value = out
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v["type"] == "summary")
+        .unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(summary["data"]["filled"], 1, "{summary}");
+    assert_eq!(calls(), 4);
+    let status: Value =
+        serde_json::from_str(run(&["--json", "previews", "status"]).trim()).unwrap();
+    assert!(
+        status["data"].as_array().unwrap().is_empty(),
+        "every video has its poster frame: {status}"
+    );
+}

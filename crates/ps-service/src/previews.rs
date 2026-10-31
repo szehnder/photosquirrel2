@@ -80,6 +80,10 @@ fn sentence(reason: &PreviewReason, detail: Option<&PlaceholderReason>, label: &
             "Videos get their preview frame from a poster-frame tool (ffmpeg), and none is set up."
                 .into()
         }
+        (PreviewReason::PosterFailed, Some(PlaceholderReason::PosterFailed { message })) => {
+            poster_failed_sentence(message)
+        }
+        (PreviewReason::PosterFailed, _) => poster_failed_sentence("no frame"),
         (PreviewReason::Sequence, _) => {
             "This is an image sequence without a still image to show.".into()
         }
@@ -87,6 +91,15 @@ fn sentence(reason: &PreviewReason, detail: Option<&PlaceholderReason>, label: &
             "A newer version of PhotoSquirrel made this placeholder.".into()
         }
     }
+}
+
+/// "ffmpeg could not get a frame from this video: <message>. The video is catalogued and exported as usual."
+/// (ADR-0114).
+pub fn poster_failed_sentence(message: &str) -> String {
+    format!(
+        "ffmpeg could not get a frame from this video: {}. The video is catalogued and exported as usual.",
+        message.trim_end_matches('.')
+    )
 }
 
 impl Library {
@@ -119,6 +132,8 @@ impl Library {
         let decoders = scan.decoders();
         scan.engine()
             .update_options(|o| o.decoders = decoders.clone());
+        // The poster-frame tool available now (ADR-0114).
+        scan.engine().refresh_poster_tool();
         let rule = scan.waiting_rule();
         let fillable = rule.fillable(&r);
         let label = format_label(r.format);
@@ -135,6 +150,7 @@ impl Library {
                         reason: None,
                     },
                     &[],
+                    false,
                 )?
                 .len() as u64;
             PreviewAction::FillIn {
@@ -176,11 +192,19 @@ impl Library {
                             .and_then(|e| e.fix.clone()),
                     }
                 }
+                (PreviewReason::PosterFailed, d) => PreviewAction::PosterFailed {
+                    message: match d {
+                        Some(PlaceholderReason::PosterFailed { message }) => message.clone(),
+                        _ => info.as_ref().map(|i| i.note.clone()).unwrap_or_default(),
+                    },
+                },
                 (PreviewReason::Sequence, _) => PreviewAction::Sequence,
                 (PreviewReason::NeedsNewerVersion, _) => PreviewAction::NewerVersion,
             }
         };
-        let sentence = if fillable && reason != PreviewReason::DecoderMissing {
+        let sentence = if fillable && reason == PreviewReason::NoPosterTool {
+            "A poster-frame tool (ffmpeg) is available now, so this video can get its preview frame.".to_owned()
+        } else if fillable && reason != PreviewReason::DecoderMissing {
             format!(
                 "This version of PhotoSquirrel reads {label} files better than the version that made this \
                  placeholder, so it can look at this file again."

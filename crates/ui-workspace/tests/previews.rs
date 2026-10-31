@@ -133,11 +133,21 @@ fn open_app(
     data: &Path,
     decoders: Decoders,
 ) -> (Arc<CatalogBackend>, Entity<Shell>, VisualTestContext) {
-    let svc = ScanService::open(data, ScanOptions::default())
+    open_app_with(cx, data, decoders, ScanOptions::default(), None)
+}
+
+fn open_app_with(
+    cx: &mut TestAppContext,
+    data: &Path,
+    decoders: Decoders,
+    options: ScanOptions,
+    dirs: Option<&Dirs>,
+) -> (Arc<CatalogBackend>, Entity<Shell>, VisualTestContext) {
+    let svc = ScanService::open(data, options)
         .unwrap()
         .with_decoders(decoders);
     let backend = Arc::new(CatalogBackend::with_service(data, svc));
-    init_app(cx, backend.clone(), None);
+    init_app(cx, backend.clone(), dirs);
     let (shell, mut vcx) = open(cx);
     wait_loaded(&shell, &mut vcx);
     vcx.simulate_resize(size(px(1440.0), px(1000.0)));
@@ -745,16 +755,21 @@ fn videos_from_older_catalogs_show_why_they_have_no_preview(cx: &mut TestAppCont
     let index = cx
         .update(|_, cx| model.read(cx).index.position_of(video))
         .expect("the video is listed");
+    // The app resolves the poster-frame tool from its settings: none is configured here, so `ffmpeg` on this
+    // machine's `PATH` counts when there is one, and the video can get its frame now (ADR-0114).
+    let tool_on_path = ps_media::poster::ffmpeg_on_path().is_some();
+    let want = if tool_on_path {
+        ps_model::PlaceholderStatus::ReadyToFill
+    } else {
+        ps_model::PlaceholderStatus::NeedsLibrary
+    };
     let g = grid.clone();
     wait_long(&mut cx, "the video's placeholder tile", move |cx| {
         cx.update(|w, cx| {
             w.render_frame(cx);
             matches!(
                 g.read(cx).painted(index),
-                Some(ui_gallery::grid::CellPaint::PlaceholderTile {
-                    status: ps_model::PlaceholderStatus::NeedsLibrary,
-                    ..
-                })
+                Some(ui_gallery::grid::CellPaint::PlaceholderTile { status, .. }) if status == want
             )
         })
     });
@@ -782,11 +797,164 @@ fn videos_from_older_catalogs_show_why_they_have_no_preview(cx: &mut TestAppCont
     });
     let reason = label("preview-help-reason", &mut cx).unwrap();
     assert!(reason.contains("poster-frame tool (ffmpeg)"), "{reason}");
+    if tool_on_path {
+        // A tool is available now: Fill in previews gives the video its frame.
+        assert!(reason.contains("available now"), "{reason}");
+        let fill = label("preview-help-fill", &mut cx).unwrap();
+        assert!(fill.contains("Fill in previews (MOV file)"), "{fill}");
+        return;
+    }
     // What to do: install ffmpeg (or, where one is set up, when the frame comes).
     let fix = label("preview-help-fix", &mut cx).or_else(|| label("preview-help-poster", &mut cx));
     assert!(
         fix.as_deref()
             .is_some_and(|f| f.contains("ffmpeg") || f.contains("poster-frame tool")),
         "{fix:?}"
+    );
+}
+
+/// A fake poster-frame tool in `dir` (ADR-0114): fails on every video whose name contains `fail` with ffmpeg's
+/// "moov atom not found", else prints a JPEG frame.
+#[cfg(unix)]
+fn fake_ffmpeg(dir: &Path, name: &str, fail: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let frame = dir.join("frame.jpg");
+    std::fs::write(&frame, ps_fixtures::media::jpeg(640, 360, 9, 85)).unwrap();
+    let tool = dir.join(name);
+    let fail = if fail.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "case \"$src\" in *{fail}*) echo \"$src: moov atom not found\" >&2; exit 1;; esac\n"
+        )
+    };
+    std::fs::write(
+        &tool,
+        format!(
+            "#!/bin/sh\nsrc=\nwhile [ $# -gt 0 ]; do [ \"$1\" = -i ] && src=$2; shift; done\n{fail}cat '{}'\n",
+            frame.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    tool
+}
+
+/// "Why no preview?" for a video whose poster frame failed (ADR-0114): ffmpeg's error, what still works, Try
+/// again and the other videos; Try again runs the tool once more and the video gets its frame.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn poster_failed_dialog_shows_the_error_and_tries_again(cx: &mut TestAppContext) {
+    let tools = tempfile::tempdir().unwrap();
+    let failing = fake_ffmpeg(tools.path(), "ffmpeg-old", "IMG_50");
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("photos");
+    std::fs::create_dir_all(root.join("DCIM")).unwrap();
+    for i in 0..2i64 {
+        let m = ps_fixtures::media::movie(&ps_fixtures::media::MovieSpec {
+            creation_unix: Some(1_562_265_000 + i * 60),
+            ..ps_fixtures::media::MovieSpec::iphone()
+        });
+        std::fs::write(root.join(format!("DCIM/IMG_500{i}.MOV")), m).unwrap();
+    }
+    std::fs::write(
+        root.join("DCIM/IMG_0100.JPG"),
+        ps_fixtures::media::jpeg(800, 600, 40, 85),
+    )
+    .unwrap();
+    let data = tmp.path().join("data");
+    {
+        let svc = ScanService::open(
+            &data,
+            ScanOptions {
+                poster_tool: Some(failing.clone()),
+                ..ScanOptions::default()
+            },
+        )
+        .unwrap()
+        .with_decoders(windows_without_hevc());
+        svc.add_source(&root).unwrap();
+        svc.start(&[]).unwrap();
+        assert_eq!(svc.wait().unwrap().status, RunStatus::Completed);
+    }
+    // ffmpeg is updated: the new one reads both videos. It is the configured tool, so the app's settings resolve to
+    // it whatever this machine's `PATH` has.
+    let fixed = fake_ffmpeg(tools.path(), "ffmpeg-new", "");
+    let dirs = Dirs::new();
+    let mut settings = ps_model::settings::Settings::default();
+    settings.scanning.poster_frame_tool = Some(fixed.clone());
+    dirs.store().save(&settings).unwrap();
+    let (backend, shell, mut cx) = open_app_with(
+        cx,
+        &data,
+        windows_without_hevc(),
+        ScanOptions {
+            poster_tool: Some(fixed),
+            ..ScanOptions::default()
+        },
+        Some(&dirs),
+    );
+    library_ready(&mut cx);
+    let video = item(&backend, "IMG_5000.MOV");
+    open_dialog(&shell, video, &mut cx);
+    let help = cx
+        .update(|_, cx| {
+            shell
+                .read(cx)
+                .preview_help()
+                .and_then(|d| d.read(cx).help().cloned())
+        })
+        .expect("the dialog's content");
+    assert_eq!(help.reason, PreviewReason::PosterFailed);
+    assert_eq!(help.status, ps_model::PlaceholderStatus::Damaged);
+    let reason = label("preview-help-reason", &mut cx).unwrap();
+    assert!(
+        reason.starts_with("ffmpeg could not get a frame from this video: "),
+        "{reason}"
+    );
+    assert!(reason.contains("moov atom not found"), "{reason}");
+    assert!(
+        reason.ends_with("The video is catalogued and exported as usual."),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("none is set up"),
+        "not the missing-tool text: {reason}"
+    );
+    let error = label("preview-help-error", &mut cx).unwrap();
+    assert!(error.contains("exit status"), "{error}");
+    assert_eq!(
+        label("preview-help-retry-note", &mut cx).as_deref(),
+        Some(ui_workspace::views::preview_help::POSTER_RETRY_TEXT)
+    );
+    assert_eq!(
+        label("preview-help-others", &mut cx).as_deref(),
+        Some("1 other video has no preview for this reason")
+    );
+    assert_eq!(
+        label("preview-help-retry", &mut cx).as_deref(),
+        Some("Try again")
+    );
+    click("preview-help-retry", &mut cx);
+    let b = backend.clone();
+    wait_long(&mut cx, "the poster frames", move |_| {
+        let scan = b.scan().unwrap();
+        let r = scan.engine().catalog().read();
+        let f = r.file_by_id(video.into()).unwrap().unwrap();
+        scan.active().is_none()
+            && f.preview.is_none()
+            && scan
+                .engine()
+                .thumbs()
+                .get(&f.identity.unwrap())
+                .unwrap()
+                .is_some_and(|t| t.kind == ps_model::ThumbKind::PosterFrame)
+    });
+    let other = item(&backend, "IMG_5001.MOV");
+    let r = backend.scan().unwrap().engine().catalog().read();
+    assert_eq!(
+        r.file_by_id(other.into()).unwrap().unwrap().preview,
+        None,
+        "Try again retried every failed poster"
     );
 }

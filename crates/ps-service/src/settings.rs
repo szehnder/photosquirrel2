@@ -346,15 +346,23 @@ pub fn scan_options(settings: &Settings) -> ScanOptions {
 
 /// Write the settings' part of the scanner options into `opts`, keeping the rest (the file layer, device
 /// classes and test hooks): classifier thresholds and extra cache patterns, hidden folders, and the
-/// poster-frame tool (the configured one, else `ffmpeg` on `PATH`, else none).
+/// poster-frame tool ([`resolve_poster_tool`]), with a resolver the engine runs again when each run starts and when
+/// the waiting counts are read (ADR-0114), so installing ffmpeg needs no restart.
 pub fn apply_scan_settings(settings: &Settings, opts: &mut ScanOptions) {
     let s = &settings.scanning;
     opts.classifier = s.classifier.clone();
     opts.include_hidden = s.include_hidden;
-    opts.poster_tool = s
-        .poster_frame_tool
-        .clone()
-        .or_else(ps_media::poster::ffmpeg_on_path);
+    opts.poster_tool = resolve_poster_tool(settings);
+    let configured = s.poster_frame_tool.clone();
+    opts.poster_tool_resolver = Some(std::sync::Arc::new(move || {
+        ps_media::poster::resolve_tool(configured.as_deref())
+    }));
+}
+
+/// The poster-frame tool available now (ADR-0114): `scanning.poster_frame_tool` when it is a file, else `ffmpeg` on
+/// `PATH`, else none.
+pub fn resolve_poster_tool(settings: &Settings) -> Option<std::path::PathBuf> {
+    ps_media::poster::resolve_tool(settings.scanning.poster_frame_tool.as_deref())
 }
 
 /// The preview cache cap in bytes (`scanning.preview_cache_gb`, binary gigabytes as ADR-0016's 4 GB default).

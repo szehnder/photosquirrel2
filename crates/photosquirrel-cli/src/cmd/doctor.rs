@@ -90,12 +90,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     // Detection: one library load and two 1 KB decodes, reading no user file (ADR-0029).
     let report = ps_media::decoder_report(
         &ps_service::decoders::DecoderHub::global().get(),
-        settings
-            .scanning
-            .poster_frame_tool
-            .clone()
-            .or_else(ps_media::poster::ffmpeg_on_path)
-            .as_deref(),
+        ps_service::settings::resolve_poster_tool(&settings).as_deref(),
     );
     let (keychain_available, keychain_detail) = match Keychain.get("photosquirrel-doctor-probe") {
         Ok(_) => (true, "OS keychain reachable".to_owned()),

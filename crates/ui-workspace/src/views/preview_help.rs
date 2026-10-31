@@ -58,8 +58,11 @@ pub const FILL_NOW_TEXT: &str = "A preview can be made now.";
 pub const LATER_VERSION_TEXT: &str =
     "A later version may; PhotoSquirrel fills these in after an update.";
 /// A video placeholder made without a poster-frame tool, when one is set up now.
-pub const POSTER_TOOL_SET_TEXT: &str = "A poster-frame tool is set up now: videos get their preview frame when they \
-     are analysed, so this one gets it once the file changes.";
+pub const POSTER_TOOL_SET_TEXT: &str = "A poster-frame tool is set up now: Fill in previews, or the next rescan of \
+     this video's source, gives it its preview frame.";
+/// A video whose poster frame failed (ADR-0114): what Try again does.
+pub const POSTER_RETRY_TEXT: &str = "Try again runs ffmpeg once more on each video whose poster frame failed, for \
+     example after updating ffmpeg.";
 pub const DAMAGED_TEXT: &str =
     "The file may be damaged. Try opening it in another app. If it opens there, please report it.";
 
@@ -145,14 +148,38 @@ impl PreviewHelpDialog {
         else {
             return;
         };
+        self.start_fill(
+            FillScope {
+                format,
+                reason: None,
+            },
+            cx,
+        );
+    }
+
+    /// Try again (ADR-0114): a Fill in previews job for the reason "poster frame failed", which runs the tool once
+    /// more on each such video.
+    pub fn try_again(&mut self, cx: &mut Context<'_, Self>) {
+        if !matches!(
+            self.help().map(|h| &h.action),
+            Some(PreviewAction::PosterFailed { .. })
+        ) {
+            return;
+        }
+        self.start_fill(
+            FillScope {
+                format: None,
+                reason: Some(PreviewReason::PosterFailed),
+            },
+            cx,
+        );
+    }
+
+    fn start_fill(&mut self, scope: FillScope, cx: &mut Context<'_, Self>) {
         if self.filling {
             return;
         }
         self.filling = true;
-        let scope = FillScope {
-            format,
-            reason: None,
-        };
         let source = self.source.clone();
         let s2 = scope.clone();
         let task = cx
@@ -320,6 +347,51 @@ impl PreviewHelpDialog {
                     ),
                 };
             }
+            PreviewAction::PosterFailed { message } => {
+                col = col
+                    .child(
+                        div()
+                            .id("preview-help-error")
+                            .test_support()
+                            .aria_label(SharedString::from(message.clone()))
+                            .w_full()
+                            .p(Tokens::space(1.5))
+                            .rounded(Tokens::RADIUS_SM)
+                            .bg(colors.inset())
+                            .border_1()
+                            .border_color(colors.border_strong)
+                            .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                            .text_size(Tokens::text_mono())
+                            .text_color(colors.text)
+                            .child(message.clone()),
+                    )
+                    .child(
+                        Self::text(
+                            "preview-help-retry-note",
+                            POSTER_RETRY_TEXT,
+                            colors.text_muted,
+                        )
+                        .test_support(),
+                    )
+                    .child(
+                        h_flex().child(kit::button(
+                            "preview-help-retry",
+                            "Try again",
+                            Some(IconName::RefreshCw),
+                            Tone::Primary,
+                            (!self.filling)
+                                .then(|| kit::on(cx.listener(|this, _, _, cx| this.try_again(cx))))
+                                .flatten(),
+                            cx,
+                        )),
+                    );
+                if let Some(e) = &self.fill_error {
+                    col = col.child(
+                        Self::text("preview-help-fill-error", e.clone(), colors.danger)
+                            .test_support(),
+                    );
+                }
+            }
             PreviewAction::Sequence => {
                 col = col.child(
                     Self::text(
@@ -350,6 +422,19 @@ pub fn others_text(n: u64) -> String {
     match n {
         1 => "1 other file has no preview for this reason".to_owned(),
         n => format!("{n} other files have no preview for this reason"),
+    }
+}
+
+/// [`others_text`] for `reason`: "videos" for the poster-frame reasons (ADR-0114).
+pub fn others_text_for(n: u64, reason: PreviewReason) -> String {
+    let video = matches!(
+        reason,
+        PreviewReason::NoPosterTool | PreviewReason::PosterFailed
+    );
+    match (n, video) {
+        (_, false) => others_text(n),
+        (1, true) => "1 other video has no preview for this reason".to_owned(),
+        (n, true) => format!("{n} other videos have no preview for this reason"),
     }
 }
 
@@ -454,7 +539,7 @@ impl Render for PreviewHelpDialog {
                     )
                     .child(self.action(&h, cx));
                 if h.others > 0 {
-                    let text = others_text(h.others);
+                    let text = others_text_for(h.others, h.reason);
                     footer = Some(
                         h_flex()
                             .w_full()

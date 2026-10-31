@@ -245,3 +245,27 @@ fn hidden_folders_default_on_and_v2_files_migrate() {
     store.update(|s| s.scanning.include_hidden = false).unwrap();
     assert!(!store.load().settings.scanning.include_hidden);
 }
+
+/// The poster-frame tool is resolved again for each run (ADR-0114): a configured tool counts while it is a file,
+/// and one installed after the options were built is found by the resolver.
+#[test]
+fn the_poster_tool_is_resolved_for_each_run() {
+    let dir = temp();
+    let tool = dir.path().join("ffmpeg-custom");
+    let mut s = Settings::default();
+    s.scanning.poster_frame_tool = Some(tool.clone());
+    let mut opts = ScanOptions::default();
+    apply_scan_settings(&s, &mut opts);
+    // Not there yet: `ffmpeg` on PATH, if any, stands in.
+    assert_eq!(opts.poster_tool, ps_media::poster::ffmpeg_on_path());
+    assert_eq!(resolve_poster_tool(&s), ps_media::poster::ffmpeg_on_path());
+    std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+    let resolve = opts.poster_tool_resolver.clone().unwrap();
+    assert_eq!(resolve(), Some(tool.clone()));
+    assert_eq!(resolve_poster_tool(&s), Some(tool.clone()));
+    // A directory at the configured path is not a tool.
+    let d = dir.path().join("ffmpeg-dir");
+    std::fs::create_dir(&d).unwrap();
+    s.scanning.poster_frame_tool = Some(d);
+    assert_eq!(resolve_poster_tool(&s), ps_media::poster::ffmpeg_on_path());
+}

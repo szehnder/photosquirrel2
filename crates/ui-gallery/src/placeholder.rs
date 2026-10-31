@@ -230,6 +230,7 @@ pub fn reason_line(badge: &PlaceholderBadge) -> String {
         R::UnsupportedVariant => format!("This version can't read this kind of {f} file"),
         R::Unreadable => format!("This {f} file could not be read"),
         R::NoPosterTool => "No poster-frame tool for videos".into(),
+        R::PosterFailed => "ffmpeg could not get a frame from this video".into(),
         R::Sequence => "An image sequence without a still image".into(),
         R::NeedsNewerVersion => "Made by a newer version of PhotoSquirrel".into(),
     }

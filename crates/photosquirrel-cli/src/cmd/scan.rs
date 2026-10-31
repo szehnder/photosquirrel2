@@ -455,6 +455,19 @@ fn print_summary(run: ScanRunId, s: &RunSummary, refresh: bool) {
             bytes(s.diff.colour_bytes)
         );
     }
+    if s.diff.posters > 0 {
+        println!(
+            "{} waiting for a poster-frame tool: {} got their poster frame, {} failed (one ffmpeg call each, no file \
+             read)",
+            if s.diff.posters == 1 {
+                "1 video".to_owned()
+            } else {
+                format!("{} videos", s.diff.posters)
+            },
+            s.diff.posters_made,
+            s.diff.posters_failed
+        );
+    }
     if s.diff.frame_reread > 0 {
         let split = s.grouping.as_ref().map_or(0, |g| g.groups_split);
         println!(
