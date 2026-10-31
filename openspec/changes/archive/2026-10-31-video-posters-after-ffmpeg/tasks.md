@@ -54,7 +54,7 @@ stays 27).
   Done: `cargo xtask screenshot` against the 7.4 catalog (release app; the screenshot backend worked although the session reports locked): `target/agent-review/screenshots/video-posters/grid-after-fill-dark.png`, `grid-after-fill-light.png` (three poster frames, the MP4 frame, the failed MOV as a placeholder with the damaged mark), `dialog-poster-failed-dark.png`, `dialog-poster-failed-light.png` (`--gallery-select 5 --command shell::ShowPreviewHelp`: the sentence, ffmpeg's error, the Try again note and button; the inspector reads "ffmpeg could not get a frame from this video"). Not committed: for the owner's review.
 - [x] 7.6 Pushed; GitHub CI green on all five jobs.
   Done: fast-forward to origin main (b809328..9e5e23e); run 41179155734 green on all five jobs: Linux (full CI), Build and test (macos-14), Build and test (windows-2022), Oldest libheif (Ubuntu 22.04, libheif 1.12), Performance budgets (relative to the parent commit).
-- [ ] 7.7 Gate review by a fresh agent that did not write the code.
+- [x] 7.7 Gate review by a fresh agent that did not write the code: PASS-WITH-FIXES (MEDIUM-1, MEDIUM-2, LOW-1 to LOW-6, fixed in 7.8, ADR-0120); GitHub run 41197486472 green on all five jobs.
 - [x] 7.8 Gate-review fixes (PASS-WITH-FIXES: two medium, six low, one optional), recorded in ADR-0120 and in
   design.md "Gate-review fixes", each with its test.
   Done: MEDIUM-1 the slot in `analyze` (`scenario_incremental_rescan_tool_calls_are_limited_during_analysis_too`, at

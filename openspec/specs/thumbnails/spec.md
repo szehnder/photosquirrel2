@@ -66,7 +66,7 @@ Grid thumbnails SHALL be stored in a dedicated store, separate from the catalog,
 - **THEN** the cache stays at or below 10 MB and the least recently used previews are evicted first
 
 ### Requirement: Placeholders when decoders are unavailable
-Without a HEIC decoder, HEIC stills SHALL get a "preview unavailable" placeholder that names the missing decoder; without a configured poster-frame tool, videos SHALL get a styled placeholder showing duration and date. With the tool configured, a video SHALL get a poster frame. Large previews SHALL use the decoders detected now, without waiting for a rescan.
+Without a HEIC decoder, HEIC stills SHALL get a "preview unavailable" placeholder that names the missing decoder; without a configured poster-frame tool, videos SHALL get a styled placeholder showing duration and date. With the tool configured, a video SHALL get a poster frame, or, when the tool gets no frame, a placeholder whose reason is that the poster frame failed, with the tool's error. Large previews SHALL use the decoders detected now, without waiting for a rescan.
 
 #### Scenario: HEIC placeholder names the missing decoder
 - **WHEN** a HEIC fixture is thumbnailed with no HEIC decoder
@@ -83,6 +83,17 @@ Without a HEIC decoder, HEIC stills SHALL get a "preview unavailable" placeholde
 #### Scenario: Poster frame from configured tool
 - **WHEN** a MOV fixture is thumbnailed with the poster-frame tool path set to a working executable
 - **THEN** a 384 px poster-frame thumbnail is stored
+
+#### Scenario: Failing tool records a failed poster
+- **WHEN** a MOV fixture is thumbnailed with a poster-frame tool that exits with an error
+- **THEN** the placeholder's reason is "poster frame failed" with the tool's error, not "needs a poster-frame tool"
+
+### Requirement: Poster-frame retry at the start
+When a poster-frame call with a seek past 0 s gives no frame, one more call SHALL be made at 0 s, except after a timeout or a cancel. A tool that cannot be started SHALL count as no tool.
+
+#### Scenario: Short clip gets a frame
+- **WHEN** a MOV fixture of 0.5 s is thumbnailed with a tool that fails with no output past the clip's end, as ffmpeg does
+- **THEN** a poster-frame thumbnail is stored
 
 ### Requirement: Thumbnail stage throughput
 Downscaled decode plus grid thumbnail of a 12 MP JPEG SHALL cost at most 100 ms on one core of the reference machine, the per-file share of the 150 files/s on 16 cores analysis budget (15 worker cores).
@@ -144,7 +155,7 @@ A TIFF decode SHALL check its caller's stop condition before every strip or tile
 - **THEN** the decode ends as cancelled after decoding 10 strips, and the same file analysed from memory is not decoded again by the fallback decoder
 
 ### Requirement: Every placeholder says why
-A placeholder SHALL record why there are no pixels: a missing decoder, a missing poster-frame tool, an image sequence, a format variant not supported (with its detail), a file that could not be read (with the error), or a format this version reads that an older version could not. It SHALL record the decoder generation that produced it.
+A placeholder SHALL record why there are no pixels: a missing decoder, a missing poster-frame tool, a poster-frame tool that got no frame (with its error), an image sequence, a format variant not supported (with its detail), a file that could not be read (with the error), or a format this version reads that an older version could not. It SHALL record the decoder generation that produced it.
 
 #### Scenario: BigTIFF placeholder names the variant
 - **WHEN** a BigTIFF file is analysed
