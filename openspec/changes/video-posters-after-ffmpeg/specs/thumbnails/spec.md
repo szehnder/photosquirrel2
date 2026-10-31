@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Placeholders when decoders are unavailable
-Without a HEIC decoder, HEIC stills SHALL get a "preview unavailable" placeholder that names the missing decoder; without a configured poster-frame tool, videos SHALL get a styled placeholder showing duration and date. With the tool configured, a video SHALL get a poster frame, or, when the tool gets no frame, a placeholder whose reason is that the poster frame failed, with the tool's error. Large previews SHALL use the decoders detected now, without waiting for a rescan.
+Without a HEIC decoder, HEIC stills SHALL get a "preview unavailable" placeholder that names the missing decoder; without a configured poster-frame tool, videos SHALL get a styled placeholder showing duration and date. With the tool configured, a video SHALL get a poster frame, or, when the tool gets no frame, a placeholder whose reason is that the poster frame failed, with the tool's error. When a call with a seek past 0 s gives no frame, one more call SHALL be made at 0 s, except after a timeout or a cancel. A tool that cannot be started SHALL count as no tool. Large previews SHALL use the decoders detected now, without waiting for a rescan.
 
 #### Scenario: HEIC placeholder names the missing decoder
 - **WHEN** a HEIC fixture is thumbnailed with no HEIC decoder
@@ -26,7 +26,7 @@ Without a HEIC decoder, HEIC stills SHALL get a "preview unavailable" placeholde
 - **THEN** the placeholder's reason is "poster frame failed" with the tool's error, not "needs a poster-frame tool"
 
 #### Scenario: Short clip gets a frame
-- **WHEN** a MOV fixture of 0.5 s is thumbnailed with a tool that gives no frame past the clip's end
+- **WHEN** a MOV fixture of 0.5 s is thumbnailed with a tool that fails with no output past the clip's end, as ffmpeg does
 - **THEN** a poster-frame thumbnail is stored
 
 ### Requirement: Every placeholder says why

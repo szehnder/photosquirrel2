@@ -55,3 +55,32 @@ stays 27).
 - [x] 7.6 Pushed; GitHub CI green on all five jobs.
   Done: fast-forward to origin main (b809328..9e5e23e); run 41179155734 green on all five jobs: Linux (full CI), Build and test (macos-14), Build and test (windows-2022), Oldest libheif (Ubuntu 22.04, libheif 1.12), Performance budgets (relative to the parent commit).
 - [ ] 7.7 Gate review by a fresh agent that did not write the code.
+- [x] 7.8 Gate-review fixes (PASS-WITH-FIXES: two medium, six low, one optional), recorded in ADR-0120 and in
+  design.md "Gate-review fixes", each with its test.
+  Done: MEDIUM-1 the slot in `analyze` (`scenario_incremental_rescan_tool_calls_are_limited_during_analysis_too`, at
+  most 2 at once on an SSD source and 1 on a network one, 6 videos and 6 workers; 4 and 6 at once without the fix);
+  MEDIUM-2 the 0 s retry after any frameless call but a timeout, cancel or spawn error
+  (`scenario_thumbnails_short_clip_gets_a_frame` with a fake exiting 234 past the end, and
+  `real_ffmpeg_gets_frames_and_retries_a_seek_past_the_end` against this machine's ffmpeg n9.0.1, run, not skipped);
+  LOW-1 offline, changed and timed-out calls leave the video waiting
+  (`scenario_incremental_rescan_temporary_failure_leaves_the_video_waiting`); LOW-2 no read before the write, a store
+  error leaves the rows (`a_store_error_leaves_the_rows_waiting`); LOW-3 `ThumbStore::put_many_over_placeholders` in
+  `poster_item`, `persist_batch` and the re-decode, poster items claimed per content per run
+  (`a_stored_poster_frame_survives_a_later_failure_put`, `copies_on_two_sources_get_one_call_in_a_rescan`: 2 calls
+  without the claim); LOW-4 `POSTER_FAILED_SENTENCE`, the error once in the box; LOW-5 "Try again (N videos)", disabled
+  with the install steps without a tool (`poster_failed_dialog_without_a_tool_disables_try_again`); LOW-6 docs say up
+  to two calls of 10 s, a spawn error is no tool, the tool must be executable
+  (`a_tool_that_cannot_be_started_is_no_tool`, `a_configured_file_without_the_execute_permission_is_not_a_tool`);
+  optional: `ScanOptions::poster_tool_default` makes the older-catalog UI test hermetic, both branches run. Checks:
+  fmt; clippy -D warnings (all targets) of ps-model, ps-media, ps-catalog, ps-scan, ps-service, photosquirrel-cli,
+  ui-workspace and photosquirrel; every test binary of those crates but the app's green (ps-scan 20 binaries, 144
+  tests; ps-service 26, 163; photosquirrel-cli 11, 65; ui-workspace lib and 17 binaries); layering (17 crates),
+  tokens, `openspec validate --all --strict` 32/32, spec coverage 673/673. Corpus gate (release CLI, medium, seed
+  42): precision, recall, keeper accuracy 1.0000, 0 violations, 19,741/19,741 pairs, 1,903 groups, 8,834 grouped
+  files, 4,166,020,278 reclaimable bytes, 6,338 suggestions (the baseline exactly; the first scan took 22.1 s against
+  17.7 s, its 193 synthetic videos ffmpeg cannot read now taking two calls each through two slots); the unchanged
+  rescan read 0 B. Budgets: `rescan-nochange-100k` 0.44 s (4 s), `scan-analysis-12mp` 4.58 ms (6.67),
+  `analysis-decode-thumb` 34.92 ms (100). The real check again: 5 calls (the cut MOV twice), "poster frame
+  failed", no call on the next fill or rescan. Dialog screenshots retaken (dark, light) into
+  `target/agent-review/screenshots/video-posters/`, not committed. GitHub CI on the pushed commits: in the
+  hand-off report.

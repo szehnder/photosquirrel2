@@ -307,11 +307,13 @@ photosquirrel-cli previews fill --reason poster_failed # run ffmpeg once more on
 
 **Videos after installing ffmpeg.** Videos catalogued without a poster-frame tool show "needs a poster-frame tool".
 Install `ffmpeg` (on your PATH, or set its path in Settings), then use **Fill in previews**: each such video gets its
-poster frame from one ffmpeg call (at most 10 s, two at a time, one at a time on a hard disk or network share), and
-PhotoSquirrel reads none of its bytes; the next rescan of a source does the same. No restart is needed. A video
-ffmpeg cannot read (a codec it lacks, a damaged clip) shows "poster frame failed" with ffmpeg's error and is not
-tried again on every run; **Try again** in the "Why no preview?" dialog (or `previews fill --reason poster_failed`)
-runs ffmpeg once more on each such video, for example after updating ffmpeg.
+poster frame from up to two ffmpeg calls (at most 10 s each; a second call at the clip's start when the first finds
+no frame), two calls at a time, one at a time on a hard disk or network share, and PhotoSquirrel reads none of its
+bytes; the next rescan of a source does the same. No restart is needed. A video ffmpeg cannot read (a codec it
+lacks, a damaged clip) shows "poster frame failed" with ffmpeg's error and is not tried again on every run; **Try
+again** in the "Why no preview?" dialog (or `previews fill --reason poster_failed`) runs ffmpeg once more on each
+such video, for example after updating ffmpeg. A call that times out, or whose drive is unplugged during it, leaves
+the video waiting for the next run; an ffmpeg that cannot be started counts as no ffmpeg.
 
 ## Freeing up space (optional)
 

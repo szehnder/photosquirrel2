@@ -47,7 +47,9 @@ installing ffmpeg needs no restart.
 
 `PlaceholderReason::PosterFailed { message }` and `PreviewReason::PosterFailed` (`poster_failed`, "poster frame
 failed", status Damaged). `video_thumbnail` records it whenever a tool was given and no frame came out: spawn error,
-exit status, timeout, empty output or a JPEG that does not decode. The placeholder carries the current video poster
+exit status, timeout, empty output or a JPEG that does not decode. (As amended by ADR-0120: a spawn error is no
+tool, and in a poster item a timeout, or a source gone offline or a file changed during the call, leaves the video
+waiting.) The placeholder carries the current video poster
 generation. Such a row is not fillable by the tool clause (its reason is not `no_poster_tool`). The generation
 branch does not take it either, until the generation is bumped or the file changes (normal diff).
 
@@ -55,8 +57,9 @@ Explicit retry: `FillScope { reason: Some(PosterFailed) }`, from the CLI's `--re
 **Try again**, adds those rows to the work for that run only (`fillable_files(.., retry_failed: true)`). A retry
 that fails again records the new message.
 
-The dialog for `poster_failed` reads: "ffmpeg could not get a frame from this video: <message>. The video is
-catalogued and exported as usual." It offers Try again and "N other videos".
+The dialog for `poster_failed` reads: "ffmpeg could not get a frame from this video. The video is catalogued and
+exported as usual.", with ffmpeg's error once, in the box below it. It offers Try again ("Try again (N videos)",
+disabled with the ffmpeg install steps when no tool is available now) and "N other videos" (ADR-0120).
 
 Older apps: a 0.3.0 that opens a catalog with `poster_failed` rows reads the thumbnail record's reason as
 `NeedsNewerVersion` (serde `other`). It reads the row's `preview_reason` through `PreviewReason::from_key`, which
@@ -70,7 +73,8 @@ instead of a `discovered` re-analysis.
 - The worker stats the file. If size or mtime differ from the row, the row is changed: the normal diff path takes
   it in a rescan, and the fill job skips it, leaving it waiting.
 - The worker then calls `poster_frame(tool, path, seek, timeout, stop)` with `seek = min(1 s, duration / 2)` (1 s
-  when the duration is unknown) and one retry at 0 s when the tool succeeds with no frame.
+  when the duration is unknown) and one retry at 0 s when that call gives no JPEG (ADR-0120: any frameless result
+  but a timeout, a cancel or a spawn error; real ffmpeg exits 234 with no output past the end of a clip).
 - It decodes and thumbnails the frame (`ThumbKind::PosterFrame`) and stores it through the replace path, which
   replaces a stored placeholder for that content id, so every exact copy shows it. It clears
   `preview_gen`/`preview_reason` for every row with that content id, or writes `poster_failed` on failure.
@@ -80,8 +84,9 @@ instead of a `discovered` re-analysis.
 ### D4. Cost and control
 
 - **Poster lane:** at most 2 concurrent ffmpeg processes per run (`POSTER_SLOTS = 2`, one on a rotational or
-  network source, using the source's device class), each with `-threads 2`.
-- **Timeout:** 10 s (`DEFAULT_TIMEOUT`).
+  network source, using the source's device class), each with `-threads 2`. ADR-0120: the analysis of new and
+  changed videos takes the same slots.
+- **Timeout:** 10 s per call (`DEFAULT_TIMEOUT`, `ScanOptions::poster_timeout`), up to two calls per video.
 - **Pause:** checked before each call (`Busy::checkpoint`); a running call finishes (at most 10 s).
 - **Cancel:** the stop check in `poster_frame`'s wait loop kills the child within its 10 ms poll, and the row stays
   waiting.
@@ -175,3 +180,66 @@ waiting-rule tests are platform-free.
   for catalogued videos today (every one is at least 2 s long, so the seek is 1 s). It matters for a lower minimum
   in the settings and, with the retry at 0 s, for clips whose duration the probe could not read; the media scenario
   `scenario_thumbnails_short_clip_gets_a_frame` covers it directly.
+
+## Gate-review fixes
+
+The gate review found two medium and six low findings; each fix has a test. Decisions recorded in ADR-0120 (amends
+0114, 0109).
+
+- **MEDIUM-1, the limit during analysis.** `analyze` takes a poster slot for the source around
+  `video_thumbnail_with_stop` when a tool is set (`busy.checkpoint()` before and after the wait, the wait ends on
+  cancel, the file then stays `probed`). Test: `scenario_incremental_rescan_tool_calls_are_limited_during_analysis_too`
+  (6 new videos, 6 CPU workers; the tool counts the calls running when it starts: at most 2 on a solid-state source,
+  1 on a network one). It fails without the fix (saw 4 and 6 at once).
+- **MEDIUM-2, the 0 s retry.** `poster_thumbnail` retries at 0 s whenever a first call with a seek past 0 s gives no
+  JPEG, except `Timeout`, `Cancelled` and `Spawn`; the last call's error is returned. The fake tool of
+  `scenario_thumbnails_short_clip_gets_a_frame` exits 234 with no output past the end, like ffmpeg n9.0.1 (checked
+  by hand: `-ss 1.000` on a 0.5 s clip, exit 234, 0 bytes). New `real_ffmpeg_gets_frames_and_retries_a_seek_past_the_end`
+  runs the machine's ffmpeg (skipped without one, or when it cannot make the clips): a 0.5 s clip with an unknown
+  duration gets a 384x288 frame, a 3 s clip gets one, and a clip cut to 60% records `Failed`. A video ffmpeg cannot
+  read now costs two calls (the scan tests' call counts say so).
+- **LOW-1, temporary failures.** After a failed call (not `Cancelled` or `Spawn`), the poster item checks the source's
+  root (offline: `lose`, nothing recorded) and stats the file again (changed, gone or unreadable: handled as before
+  the call, nothing recorded); a `Timeout` is reported as a run error and leaves the row waiting. A hung file is
+  called once per run (one poster item per content per run) and again by the next run. Test:
+  `scenario_incremental_rescan_temporary_failure_leaves_the_video_waiting` (a hanging tool with a 300 ms timeout: 4
+  calls, 0 failed, every row still `no_poster_tool`, 4 fillable, the next fill calls 4 more; then a tool that moves
+  the source root away and fails: the source incomplete, 0 failed, rows still waiting; plugged back, a working tool
+  fills 4). `ScanOptions::poster_timeout` (default 10 s) lets tests shorten the bound.
+- **LOW-2, a store error.** The stored-kind read before the write is gone: the write is the conditional upsert below,
+  and its error reports "could not store its poster frame (...); it keeps its placeholder and waits" and leaves the
+  rows untouched. Test: `a_store_error_leaves_the_rows_waiting` (the tool starts a `python3` that holds `thumbs.db`'s
+  write lock for 7 s, longer than the store's 5 s busy timeout: 0 filled, an error, the row still `no_poster_tool`,
+  the thumbnail still a placeholder; the next fill gives it its frame; skipped without `python3`). The read that
+  could fail no longer exists, so the test covers the one remaining store call.
+- **LOW-3, the replace race.** `ThumbStore::put_many_over_placeholders` (the plain `put_many` and it share one
+  `upsert`): `ON CONFLICT (content_id) DO UPDATE ... WHERE thumb.kind = 'placeholder'`, returning per item whether it
+  wrote. Used by `poster_item`, `persist_batch` and the re-decode's failure placeholder (a frame written: stamp; not
+  written because pixels are stored: clear). Poster items are claimed per content per run (`PosterSlots::claim`,
+  passed to `diff` as `claim_poster` and used by `fill_work`). Tests: `a_stored_poster_frame_survives_a_later_failure_put`
+  (ps-catalog) and `copies_on_two_sources_get_one_call_in_a_rescan` (1 call, both rows get the frame; 2 calls
+  without the claim).
+- **LOW-4, the error twice.** `ps_service::previews::POSTER_FAILED_SENTENCE` replaces `poster_failed_sentence`; the
+  mono box keeps the error. `poster_failed_dialog_shows_the_error_and_tries_again` checks the exact sentence and the
+  error in the box. D2 above updated. Dialog screenshots retaken (dark and light), not committed.
+- **LOW-5, Try again without a tool.** `PreviewAction::PosterFailed { message, retry, fix }`: `retry` is the number
+  of failed videos Try again runs on, `None` without a tool, and `fix` is then the ffmpeg install steps. The button
+  reads "Try again (2 videos)", or is disabled ("Try again (unavailable)" to assistive technology) with
+  `POSTER_RETRY_NEEDS_TOOL_TEXT` and the install panel; `try_again` also refuses without a tool. Tests: the count in
+  `poster_failed_dialog_shows_the_error_and_tries_again`; new `poster_failed_dialog_without_a_tool_disables_try_again`
+  (no tool, the install panel, the disabled button, a click starts no run, the row stays `poster_failed`).
+- **LOW-6, docs and Spawn.** README and release notes say "up to two ffmpeg calls per video, at most 10 s each".
+  `PosterError::Spawn` is no tool: `video_thumbnail_with_stop` gives the `no_poster_tool` placeholder, a poster item
+  records `no_poster_tool` (a retried `poster_failed` row becomes `no_poster_tool`) and reports a run error.
+  `resolve_tool` and `ffmpeg_on_path` require an executable file (`poster::is_executable`: the execute permission on
+  Unix). Tests: `scenario_thumbnails_failing_tool_records_a_failed_poster` (a missing tool and a file with mode 0644
+  give `NoPosterTool`), `a_configured_file_without_the_execute_permission_is_not_a_tool` (ps-media unit) and
+  `a_tool_that_cannot_be_started_is_no_tool` (ps-scan).
+- **Optional, a hermetic UI test.** `ScanOptions::poster_tool_default`, a test hook that `apply_scan_settings` keeps,
+  replaces the `PATH` lookup. `videos_from_older_catalogs_show_why_they_have_no_preview` runs with no tool and new
+  `videos_from_older_catalogs_can_get_their_frame_when_a_tool_is_available` with a fake one (Unix), so both branches
+  run on every machine.
+- **Spec deltas.** Thumbnails: the retry rule and Spawn as no tool in the requirement, the short-clip scenario's tool
+  fails like ffmpeg. Incremental rescan: once per run per content; a new requirement "Poster-frame tool calls are
+  bounded" (the shared limit, temporary failures) with the scenarios "Temporary failure leaves the video waiting"
+  and "Tool calls are limited during analysis too".
