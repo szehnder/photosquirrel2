@@ -29,6 +29,11 @@ pub struct ScanOptions {
     /// Resolves `poster_tool` again when each run starts and when the waiting counts are read (ADR-0114), so a tool
     /// installed after the app started counts without a restart. `None`: `poster_tool` is used as it is (tests).
     pub poster_tool_resolver: Option<PosterToolFn>,
+    /// Test hook: finds the default poster-frame tool (where none is configured) instead of `ffmpeg` on `PATH`
+    /// (`ps_service::settings::apply_scan_settings` keeps it), so tests do not depend on the machine's `PATH`.
+    pub poster_tool_default: Option<PosterToolFn>,
+    /// The bound of each poster-frame tool call ([`ps_media::poster::DEFAULT_TIMEOUT`], 10 s; tests shorten it).
+    pub poster_timeout: Duration,
     /// Walk hidden folders (names starting with `.`) too (ADR-0052: on by default, so nothing a source holds is
     /// missed; `scanning.include_hidden` in settings).
     pub include_hidden: bool,
@@ -76,6 +81,8 @@ impl Default for ScanOptions {
             classifier: ClassifierSettings::default(),
             poster_tool: None,
             poster_tool_resolver: None,
+            poster_tool_default: None,
+            poster_timeout: ps_media::poster::DEFAULT_TIMEOUT,
             include_hidden: true,
             cpu_threads: default_cpu_threads(),
             memory_cap: DEFAULT_MEMORY_CAP,
@@ -101,6 +108,8 @@ impl std::fmt::Debug for ScanOptions {
             .field("classifier", &self.classifier)
             .field("poster_tool", &self.poster_tool)
             .field("poster_tool_resolver", &self.poster_tool_resolver.is_some())
+            .field("poster_tool_default", &self.poster_tool_default.is_some())
+            .field("poster_timeout", &self.poster_timeout)
             .field("include_hidden", &self.include_hidden)
             .field("cpu_threads", &self.cpu_threads)
             .field("memory_cap", &self.memory_cap)

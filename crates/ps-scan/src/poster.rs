@@ -1,10 +1,13 @@
-//! The poster lane of a run (ADR-0114): at most [`POSTER_SLOTS`] poster-frame tool calls at once, one on a
-//! rotational or network source. The calls run on the lanes' reader threads, which wait here for a slot.
+//! The poster lane of a run (ADR-0114, ADR-0120): at most [`POSTER_SLOTS`] poster-frame tool calls at once, one on
+//! a rotational or network source, whether a poster item makes the call (on a lane's reader thread) or the analysis
+//! of a new or changed video does (on a CPU worker); both wait here for a slot. The lane also remembers the contents
+//! that already have a poster item in this run, so copies on other sources get one call between them.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex};
-use ps_model::DeviceClass;
+use ps_model::{ContentId, DeviceClass};
 
 /// Poster-frame tool calls a run makes at most at once (each with `-threads 2`).
 pub const POSTER_SLOTS: usize = 2;
@@ -18,6 +21,8 @@ pub(crate) struct PosterSlots {
     limits: Vec<usize>,
     used: Mutex<(usize, Vec<usize>)>,
     freed: Condvar,
+    /// Contents with a poster item in this run (any source).
+    claimed: Mutex<HashSet<ContentId>>,
 }
 
 /// One slot, given back on drop.
@@ -43,7 +48,14 @@ impl PosterSlots {
             limits,
             used: Mutex::new((0, vec![0; n])),
             freed: Condvar::new(),
+            claimed: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Claim the poster item of a content for this run: `false` when another source's copy already has it (its
+    /// outcome reaches every waiting copy, ADR-0114).
+    pub(crate) fn claim(&self, id: ContentId) -> bool {
+        self.claimed.lock().insert(id)
     }
 
     /// Wait for a slot for source `idx`; `None` when `cancelled` returns true while none is free.

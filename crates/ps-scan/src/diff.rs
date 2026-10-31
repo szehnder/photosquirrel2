@@ -280,6 +280,7 @@ pub fn diff(
     decoders: &ps_media::Decoders,
     generations: &ps_model::Generations,
     poster_tool: bool,
+    claim_poster: &dyn Fn(ContentId) -> bool,
 ) -> ps_catalog::Result<DiffOutput> {
     let mut stale = Vec::new();
     let mut out = DiffOutput {
@@ -295,7 +296,6 @@ pub fn diff(
         .map(|q| (q.rel_path, (q.size, q.mtime_ns, q.quarantine_rel_path)))
         .collect();
     let mut converted: Option<std::collections::HashSet<ContentId>> = None;
-    let mut posters: std::collections::HashSet<ContentId> = std::collections::HashSet::new();
     let mut page = readers.source_files(source, None, PAGE)?;
     let mut pi = 0usize;
     let mut walk = entries.into_iter().peekable();
@@ -479,8 +479,9 @@ pub fn diff(
                             {
                                 if is_video(r) {
                                     // A video waiting for a poster-frame tool (ADR-0114): one call of the tool, no
-                                    // byte read here. One item per content in a source; copies get its frame.
-                                    if posters.insert(id) {
+                                    // byte read here. One item per content in the run (`claim_poster`, shared
+                                    // by the sources' diffs); copies get its outcome.
+                                    if claim_poster(id) {
                                         out.counts.posters += 1;
                                         out.todo.push(Todo {
                                             poster: Some(PosterWork {

@@ -232,7 +232,6 @@ fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput
         }
     };
     let mut outs: Vec<DiffOutput> = ctx.sources.iter().map(|_| DiffOutput::default()).collect();
-    let mut posters = std::collections::HashSet::new();
     for r in rows {
         let Some(idx) = ctx.sources.iter().position(|s| s.id == r.key.source) else {
             continue;
@@ -246,7 +245,7 @@ fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput
         let Some(identity) = r.identity else { continue };
         if crate::diff::is_video(&r) {
             // A poster item (ADR-0114): nothing read; copies of the same content get its frame.
-            if posters.insert(identity) {
+            if ctx.posters.claim(identity) {
                 out.counts.unchanged += 1;
                 out.counts.posters += 1;
                 *out.stages.get_mut(r.stage) += 1;
@@ -562,6 +561,7 @@ fn walk_and_diff(ctx: &RunCtx, idx: usize) -> Option<DiffOutput> {
         &ctx.opts.decoders,
         &ctx.opts.generations,
         ctx.opts.poster_tool.is_some(),
+        &|id| ctx.posters.claim(id),
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -1558,12 +1558,15 @@ fn process_file(
     send_job(&busy, cpu_tx, job);
 }
 
-/// A poster item (ADR-0114): one call of the run's poster-frame tool for a video waiting for one. The file is
-/// stat'ed through the scan's file layer, never opened: a changed size or time leaves it to the normal diff (the
-/// fill job leaves it waiting). Pause is honoured before the call, which waits for one of the run's poster slots;
-/// cancel kills a running tool and records nothing. The poster frame replaces the stored placeholder of the content
-/// (stored pixels are never replaced, ADR-0109); a failed call records "poster frame failed" with the tool's error
-/// at this run's generation, so it is not retried until the file or the generation changes, or the user asks.
+/// A poster item (ADR-0114): one call of the run's poster-frame tool for a video waiting for one (a second at 0 s
+/// when the first gets no frame). The file is stat'ed through the scan's file layer, never opened: a changed size
+/// or time leaves it to the normal diff (the fill job leaves it waiting). Pause is honoured before the call, which
+/// waits for one of the run's poster slots; cancel kills a running tool and records nothing. The poster frame
+/// replaces the stored placeholder of the content (stored pixels are never replaced, ADR-0109); a failed call
+/// records "poster frame failed" with the tool's error at this run's generation, so it is not retried until the
+/// file or the generation changes, or the user asks. A failure that says nothing about the file leaves the video
+/// waiting (ADR-0120): the source went offline or the file changed during the call, or the call timed out; a tool
+/// that cannot be started is no tool ("needs a poster-frame tool").
 fn poster_item(
     ctx: &RunCtx,
     idx: usize,
@@ -1575,27 +1578,8 @@ fn poster_item(
     let src = &ctx.sources[idx];
     let key = FileKey::new(src.id, t.path.clone());
     let abs = t.path.under(&src.root);
-    match ctx.opts.fs.metadata(&abs) {
-        Ok(m) if ctx.opts.fs.fingerprint(&m).unchanged(&t.stat) => {}
-        Ok(_) => {
-            changed_during_scan(ctx, idx, t);
-            return;
-        }
-        Err(e) => {
-            if !ctx.root_available(idx) {
-                ctx.lose(idx);
-            } else if e.kind() == io::ErrorKind::NotFound {
-                ctx.submit(Command::MarkMissing {
-                    files: vec![key],
-                    at_ms: now_ms(),
-                });
-                ctx.progress.vanished(idx, t.stage);
-                ctx.progress.file_done(idx);
-            } else {
-                redecode_unreadable(ctx, idx, t, &io_message(&e));
-            }
-            return;
-        }
+    if !poster_file_unchanged(ctx, idx, t, &key, &abs) {
+        return;
     }
     let Some(tool) = ctx.opts.poster_tool.as_deref() else {
         // The rule queues poster items only with a tool; nothing to run.
@@ -1618,6 +1602,9 @@ fn poster_item(
     let Some(slot) = ctx.posters.acquire(idx, &cancelled) else {
         return;
     };
+    if busy.checkpoint().is_err() {
+        return;
+    }
     ctx.progress.set_dir(
         idx,
         reader,
@@ -1631,89 +1618,184 @@ fn poster_item(
     let stored = ctx.thumbs.get(&work.identity).ok().flatten();
     let info = stored.as_ref().and_then(|s| s.placeholder.clone());
     let duration = info.as_ref().and_then(|i| i.duration_ms);
-    let made = ps_media::thumb::poster_thumbnail(tool, &abs, duration, &cancelled);
+    let made = ps_media::thumb::poster_thumbnail(
+        tool,
+        &abs,
+        duration,
+        ctx.opts.poster_timeout,
+        &cancelled,
+    );
     drop(slot);
     ctx.progress.set_dir(idx, reader, None);
-    let (thumb, outcome) = match made {
-        Err(ps_media::poster::PosterError::Cancelled) => return,
-        Ok(thumb) => (thumb, None),
-        Err(e) => {
-            let message = e.to_string();
-            let generation = ctx.opts.generations.of_format(work.format);
-            let reason = ps_model::PlaceholderReason::PosterFailed {
-                message: message.clone(),
-            };
-            let mut record = stored.clone().unwrap_or(ThumbnailRecord {
-                kind: ps_model::ThumbKind::Placeholder,
-                width: 0,
-                height: 0,
-                dominant_rgb: [96, 96, 104],
-                jpeg: Vec::new(),
-                placeholder: None,
-            });
-            let base = info.clone().unwrap_or(ps_model::PlaceholderInfo {
-                media_kind: MediaKind::Video,
-                format: work.format,
-                duration_ms: None,
-                capture_date: None,
-                note: String::new(),
-                reason: None,
-                generation,
-            });
-            record.placeholder = Some(ps_model::PlaceholderInfo {
-                note: format!("video (poster frame failed: {message})"),
-                reason: Some(reason),
-                generation,
-                ..base
-            });
-            let stamp = ps_model::PreviewStamp {
-                generation,
-                reason: ps_model::PreviewReason::PosterFailed,
-            };
-            (record, Some((stamp, message)))
-        }
-    };
-    // The thumbnail store's replace rule (ADR-0109): a placeholder, or nothing, is replaced; pixels are kept.
-    let replace = matches!(
-        ctx.thumbs.stored_kind(&work.identity),
-        Ok(None | Some(ps_model::ThumbKind::Placeholder))
-    );
-    if replace && let Err(e) = ctx.thumbs.put_many([(&work.identity, &thumb)]) {
+    let report = |message: String| {
         ctx.progress.error(RecentError {
             source: src.id,
             path: t.path.clone(),
             stage: t.stage,
-            message: format!(
-                "could not store its poster frame ({e}); it keeps its placeholder and waits"
-            ),
+            message,
         });
-        ctx.progress.file_done(idx);
-        return;
-    }
+    };
+    let generation = ctx.opts.generations.of_format(work.format);
+    // The stored placeholder with a new reason: it keeps the clip's duration and date.
+    let record_with = |reason: ps_model::PlaceholderReason, note: String| {
+        let mut record = stored.clone().unwrap_or(ThumbnailRecord {
+            kind: ps_model::ThumbKind::Placeholder,
+            width: 0,
+            height: 0,
+            dominant_rgb: [96, 96, 104],
+            jpeg: Vec::new(),
+            placeholder: None,
+        });
+        let base = info.clone().unwrap_or(ps_model::PlaceholderInfo {
+            media_kind: MediaKind::Video,
+            format: work.format,
+            duration_ms: None,
+            capture_date: None,
+            note: String::new(),
+            reason: None,
+            generation,
+        });
+        let stamp = ps_model::PreviewStamp {
+            generation,
+            reason: reason.kind(),
+        };
+        record.placeholder = Some(ps_model::PlaceholderInfo {
+            note,
+            reason: Some(reason),
+            generation,
+            ..base
+        });
+        (record, stamp)
+    };
+    use ps_media::poster::PosterError;
+    let (thumb, outcome) = match made {
+        Err(PosterError::Cancelled) => return,
+        Ok(thumb) => (thumb, PosterOutcome::Frame),
+        Err(PosterError::Spawn(e)) => {
+            let (record, stamp) = record_with(
+                ps_model::PlaceholderReason::NoPosterTool,
+                "video (no poster-frame tool)".into(),
+            );
+            (
+                record,
+                PosterOutcome::NoTool {
+                    stamp,
+                    message: e.to_string(),
+                },
+            )
+        }
+        Err(e) => {
+            // Nothing learnt about the file: it keeps waiting, and a later fill or rescan tries again.
+            if !ctx.root_available(idx) {
+                ctx.lose(idx);
+                return;
+            }
+            if !poster_file_unchanged(ctx, idx, t, &key, &abs) {
+                return;
+            }
+            if let PosterError::Timeout(d) = e {
+                report(format!(
+                    "the poster-frame tool timed out after {} s; the video keeps waiting and the next Fill in \
+                     previews or rescan tries again",
+                    d.as_secs()
+                ));
+                ctx.progress.file_done(idx);
+                return;
+            }
+            let message = e.to_string();
+            let (record, stamp) = record_with(
+                ps_model::PlaceholderReason::PosterFailed {
+                    message: message.clone(),
+                },
+                format!("video (poster frame failed: {message})"),
+            );
+            (record, PosterOutcome::Failed { stamp, message })
+        }
+    };
+    // The replace rule (ADR-0109), checked and applied in one statement: a placeholder, or nothing, is replaced;
+    // pixels are kept. A store error leaves the rows as they are (still waiting).
+    let written = match ctx
+        .thumbs
+        .put_many_over_placeholders([(&work.identity, &thumb)])
+    {
+        Ok(w) => w.first().copied().unwrap_or(false),
+        Err(e) => {
+            report(format!(
+                "could not store its poster frame ({e}); it keeps its placeholder and waits"
+            ));
+            ctx.progress.file_done(idx);
+            return;
+        }
+    };
     match outcome {
-        None => {
+        PosterOutcome::Frame => {
             ctx.submit(Command::SetPosterPreview(vec![(key, None)]));
             ctx.progress.poster(idx, true);
             ctx.filled.fetch_add(1, Ordering::Relaxed);
         }
-        Some((stamp, message)) => {
+        PosterOutcome::NoTool { stamp, message } => {
             ctx.submit(Command::SetPosterPreview(vec![(
                 key,
-                replace.then_some(stamp),
+                written.then_some(stamp),
+            )]));
+            report(format!(
+                "could not start the poster-frame tool ({message}); the video waits for a working tool"
+            ));
+        }
+        PosterOutcome::Failed { stamp, message } => {
+            ctx.submit(Command::SetPosterPreview(vec![(
+                key,
+                written.then_some(stamp),
             )]));
             ctx.progress.poster(idx, false);
             ctx.fill_failed.fetch_add(1, Ordering::Relaxed);
-            ctx.progress.error(RecentError {
-                source: src.id,
-                path: t.path.clone(),
-                stage: t.stage,
-                message: format!(
-                    "poster frame failed ({message}); the video is catalogued and exported as usual"
-                ),
-            });
+            report(format!(
+                "poster frame failed ({message}); the video is catalogued and exported as usual"
+            ));
         }
     }
     ctx.progress.file_done(idx);
+}
+
+/// What a poster item's call gave.
+enum PosterOutcome {
+    Frame,
+    /// The tool could not be started: the video waits for a tool (ADR-0120).
+    NoTool {
+        stamp: ps_model::PreviewStamp,
+        message: String,
+    },
+    Failed {
+        stamp: ps_model::PreviewStamp,
+        message: String,
+    },
+}
+
+/// A poster item's file still has the size and time the work list saw, stat'ed through the scan's file layer;
+/// otherwise it is handled (changed during the scan, missing, unreadable, or its source offline) and `false`.
+fn poster_file_unchanged(ctx: &RunCtx, idx: usize, t: &Todo, key: &FileKey, abs: &Path) -> bool {
+    match ctx.opts.fs.metadata(abs) {
+        Ok(m) if ctx.opts.fs.fingerprint(&m).unchanged(&t.stat) => true,
+        Ok(_) => {
+            changed_during_scan(ctx, idx, t);
+            false
+        }
+        Err(e) => {
+            if !ctx.root_available(idx) {
+                ctx.lose(idx);
+            } else if e.kind() == io::ErrorKind::NotFound {
+                ctx.submit(Command::MarkMissing {
+                    files: vec![key.clone()],
+                    at_ms: now_ms(),
+                });
+                ctx.progress.vanished(idx, t.stage);
+                ctx.progress.file_done(idx);
+            } else {
+                redecode_unreadable(ctx, idx, t, &io_message(&e));
+            }
+            false
+        }
+    }
 }
 
 /// Hand a job to the CPU workers, giving up on cancel.
@@ -2187,14 +2269,29 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
     let mut decoder_missing = None;
     let mut decode_failure = None;
     let (hashes, mut thumb) = if probe.kind() == Some(MediaKind::Video) {
-        // The tool is killed on cancel (ADR-0114); the file then stays `probed`, like a cancelled decode.
+        // The tool call takes one of the run's poster slots (ADR-0120: at most two at once, one on a rotational
+        // or network source), as a poster item's does; pause is honoured before and after the wait. The tool is
+        // killed on cancel (ADR-0114); the file then stays `probed`, like a cancelled decode.
+        let tool = ctx.opts.poster_tool.as_deref();
+        let cancelled = || ctx.ctl.is_cancelled();
+        let slot = match tool {
+            Some(_) => {
+                busy.checkpoint().ok()?;
+                let slot = ctx.posters.acquire(idx, &cancelled)?;
+                busy.checkpoint().ok()?;
+                Some(slot)
+            }
+            None => None,
+        };
         let thumb = ps_media::thumb::video_thumbnail_with_stop(
             &abs,
             &probe,
             capture,
-            ctx.opts.poster_tool.as_deref(),
-            &|| ctx.ctl.is_cancelled(),
+            tool,
+            ctx.opts.poster_timeout,
+            &cancelled,
         )?;
+        drop(slot);
         (None, thumb)
     } else if let Some(decoded) = decoded {
         // Decoded in one pass by the reader (ADR-0086); a decode error keeps the identity, with a placeholder.
@@ -2585,17 +2682,11 @@ fn persist_batch(
     let to_store: Vec<(&ContentId, &ThumbnailRecord)> = done
         .iter()
         .filter(|d| seen.insert(d.4.identity))
-        // A stored placeholder is replaced (a preview now, or a placeholder that says why at this generation,
-        // ADR-0109); stored pixels are kept.
-        .filter(|d| {
-            matches!(
-                ctx.thumbs.stored_kind(&d.4.identity),
-                Ok(None | Some(ps_model::ThumbKind::Placeholder))
-            )
-        })
         .map(|d| (&d.4.identity, &d.5))
         .collect();
-    if let Err(e) = ctx.thumbs.put_many(to_store) {
+    // A stored placeholder is replaced (a preview now, or a placeholder that says why at this generation,
+    // ADR-0109); stored pixels are kept, checked in the same statement (ADR-0120).
+    if let Err(e) = ctx.thumbs.put_many_over_placeholders(to_store) {
         for (idx, path, ..) in done {
             ctx.fail(
                 idx,
@@ -2690,13 +2781,11 @@ fn persist_redecode(
             // generation changes (ADR-0109). Stored pixels (another copy of the same content decoded) are never
             // replaced by a placeholder, as in `persist_batch`: the row then shows them.
             if let Some((t, p)) = placeholder {
-                match ctx.thumbs.stored_kind(&identity) {
-                    Ok(None | Some(ps_model::ThumbKind::Placeholder)) => {
-                        if ctx.thumbs.put_many([(&identity, &t)]).is_ok() {
-                            ctx.submit(Command::SetPreview(vec![(key.clone(), Some(p))]));
-                        }
+                match ctx.thumbs.put_many_over_placeholders([(&identity, &t)]) {
+                    Ok(w) if w.first().copied().unwrap_or(false) => {
+                        ctx.submit(Command::SetPreview(vec![(key.clone(), Some(p))]));
                     }
-                    Ok(Some(_)) => ctx.submit(Command::SetPreview(vec![(key.clone(), None)])),
+                    Ok(_) => ctx.submit(Command::SetPreview(vec![(key.clone(), None)])),
                     Err(_) => {}
                 }
             }
