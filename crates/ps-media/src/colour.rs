@@ -123,12 +123,55 @@ pub(crate) fn icc_ranges(chunks: &[IccChunk], base: u64) -> Result<Option<Vec<By
 /// The longest profile description kept, in characters (stored in the catalog and shown by the inspector).
 pub const DESCRIPTION_MAX_CHARS: usize = 64;
 
-/// A profile description as stored and shown: control characters removed, whitespace trimmed, at most
-/// [`DESCRIPTION_MAX_CHARS`] characters (cut ones end in an ellipsis). The text comes from the file, so nothing in it
-/// may break a line of the inspector or the CLI.
+/// A Unicode format character (general category `Cf`): bidirectional controls, zero-width characters, the soft
+/// hyphen, tag characters and the like. Invisible, and the bidi ones reorder the text around them, so a description
+/// carrying them could show other text than it holds.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
+/// A profile description as stored and shown: a run of whitespace (a tab or line break included) becomes one space,
+/// other control characters and Unicode format characters (bidi controls, zero-width ones) are removed, the text is
+/// trimmed and kept to at most [`DESCRIPTION_MAX_CHARS`] characters (cut ones end in an ellipsis). The text comes
+/// from the file, so nothing in it may break or reorder a line of the inspector or the CLI.
 pub(crate) fn clean_description(raw: &str) -> String {
-    let text: String = raw.chars().filter(|c| !c.is_control()).collect();
-    let text = text.trim();
+    let mut text = String::with_capacity(raw.len());
+    let mut space = false;
+    for c in raw.chars() {
+        if c.is_whitespace() {
+            space = true;
+        } else if !c.is_control() && !is_format_char(c) {
+            if space && !text.is_empty() {
+                text.push(' ');
+            }
+            space = false;
+            text.push(c);
+        }
+    }
+    let text = text.as_str();
     if text.chars().count() <= DESCRIPTION_MAX_CHARS {
         return text.to_owned();
     }
@@ -416,6 +459,81 @@ mod tests {
         assert!(profile_space(b"not a profile at all, just bytes").is_err());
     }
 
+    /// An ICC v4 sRGB profile built from lookup tables (`mAB` A2B0/A2B1, no colorants or tone curves, as v4
+    /// profiles may be): the sRGB tone curve as its A curves and a 17-point CLUT of the sRGB primaries (D50). moxcms
+    /// evaluates the tables rather than a matrix shaper, and the 125-sample check still says sRGB.
+    fn srgb_v4_lut_profile() -> ColorProfile {
+        let mut p = ColorProfile::new_srgb();
+        let (r, g, b) = (p.red_colorant, p.green_colorant, p.blue_colorant);
+        let trc = moxcms::ToneReprCurve::Parametric(vec![
+            2.4,
+            1. / 1.055,
+            0.055 / 1.055,
+            1. / 12.92,
+            0.04045,
+        ]);
+        const GRID: u8 = 17;
+        let mut clut = Vec::with_capacity(usize::from(GRID).pow(3) * 3);
+        let step = |i: u8| f64::from(i) / f64::from(GRID - 1);
+        for ri in 0..GRID {
+            for gi in 0..GRID {
+                for bi in 0..GRID {
+                    let (lr, lg, lb) = (step(ri), step(gi), step(bi));
+                    for v in [
+                        lr * r.x + lg * g.x + lb * b.x,
+                        lr * r.y + lg * g.y + lb * b.y,
+                        lr * r.z + lg * g.z + lb * b.z,
+                    ] {
+                        // PCS XYZ in a lutAToB table: 1.0 is 0x8000.
+                        clut.push((v * 32768.0).round().clamp(0.0, 65535.0) as u16);
+                    }
+                }
+            }
+        }
+        let identity = moxcms::ToneReprCurve::Parametric(vec![1.0]);
+        let mut grid_points = [0u8; 16];
+        grid_points[..3].fill(GRID);
+        let lut = moxcms::LutWarehouse::Multidimensional(moxcms::LutMultidimensionalType {
+            num_input_channels: 3,
+            num_output_channels: 3,
+            grid_points,
+            clut: Some(moxcms::LutStore::Store16(clut)),
+            a_curves: vec![trc.clone(), trc.clone(), trc],
+            b_curves: vec![identity.clone(), identity.clone(), identity.clone()],
+            m_curves: vec![identity.clone(), identity.clone(), identity],
+            matrix: moxcms::Matrix3d::IDENTITY,
+            bias: moxcms::Vector3d::default(),
+        });
+        p.red_trc = None;
+        p.green_trc = None;
+        p.blue_trc = None;
+        p.red_colorant = Default::default();
+        p.green_colorant = Default::default();
+        p.blue_colorant = Default::default();
+        p.cicp = None;
+        p.lut_a_to_b_perceptual = Some(lut.clone());
+        p.lut_a_to_b_colorimetric = Some(lut);
+        p.description = Some(moxcms::ProfileText::PlainString(
+            "sRGB v4 (lookup tables)".into(),
+        ));
+        p
+    }
+
+    #[test]
+    fn a_v4_srgb_profile_of_lookup_tables_is_srgb() {
+        let p = srgb_v4_lut_profile();
+        assert!(!p.is_matrix_shaper(), "the tables are what is evaluated");
+        let icc = p.encode().unwrap();
+        let back = ColorProfile::new_from_slice(&icc).unwrap();
+        assert!(back.lut_a_to_b_perceptual.is_some(), "an A2B0 table");
+        assert!(
+            back.version() >= moxcms::ProfileVersion::V4_0,
+            "{:?}",
+            back.version()
+        );
+        assert_eq!(profile_space(&icc), Ok(Some(ColourSpace::Srgb)));
+    }
+
     #[test]
     fn a_name_saying_srgb_is_not_evidence() {
         let enc = |p: ColorProfile| p.encode().unwrap();
@@ -441,7 +559,16 @@ mod tests {
 
     #[test]
     fn descriptions_are_cleaned_and_cut() {
-        assert_eq!(clean_description("  Wide\u{0}\n\tGamut\r "), "WideGamut");
+        assert_eq!(clean_description("  Wide\u{0}\n\tGamut\r "), "Wide Gamut");
+        assert_eq!(clean_description("Wide\r\nGa\u{0}mut"), "Wide Gamut");
+        // Bidi controls and zero-width characters cannot reorder or hide text.
+        assert_eq!(
+            clean_description("\u{202E}Adobe\u{200B} RGB\u{2066}\u{FEFF}\u{2069}\u{00AD}"),
+            "Adobe RGB"
+        );
+        assert_eq!(clean_description("\u{200F}\u{061C}\u{E0041}"), "");
+        // Other scripts and symbols stay.
+        assert_eq!(clean_description("Écran — 広色域"), "Écran — 広色域");
         let long = "x".repeat(200);
         let cut = clean_description(&long);
         assert_eq!(cut.chars().count(), DESCRIPTION_MAX_CHARS);
