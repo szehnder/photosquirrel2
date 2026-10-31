@@ -1,6 +1,7 @@
 //! First launch: what PhotoSquirrel does, the read-only promise, and one primary action, "Add a source".
 
 use gpui_kit::component::{Icon, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ui_theme::Tokens;
 
@@ -60,6 +61,8 @@ pub(crate) fn render(cx: &mut Context<'_, Shell>) -> impl IntoElement + use<> {
             )
     };
     let palette_key = keymap::shortcut_for(&crate::actions::OpenCommandPalette).unwrap_or_default();
+    // While the picker is open or a folder is being added, the button says so and is unavailable (L3).
+    let busy = crate::views::scan::ScanHub::monitor(cx).is_some_and(|m| m.read(cx).add_busy());
 
     div()
         .id("onboarding")
@@ -146,18 +149,31 @@ pub(crate) fn render(cx: &mut Context<'_, Shell>) -> impl IntoElement + use<> {
                                         .px(Tokens::space(5.0))
                                         .gap(Tokens::space(2.0))
                                         .rounded(Tokens::RADIUS_MD)
-                                        .bg(colors.accent)
-                                        .hover(|d| d.bg(colors.accent_hover))
-                                        .active(|d| d.bg(colors.accent_active))
-                                        .shadow_md()
-                                        .cursor_pointer()
-                                        .text_color(colors.on_accent)
+                                        // Unavailable: drawn neutral, as kit buttons are, so the label stays readable.
+                                        .bg(if busy { colors.raised } else { colors.accent })
+                                        .text_color(if busy {
+                                            colors.text_muted
+                                        } else {
+                                            colors.on_accent
+                                        })
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.add_source(window, cx)
-                                        }))
+                                        .when(!busy, |d| d.shadow_md())
+                                        .when(!busy, |d| {
+                                            d.hover(|d| d.bg(colors.accent_hover))
+                                                .active(|d| d.bg(colors.accent_active))
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.add_source(window, cx)
+                                                }))
+                                        })
                                         .child(Icon::new(IconName::FolderPlus).size(Tokens::icon_md()))
-                                        .child("Add a source"),
+                                        .child(if busy { "Adding…" } else { "Add a source" })
+                                        .role(Role::Button)
+                                        .aria_label(if busy {
+                                            "Adding… (unavailable)"
+                                        } else {
+                                            "Add a source"
+                                        }),
                                 )
                                 .child(
                                     h_flex()

@@ -152,10 +152,11 @@ fn dashboard_says_a_scan_paused_on_battery(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let s = shell.clone();
     cx.update(|w, cx| s.update(cx, |s, cx| s.show_view(ViewId::Sources, w, cx)));
+    // The source was never scanned: its first scan is the primary action (the selection's would do the same).
     wait(&mut cx, "the sources", |cx| {
-        label("scan-start", cx).is_some_and(|l| l.starts_with("Scan"))
+        label("scan-new", cx).is_some_and(|l| l.starts_with("Scan"))
     });
-    click("scan-start", &mut cx);
+    click("scan-new", &mut cx);
     wait(&mut cx, "the scan to run", |_| {
         ScanBackend::snapshot(&*backend).is_some_and(|s| s.status == RunStatus::Running)
     });

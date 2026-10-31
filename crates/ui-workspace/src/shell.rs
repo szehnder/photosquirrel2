@@ -460,13 +460,23 @@ impl Shell {
                 cx,
             ),
             AddStart::NotScanned if onboarding => self.show_view(ViewId::Sources, window, cx),
-            AddStart::NotScanned => self.show_toast(
-                ToastKind::Info,
-                format!("Added {named}"),
-                "It is not scanned yet: start it from Sources.",
-                true,
-                cx,
-            ),
+            AddStart::NotScanned => match &o.note {
+                // The start was refused (an export or a cleanup is running): say why.
+                Some(note) => self.show_toast(
+                    ToastKind::Warning,
+                    format!("Added {named}, not scanned"),
+                    note.clone(),
+                    true,
+                    cx,
+                ),
+                None => self.show_toast(
+                    ToastKind::Info,
+                    format!("Added {named}"),
+                    "It is not scanned yet: start it from Sources.",
+                    true,
+                    cx,
+                ),
+            },
             AddStart::Nothing => {}
         }
         self.refresh(window, cx);

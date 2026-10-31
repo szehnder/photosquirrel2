@@ -321,7 +321,9 @@ impl SourcesView {
                 row.name,
                 if row.online { "online" } else { "offline" },
                 last,
-                pct.map(|p| format!("{p}% scanned")).unwrap_or_default()
+                pct.filter(|_| row.first_scan_done)
+                    .map(|p| format!("{p}% scanned"))
+                    .unwrap_or_default()
             )))
             .w_full()
             .py(Tokens::space(3.0))
@@ -386,8 +388,10 @@ impl SourcesView {
                                     .child(kit::middle_ellipsis(&kit::display_path(&row.root), 72)),
                             ),
                     )
-                    .child(
+                    .child(if row.first_scan_done {
                         v_flex()
+                            .id(SharedString::from(format!("source-progress-{}", id.0)))
+                            .test_support()
                             .w(Tokens::size(180.0))
                             .flex_none()
                             .gap(Tokens::space(1.0))
@@ -419,8 +423,21 @@ impl SourcesView {
                                         format_count(row.finished),
                                         format_count(row.files)
                                     )),
-                            ),
-                    )
+                            )
+                            .into_any_element()
+                    } else {
+                        // No completed first scan: no bar, percentage or counts, only the state (L1).
+                        v_flex()
+                            .w(Tokens::size(180.0))
+                            .flex_none()
+                            .child(
+                                div()
+                                    .text_size(Tokens::text_xs())
+                                    .text_color(colors.text_muted)
+                                    .child(last),
+                            )
+                            .into_any_element()
+                    })
                     .children(actions),
             )
             .when(confirming, |d| {
@@ -527,7 +544,7 @@ impl Render for SourcesView {
                 scan_dashboard::offers_resume(m),
                 m.add_busy(),
                 m.adding.clone(),
-                m.queued.clone(),
+                m.queued_now(),
             )
         };
         let selected: HashSet<SourceId> = self.selected(cx).into_iter().collect();
@@ -588,24 +605,29 @@ impl Render for SourcesView {
                     .into_any_element(),
             );
         }
-        header_actions.push(kit::button(
-            "scan-start",
-            start_label,
-            Some(if active {
-                IconName::Activity
-            } else {
-                IconName::Play
-            }),
-            if active || offers_resume || new_action.is_some() {
-                Tone::Secondary
-            } else {
-                Tone::Primary
-            },
-            can_start
-                .then(|| kit::on(cx.listener(|this, _, _, cx| this.start(cx))))
-                .flatten(),
-            cx,
-        ));
+        // The selection's scan is hidden when it would do exactly what the primary action does (L2).
+        let fresh_ids: HashSet<SourceId> = fresh.iter().map(|r| r.id).collect();
+        let duplicate_action = new_action.is_some() && selected == fresh_ids;
+        if !duplicate_action {
+            header_actions.push(kit::button(
+                "scan-start",
+                start_label,
+                Some(if active {
+                    IconName::Activity
+                } else {
+                    IconName::Play
+                }),
+                if active || offers_resume || new_action.is_some() {
+                    Tone::Secondary
+                } else {
+                    Tone::Primary
+                },
+                can_start
+                    .then(|| kit::on(cx.listener(|this, _, _, cx| this.start(cx))))
+                    .flatten(),
+                cx,
+            ));
+        }
         let pending_rows: Vec<AnyElement> = adding
             .iter()
             .map(|a| pending_row(a, &monitor, &colors, cx))

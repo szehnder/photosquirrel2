@@ -124,10 +124,12 @@ fn open_real(cx: &mut TestAppContext, data: &Path, roots: &[PathBuf], slow: bool
 }
 
 fn exercise(r: &mut Real, sources: usize, limit: Duration) {
+    // None of them was scanned yet: the primary action scans them all (the selection's would do the same).
     r.wait("the sources", limit, |r| {
-        label("scan-start", &mut r.cx).as_deref() == Some(&format!("Scan {sources} sources"))
+        label("scan-new", &mut r.cx).as_deref() == Some(&format!("Scan {sources} new sources"))
     });
-    click("scan-start", &mut r.cx);
+    assert!(!exists("scan-start", &mut r.cx));
+    click("scan-new", &mut r.cx);
     // Live progress.
     r.wait("analysis progress", limit, |r| {
         r.snap()
@@ -248,4 +250,50 @@ fn dashboard_controls_on_the_medium_corpus(cx: &mut TestAppContext) {
     let tmp = tempfile::tempdir().unwrap();
     let mut r = open_real(cx, &tmp.path().join("data"), &roots, false);
     exercise(&mut r, roots.len(), Duration::from_secs(300));
+}
+
+/// M3 of the gate review: a source offline through a completed run of all sources has not been scanned.
+#[gpui_kit::test]
+fn scenario_scan_progress_source_offline_during_a_completed_run_stays_never_scanned(
+    cx: &mut TestAppContext,
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let laptop = tmp.path().join("Laptop");
+    let card = tmp.path().join("Card");
+    for d in [&laptop, &card] {
+        std::fs::create_dir_all(d.join("DCIM")).unwrap();
+        std::fs::write(d.join("DCIM/notes.txt"), b"not a photo").unwrap();
+    }
+    let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
+    let backend = Arc::new(CatalogBackend::with_service(&data, svc));
+    let a = backend.add_source(&laptop).unwrap();
+    let b = backend.add_source(&card).unwrap();
+    // The card is unplugged during a run of both sources, which completes.
+    let away = tmp.path().join("Card (unplugged)");
+    std::fs::rename(&card, &away).unwrap();
+    backend.start(&[a, b]).unwrap();
+    let summary = backend.scan().unwrap().wait().unwrap();
+    assert_eq!(summary.status, RunStatus::Completed);
+    assert!(summary.incomplete_sources.contains(&b), "{summary:?}");
+    std::fs::rename(&away, &card).unwrap();
+    let rows = backend.sources().unwrap();
+    let row = |id| rows.iter().find(|r| r.id == id).unwrap();
+    assert!(row(a).first_scan_done, "the online source was scanned");
+    assert!(!row(b).first_scan_done, "the offline one was not");
+    assert!(row(b).online, "it is back");
+    init_app(cx, backend.clone(), None);
+    let (shell, mut vcx) = open(cx);
+    wait_loaded(&shell, &mut vcx);
+    let s = shell.clone();
+    vcx.update(|w, cx| s.update(cx, |s, cx| s.show_view(ViewId::Sources, w, cx)));
+    let start = Instant::now();
+    while label("scan-new", &mut vcx).is_none() {
+        assert!(start.elapsed() < Duration::from_secs(20), "the sources");
+        std::thread::sleep(Duration::from_millis(10));
+        vcx.run_until_parked();
+    }
+    assert_eq!(label("scan-new", &mut vcx).as_deref(), Some("Scan “Card”"));
+    let card_row = label(&format!("source-row-{}", b.0), &mut vcx).unwrap();
+    assert!(card_row.contains("Not scanned yet"), "{card_row}");
 }

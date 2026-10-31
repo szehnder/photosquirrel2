@@ -732,6 +732,13 @@ fn scenario_scan_progress_pending_row_shown_at_once(cx: &mut TestAppContext) {
 fn scenario_scan_progress_status_bar_follows_a_scan_started_by_add_source(cx: &mut TestAppContext) {
     let mut r = rig(cx, one_small_source());
     r.show(ViewId::Library);
+    // The shell's engine reports the run's activity, as the real one does while it scans.
+    *r.shell_backend.activity.lock().unwrap() = Some(ui_workspace::service::ActivitySnapshot {
+        label: "Scanning".into(),
+        done: 10,
+        total: Some(1_200),
+        paused: false,
+    });
     let calls_before = r
         .shell_backend
         .activity_calls
@@ -743,9 +750,15 @@ fn scenario_scan_progress_status_bar_follows_a_scan_started_by_add_source(cx: &m
         vec![vec![SourceId(2)]],
         "the add started its scan"
     );
+    let m = r.monitor();
     let status = label("status-activity", &mut r.cx).unwrap();
+    assert_eq!(
+        Some(status.clone()),
+        r.cx.update(|_, cx| m.read(cx).status_line()),
+        "the status bar shows the run's line"
+    );
     assert!(
-        status.starts_with("Walking folders") || status.starts_with("Scanning"),
+        status.starts_with("Walking folders") || status.starts_with("Scanning "),
         "{status}"
     );
     assert!(
@@ -755,16 +768,24 @@ fn scenario_scan_progress_status_bar_follows_a_scan_started_by_add_source(cx: &m
             > calls_before,
         "the shell samples the run's activity (the Library's live updates)"
     );
-    // Later, the analysis phase reads as progress.
-    r.wait("the analysis", |r| {
-        label("status-activity", &mut r.cx).is_some_and(|s| s.starts_with("Scanning"))
-    });
+    // The service's reply is polled on timers: the shell holds the engine's activity once it lands.
     let shell = r.shell.clone();
+    r.wait("the shell to hold the engine's activity", |r| {
+        r.cx.update(|_, cx| shell.read(cx).activity_snapshot().map(|a| a.done)) == Some(10)
+    });
+    // Later the analysis of the new source (1,200 files) reads as progress, with its own counts.
+    r.wait("the analysis", |r| {
+        label("status-activity", &mut r.cx)
+            .is_some_and(|s| s.starts_with("Scanning ") && s.contains(" of 1,200 files"))
+    });
+    let status = label("status-activity", &mut r.cx).unwrap();
+    assert!(status.contains('%'), "{status}");
     assert_eq!(
         r.cx.update(|_, cx| shell.read(cx).active_view()),
         ViewId::Library,
         "the add did not switch views"
     );
+    *r.shell_backend.activity.lock().unwrap() = None;
 }
 
 #[gpui_kit::test]
@@ -850,6 +871,15 @@ fn scenario_scan_progress_primary_action_scans_only_never_scanned_sources(cx: &m
     );
     let row = label("source-row-2", &mut r.cx).unwrap();
     assert!(row.contains("Not scanned yet"), "{row}");
+    assert!(!row.contains('%'), "{row}");
+    assert!(
+        exists("source-progress-1", &mut r.cx),
+        "the scanned source's progress"
+    );
+    assert!(
+        !exists("source-progress-2", &mut r.cx),
+        "no progress bar or counts before its first scan"
+    );
     click("scan-new", &mut r.cx);
     r.wait("the run", |r| {
         r.snap(|s| s.status) == Some(RunStatus::Running)
@@ -888,10 +918,13 @@ fn scenario_settings_new_source_not_scanned_when_the_setting_is_off(cx: &mut Tes
         label("scan-new", &mut r.cx).as_deref(),
         Some("Scan “Holiday 2024”")
     );
-    assert_eq!(
-        label("scan-start", &mut r.cx).as_deref(),
-        Some("Scan 1 source"),
-        "the new source is the selection"
+    assert!(
+        !exists("scan-start", &mut r.cx),
+        "the selection is the new source: no second button doing the same"
+    );
+    assert!(
+        !exists("source-progress-2", &mut r.cx),
+        "no progress bar or counts before its first scan"
     );
     click("scan-new", &mut r.cx);
     r.wait("its run", |r| r.started().len() == 1);
@@ -933,4 +966,151 @@ fn scenario_app_shell_onboarding_add_without_scanning_leads_to_sources(cx: &mut 
         "no run is active"
     );
     assert!(r.started().is_empty());
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_removed_queued_source_leaves_the_queue(cx: &mut TestAppContext) {
+    let mut r = rig(cx, one_small_source());
+    start_all(&mut r);
+    click("source-add", &mut r.cx);
+    r.pick(holiday());
+    r.show(ViewId::Library);
+    let status = label("status-activity", &mut r.cx).unwrap();
+    assert!(status.ends_with("then 1 more source"), "{status}");
+    // Removed from the catalog meanwhile (another window, the CLI, or folded into an outer source).
+    r.backend
+        .scan
+        .reconfigure(|c| c.sources.retain(|s| s.id != SourceId(2)));
+    let m = r.monitor();
+    r.cx.update(|_, cx| m.update(cx, |m, cx| m.refresh_sources(cx)));
+    r.cx.run_until_parked();
+    let status = label("status-activity", &mut r.cx).unwrap();
+    assert!(!status.contains("then"), "{status}");
+    assert!(r.cx.update(|_, cx| m.read(cx).queued.is_empty()));
+    r.wait("the run to complete", |r| {
+        r.snap(|s| s.status) == Some(RunStatus::Completed)
+    });
+    r.tick(1_000);
+    assert_eq!(r.started(), vec![vec![SourceId(1)]], "nothing else starts");
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_offline_queued_source_is_dropped(cx: &mut TestAppContext) {
+    let mut r = rig(cx, one_small_source());
+    start_all(&mut r);
+    click("source-add", &mut r.cx);
+    r.pick(holiday());
+    let m = r.monitor();
+    assert_eq!(
+        r.cx.update(|_, cx| m.read(cx).queued.clone()),
+        vec![SourceId(2)]
+    );
+    let set_online = |r: &mut Rig, online: bool| {
+        r.backend.scan.reconfigure(|c| {
+            for s in &mut c.sources {
+                if s.id == SourceId(2) {
+                    s.online = online;
+                }
+            }
+        });
+    };
+    set_online(&mut r, false);
+    r.wait("the run to complete", |r| {
+        r.snap(|s| s.status) == Some(RunStatus::Completed)
+    });
+    r.tick(1_000);
+    assert_eq!(
+        r.started(),
+        vec![vec![SourceId(1)]],
+        "the offline source does not start"
+    );
+    assert!(
+        r.cx.update(|_, cx| m.read(cx).queued.is_empty()),
+        "it left the queue"
+    );
+    // It comes back: still nothing starts by surprise, and its row waits.
+    set_online(&mut r, true);
+    r.cx.update(|_, cx| m.update(cx, |m, cx| m.refresh_sources(cx)));
+    r.tick(1_000);
+    assert_eq!(r.started(), vec![vec![SourceId(1)]]);
+    let row = label("source-row-2", &mut r.cx).unwrap();
+    assert!(row.contains("Not scanned yet"), "{row}");
+    assert_eq!(
+        label("scan-new", &mut r.cx).as_deref(),
+        Some("Scan “Holiday 2024”")
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_start_refused_by_another_operation_says_why(cx: &mut TestAppContext) {
+    let mut r = rig(cx, one_small_source());
+    *r.backend.start_busy.lock().unwrap() = Some("an export".into());
+    click("source-add", &mut r.cx);
+    r.pick(holiday());
+    assert!(r.started().is_empty(), "no run started");
+    let m = r.monitor();
+    let error = r.cx.update(|_, cx| m.read(cx).error.clone()).unwrap();
+    assert_eq!(
+        error,
+        "Added “Holiday 2024”, not scanned: an export is running. Scan it when it finishes."
+    );
+    assert!(!exists("source-pending-1", &mut r.cx), "it was added");
+    let row = label("source-row-2", &mut r.cx).unwrap();
+    assert!(row.contains("Not scanned yet"), "{row}");
+    *r.backend.start_busy.lock().unwrap() = None;
+    click("scan-new", &mut r.cx);
+    r.wait("its run", |r| r.started().len() == 1);
+    assert_eq!(r.started(), vec![vec![SourceId(2)]]);
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_onboarding_add_unavailable_while_pending(cx: &mut TestAppContext) {
+    let mut config = one_small_source();
+    config.sources.clear();
+    let backend = Arc::new(DemoBackend::new(FakeScanService::new(config)));
+    *backend.add_delay.lock().unwrap() = Duration::from_millis(300);
+    let mut r = rig_full(
+        cx,
+        backend,
+        Arc::new(ui_gallery::source::EmptySource),
+        FakeBackend::default(),
+        None,
+    );
+    assert_eq!(
+        label("onboarding-add-source", &mut r.cx).as_deref(),
+        Some("Add a source")
+    );
+    click("onboarding-add-source", &mut r.cx);
+    assert!(r.cx.did_prompt_for_paths());
+    assert_eq!(
+        label("onboarding-add-source", &mut r.cx).as_deref(),
+        Some("Adding… (unavailable)"),
+        "unavailable while the picker is open"
+    );
+    r.cx.simulate_path_prompt_response(|_| Some(vec![holiday()]));
+    let m = r.monitor();
+    for _ in 0..200 {
+        if r.cx.update(|_, cx| !m.read(cx).adding.is_empty()) {
+            break;
+        }
+        r.cx.executor().tick();
+    }
+    assert_eq!(
+        label("onboarding-add-source", &mut r.cx).as_deref(),
+        Some("Adding… (unavailable)"),
+        "unavailable while the add is pending"
+    );
+    assert_eq!(
+        label("status-activity", &mut r.cx).as_deref(),
+        Some("Adding Holiday 2024…")
+    );
+    // Clicked again while pending (without letting the add finish): no second picker.
+    r.cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(gpui_kit::SharedString::from("onboarding-add-source"), cx);
+    });
+    assert!(
+        !r.cx.did_prompt_for_paths(),
+        "a second click opens no picker"
+    );
 }

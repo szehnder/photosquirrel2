@@ -580,6 +580,22 @@ pub fn source_name(root: &Path) -> String {
         .unwrap_or_else(|| root.display().to_string())
 }
 
+/// A completed scan run (not a fill job) that covered `id` and did not report it offline or lost.
+fn scanned_whole(r: &ps_service::scan::RunRecord, id: SourceId) -> bool {
+    r.fill.is_none()
+        && r.status == RunStatus::Completed
+        && r.sources.contains(&id)
+        && !reported_offline(r, id)
+}
+
+/// The run's summary lists `id` among the sources that were offline at its start or went offline during it.
+fn reported_offline(r: &ps_service::scan::RunRecord, id: SourceId) -> bool {
+    r.stats
+        .get("incomplete_sources")
+        .and_then(|v| v.as_array())
+        .is_some_and(|ids| ids.iter().any(|v| v.as_i64() == Some(id.0)))
+}
+
 fn excluded_rows(
     b: &std::collections::BTreeMap<ExclusionReason, (u64, u64)>,
 ) -> Vec<(ExclusionReason, u64, u64)> {
@@ -602,14 +618,16 @@ impl ScanBackend for CatalogBackend {
                 .filter(|(st, _)| matches!(st, Stage::Thumbed | Stage::Skipped))
                 .map(|(_, n)| n)
                 .sum();
+            // Runs during which the source was offline did not scan it.
             let last_scan_ms = runs
                 .iter()
-                .filter(|r| r.sources.contains(&s.id))
+                .filter(|r| r.sources.contains(&s.id) && !reported_offline(r, s.id))
                 .filter_map(|r| r.ended_at_ms)
                 .max();
-            let first_scan_done = runs.iter().any(|r| {
-                r.fill.is_none() && r.status == RunStatus::Completed && r.sources.contains(&s.id)
-            });
+            // A recorded fingerprint, or a completed scan that covered the source while it was online throughout
+            // (an empty folder records no fingerprint but has been scanned).
+            let first_scan_done =
+                s.fingerprint_samples > 0 || runs.iter().any(|r| scanned_whole(r, s.id));
             out.push(SourceRow {
                 id: s.id,
                 name: source_name(&s.root),
@@ -1091,6 +1109,9 @@ pub struct DemoBackend {
     pub never_scanned: Mutex<Vec<SourceId>>,
     /// Every `add_source` call blocks this long first (tests of the pending row; a real sleep).
     pub add_delay: Mutex<std::time::Duration>,
+    /// An operation holding the operations lock ("an export"): every start is refused with it, as the real engine
+    /// refuses one during an export or a cleanup (tests).
+    pub start_busy: Mutex<Option<String>>,
 }
 
 /// An in-memory cleanup run for [`DemoBackend`]: selecting and discarding change only these rows.
@@ -1242,6 +1263,7 @@ impl DemoBackend {
             cleanup: Mutex::new(None),
             never_scanned: Mutex::new(Vec::new()),
             add_delay: Mutex::new(std::time::Duration::ZERO),
+            start_busy: Mutex::new(None),
         }
     }
 
@@ -1629,6 +1651,9 @@ impl ScanBackend for DemoBackend {
     }
 
     fn start(&self, sources: &[SourceId]) -> anyhow::Result<ScanRunId> {
+        if let Some(op) = Self::lock(&self.start_busy).clone() {
+            return Err(ps_service::scan::ScanError::Busy(op).into());
+        }
         Self::lock(&self.started).push(sources.to_vec());
         Ok(self.scan.start(sources)?)
     }

@@ -81,6 +81,9 @@ pub struct AddOutcome {
     /// Folders not added: name and error.
     pub failed: Vec<(String, String)>,
     pub start: AddStart,
+    /// Why the added sources were not scanned when the start was refused (an export or a cleanup holds the
+    /// operations lock): shown on the dashboard and in the add's toast.
+    pub note: Option<String>,
 }
 
 /// Per-source throughput history (MB/s and files/s, one point per second of run time).
@@ -133,6 +136,8 @@ pub struct ScanMonitor {
     pub queued: Vec<SourceId>,
     /// Sources an add did not scan, for the Sources view to select once (generation, ids; D7).
     pub selection_hint: Option<(u64, Vec<SourceId>)>,
+    /// The queue's start in flight: the sources are listed again first, so only present, online ones start.
+    queue_check: Option<Task<()>>,
 }
 
 impl ScanMonitor {
@@ -166,6 +171,7 @@ impl ScanMonitor {
             next_add: 0,
             queued: Vec::new(),
             selection_hint: None,
+            queue_check: None,
         };
         this.refresh_sources(cx);
         this.refresh_last_run(cx);
@@ -229,7 +235,7 @@ impl ScanMonitor {
             .percent()
             .map(|p| format!(" · {p}%"))
             .unwrap_or_default();
-        let more = match self.queued.len() {
+        let more = match self.queued_now().len() {
             0 => String::new(),
             1 => " · then 1 more source".to_owned(),
             n => format!(" · then {n} more sources"),
@@ -258,6 +264,27 @@ impl ScanMonitor {
             }
             _ => None,
         }
+    }
+
+    /// Store a fresh source list. The queue keeps only sources still present and online: a removed or folded source
+    /// leaves it, and one that went offline is dropped, so its row reads "Not scanned yet" and it never starts by
+    /// surprise when it comes back.
+    pub fn set_sources(&mut self, rows: Vec<SourceRow>) {
+        self.queued
+            .retain(|id| rows.iter().any(|r| r.id == *id && r.online));
+        self.sources = Loadable::Ready(rows);
+    }
+
+    /// The queued sources the shown list confirms present and online; none while the list is not loaded.
+    pub fn queued_now(&self) -> Vec<SourceId> {
+        let Some(rows) = self.sources.ready() else {
+            return Vec::new();
+        };
+        self.queued
+            .iter()
+            .copied()
+            .filter(|id| rows.iter().any(|r| r.id == *id && r.online))
+            .collect()
     }
 
     // ---- adding sources (responsive-add-source) ----------------------------------------------------------
@@ -337,7 +364,7 @@ impl ScanMonitor {
                     b.snapshot()
                         .is_some_and(|s| matches!(s.status, RunStatus::Running | RunStatus::Paused))
                 };
-                let mut start_error = None;
+                let mut start_error: Option<(Option<String>, String)> = None;
                 let (start, snap) = if added.is_empty() {
                     (AddStart::Nothing, None)
                 } else if !scan_now {
@@ -350,7 +377,12 @@ impl ScanMonitor {
                         // A run started meanwhile: they scan after it. Never "not added".
                         Err(_) if active(&backend) => (AddStart::Queued, None),
                         Err(e) => {
-                            start_error = Some(format!("Could not start the scan: {e:#}"));
+                            // An export or a cleanup holds the operations lock: say so (task 6.7, L8).
+                            let busy = match e.downcast_ref::<ps_service::scan::ScanError>() {
+                                Some(ps_service::scan::ScanError::Busy(op)) => Some(op.clone()),
+                                _ => None,
+                            };
+                            start_error = Some((busy, format!("{e:#}")));
                             (AddStart::NotScanned, None)
                         }
                     }
@@ -365,6 +397,7 @@ impl ScanMonitor {
                     names: Vec::new(),
                     failed: Vec::new(),
                     start,
+                    note: None,
                 };
                 for (key, r) in keys.iter().zip(&results) {
                     let Some(i) = m.adding.iter().position(|a| a.key == *key) else {
@@ -378,10 +411,9 @@ impl ScanMonitor {
                         }
                     }
                 }
-                if let Ok(rows) = rows {
-                    m.sources = Loadable::Ready(rows);
-                } else {
-                    m.refresh_sources(cx);
+                match rows {
+                    Ok(rows) => m.set_sources(rows),
+                    Err(_) => m.refresh_sources(cx),
                 }
                 match start {
                     AddStart::Started => {
@@ -404,8 +436,20 @@ impl ScanMonitor {
                     }
                     AddStart::Nothing => {}
                 }
-                if start_error.is_some() {
-                    m.error = start_error;
+                if let Some((busy, e)) = start_error {
+                    let named = match outcome.names.as_slice() {
+                        [one] => format!("“{one}”"),
+                        many => format!("{} folders", many.len()),
+                    };
+                    let it = if outcome.names.len() == 1 { "it" } else { "them" };
+                    let message = match busy {
+                        Some(op) => format!(
+                            "Added {named}, not scanned: {op} is running. Scan {it} when it finishes."
+                        ),
+                        None => format!("Added {named}, not scanned: could not start the scan: {e}"),
+                    };
+                    outcome.note = Some(message.clone());
+                    m.error = Some(message);
                 }
                 cx.notify();
                 outcome
@@ -415,6 +459,7 @@ impl ScanMonitor {
                 names: Vec::new(),
                 failed: Vec::new(),
                 start,
+                note: None,
             })
         })
     }
@@ -425,25 +470,37 @@ impl ScanMonitor {
         cx.notify();
     }
 
-    /// Start a run of the queued sources that are online, once the run before them completed (D6). Offline ones stay
-    /// queued.
+    /// Start a run of the queued sources once the run before them completed (D6). The sources are listed again first
+    /// ([`ScanMonitor::set_sources`]): only those still present and online start, and nothing starts when the list
+    /// cannot be read.
     fn start_queued(&mut self, cx: &mut Context<'_, Self>) {
-        if self.queued.is_empty() || self.is_active() || self.pending.is_some() {
+        if self.queued.is_empty()
+            || self.is_active()
+            || self.pending.is_some()
+            || self.queue_check.is_some()
+        {
             return;
         }
-        let online: Vec<SourceId> = match self.sources.ready() {
-            Some(rows) => self
-                .queued
-                .iter()
-                .copied()
-                .filter(|id| rows.iter().any(|r| r.id == *id && r.online))
-                .collect(),
-            None => self.queued.clone(),
-        };
-        if online.is_empty() {
-            return;
-        }
-        self.start(online, cx);
+        let backend = self.backend.clone();
+        self.queue_check = Some(cx.spawn(async move |this, cx| {
+            let rows = cx.background_spawn(async move { backend.sources() }).await;
+            let _ = this.update(cx, |m, cx| {
+                m.queue_check = None;
+                match rows {
+                    Ok(rows) => m.set_sources(rows),
+                    Err(e) => {
+                        m.sources = Loadable::Failed(format!("{e:#}"));
+                        cx.notify();
+                        return;
+                    }
+                }
+                if !m.queued.is_empty() && !m.is_active() && m.pending.is_none() {
+                    let ids = m.queued.clone();
+                    m.start(ids, cx);
+                }
+                cx.notify();
+            });
+        }));
     }
 
     // ---- sampling -------------------------------------------------------------------------------------
@@ -595,10 +652,10 @@ impl ScanMonitor {
         let Some((rows, last)) = loaded else {
             return false;
         };
-        self.sources = match rows {
-            Ok(r) => Loadable::Ready(r),
-            Err(e) => Loadable::Failed(format!("{e:#}")),
-        };
+        match rows {
+            Ok(r) => self.set_sources(r),
+            Err(e) => self.sources = Loadable::Failed(format!("{e:#}")),
+        }
         if self.overview.is_none()
             && let Ok(Some(o)) = last
         {
@@ -612,10 +669,10 @@ impl ScanMonitor {
         cx.spawn(async move |this, cx| {
             let rows = cx.background_spawn(async move { backend.sources() }).await;
             let _ = this.update(cx, |m, cx| {
-                m.sources = match rows {
-                    Ok(r) => Loadable::Ready(r),
-                    Err(e) => Loadable::Failed(format!("{e:#}")),
-                };
+                match rows {
+                    Ok(r) => m.set_sources(r),
+                    Err(e) => m.sources = Loadable::Failed(format!("{e:#}")),
+                }
                 cx.notify();
             });
         })
@@ -812,7 +869,7 @@ pub fn install_primed(backend: SharedScanBackend, gallery: SharedSource, cx: &mu
     let monitor = cx.new(|cx| {
         let mut m = ScanMonitor::new(backend.clone(), gallery, cx);
         if let Ok(rows) = backend.sources() {
-            m.sources = Loadable::Ready(rows);
+            m.set_sources(rows);
         }
         let snap = backend.snapshot();
         m.apply(snap, cx);

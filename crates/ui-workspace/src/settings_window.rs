@@ -184,6 +184,16 @@ pub fn definitions() -> Vec<SettingDef> {
             },
         },
         SettingDef {
+            key: "scanning.scan_new_sources",
+            section: Scanning,
+            name: "Scan new sources right away",
+            description: "Start scanning a folder as soon as you add it. When off, start it from Sources.",
+            control: Control::Toggle {
+                get: |s| s.scanning.scan_new_sources,
+                set: |s, v| s.scanning.scan_new_sources = v,
+            },
+        },
+        SettingDef {
             key: "scanning.classifier.min_side_px",
             section: Scanning,
             name: "Minimum image side",
@@ -302,16 +312,6 @@ pub fn definitions() -> Vec<SettingDef> {
             control: Control::Toggle {
                 get: |s| s.scanning.include_hidden,
                 set: |s, v| s.scanning.include_hidden = v,
-            },
-        },
-        SettingDef {
-            key: "scanning.scan_new_sources",
-            section: Scanning,
-            name: "Scan new sources right away",
-            description: "Start scanning a folder as soon as you add it. When off, start it from Sources.",
-            control: Control::Toggle {
-                get: |s| s.scanning.scan_new_sources,
-                set: |s, v| s.scanning.scan_new_sources = v,
             },
         },
         SettingDef {
