@@ -190,6 +190,16 @@ pub struct DiffCounts {
     /// The bytes the colour checks of `colour_checked` read.
     #[serde(default)]
     pub colour_bytes: u64,
+    /// Unchanged videos waiting for a poster-frame tool that this run has (ADR-0114): queued for one tool call each,
+    /// no byte of them read by PhotoSquirrel (counted in `unchanged` too).
+    #[serde(default)]
+    pub posters: u64,
+    /// Of `posters`, the videos that got their poster frame, and those whose tool call got no frame (recorded "poster
+    /// frame failed").
+    #[serde(default)]
+    pub posters_made: u64,
+    #[serde(default)]
+    pub posters_failed: u64,
 }
 
 impl DiffCounts {
@@ -215,6 +225,9 @@ impl DiffCounts {
         self.colour_checked += o.colour_checked;
         self.recoloured += o.recoloured;
         self.colour_bytes += o.colour_bytes;
+        self.posters += o.posters;
+        self.posters_made += o.posters_made;
+        self.posters_failed += o.posters_failed;
     }
 
     /// Unchanged files that still keep a class decided before facts were stored, after this run.

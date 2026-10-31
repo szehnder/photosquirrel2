@@ -33,6 +33,9 @@ pub fn placeholder_for_error(
         PlaceholderReason::Unreadable { message } => {
             format!("preview unavailable (could not be decoded: {message})")
         }
+        PlaceholderReason::PosterFailed { message } => {
+            format!("video (poster frame failed: {message})")
+        }
         PlaceholderReason::NoPosterTool | PlaceholderReason::NeedsNewerVersion => {
             "preview unavailable".to_owned()
         }
@@ -385,25 +388,82 @@ pub fn make_large_tiff_preview<R: std::io::Read + std::io::Seek>(
 }
 
 /// The thumbnail of a video: a poster frame from the configured tool when available, else a placeholder
-/// carrying duration and capture date.
+/// carrying duration and capture date: "no poster-frame tool" without a tool, "poster frame failed" with the tool's
+/// error when the tool got no frame (ADR-0114).
 pub fn video_thumbnail(
     source_path: &std::path::Path,
     probe: &ProbeRecord,
     capture: Option<CaptureTime>,
     tool: Option<&std::path::Path>,
 ) -> ThumbnailRecord {
-    if let Some(tool) = tool
-        && let Ok(jpeg) =
-            crate::poster::poster_frame(tool, source_path, crate::poster::DEFAULT_TIMEOUT)
-        && let Ok((img, _)) = decode::decode_jpeg(&jpeg, THUMB_LONG_EDGE)
-        && let Ok(t) = thumbnail_from_image(&img, ThumbKind::PosterFrame, &ColourSource::srgb())
-    {
-        return t;
+    video_thumbnail_with_stop(source_path, probe, capture, tool, &|| false)
+        .unwrap_or_else(|| poster_failed_placeholder(probe, capture, "cancelled"))
+}
+
+/// [`video_thumbnail`] whose tool is killed as soon as `stop` returns true; `None` then (a cancelled run: nothing
+/// is recorded about the file).
+pub fn video_thumbnail_with_stop(
+    source_path: &std::path::Path,
+    probe: &ProbeRecord,
+    capture: Option<CaptureTime>,
+    tool: Option<&std::path::Path>,
+    stop: &dyn Fn() -> bool,
+) -> Option<ThumbnailRecord> {
+    let Some(tool) = tool else {
+        return Some(placeholder_for(
+            probe,
+            capture,
+            "video (no poster-frame tool)",
+            Some(PlaceholderReason::NoPosterTool),
+        ));
+    };
+    let duration = probe.video.as_ref().and_then(|v| v.duration_ms);
+    match poster_thumbnail(tool, source_path, duration, stop) {
+        Ok(t) => Some(t),
+        Err(crate::poster::PosterError::Cancelled) => None,
+        Err(e) => Some(poster_failed_placeholder(probe, capture, &e.to_string())),
     }
+}
+
+/// A video placeholder whose poster-frame tool got no frame, with the tool's error (ADR-0114).
+pub fn poster_failed_placeholder(
+    probe: &ProbeRecord,
+    capture: Option<CaptureTime>,
+    message: &str,
+) -> ThumbnailRecord {
     placeholder_for(
         probe,
         capture,
-        "video (no poster-frame tool)",
-        Some(PlaceholderReason::NoPosterTool),
+        &format!("video (poster frame failed: {message})"),
+        Some(PlaceholderReason::PosterFailed {
+            message: message.to_owned(),
+        }),
     )
+}
+
+/// The poster-frame thumbnail of a video (ADR-0114): one call of `tool` at [`crate::poster::seek_for`] the clip's
+/// duration, and one more at 0 s when the tool succeeds with no frame (a clip shorter than the seek), each bounded
+/// by [`crate::poster::DEFAULT_TIMEOUT`] and killed when `stop` returns true. The source is read by the tool only.
+pub fn poster_thumbnail(
+    tool: &std::path::Path,
+    source_path: &std::path::Path,
+    duration_ms: Option<u64>,
+    stop: &dyn Fn() -> bool,
+) -> Result<ThumbnailRecord, crate::poster::PosterError> {
+    use crate::poster::{DEFAULT_TIMEOUT, PosterError, poster_frame, seek_for};
+    let seek = seek_for(duration_ms);
+    let jpeg = match poster_frame(tool, source_path, seek, DEFAULT_TIMEOUT, stop) {
+        Err(PosterError::NoFrame) if !seek.is_zero() => poster_frame(
+            tool,
+            source_path,
+            std::time::Duration::ZERO,
+            DEFAULT_TIMEOUT,
+            stop,
+        )?,
+        r => r?,
+    };
+    let (img, _) = decode::decode_jpeg(&jpeg, THUMB_LONG_EDGE)
+        .map_err(|e| PosterError::Failed(format!("the frame could not be decoded: {e}")))?;
+    thumbnail_from_image(&img, ThumbKind::PosterFrame, &ColourSource::srgb())
+        .map_err(|e| PosterError::Failed(format!("the frame could not be thumbnailed: {e}")))
 }

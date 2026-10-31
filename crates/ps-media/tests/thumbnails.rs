@@ -299,10 +299,146 @@ fn hanging_poster_tool_is_killed() {
     let r = ps_media::poster::poster_frame(
         &tool,
         Path::new("/x.mov"),
+        ps_media::poster::DEFAULT_SEEK,
         std::time::Duration::from_millis(300),
+        &|| false,
     );
     assert!(matches!(r, Err(ps_media::poster::PosterError::Timeout(_))));
     assert!(t0.elapsed().as_secs() < 5);
+}
+
+/// A shell-script stand-in for ffmpeg in `dir` (ADR-0114 tests): `body` runs with the seek in `$ss`.
+#[cfg(unix)]
+fn fake_tool(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let tool = dir.join(name);
+    let script = format!(
+        "#!/bin/sh\nss=\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -ss ]; then ss=$2; fi; shift; done\n{body}\n"
+    );
+    std::fs::write(&tool, script).expect("write tool");
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    tool
+}
+
+#[cfg(unix)]
+#[test]
+fn scenario_thumbnails_failing_tool_records_a_failed_poster() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tool = fake_tool(
+        dir.path(),
+        "broken-ffmpeg",
+        "echo 'x.mov: Invalid data found when processing input' >&2\nexit 1",
+    );
+    let (m, p) = iphone_probe();
+    let src = dir.path().join("IMG.MOV");
+    std::fs::write(&src, m).expect("write mov");
+    let t = thumb::video_thumbnail(&src, &p, None, Some(&tool));
+    assert_eq!(t.kind, ThumbKind::Placeholder);
+    let info = t.placeholder.expect("placeholder info");
+    let Some(ps_model::PlaceholderReason::PosterFailed { message }) = &info.reason else {
+        panic!("not a failed poster: {:?}", info.reason);
+    };
+    assert!(message.contains("exit status"), "{message}");
+    assert!(message.contains("Invalid data found"), "{message}");
+    assert_eq!(
+        info.reason.as_ref().map(ps_model::PlaceholderReason::kind),
+        Some(ps_model::PreviewReason::PosterFailed),
+        "not \"needs a poster-frame tool\""
+    );
+    assert_ne!(
+        ps_model::PreviewReason::PosterFailed.label(),
+        ps_model::PreviewReason::NoPosterTool.label()
+    );
+    assert_eq!(info.duration_ms, Some(12_500));
+    // A tool that cannot be started and one that succeeds without a frame are failures too.
+    let t = thumb::video_thumbnail(&src, &p, None, Some(&dir.path().join("missing-ffmpeg")));
+    assert!(matches!(
+        t.placeholder.and_then(|i| i.reason),
+        Some(ps_model::PlaceholderReason::PosterFailed { .. })
+    ));
+    let silent = fake_tool(dir.path(), "silent-ffmpeg", "exit 0");
+    let t = thumb::video_thumbnail(&src, &p, None, Some(&silent));
+    let reason = t.placeholder.and_then(|i| i.reason);
+    assert_eq!(
+        reason,
+        Some(ps_model::PlaceholderReason::PosterFailed {
+            message: "the poster-frame tool gave no frame".into()
+        })
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn scenario_thumbnails_short_clip_gets_a_frame() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let frame = dir.path().join("frame.jpg");
+    std::fs::write(&frame, fx::jpeg(640, 360, 9, 85)).expect("write frame");
+    let log = dir.path().join("calls.log");
+    // Frames exist only before the clip's end (0.5 s); every call is logged with its seek.
+    let tool = fake_tool(
+        dir.path(),
+        "short-ffmpeg",
+        &format!(
+            "echo \"$ss\" >> '{}'\nif awk \"BEGIN {{ exit !($ss < 0.5) }}\"; then cat '{}'; fi",
+            log.display(),
+            frame.display()
+        ),
+    );
+    let m = fx::movie(&fx::MovieSpec {
+        duration_ms: 500,
+        ..fx::MovieSpec::iphone()
+    });
+    let p = probe(&m);
+    assert_eq!(p.video.as_ref().and_then(|v| v.duration_ms), Some(500));
+    let src = dir.path().join("SHORT.MOV");
+    std::fs::write(&src, m).expect("write mov");
+    let t = thumb::video_thumbnail(&src, &p, None, Some(&tool));
+    assert_eq!(t.kind, ThumbKind::PosterFrame);
+    assert!(!t.jpeg.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("log"),
+        "0.250\n",
+        "one call, at half the clip"
+    );
+    // Without a known duration the seek is 1 s: no frame there, so one retry at 0 s.
+    std::fs::write(&log, "").expect("reset log");
+    let mut unknown = p.clone();
+    if let Some(v) = unknown.video.as_mut() {
+        v.duration_ms = None;
+    }
+    let t = thumb::video_thumbnail(&src, &unknown, None, Some(&tool));
+    assert_eq!(t.kind, ThumbKind::PosterFrame);
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("log"),
+        "1.000\n0.000\n"
+    );
+}
+
+/// A stop check kills a running tool within its poll (cancel, ADR-0114).
+#[cfg(unix)]
+#[test]
+fn a_stopped_poster_call_kills_the_tool() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tool = fake_tool(dir.path(), "hang", "exec sleep 30");
+    let t0 = Instant::now();
+    let stop = || t0.elapsed() > std::time::Duration::from_millis(200);
+    let r = ps_media::poster::poster_frame(
+        &tool,
+        Path::new("/x.mov"),
+        ps_media::poster::DEFAULT_SEEK,
+        ps_media::poster::DEFAULT_TIMEOUT,
+        &stop,
+    );
+    assert!(matches!(r, Err(ps_media::poster::PosterError::Cancelled)));
+    assert!(t0.elapsed().as_secs() < 3, "{:?}", t0.elapsed());
+    let (_, p) = iphone_probe();
+    let t0 = Instant::now();
+    let stop = || t0.elapsed() > std::time::Duration::from_millis(200);
+    assert!(
+        thumb::video_thumbnail_with_stop(Path::new("/x.mov"), &p, None, Some(&tool), &stop)
+            .is_none(),
+        "a cancelled call records nothing"
+    );
 }
 
 #[test]

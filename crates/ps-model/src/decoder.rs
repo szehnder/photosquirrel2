@@ -144,6 +144,9 @@ pub enum PlaceholderReason {
     UnsupportedVariant { detail: String },
     /// The decoder failed on data that should be decodable: the file may be damaged.
     Unreadable { message: String },
+    /// A video whose poster-frame tool ran and got no frame: spawn error, exit status, timeout, no frame, output
+    /// that is not a JPEG (ADR-0114). The tool's error is kept.
+    PosterFailed { message: String },
     /// A reason written by a newer version that this one does not know (`preview-placeholders`, ADR-0109).
     #[serde(other)]
     NeedsNewerVersion,
@@ -159,6 +162,7 @@ impl PlaceholderReason {
             PlaceholderReason::Sequence => R::Sequence,
             PlaceholderReason::UnsupportedVariant { .. } => R::UnsupportedVariant,
             PlaceholderReason::Unreadable { .. } => R::Unreadable,
+            PlaceholderReason::PosterFailed { .. } => R::PosterFailed,
             PlaceholderReason::NeedsNewerVersion => R::NeedsNewerVersion,
         }
     }
@@ -424,5 +428,36 @@ mod tests {
             serde_json::from_str::<PlaceholderReason>(&s).expect("back"),
             r
         );
+    }
+
+    /// `poster_failed` round-trips with its message (ADR-0114).
+    #[test]
+    fn poster_failed_round_trips() {
+        let r = PlaceholderReason::PosterFailed {
+            message: "exit status 1".into(),
+        };
+        let s = serde_json::to_string(&r).expect("json");
+        assert_eq!(s, r#"{"kind":"poster_failed","message":"exit status 1"}"#);
+        assert_eq!(
+            serde_json::from_str::<PlaceholderReason>(&s).expect("back"),
+            r
+        );
+        assert_eq!(r.kind(), crate::PreviewReason::PosterFailed);
+    }
+
+    /// What an older version does with a reason it does not know and its fields (0.3.0 reading `poster_failed`,
+    /// ADR-0114): the record still deserialises, as "made by a newer version", so the tile stays a placeholder.
+    #[test]
+    fn an_unknown_reason_with_fields_reads_as_a_newer_version() {
+        let s = r#"{"kind":"poster_frame_v9","message":"exit status 1","detail":{"x":1}}"#;
+        assert_eq!(
+            serde_json::from_str::<PlaceholderReason>(s).expect("reads"),
+            PlaceholderReason::NeedsNewerVersion
+        );
+        let info = r#"{"media_kind":"video","format":"mov","duration_ms":500,"capture_date":null,"note":"n",
+            "reason":{"kind":"poster_frame_v9","message":"m"},"generation":3}"#;
+        let p: crate::PlaceholderInfo = serde_json::from_str(info).expect("placeholder");
+        assert_eq!(p.reason, Some(PlaceholderReason::NeedsNewerVersion));
+        assert_eq!(p.generation, 3);
     }
 }

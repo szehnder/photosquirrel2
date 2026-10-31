@@ -20,17 +20,20 @@ pub enum PreviewReason {
     UnsupportedVariant,
     /// The decoder failed on the file's data.
     Unreadable,
+    /// A video whose poster-frame tool ran and got no frame (ADR-0114).
+    PosterFailed,
     /// Written by a newer version (a reason this one does not know).
     NeedsNewerVersion,
 }
 
 impl PreviewReason {
-    pub const ALL: [PreviewReason; 6] = [
+    pub const ALL: [PreviewReason; 7] = [
         PreviewReason::DecoderMissing,
         PreviewReason::NoPosterTool,
         PreviewReason::Sequence,
         PreviewReason::UnsupportedVariant,
         PreviewReason::Unreadable,
+        PreviewReason::PosterFailed,
         PreviewReason::NeedsNewerVersion,
     ];
 
@@ -42,6 +45,7 @@ impl PreviewReason {
             PreviewReason::Sequence => "sequence",
             PreviewReason::UnsupportedVariant => "unsupported_variant",
             PreviewReason::Unreadable => "unreadable",
+            PreviewReason::PosterFailed => "poster_failed",
             PreviewReason::NeedsNewerVersion => "needs_newer_version",
         }
     }
@@ -58,6 +62,7 @@ impl PreviewReason {
             PreviewReason::Sequence => "image sequence",
             PreviewReason::UnsupportedVariant => "not supported yet",
             PreviewReason::Unreadable => "could not be read",
+            PreviewReason::PosterFailed => "poster frame failed",
             PreviewReason::NeedsNewerVersion => "made by a newer version",
         }
     }
@@ -85,7 +90,7 @@ impl PlaceholderStatus {
             PreviewReason::DecoderMissing | PreviewReason::NoPosterTool => {
                 PlaceholderStatus::NeedsLibrary
             }
-            PreviewReason::Unreadable => PlaceholderStatus::Damaged,
+            PreviewReason::Unreadable | PreviewReason::PosterFailed => PlaceholderStatus::Damaged,
             PreviewReason::Sequence
             | PreviewReason::UnsupportedVariant
             | PreviewReason::NeedsNewerVersion => PlaceholderStatus::NotSupported,
@@ -319,6 +324,9 @@ pub enum PreviewAction {
     Damaged { message: String },
     /// Videos need a poster-frame tool (ffmpeg).
     PosterTool { fix: Option<Fix> },
+    /// The poster-frame tool ran and got no frame (ADR-0114): its error, and Try again (a Fill in previews job
+    /// for the reason `poster_failed`).
+    PosterFailed { message: String },
     /// Image sequences show their first frame in a later version.
     Sequence,
     /// The placeholder was made by a newer version of PhotoSquirrel.
@@ -360,6 +368,30 @@ mod tests {
         for r in PreviewReason::ALL {
             assert_eq!(PreviewReason::from_key(r.as_str()), Some(r));
         }
+    }
+
+    /// `poster_failed` (ADR-0114): its key, label and status; a key this version does not know is `None` (an older
+    /// version reads this one's `poster_failed` that way, and the catalog maps it to `NeedsNewerVersion`).
+    #[test]
+    fn poster_failed_key_label_and_status() {
+        let r = PreviewReason::PosterFailed;
+        assert_eq!(r.as_str(), "poster_failed");
+        assert_eq!(PreviewReason::from_key("poster_failed"), Some(r));
+        assert_eq!(r.label(), "poster frame failed");
+        assert_eq!(PlaceholderStatus::of(r, false), PlaceholderStatus::Damaged);
+        assert_eq!(
+            PlaceholderStatus::of(r, true),
+            PlaceholderStatus::ReadyToFill
+        );
+        assert_eq!(PreviewReason::from_key("poster_frame_v9"), None);
+        assert_eq!(
+            serde_json::to_string(&FillScope {
+                format: None,
+                reason: Some(r)
+            })
+            .expect("json"),
+            r#"{"format":null,"reason":"poster_failed"}"#
+        );
     }
 
     #[test]
