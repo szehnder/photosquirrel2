@@ -695,12 +695,12 @@ mod tests {
     }
 
     /// The eleven ADR-0026 budgets: name and upper bound, in the unit the budgets file uses (throughput as
-    /// time per unit: 50k rows/s = 20 us/row, 150 files/s = 6.67 ms/file).
+    /// time per unit: 50k rows/s = 20 us/row, 150 files/s = 6.67 ms/file). Idle RSS as amended by ADR-0123.
     const ADR_0026: [(&str, f64, &str); 11] = [
         ("gallery-scroll-p95", 8.3, "ms"),
         ("first-gallery-frame", 600.0, "ms"),
         ("cold-start", 400.0, "ms"),
-        ("idle-rss", 250.0, "MB"),
+        ("idle-rss", 320.0, "MB"),
         ("catalog-insert", 20.0, "us"),
         ("catalog-id-list-1m", 300.0, "ms"),
         ("rescan-nochange-100k", 4.0, "s"),
@@ -777,7 +777,7 @@ mod tests {
 
     #[test]
     fn scenario_performance_budgets_missing_measurement_fails() {
-        let (a, b) = (budget("catalog-insert", 20.0), budget("idle-rss", 250.0));
+        let (a, b) = (budget("catalog-insert", 20.0), budget("idle-rss", 320.0));
         let m = measured(&[("catalog-insert", 15.0)]);
         for mode in [Mode::Local, Mode::Ci] {
             let v = evaluate(&[&a, &b], &m, &Baseline::default(), mode);

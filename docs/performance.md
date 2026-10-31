@@ -67,7 +67,9 @@ Sources (`source.kind` in `perf-budgets.toml`):
   The test also asserts its own budget in optimized builds, so `cargo test --release` catches a miss too.
 - `app`: the release app with a measurement flag, run `runs` times on a fresh data directory; the median
   (or the maximum, for `metric = "max"`) of its `measure` lines. The 1M-item synthetic catalog used by
-  `idle-rss` and `first-gallery-frame` is built once into the temp folder.
+  `idle-rss` and `first-gallery-frame` is built once into the temp folder. Before each launch on it, the catalog is
+  migrated and its leftover log folded in (ADR-0122): the measured app quits without closing its catalog, and no
+  measured launch should pay a migration or a WAL recovery.
 - `criterion`: a criterion benchmark's median (none at the moment; criterion benches stay for exploration).
 
 ## CI
@@ -111,7 +113,7 @@ the test now asserts 800 ms, and an xtask unit test keeps every `budget(...)` bo
 | `catalog-insert` | mean <= 20 us | yes | catalog | 14.797 us |
 | `catalog-id-list-1m` | median <= 300 ms | yes | catalog | 127.425 ms |
 | `cold-start` | median <= 400 ms | yes | app-shell | 258.9 ms |
-| `idle-rss` | max <= 250 MB | yes | app-shell | 209.6 MB |
+| `idle-rss` | max <= 320 MB (ADR-0123) | yes | app-shell | 209.6 MB |
 | `scan-analysis-12mp` | mean <= 6.67 ms | yes | scanning | 4.833 ms |
 | `rescan-nochange-100k` | median <= 4 s | yes | scanning | 0.408 s |
 | `control-latency-p95` | p95 <= 250 ms | yes | scanning | 106.92 ms |

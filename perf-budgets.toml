@@ -78,7 +78,8 @@ source = { kind = "test", package = "ps-service", test = "budgets", name = "scen
 # app-shell (ADR-0026): the release app with measurement flags (opens a window; skipped by `--ci`).
 # Cold start: launch to the first presented frame, median of 10 runs. Idle RSS: resident memory after 5 s idle
 # on the gallery's 1M synthetic catalog (built once, like first-gallery-frame; PHOTOSQUIRREL_SYNTHETIC_DIR moves
-# it). Measured 213 MB (113 MB on an empty data dir).
+# it). Measured 213 MB (113 MB on an empty data dir) on 2026-10-21; 267-276 MB in 0.3.0 and 0.3.1 (290.6 MB once), so
+# ADR-0123 raised the bound from 250 MB to 320 MB.
 [[budget]]
 name = "cold-start"
 metric = "median"
@@ -90,7 +91,7 @@ source = { kind = "app", args = ["--measure-startup"], runs = 10 }
 [[budget]]
 name = "idle-rss"
 metric = "max"
-max = 250.0
+max = 320.0
 unit = "MB"
 change = "app-shell"
 source = { kind = "app", args = ["--synthetic-catalog", "1000000", "--measure-idle-memory", "5"], runs = 1 }
