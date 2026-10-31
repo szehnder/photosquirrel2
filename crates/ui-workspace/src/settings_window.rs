@@ -305,6 +305,16 @@ pub fn definitions() -> Vec<SettingDef> {
             },
         },
         SettingDef {
+            key: "scanning.scan_new_sources",
+            section: Scanning,
+            name: "Scan new sources right away",
+            description: "Start scanning a folder as soon as you add it. When off, start it from Sources.",
+            control: Control::Toggle {
+                get: |s| s.scanning.scan_new_sources,
+                set: |s, v| s.scanning.scan_new_sources = v,
+            },
+        },
+        SettingDef {
             key: "ai.max_concurrent_requests",
             section: Ai,
             name: "Concurrent requests",

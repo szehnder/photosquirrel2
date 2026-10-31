@@ -77,6 +77,9 @@ struct Rig {
     shell: Entity<Shell>,
     cx: VisualTestContext,
     backend: Arc<DemoBackend>,
+    /// The shell's own engine (its activity calls show the shell sampling).
+    shell_backend: Arc<FakeBackend>,
+    _dirs: Option<Dirs>,
 }
 
 impl Rig {
@@ -129,18 +132,33 @@ fn rig_with(cx: &mut TestAppContext, config: FakeConfig, gallery: SharedSource) 
 }
 
 fn rig_backend(cx: &mut TestAppContext, backend: Arc<DemoBackend>, gallery: SharedSource) -> Rig {
-    init_app(cx, Arc::new(FakeBackend::small_corpus()), None);
+    let rig = rig_full(cx, backend, gallery, FakeBackend::small_corpus(), None);
+    let mut rig = rig;
+    rig.show(ViewId::Sources);
+    rig
+}
+
+/// A rig with a given shell engine and settings directory (no view switch).
+fn rig_full(
+    cx: &mut TestAppContext,
+    backend: Arc<DemoBackend>,
+    gallery: SharedSource,
+    shell_backend: FakeBackend,
+    dirs: Option<Dirs>,
+) -> Rig {
+    let shell_backend = Arc::new(shell_backend);
+    init_app(cx, shell_backend.clone(), dirs.as_ref());
     let b = backend.clone();
     cx.update(move |cx| ui_workspace::views::scan::install(b, gallery, cx));
     let (shell, mut vcx) = open(cx);
     wait_loaded(&shell, &mut vcx);
-    let mut rig = Rig {
+    Rig {
         shell,
         cx: vcx,
         backend,
-    };
-    rig.show(ViewId::Sources);
-    rig
+        shell_backend,
+        _dirs: dirs,
+    }
 }
 
 fn rig(cx: &mut TestAppContext, config: FakeConfig) -> Rig {
@@ -603,4 +621,316 @@ fn demo_thumbs_map_synthetic_keys_to_real_thumbnails(_cx: &mut TestAppContext) {
     let mut k = [0u8; 32];
     k[8] = 0xfa;
     assert!(t.thumbnail(&ThumbKey(k)).unwrap().is_some());
+}
+
+// ---- responsive-add-source -------------------------------------------------------------------------------------
+
+/// One small SSD source of 2,000 files at 4,000 files/s: a run takes about a second of simulated time.
+fn one_small_source() -> FakeConfig {
+    let mut c = FakeConfig::two_sources(4_000.0);
+    c.sources = vec![FakeSource::new(
+        1,
+        "Macintosh HD · Pictures",
+        DeviceClass::SolidState,
+        2_000,
+    )];
+    c
+}
+
+fn holiday() -> std::path::PathBuf {
+    std::path::PathBuf::from("/demo/Holiday 2024")
+}
+
+impl Rig {
+    /// Answer an open folder picker with `path`, then wait until the add has answered.
+    fn pick(&mut self, path: std::path::PathBuf) {
+        assert!(self.cx.did_prompt_for_paths(), "a folder picker is open");
+        self.cx
+            .simulate_path_prompt_response(move |_| Some(vec![path]));
+        let m = self.monitor();
+        self.wait("the add to answer", |r| {
+            r.cx.update(|_, cx| {
+                let m = m.read(cx);
+                !m.picking && m.adding.is_empty()
+            })
+        });
+    }
+
+    fn started(&self) -> Vec<Vec<SourceId>> {
+        self.backend.started.lock().unwrap().clone()
+    }
+
+    fn add_from_shell(&mut self) {
+        let shell = self.shell.clone();
+        self.cx
+            .update(|w, cx| shell.update(cx, |s, cx| s.add_source(w, cx)));
+        self.cx.run_until_parked();
+    }
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_pending_row_shown_at_once(cx: &mut TestAppContext) {
+    let mut r = rig(cx, one_small_source());
+    *r.backend.add_delay.lock().unwrap() = Duration::from_millis(300);
+    click("source-add", &mut r.cx);
+    assert!(r.cx.did_prompt_for_paths());
+    assert_eq!(
+        label("source-add", &mut r.cx).as_deref(),
+        Some("Adding… (unavailable)"),
+        "Add is unavailable while the picker is open"
+    );
+    r.cx.simulate_path_prompt_response(|_| Some(vec![holiday()]));
+    // Step the executor until the picker's answer is handled; the add itself (300 ms) has not run yet.
+    let m = r.monitor();
+    for _ in 0..200 {
+        if r.cx.update(|_, cx| !m.read(cx).adding.is_empty()) {
+            break;
+        }
+        r.cx.executor().tick();
+    }
+    assert!(
+        r.backend.added.lock().unwrap().is_empty(),
+        "the pending row comes before the add"
+    );
+    // The very next frame draws it.
+    let t = Instant::now();
+    let row = label("source-pending-1", &mut r.cx).expect("pending row");
+    assert!(
+        t.elapsed() < Duration::from_millis(250),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(row, "Holiday 2024: Adding…");
+    assert_eq!(
+        label("status-activity", &mut r.cx).as_deref(),
+        Some("Adding Holiday 2024…")
+    );
+    assert_eq!(
+        label("source-add", &mut r.cx).as_deref(),
+        Some("Adding… (unavailable)")
+    );
+    // The add answers (after its delay): the pending row is the source's row, and its scan starts.
+    r.wait("the add", |r| {
+        r.cx.update(|_, cx| m.read(cx).adding.is_empty())
+    });
+    assert!(!exists("source-pending-1", &mut r.cx));
+    // The new row may be below the fold of the test window once the run card shows: read the model behind it.
+    assert!(r.cx.update(|_, cx| {
+        m.read(cx).sources.ready().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row.id == SourceId(2) && row.name == "Holiday 2024")
+        })
+    }));
+    assert_eq!(r.started(), vec![vec![SourceId(2)]]);
+    assert_eq!(
+        label("source-add", &mut r.cx).as_deref(),
+        Some("Add source…")
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_status_bar_follows_a_scan_started_by_add_source(cx: &mut TestAppContext) {
+    let mut r = rig(cx, one_small_source());
+    r.show(ViewId::Library);
+    let calls_before = r
+        .shell_backend
+        .activity_calls
+        .load(std::sync::atomic::Ordering::SeqCst);
+    r.add_from_shell();
+    r.pick(holiday());
+    assert_eq!(
+        r.started(),
+        vec![vec![SourceId(2)]],
+        "the add started its scan"
+    );
+    let status = label("status-activity", &mut r.cx).unwrap();
+    assert!(
+        status.starts_with("Walking folders") || status.starts_with("Scanning"),
+        "{status}"
+    );
+    assert!(
+        r.shell_backend
+            .activity_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > calls_before,
+        "the shell samples the run's activity (the Library's live updates)"
+    );
+    // Later, the analysis phase reads as progress.
+    r.wait("the analysis", |r| {
+        label("status-activity", &mut r.cx).is_some_and(|s| s.starts_with("Scanning"))
+    });
+    let shell = r.shell.clone();
+    assert_eq!(
+        r.cx.update(|_, cx| shell.read(cx).active_view()),
+        ViewId::Library,
+        "the add did not switch views"
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_queued_add_starts_after_the_active_run(cx: &mut TestAppContext) {
+    let mut r = rig(cx, one_small_source());
+    start_all(&mut r);
+    click("source-add", &mut r.cx);
+    r.pick(holiday());
+    assert_eq!(r.started(), vec![vec![SourceId(1)]], "nothing started yet");
+    let m = r.monitor();
+    assert_eq!(
+        r.cx.update(|_, cx| m.read(cx).queued.clone()),
+        vec![SourceId(2)]
+    );
+    let row = label("source-row-2", &mut r.cx).unwrap();
+    assert!(row.contains("Queued, scans next"), "{row}");
+    r.show(ViewId::Library);
+    let status = label("status-activity", &mut r.cx).unwrap();
+    assert!(status.ends_with("then 1 more source"), "{status}");
+    // The run completes: a run of only the new source starts by itself.
+    r.wait("the queued run", |r| r.started().len() == 2);
+    assert_eq!(
+        r.started(),
+        vec![vec![SourceId(1)], vec![SourceId(2)]],
+        "the finished source is not rescanned"
+    );
+    assert!(r.cx.update(|_, cx| m.read(cx).queued.is_empty()));
+    r.wait("the queued run to show", |r| {
+        label("status-activity", &mut r.cx).is_some_and(|s| !s.contains("then"))
+            && r.snap(|s| s.status) == Some(RunStatus::Running)
+    });
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_cancelled_run_leaves_the_queue_visible(cx: &mut TestAppContext) {
+    let mut config = one_small_source();
+    config.files_per_s = 50.0;
+    let mut r = rig(cx, config);
+    start_all(&mut r);
+    click("source-add", &mut r.cx);
+    r.pick(holiday());
+    click("scan-cancel", &mut r.cx);
+    r.wait("the cancel", |r| {
+        r.snap(|s| s.status) == Some(RunStatus::Cancelled)
+    });
+    r.tick(2_000);
+    assert_eq!(
+        r.started(),
+        vec![vec![SourceId(1)]],
+        "no run starts by itself"
+    );
+    let m = r.monitor();
+    assert_eq!(
+        r.cx.update(|_, cx| m.read(cx).queued.clone()),
+        vec![SourceId(2)]
+    );
+    let row = label("source-row-2", &mut r.cx).unwrap();
+    assert!(row.contains("Queued, scans next"), "{row}");
+    assert_eq!(
+        label("scan-new", &mut r.cx).as_deref(),
+        Some("Scan “Holiday 2024”")
+    );
+    click("scan-new", &mut r.cx);
+    r.wait("its run", |r| r.started().len() == 2);
+    assert_eq!(r.started()[1], vec![SourceId(2)]);
+    assert!(r.cx.update(|_, cx| m.read(cx).queued.is_empty()));
+}
+
+#[gpui_kit::test]
+fn scenario_scan_progress_primary_action_scans_only_never_scanned_sources(cx: &mut TestAppContext) {
+    let backend = Arc::new(DemoBackend::new(FakeScanService::new(
+        FakeConfig::two_sources(500.0),
+    )));
+    backend.never_scanned.lock().unwrap().push(SourceId(2));
+    let mut r = rig_backend(cx, backend, Arc::new(ui_gallery::source::EmptySource));
+    assert_eq!(
+        label("scan-new", &mut r.cx).as_deref(),
+        Some("Scan “NAS · Family”")
+    );
+    assert_eq!(
+        label("scan-start", &mut r.cx).as_deref(),
+        Some("Scan 2 sources (1 new)")
+    );
+    let row = label("source-row-2", &mut r.cx).unwrap();
+    assert!(row.contains("Not scanned yet"), "{row}");
+    click("scan-new", &mut r.cx);
+    r.wait("the run", |r| {
+        r.snap(|s| s.status) == Some(RunStatus::Running)
+    });
+    assert_eq!(r.started(), vec![vec![SourceId(2)]], "only the new source");
+}
+
+fn settings_off() -> Dirs {
+    let dirs = Dirs::new();
+    dirs.store()
+        .update(|s| s.scanning.scan_new_sources = false)
+        .unwrap();
+    dirs
+}
+
+#[gpui_kit::test]
+fn scenario_settings_new_source_not_scanned_when_the_setting_is_off(cx: &mut TestAppContext) {
+    let backend = Arc::new(DemoBackend::new(FakeScanService::new(one_small_source())));
+    let mut r = rig_full(
+        cx,
+        backend,
+        Arc::new(ui_gallery::source::EmptySource),
+        FakeBackend::small_corpus(),
+        Some(settings_off()),
+    );
+    r.show(ViewId::Sources);
+    click("source-add", &mut r.cx);
+    r.pick(holiday());
+    r.tick(500);
+    assert!(r.started().is_empty(), "no run started");
+    let m = r.monitor();
+    assert!(!r.cx.update(|_, cx| m.read(cx).is_active()));
+    let row = label("source-row-2", &mut r.cx).unwrap();
+    assert!(row.contains("Not scanned yet"), "{row}");
+    assert_eq!(
+        label("scan-new", &mut r.cx).as_deref(),
+        Some("Scan “Holiday 2024”")
+    );
+    assert_eq!(
+        label("scan-start", &mut r.cx).as_deref(),
+        Some("Scan 1 source"),
+        "the new source is the selection"
+    );
+    click("scan-new", &mut r.cx);
+    r.wait("its run", |r| r.started().len() == 1);
+    assert_eq!(r.started(), vec![vec![SourceId(2)]]);
+}
+
+#[gpui_kit::test]
+fn scenario_app_shell_onboarding_add_without_scanning_leads_to_sources(cx: &mut TestAppContext) {
+    let mut config = one_small_source();
+    config.sources.clear();
+    let backend = Arc::new(DemoBackend::new(FakeScanService::new(config)));
+    let mut r = rig_full(
+        cx,
+        backend,
+        Arc::new(ui_gallery::source::EmptySource),
+        FakeBackend::default(),
+        Some(settings_off()),
+    );
+    assert!(exists("onboarding", &mut r.cx), "first launch");
+    click("onboarding-add-source", &mut r.cx);
+    // The catalog the shell reads next holds the new source (the shell's fake engine is not the scan hub's).
+    r.shell_backend.summary.lock().unwrap().sources = 1;
+    r.pick(holiday());
+    r.wait("the Sources view", |r| exists("source-row-1", &mut r.cx));
+    let shell = r.shell.clone();
+    assert_eq!(
+        r.cx.update(|_, cx| shell.read(cx).active_view()),
+        ViewId::Sources
+    );
+    let row = label("source-row-1", &mut r.cx).unwrap();
+    assert!(row.contains("Not scanned yet"), "{row}");
+    assert_eq!(
+        label("scan-new", &mut r.cx).as_deref(),
+        Some("Scan “Holiday 2024”")
+    );
+    let m = r.monitor();
+    assert!(
+        !r.cx.update(|_, cx| m.read(cx).is_active()),
+        "no run is active"
+    );
+    assert!(r.started().is_empty());
 }

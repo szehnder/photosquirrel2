@@ -27,6 +27,8 @@ pub struct SourcesView {
     monitor: Option<Entity<ScanMonitor>>,
     /// Sources picked for the next scan (`None` until the list first loads: then every online source).
     selected: Option<HashSet<SourceId>>,
+    /// The monitor's selection hint last applied (D7: sources an add did not scan are selected once).
+    hint_applied: u64,
     confirm_remove: Option<SourceId>,
     /// Render cost of recent frames (the constant-cost check reads it).
     pub frame_times: Vec<Duration>,
@@ -53,6 +55,7 @@ impl SourcesView {
         Self {
             monitor,
             selected: None,
+            hint_applied: 0,
             confirm_remove: None,
             frame_times: Vec::new(),
             _sub: sub,
@@ -65,9 +68,15 @@ impl SourcesView {
 
     /// The sources picked for the next scan.
     pub fn selected(&self, cx: &App) -> Vec<SourceId> {
-        let mut v: Vec<SourceId> = match &self.selected {
-            Some(s) => s.iter().copied().collect(),
-            None => self
+        let hint = self
+            .monitor
+            .as_ref()
+            .and_then(|m| m.read(cx).selection_hint.clone())
+            .filter(|(g, _)| *g > self.hint_applied);
+        let mut v: Vec<SourceId> = match (&self.selected, hint) {
+            (_, Some((_, ids))) => ids,
+            (Some(s), None) => s.iter().copied().collect(),
+            (None, None) => self
                 .rows(cx)
                 .iter()
                 .filter(|r| r.online)
@@ -85,8 +94,39 @@ impl SourcesView {
             .unwrap_or_default()
     }
 
+    /// Mark the monitor's selection hint as applied (the user's own selection wins from now on).
+    fn settle_hint(&mut self, cx: &App) {
+        if let Some((g, _)) = self
+            .monitor
+            .as_ref()
+            .and_then(|m| m.read(cx).selection_hint.clone())
+        {
+            self.hint_applied = self.hint_applied.max(g);
+        }
+    }
+
+    /// Online sources that no completed scan has covered (D6b): the primary action's targets.
+    pub fn never_scanned(&self, cx: &App) -> Vec<SourceRow> {
+        self.rows(cx)
+            .into_iter()
+            .filter(|r| r.online && !r.first_scan_done)
+            .collect()
+    }
+
+    /// Scan only the sources never scanned (the primary action whenever there are any).
+    pub fn start_new(&mut self, cx: &mut Context<'_, Self>) {
+        let ids: Vec<SourceId> = self.never_scanned(cx).iter().map(|r| r.id).collect();
+        if ids.is_empty() {
+            return;
+        }
+        if let Some(m) = &self.monitor {
+            m.update(cx, |m, cx| m.start(ids, cx));
+        }
+    }
+
     pub fn toggle(&mut self, id: SourceId, cx: &mut Context<'_, Self>) {
         let mut sel: HashSet<SourceId> = self.selected(cx).into_iter().collect();
+        self.settle_hint(cx);
         if !sel.remove(&id) {
             sel.insert(id);
         }
@@ -99,47 +139,34 @@ impl SourcesView {
         if ids.is_empty() {
             return;
         }
+        self.settle_hint(cx);
         if let Some(m) = &self.monitor {
             m.update(cx, |m, cx| m.start(ids, cx));
         }
     }
 
+    /// Add folders through the monitor (D4): the picker, then an "Adding…" row per folder at once, then the real
+    /// rows; their scan starts, queues or waits per "Scan new sources right away". A started scan is followed by the
+    /// shell's activity sampling (the Library's live updates).
     fn add_sources(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(monitor) = self.monitor.clone() else {
             return;
         };
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: true,
-            prompt: Some("Add source".into()),
-        });
+        let scan_now = crate::settings::AppSettings::get(cx)
+            .scanning
+            .scan_new_sources;
+        let task = monitor.update(cx, |m, cx| m.pick_and_add(scan_now, cx));
         cx.spawn_in(window, async move |_, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else {
+            let Some(outcome) = task.await else {
                 return;
             };
-            let backend = monitor.read_with(cx, |m, _| m.backend().clone());
-            let result = cx
-                .background_spawn(async move {
-                    let mut ids = Vec::new();
-                    for p in paths {
-                        ids.push(backend.add_source(&p)?);
+            if outcome.start == crate::views::scan::AddStart::Started {
+                let _ = cx.update(|window, cx| {
+                    if let Some(shell) = crate::shell::Shell::for_window(window, cx) {
+                        shell.update(cx, |s, cx| s.watch_activity(window, cx));
                     }
-                    anyhow::Ok(ids)
-                })
-                .await;
-            monitor.update(cx, |m, cx| match result {
-                Ok(ids) => {
-                    m.refresh_sources(cx);
-                    if !m.is_active() && !ids.is_empty() {
-                        m.start(ids, cx);
-                    }
-                }
-                Err(e) => {
-                    m.error = Some(format!("Source not added: {e:#}"));
-                    cx.notify();
-                }
-            });
+                });
+            }
         })
         .detach();
     }
@@ -202,11 +229,13 @@ impl SourcesView {
         cx.notify();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn source_row(
         &self,
         row: &SourceRow,
         selected: bool,
         active: bool,
+        queued: bool,
         colors: &Colors,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
@@ -263,10 +292,7 @@ impl SourcesView {
                 Colors::chip_bg(colors.warning),
             )
         };
-        let last = row
-            .last_scan_ms
-            .map(|ms| format!("Scanned {}", ago(ms)))
-            .unwrap_or_else(|| "Not scanned yet".into());
+        let last = source_state(row, queued);
         let actions: Vec<AnyElement> = vec![
             kit::button(
                 format!("source-relink-{}", id.0),
@@ -480,7 +506,7 @@ impl Render for SourcesView {
                 .map(|(i, k)| (i, s.texture(k)))
                 .collect::<Vec<_>>()
         });
-        let (active, pending, rows, dashboard, offers_resume) = {
+        let (active, pending, rows, dashboard, offers_resume, add_busy, adding, queued) = {
             let m = monitor.read(cx);
             let rows = m.sources.clone();
             let names: HashMap<SourceId, String> = rows
@@ -499,48 +525,91 @@ impl Render for SourcesView {
                 rows,
                 scan_dashboard::render(&model, cx),
                 scan_dashboard::offers_resume(m),
+                m.add_busy(),
+                m.adding.clone(),
+                m.queued.clone(),
             )
         };
         let selected: HashSet<SourceId> = self.selected(cx).into_iter().collect();
+        let fresh = self.never_scanned(cx);
         let can_start = !active && !selected.is_empty() && pending.is_none();
+        let fresh_in_selection = fresh.iter().filter(|r| selected.contains(&r.id)).count();
         let start_label = if active {
             "Scanning…".to_owned()
-        } else if selected.len() == 1 {
-            "Scan 1 source".to_owned()
         } else {
-            format!("Scan {} sources", selected.len())
+            selection_label(selected.len(), fresh_in_selection)
         };
+        // Never-scanned sources get the primary action, which scans only them (D6b, the owner's choice); the
+        // selection's scan becomes secondary and says how many of its sources are new.
+        let new_action = (!fresh.is_empty() && !active).then(|| {
+            let names: Vec<&str> = fresh.iter().map(|r| r.name.as_str()).collect();
+            let ids: Vec<SourceId> = fresh.iter().map(|r| r.id).collect();
+            let accessible = format!("Scan only the sources never scanned: {}", names.join(", "));
+            let queued_note = ids.iter().any(|id| queued.contains(id));
+            (new_sources_label(&names), accessible, queued_note)
+        });
         // While a run is live the start control is unavailable and says what is happening (an activity glyph, not
         // a dimmed play button; Pause and Cancel are on the run card). While the dashboard offers Resume, that is
         // the page's one primary action and starting a new scan is secondary.
-        let header_actions = vec![
-            kit::button(
-                "source-add",
-                "Add source…",
-                Some(IconName::FolderPlus),
-                Tone::Secondary,
-                kit::on(cx.listener(|this, _, w, cx| this.add_sources(w, cx))),
-                cx,
-            ),
-            kit::button(
-                "scan-start",
-                start_label,
-                Some(if active {
-                    IconName::Activity
-                } else {
-                    IconName::Play
-                }),
-                if active || offers_resume {
-                    Tone::Secondary
-                } else {
-                    Tone::Primary
-                },
-                can_start
-                    .then(|| kit::on(cx.listener(|this, _, _, cx| this.start(cx))))
-                    .flatten(),
-                cx,
-            ),
-        ];
+        let mut header_actions = vec![kit::button(
+            "source-add",
+            if add_busy {
+                "Adding…"
+            } else {
+                "Add source…"
+            },
+            Some(IconName::FolderPlus),
+            Tone::Secondary,
+            (!add_busy)
+                .then(|| kit::on(cx.listener(|this, _, w, cx| this.add_sources(w, cx))))
+                .flatten(),
+            cx,
+        )];
+        if let Some((label, accessible, _)) = &new_action {
+            header_actions.push(
+                div()
+                    .id("scan-new-wrap")
+                    .test_support()
+                    .aria_label(SharedString::from(accessible.clone()))
+                    .child(kit::button(
+                        "scan-new",
+                        label.clone(),
+                        Some(IconName::Play),
+                        if offers_resume {
+                            Tone::Secondary
+                        } else {
+                            Tone::Primary
+                        },
+                        (pending.is_none())
+                            .then(|| kit::on(cx.listener(|this, _, _, cx| this.start_new(cx))))
+                            .flatten(),
+                        cx,
+                    ))
+                    .into_any_element(),
+            );
+        }
+        header_actions.push(kit::button(
+            "scan-start",
+            start_label,
+            Some(if active {
+                IconName::Activity
+            } else {
+                IconName::Play
+            }),
+            if active || offers_resume || new_action.is_some() {
+                Tone::Secondary
+            } else {
+                Tone::Primary
+            },
+            can_start
+                .then(|| kit::on(cx.listener(|this, _, _, cx| this.start(cx))))
+                .flatten(),
+            cx,
+        ));
+        let pending_rows: Vec<AnyElement> = adding
+            .iter()
+            .map(|a| pending_row(a, &monitor, &colors, cx))
+            .collect();
         let list: AnyElement = match &rows {
             Loadable::Loading => div()
                 .text_size(Tokens::text_sm())
@@ -551,7 +620,7 @@ impl Render for SourcesView {
                 .text_color(colors.danger)
                 .child(e.clone())
                 .into_any_element(),
-            Loadable::Ready(rows) if rows.is_empty() => div()
+            Loadable::Ready(rows) if rows.is_empty() && pending_rows.is_empty() => div()
                 .text_size(Tokens::text_sm())
                 .text_color(colors.text_muted)
                 .child("No sources yet. Add a folder, a USB drive or a NAS share.")
@@ -560,9 +629,19 @@ impl Render for SourcesView {
                 .w_full()
                 .children(
                     rows.iter()
-                        .map(|r| self.source_row(r, selected.contains(&r.id), active, &colors, cx))
+                        .map(|r| {
+                            self.source_row(
+                                r,
+                                selected.contains(&r.id),
+                                active,
+                                queued.contains(&r.id),
+                                &colors,
+                                cx,
+                            )
+                        })
                         .collect::<Vec<_>>(),
                 )
+                .children(pending_rows)
                 .into_any_element(),
         };
         let count = rows.ready().map_or(0, Vec::len);
@@ -593,6 +672,135 @@ impl Render for SourcesView {
         }
         el
     }
+}
+
+/// What a source row says about its scans: "Queued, scans next" (added during a run, D6), "Not scanned yet", "First
+/// scan not finished" (a first run that was cancelled or interrupted), or "Scanned 2 days ago".
+pub fn source_state(row: &SourceRow, queued: bool) -> String {
+    if queued {
+        return "Queued, scans next".into();
+    }
+    match (row.first_scan_done, row.last_scan_ms) {
+        (true, Some(ms)) => format!("Scanned {}", ago(ms)),
+        (false, Some(_)) => "First scan not finished".into(),
+        (_, None) => "Not scanned yet".into(),
+    }
+}
+
+/// The primary action for never-scanned sources (D6b): it names one source, or counts several as new.
+pub fn new_sources_label(names: &[&str]) -> String {
+    match names {
+        [one] => format!("Scan “{one}”"),
+        many => format!("Scan {} new sources", many.len()),
+    }
+}
+
+/// The selection's scan, saying how many of its sources are new when it mixes them (D6b): "Scan 2 sources (1 new)".
+pub fn selection_label(selected: usize, new: usize) -> String {
+    let noun = if selected == 1 { "source" } else { "sources" };
+    if new > 0 && new < selected {
+        format!("Scan {selected} {noun} ({new} new)")
+    } else {
+        format!("Scan {selected} {noun}")
+    }
+}
+
+/// An "Adding…" row for a folder being added, or its error with a Dismiss control (D4).
+fn pending_row(
+    a: &crate::views::scan::PendingAdd,
+    monitor: &Entity<ScanMonitor>,
+    colors: &Colors,
+    cx: &mut Context<'_, SourcesView>,
+) -> AnyElement {
+    let key = a.key;
+    let label = match &a.error {
+        None => format!("{}: Adding…", a.name),
+        Some(e) => format!("{}: not added: {e}", a.name),
+    };
+    let monitor = monitor.clone();
+    h_flex()
+        .id(SharedString::from(format!("source-pending-{key}")))
+        .test_support()
+        .aria_label(SharedString::from(label))
+        .w_full()
+        .py(Tokens::space(3.0))
+        .gap(Tokens::space(3.0))
+        .items_center()
+        .border_t_1()
+        .border_color(colors.border)
+        .child(
+            div()
+                .size(Tokens::size(32.0))
+                .flex_none()
+                .rounded(Tokens::RADIUS_MD)
+                .bg(colors.raised)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Icon::new(if a.error.is_some() {
+                        IconName::X
+                    } else {
+                        IconName::FolderPlus
+                    })
+                    .size(Tokens::icon_md())
+                    .text_color(colors.text_muted),
+                ),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(Tokens::space(0.5))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(colors.text)
+                        .child(a.name.clone()),
+                )
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .font_family(ui_theme::fonts::MONO_FONT_FAMILY)
+                        .text_size(Tokens::text_mono())
+                        .text_color(colors.text_faint)
+                        .child(kit::middle_ellipsis(&kit::display_path(&a.path), 72)),
+                ),
+        )
+        .child(match &a.error {
+            None => div()
+                .flex_none()
+                .text_size(Tokens::text_xs())
+                .text_color(colors.text_muted)
+                .child("Adding…")
+                .into_any_element(),
+            Some(e) => h_flex()
+                .flex_none()
+                .max_w(Tokens::size(360.0))
+                .gap(Tokens::space(2.0))
+                .items_center()
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_size(Tokens::text_xs())
+                        .text_color(colors.danger)
+                        .child(format!("Not added: {e}")),
+                )
+                .child(kit::button(
+                    format!("source-pending-dismiss-{key}"),
+                    "Dismiss",
+                    None,
+                    Tone::Ghost,
+                    kit::on(move |_, _, cx: &mut App| {
+                        monitor.update(cx, |m, cx| m.dismiss_add(key, cx));
+                    }),
+                    cx,
+                ))
+                .into_any_element(),
+        })
+        .into_any_element()
 }
 
 /// The list's title: "1 source · 1 online", "3 sources · 2 online".

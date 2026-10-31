@@ -144,7 +144,11 @@ impl LibraryBackend for CatalogBackend {
         let scan = self.scan()?;
         let added = scan.add_source(&path)?;
         self.lib.refresh_sources();
-        scan.start(&[added.source.id])?;
+        // The add succeeded: a start refused because a run is active is not a failed add (the shell's own path, with
+        // a scan hub, queues it instead).
+        if let Err(e) = scan.start(&[added.source.id]) {
+            log::info!("source {} added; not started: {e}", added.source.id);
+        }
         Ok(())
     }
 

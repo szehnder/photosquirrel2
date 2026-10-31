@@ -28,6 +28,8 @@ pub struct FakeBackend {
     pub summary_delay: Mutex<Duration>,
     pub resumed: Mutex<Vec<ScanRunId>>,
     pub rescans: AtomicU32,
+    /// `activity()` calls (the shell's activity sampling).
+    pub activity_calls: AtomicU32,
     /// The gallery's data (an empty library when `None`).
     pub gallery: Option<Arc<dyn ui_gallery::source::GallerySource>>,
 }
@@ -72,6 +74,7 @@ impl LibraryBackend for FakeBackend {
         Ok(())
     }
     fn activity(&self) -> Option<ActivitySnapshot> {
+        self.activity_calls.fetch_add(1, Ordering::SeqCst);
         None
     }
     fn gallery(self: Arc<Self>) -> Arc<dyn ui_gallery::source::GallerySource> {

@@ -7,10 +7,11 @@
 //! loop stops and the run summary is fetched. [`ScanHub`] is the global that holds the monitor.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::*;
-use ps_model::{ProgressSnapshot, RunStatus, ScanRunId, SourceId};
+use ps_model::{ProgressSnapshot, RunStatus, ScanPhase, ScanRunId, SourceId};
 use ps_service::scans::eta::{RATE_WINDOW_MS, remaining_bytes, window_rates};
 use ps_service::scans::{Eta, EtaEstimator, RunError, RunOverview};
 use ui_gallery::source::{SharedSource, ThumbKey};
@@ -45,6 +46,41 @@ impl Control {
             Control::Cancelling => "Cancelling…",
         }
     }
+}
+
+/// A folder being added (responsive-add-source, D4): shown as an "Adding…" row from the frame the picker returns
+/// until the add answers; a failed add keeps its row with the error until dismissed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingAdd {
+    pub key: u64,
+    pub path: PathBuf,
+    /// The folder's name ("Pictures").
+    pub name: String,
+    pub error: Option<String>,
+}
+
+/// What happened to the sources an add registered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddStart {
+    /// Nothing was added.
+    Nothing,
+    /// Their scan started.
+    Started,
+    /// A run was active: they scan next, after it (the owner's choice, D6).
+    Queued,
+    /// "Scan new sources right away" is off, or the start failed: "Not scanned yet".
+    NotScanned,
+}
+
+/// The result of [`ScanMonitor::add_paths`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddOutcome {
+    pub added: Vec<SourceId>,
+    /// Names of the added folders.
+    pub names: Vec<String>,
+    /// Folders not added: name and error.
+    pub failed: Vec<(String, String)>,
+    pub start: AddStart,
 }
 
 /// Per-source throughput history (MB/s and files/s, one point per second of run time).
@@ -88,6 +124,15 @@ pub struct ScanMonitor {
     pub power_note: Option<String>,
     /// The run summary's "How to enable HEIC previews" disclosure is open.
     pub decoder_fix_open: bool,
+    /// A folder picker for Add source is open (Add is unavailable meanwhile).
+    pub picking: bool,
+    /// Folders being added, or whose add failed (D4).
+    pub adding: Vec<PendingAdd>,
+    next_add: u64,
+    /// Sources added while a run was active, each once, in order: they scan next (D6).
+    pub queued: Vec<SourceId>,
+    /// Sources an add did not scan, for the Sources view to select once (generation, ids; D7).
+    pub selection_hint: Option<(u64, Vec<SourceId>)>,
 }
 
 impl ScanMonitor {
@@ -116,6 +161,11 @@ impl ScanMonitor {
             power_note: None,
             // Dev-only: scripted screenshots of the open "How to enable HEIC previews".
             decoder_fix_open: std::env::var("PHOTOSQUIRREL_DECODER_FIX").is_ok_and(|v| v == "open"),
+            picking: false,
+            adding: Vec::new(),
+            next_add: 0,
+            queued: Vec::new(),
+            selection_hint: None,
         };
         this.refresh_sources(cx);
         this.refresh_last_run(cx);
@@ -164,16 +214,34 @@ impl ScanMonitor {
         (s.to_process > 0).then(|| ((s.processed.min(s.to_process) * 100) / s.to_process) as u32)
     }
 
-    /// The status bar's line while a run is active ("Scanning · 41% · about 4 min left").
+    /// The status bar's line while a folder is being added ("Adding Pictures…") or a run is active ("Scanning 41 of
+    /// 100 files · 41% · about 4 min left", "Walking folders"), with the queued sources that follow it ("then 1 more
+    /// source").
     pub fn status_line(&self) -> Option<String> {
+        let adding: Vec<&PendingAdd> = self.adding.iter().filter(|a| a.error.is_none()).collect();
+        match adding.as_slice() {
+            [] => {}
+            [one] => return Some(format!("Adding {}…", one.name)),
+            many => return Some(format!("Adding {} folders…", many.len())),
+        }
         let s = self.snapshot.as_ref()?;
         let pct = self
             .percent()
             .map(|p| format!(" · {p}%"))
             .unwrap_or_default();
+        let more = match self.queued.len() {
+            0 => String::new(),
+            1 => " · then 1 more source".to_owned(),
+            n => format!(" · then {n} more sources"),
+        };
         match (self.pending, s.status) {
             (Some(c), _) => Some(c.label().to_owned()),
-            (None, RunStatus::Paused) => Some(format!("Scan paused{pct}")),
+            (None, RunStatus::Paused) => Some(format!("Scan paused{pct}{more}")),
+            (None, RunStatus::Running)
+                if !s.fill && matches!(s.phase, ScanPhase::Starting | ScanPhase::Walking) =>
+            {
+                Some(format!("Walking folders{more}"))
+            }
             (None, RunStatus::Running) => {
                 let eta = match self.eta() {
                     Eta::Remaining(d) => {
@@ -183,13 +251,199 @@ impl ScanMonitor {
                     Eta::Done => String::new(),
                 };
                 Some(format!(
-                    "Scanning {} of {} files{pct}{eta}",
+                    "Scanning {} of {} files{pct}{eta}{more}",
                     format_count(s.processed),
                     format_count(s.to_process)
                 ))
             }
             _ => None,
         }
+    }
+
+    // ---- adding sources (responsive-add-source) ----------------------------------------------------------
+
+    /// The picker is open or a folder is being added: Add is unavailable.
+    pub fn add_busy(&self) -> bool {
+        self.picking || self.adding.iter().any(|a| a.error.is_none())
+    }
+
+    /// Open the folder picker and add what it returns ([`ScanMonitor::add_paths`]); `None` when the picker was
+    /// cancelled or Add is busy.
+    pub fn pick_and_add(
+        &mut self,
+        scan_now: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> Task<Option<AddOutcome>> {
+        if self.add_busy() {
+            return Task::ready(None);
+        }
+        self.picking = true;
+        cx.notify();
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some("Add source".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let paths = match picked.await {
+                Ok(Ok(Some(p))) if !p.is_empty() => Some(p),
+                _ => None,
+            };
+            let task = this
+                .update(cx, |m, cx| {
+                    m.picking = false;
+                    cx.notify();
+                    paths.map(|p| m.add_paths(p, scan_now, cx))
+                })
+                .ok()
+                .flatten()?;
+            Some(task.await)
+        })
+    }
+
+    /// Add `paths` as sources (D4-D7). Each shows as an "Adding…" row from this update on, so the next frame draws
+    /// it; one background task registers them (constant cost, ADR-0121), lists the sources and, with `scan_now`,
+    /// starts their scan, or queues them when a run is active. The pending rows give way to the real rows in the same
+    /// update; a failed folder keeps its row with the error.
+    pub fn add_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        scan_now: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> Task<AddOutcome> {
+        let mut keys = Vec::new();
+        for path in &paths {
+            self.next_add += 1;
+            keys.push(self.next_add);
+            self.adding.push(PendingAdd {
+                key: self.next_add,
+                path: path.clone(),
+                name: crate::scan_backend::source_name(path),
+                error: None,
+            });
+        }
+        self.error = None;
+        cx.notify();
+        let backend = self.backend.clone();
+        cx.spawn(async move |this, cx| {
+            let work = cx.background_spawn(async move {
+                let results: Vec<Result<SourceId, String>> = paths
+                    .iter()
+                    .map(|p| backend.add_source(p).map_err(|e| format!("{e:#}")))
+                    .collect();
+                let added: Vec<SourceId> = results.iter().filter_map(|r| r.clone().ok()).collect();
+                let active = |b: &crate::scan_backend::SharedScanBackend| {
+                    b.snapshot()
+                        .is_some_and(|s| matches!(s.status, RunStatus::Running | RunStatus::Paused))
+                };
+                let mut start_error = None;
+                let (start, snap) = if added.is_empty() {
+                    (AddStart::Nothing, None)
+                } else if !scan_now {
+                    (AddStart::NotScanned, None)
+                } else if active(&backend) {
+                    (AddStart::Queued, None)
+                } else {
+                    match backend.start(&added) {
+                        Ok(_) => (AddStart::Started, backend.snapshot()),
+                        // A run started meanwhile: they scan after it. Never "not added".
+                        Err(_) if active(&backend) => (AddStart::Queued, None),
+                        Err(e) => {
+                            start_error = Some(format!("Could not start the scan: {e:#}"));
+                            (AddStart::NotScanned, None)
+                        }
+                    }
+                };
+                let rows = backend.sources();
+                (results, added, start, snap, rows, start_error)
+            });
+            let (results, added, start, snap, rows, start_error) = work.await;
+            this.update(cx, |m, cx| {
+                let mut outcome = AddOutcome {
+                    added: added.clone(),
+                    names: Vec::new(),
+                    failed: Vec::new(),
+                    start,
+                };
+                for (key, r) in keys.iter().zip(&results) {
+                    let Some(i) = m.adding.iter().position(|a| a.key == *key) else {
+                        continue;
+                    };
+                    match r {
+                        Ok(_) => outcome.names.push(m.adding.remove(i).name),
+                        Err(e) => {
+                            outcome.failed.push((m.adding[i].name.clone(), e.clone()));
+                            m.adding[i].error = Some(e.clone());
+                        }
+                    }
+                }
+                if let Ok(rows) = rows {
+                    m.sources = Loadable::Ready(rows);
+                } else {
+                    m.refresh_sources(cx);
+                }
+                match start {
+                    AddStart::Started => {
+                        m.apply(snap, cx);
+                        m.overview = None;
+                        m.ensure_sampling(cx);
+                    }
+                    AddStart::Queued => {
+                        for id in &added {
+                            if !m.queued.contains(id) {
+                                m.queued.push(*id);
+                            }
+                        }
+                        // The run may have ended meanwhile: sampling sees it and starts the queue (`run_ended`).
+                        m.ensure_sampling(cx);
+                    }
+                    AddStart::NotScanned => {
+                        let generation = m.selection_hint.as_ref().map_or(1, |(g, _)| g + 1);
+                        m.selection_hint = Some((generation, added.clone()));
+                    }
+                    AddStart::Nothing => {}
+                }
+                if start_error.is_some() {
+                    m.error = start_error;
+                }
+                cx.notify();
+                outcome
+            })
+            .unwrap_or(AddOutcome {
+                added,
+                names: Vec::new(),
+                failed: Vec::new(),
+                start,
+            })
+        })
+    }
+
+    /// Forget a failed add's row.
+    pub fn dismiss_add(&mut self, key: u64, cx: &mut Context<'_, Self>) {
+        self.adding.retain(|a| a.key != key);
+        cx.notify();
+    }
+
+    /// Start a run of the queued sources that are online, once the run before them completed (D6). Offline ones stay
+    /// queued.
+    fn start_queued(&mut self, cx: &mut Context<'_, Self>) {
+        if self.queued.is_empty() || self.is_active() || self.pending.is_some() {
+            return;
+        }
+        let online: Vec<SourceId> = match self.sources.ready() {
+            Some(rows) => self
+                .queued
+                .iter()
+                .copied()
+                .filter(|id| rows.iter().any(|r| r.id == *id && r.online))
+                .collect(),
+            None => self.queued.clone(),
+        };
+        if online.is_empty() {
+            return;
+        }
+        self.start(online, cx);
     }
 
     // ---- sampling -------------------------------------------------------------------------------------
@@ -296,9 +550,15 @@ impl ScanMonitor {
 
     fn run_ended(&mut self, cx: &mut Context<'_, Self>) {
         self.pending = None;
-        let Some(run) = self.snapshot.as_ref().map(|s| s.run) else {
+        let Some((run, status)) = self.snapshot.as_ref().map(|s| (s.run, s.status)) else {
+            // No run at all: a queue (from a race with a run's end) can start now.
+            self.start_queued(cx);
             return;
         };
+        // The queued sources scan next after a completed run; a cancelled run leaves them queued until the user acts.
+        if status == RunStatus::Completed {
+            self.start_queued(cx);
+        }
         if self.ended == Some(run) {
             return;
         }
@@ -425,6 +685,8 @@ impl ScanMonitor {
         if self.is_active() {
             return;
         }
+        // Started now: no longer waiting.
+        self.queued.retain(|id| !sources.contains(id));
         self.control(
             Control::Starting,
             move |b| b.start(&sources).map(|_| ()),

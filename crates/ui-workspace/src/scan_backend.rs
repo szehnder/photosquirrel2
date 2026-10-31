@@ -37,6 +37,9 @@ pub struct SourceRow {
     /// Files catalogued (present) and of those, finished (thumbed or skipped).
     pub files: u64,
     pub finished: u64,
+    /// A scan run that covered the source completed (fill jobs aside). `false`: "Not scanned yet", or a first scan
+    /// that never finished; the Sources view's primary action scans these first.
+    pub first_scan_done: bool,
 }
 
 impl SourceRow {
@@ -207,7 +210,7 @@ pub fn earlier_rules_note(n: u64) -> Option<String> {
 /// The engine side of the Sources, dashboard, Export and Reports views.
 pub trait ScanBackend: Send + Sync + 'static {
     fn sources(&self) -> anyhow::Result<Vec<SourceRow>>;
-    /// Register a folder (walks and fingerprints it; does not start a scan).
+    /// Register a folder (constant cost, ADR-0121: opens no file; does not start a scan).
     fn add_source(&self, root: &Path) -> anyhow::Result<SourceId>;
     fn relink_source(&self, id: SourceId, new_root: &Path) -> anyhow::Result<()>;
     /// Forget a source's catalog records. Never touches its files (ADR-0004).
@@ -604,6 +607,9 @@ impl ScanBackend for CatalogBackend {
                 .filter(|r| r.sources.contains(&s.id))
                 .filter_map(|r| r.ended_at_ms)
                 .max();
+            let first_scan_done = runs.iter().any(|r| {
+                r.fill.is_none() && r.status == RunStatus::Completed && r.sources.contains(&s.id)
+            });
             out.push(SourceRow {
                 id: s.id,
                 name: source_name(&s.root),
@@ -613,6 +619,7 @@ impl ScanBackend for CatalogBackend {
                 last_scan_ms,
                 files,
                 finished,
+                first_scan_done,
             });
         }
         Ok(out)
@@ -1080,6 +1087,10 @@ pub struct DemoBackend {
     pub roots: Mutex<HashMap<SourceId, PathBuf>>,
     /// An in-memory cleanup plan (UI tests of the selection tree); nothing on disk.
     pub cleanup: Mutex<Option<DemoCleanup>>,
+    /// Sources added here that no completed run has covered yet ("Not scanned yet").
+    pub never_scanned: Mutex<Vec<SourceId>>,
+    /// Every `add_source` call blocks this long first (tests of the pending row; a real sleep).
+    pub add_delay: Mutex<std::time::Duration>,
 }
 
 /// An in-memory cleanup run for [`DemoBackend`]: selecting and discarding change only these rows.
@@ -1229,6 +1240,8 @@ impl DemoBackend {
             restarted: AtomicBool::new(false),
             roots: Mutex::new(HashMap::new()),
             cleanup: Mutex::new(None),
+            never_scanned: Mutex::new(Vec::new()),
+            add_delay: Mutex::new(std::time::Duration::ZERO),
         }
     }
 
@@ -1534,11 +1547,22 @@ impl ScanBackend for DemoBackend {
     }
 
     fn sources(&self) -> anyhow::Result<Vec<SourceRow>> {
+        // A completed simulated run covered the sources of the last start.
+        if self
+            .scan
+            .overview()
+            .is_some_and(|o| o.status == RunStatus::Completed)
+            && let Some(last) = Self::lock(&self.started).last().cloned()
+        {
+            Self::lock(&self.never_scanned).retain(|id| !last.contains(id));
+        }
+        let never = Self::lock(&self.never_scanned).clone();
         Ok(self
             .scan
             .sources()
             .into_iter()
             .map(|s| SourceRow {
+                first_scan_done: !never.contains(&s.id),
                 id: s.id,
                 name: s.name.clone(),
                 root: Self::lock(&self.roots)
@@ -1547,16 +1571,51 @@ impl ScanBackend for DemoBackend {
                     .unwrap_or_else(|| demo_root(&s.name)),
                 online: s.online,
                 device: s.device,
-                last_scan_ms: Some(now_ms() - s.id.0 * 86_400_000 * 3),
-                files: s.files,
-                finished: s.files - s.files / (3 + s.id.0 as u64 * 4),
+                last_scan_ms: (!never.contains(&s.id)).then(|| now_ms() - s.id.0 * 86_400_000 * 3),
+                files: if never.contains(&s.id) { 0 } else { s.files },
+                finished: if never.contains(&s.id) {
+                    0
+                } else {
+                    s.files - s.files / (3 + s.id.0 as u64 * 4)
+                },
             })
             .collect())
     }
 
+    /// Registers a simulated source of 1,200 files for `root` (once per root), after [`DemoBackend::add_delay`].
     fn add_source(&self, root: &Path) -> anyhow::Result<SourceId> {
+        let delay = *Self::lock(&self.add_delay);
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
         Self::lock(&self.added).push(root.to_path_buf());
-        Ok(SourceId(99))
+        if let Some((id, _)) = Self::lock(&self.roots)
+            .iter()
+            .find(|(_, r)| r.as_path() == root)
+        {
+            anyhow::bail!("{} is already a source ({id})", root.display());
+        }
+        let id = SourceId(
+            self.scan
+                .sources()
+                .iter()
+                .map(|s| s.id.0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        let name = source_name(root);
+        self.scan.reconfigure(|c| {
+            c.sources.push(ps_service::scans::FakeSource::new(
+                id.0,
+                &name,
+                DeviceClass::SolidState,
+                1_200,
+            ))
+        });
+        Self::lock(&self.roots).insert(id, root.to_path_buf());
+        Self::lock(&self.never_scanned).push(id);
+        Ok(id)
     }
 
     fn relink_source(&self, id: SourceId, new_root: &Path) -> anyhow::Result<()> {

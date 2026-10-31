@@ -92,6 +92,10 @@ pub struct Shell {
     frames: u64,
     save_task: Option<Task<()>>,
     activity_task: Option<Task<()>>,
+    /// The activity sampling loop is running.
+    activity_live: bool,
+    /// The monitor's run the shell last started sampling for (once per run).
+    followed_run: Option<ps_model::ScanRunId>,
     toast_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -139,9 +143,24 @@ impl Shell {
             frames: 0,
             save_task: None,
             activity_task: None,
+            activity_live: false,
+            followed_run: None,
             toast_task: None,
             _subscriptions: subscriptions,
         };
+        // Every run the scan monitor sees (the dashboard, an add, the queue, Resume) reaches the status bar and the
+        // Library's live updates through the same activity sampling (responsive-add-source D6c).
+        if let Some(monitor) = crate::views::scan::ScanHub::monitor(cx) {
+            this._subscriptions
+                .push(cx.observe_in(&monitor, window, |this, m, window, cx| {
+                    let m = m.read(cx);
+                    let run = m.snapshot.as_ref().map(|s| s.run);
+                    if m.is_active() && !this.activity_live && this.followed_run != run {
+                        this.followed_run = run;
+                        this.start_activity_sampling(window, cx);
+                    }
+                }));
+        }
         if let Some(recovery) = AppSettings::recovery(cx).cloned() {
             this.show_toast(
                 ToastKind::Warning,
@@ -356,7 +375,27 @@ impl Shell {
         .detach();
     }
 
+    /// Add folders (Library, Ctrl+O, onboarding, the palette). With a scan hub, through its monitor (D4): an
+    /// "Adding…" row and status line at once, then the scan started (followed here), queued or left for Sources.
     pub fn add_source(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if let Some(monitor) = crate::views::scan::ScanHub::monitor(cx) {
+            if monitor.read(cx).add_busy() {
+                return;
+            }
+            let scan_now = AppSettings::get(cx).scanning.scan_new_sources;
+            let onboarding = self.summary.ready().is_some_and(CatalogSummary::is_empty);
+            let task = monitor.update(cx, |m, cx| m.pick_and_add(scan_now, cx));
+            cx.spawn_in(window, async move |this, cx| {
+                let Some(outcome) = task.await else {
+                    return;
+                };
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.after_add(&outcome, onboarding, window, cx)
+                });
+            })
+            .detach();
+            return;
+        }
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -381,9 +420,56 @@ impl Shell {
                     return;
                 }
             }
-            let _ = this.update_in(cx, |this, window, cx| this.refresh(window, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.start_activity_sampling(window, cx);
+                this.refresh(window, cx);
+            });
         })
         .detach();
+    }
+
+    /// What the shell does once an add answered (D5-D8).
+    fn after_add(
+        &mut self,
+        o: &crate::views::scan::AddOutcome,
+        onboarding: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        use crate::views::scan::AddStart;
+        let named = match o.names.as_slice() {
+            [one] => format!("“{one}”"),
+            many => format!("{} folders", many.len()),
+        };
+        if let Some((name, e)) = o.failed.first() {
+            self.show_toast(
+                ToastKind::Warning,
+                "Source not added",
+                format!("{name}: {e}"),
+                true,
+                cx,
+            );
+        }
+        match o.start {
+            AddStart::Started => self.start_activity_sampling(window, cx),
+            AddStart::Queued => self.show_toast(
+                ToastKind::Info,
+                format!("Added {named}"),
+                "It scans next, after the current scan.",
+                true,
+                cx,
+            ),
+            AddStart::NotScanned if onboarding => self.show_view(ViewId::Sources, window, cx),
+            AddStart::NotScanned => self.show_toast(
+                ToastKind::Info,
+                format!("Added {named}"),
+                "It is not scanned yet: start it from Sources.",
+                true,
+                cx,
+            ),
+            AddStart::Nothing => {}
+        }
+        self.refresh(window, cx);
     }
 
     /// Follow a run started elsewhere (Fill in previews from the Library or the dialog): the status bar and the
@@ -395,6 +481,7 @@ impl Shell {
     /// Sample the backend's activity every 100 ms until it reports idle (ADR-0019).
     fn start_activity_sampling(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
         let service = self.service.clone();
+        self.activity_live = true;
         self.activity_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 let snapshot = service
@@ -417,7 +504,10 @@ impl Shell {
                 }
                 cx.background_executor().timer(ACTIVITY_INTERVAL).await;
             }
-            let _ = this.update_in(cx, |this, window, cx| this.refresh(window, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.activity_live = false;
+                this.refresh(window, cx);
+            });
         }));
     }
 
