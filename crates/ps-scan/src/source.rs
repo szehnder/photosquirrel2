@@ -238,6 +238,12 @@ pub fn encode(samples: &[Sample]) -> Vec<u8> {
     out
 }
 
+/// Whether a source still needs its fingerprint recorded (ADR-0121): none stored, or a stored one with no sample
+/// (catalogs written before an empty sample set was left unset).
+pub fn measure_pending(stored: Option<&[u8]>) -> bool {
+    stored.is_none_or(|f| decode(f).is_empty())
+}
+
 /// Decode a stored fingerprint (malformed trailing bytes are ignored).
 pub fn decode(blob: &[u8]) -> Vec<Sample> {
     blob.as_chunks::<SAMPLE_BYTES>()
@@ -353,6 +359,18 @@ pub fn overlap(new: &Path, existing: &Path) -> Overlap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_or_missing_fingerprint_is_measured_again() {
+        assert!(measure_pending(None));
+        assert!(measure_pending(Some(&[])));
+        assert!(measure_pending(Some(&[0u8; 10])), "no whole sample");
+        let one = encode(&[Sample {
+            path_hash: [1; 32],
+            content: ContentId::full([2; 32]),
+        }]);
+        assert!(!measure_pending(Some(&one)));
+    }
 
     #[test]
     fn samples_round_trip_and_overlap() {

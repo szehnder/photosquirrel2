@@ -131,8 +131,13 @@ impl SourceFs {
     }
 
     /// The names of the folders directly in `dir` (not symlinks to folders), sorted by name bytes, from the
-    /// listing's entry types alone: no entry is stat-ed where the filesystem reports types (`d_type`; std falls
-    /// back to `lstat` elsewhere). For searches that need the tree's shape, not its files (ADR-0121).
+    /// listing's entry types alone: no entry is stat-ed where the filesystem reports types (`d_type`). For searches
+    /// that need the tree's shape, not its files (ADR-0121).
+    ///
+    /// Where the filesystem does not report entry types (`DT_UNKNOWN`: some network and FUSE filesystems, older
+    /// XFS, reiserfs), std's `file_type` falls back to one `lstat` per entry, inside std. The instrumented layer
+    /// does not see those calls, so the registration guard test (0 entry stats) cannot catch them; the search's
+    /// depth and folder limits still bound the cost.
     pub fn subfolders(&self, dir: &Path) -> io::Result<Vec<OsString>> {
         if let Some(i) = &self.instr {
             i.read_dirs.fetch_add(1, Ordering::Relaxed);

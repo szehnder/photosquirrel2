@@ -22,7 +22,7 @@ The user SHALL be able to add a folder as a source. Adding SHALL record its root
 - **THEN** the cancelled run records no fingerprint and the resumed run records the total size and fingerprint
 
 ### Requirement: Re-link a moved source
-When a source's root is missing, the source SHALL be shown as offline, and the user SHALL be able to re-link it to a new root; re-linking MUST be confirmed only when the sampled content fingerprint matches. A source without a recorded fingerprint SHALL be checked by the files its scans identified so far, and one with no identified file SHALL be re-linked without a check.
+When a source's root is missing, the source SHALL be shown as offline, and the user SHALL be able to re-link it to a new root; re-linking MUST be confirmed only when the sampled content fingerprint matches. A source without a recorded fingerprint SHALL be checked by the files its scans identified so far, and one with no identified file SHALL be re-linked without a check. A completed scan with no file to sample SHALL leave the fingerprint unset, so a later completed scan records it.
 
 #### Scenario: Remounted drive relinked
 - **WHEN** a scanned corpus drive is moved to a new path and re-linked to it
@@ -35,6 +35,10 @@ When a source's root is missing, the source SHALL be shown as offline, and the u
 #### Scenario: Never scanned source relinked
 - **WHEN** a source that was added but never scanned is moved and re-linked to its new path
 - **THEN** it is re-linked without a fingerprint check and its first scan records the fingerprint
+
+#### Scenario: Source empty at its first scan records the fingerprint later
+- **WHEN** an empty folder is added and scanned to completion, photos are copied into it and it is scanned again, then it is moved and re-linked to another drive and to its new path
+- **THEN** the first scan records a size of 0 and no fingerprint, the second records a fingerprint, the other drive is refused with a mismatch count and the new path is accepted
 
 #### Scenario: Relink after an interrupted first scan
 - **WHEN** a source whose first scan was cancelled after identifying some files is moved, then re-linked to its new path and to another drive

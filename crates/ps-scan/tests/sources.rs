@@ -209,6 +209,55 @@ fn scenario_sources_relink_after_an_interrupted_first_scan() {
 }
 
 #[test]
+fn scenario_sources_source_empty_at_its_first_scan_records_the_fingerprint_later() {
+    let _cores = shared();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tmp.path().join("drive");
+    std::fs::create_dir_all(&root).expect("mkdir");
+    let mut e = env();
+    let id = e.add(&root);
+    completed(&e.scan(&[id]));
+    let s = &e.s().sources().expect("sources")[0];
+    assert_eq!(s.total_bytes, Some(0), "the size is recorded");
+    assert_eq!(
+        s.fingerprint_samples, 0,
+        "no sample: the fingerprint stays unset"
+    );
+    // A catalog written before this fix stored an empty fingerprint: it heals the same way.
+    let dir = e.dir.clone();
+    e.close();
+    rusqlite::Connection::open(dir.join(ps_catalog::CATALOG_FILE))
+        .expect("catalog")
+        .execute("UPDATE source SET fingerprint = X'' WHERE id = ?1", [id.0])
+        .expect("store an empty fingerprint");
+    e.reopen(ps_scan::ScanOptions::default());
+    // Photos arrive; the next completed scan records the fingerprint.
+    for sub in ["Backup 2015", "Backup 2016"] {
+        copy_tree(&corpus().root.join("drive-b").join(sub), &root.join(sub));
+    }
+    completed(&e.scan(&[id]));
+    let s = &e.s().sources().expect("sources")[0];
+    assert!(
+        s.fingerprint_samples > 0 && s.fingerprint_samples <= 64,
+        "{} samples",
+        s.fingerprint_samples
+    );
+    let moved = tmp.path().join("drive-moved");
+    ps_fixtures::scratch::rename(&root, &moved).expect("move drive");
+    e.s().refresh_sources().expect("refresh");
+    let err = e
+        .s()
+        .relink_source(id, &corpus().root.join("drive-c"))
+        .expect_err("wrong drive");
+    assert!(
+        matches!(err, ScanError::FingerprintMismatch { mismatched, .. } if mismatched > 0),
+        "{err:?}"
+    );
+    let s = e.s().relink_source(id, &moved).expect("relink");
+    assert_eq!(s.status, SourceStatus::Online);
+}
+
+#[test]
 fn scenario_sources_missing_folder_rejected() {
     let e = env();
     let tmp = tempfile::tempdir().expect("tmp");

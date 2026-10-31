@@ -432,6 +432,8 @@ fn record_measures(ctx: &RunCtx) {
             }
         };
         let samples = crate::source::from_rows(&rows.identified);
+        // No file to sample yet (an empty folder, or only files outside the size range): the fingerprint stays
+        // unset, so the next completed scan measures again once there is one.
         log::info!(
             "source {}: total size {} bytes and {} fingerprint samples recorded",
             s.id,
@@ -441,7 +443,7 @@ fn record_measures(ctx: &RunCtx) {
         ctx.submit(Command::SetSourceMeasure {
             source: s.id,
             total_bytes: rows.total_bytes,
-            fingerprint: crate::source::encode(&samples),
+            fingerprint: (!samples.is_empty()).then(|| crate::source::encode(&samples)),
         });
     }
 }

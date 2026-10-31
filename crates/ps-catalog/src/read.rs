@@ -409,8 +409,7 @@ impl Readers {
             }
             let any_identified: bool = c
                 .prepare_cached(
-                    "SELECT EXISTS (SELECT 1 FROM file WHERE source_id = ?1 AND missing_since IS NULL
-                                     AND content_id IS NOT NULL)",
+                    "SELECT EXISTS (SELECT 1 FROM file WHERE source_id = ?1 AND content_id IS NOT NULL)",
                 )?
                 .query_row([source.0], |r| r.get(0))?;
             Ok(SourceMeasureRows {
@@ -885,6 +884,7 @@ pub struct SourceMeasureRows {
     pub total_bytes: u64,
     /// Present files in the size range with a content identity: path, size, identity.
     pub identified: Vec<(RelPath, u64, ContentId)>,
-    /// Some present file (of any size) has a content identity.
+    /// Some file of the source (of any size, present or missing) has a content identity: results a wrong re-link
+    /// would attach to another drive.
     pub any_identified: bool,
 }

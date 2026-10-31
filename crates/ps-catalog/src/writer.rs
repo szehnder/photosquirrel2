@@ -106,11 +106,12 @@ pub enum Command {
         source: SourceId,
         device_hint: String,
     },
-    /// A source's total size and content fingerprint, recorded by its first completed scan (ADR-0121).
+    /// A source's total size and content fingerprint, recorded by its first completed scan (ADR-0121). `None`
+    /// leaves the fingerprint unset (no file to sample yet), so a later completed scan measures again.
     SetSourceMeasure {
         source: SourceId,
         total_bytes: u64,
-        fingerprint: Vec<u8>,
+        fingerprint: Option<Vec<u8>>,
     },
     /// Re-link a source to a new root (ADR-0006): new root path and volume facts, status `online`.
     RelinkSource {

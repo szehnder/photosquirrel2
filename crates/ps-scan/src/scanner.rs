@@ -520,16 +520,16 @@ impl Scanner {
     }
 
     /// The fingerprint a re-link checks (ADR-0121): the recorded one, else the one the source's identified files
-    /// give now (an unfinished first scan), and whether any of its present files has a content identity (results
-    /// a wrong re-link would attach to another drive).
+    /// give now (an unfinished first scan, or a stored empty one), and whether any of its files has a content
+    /// identity (results a wrong re-link would attach to another drive).
     fn fingerprint_of(&self, rec: &SourceRecord) -> Result<(Vec<source::Sample>, bool)> {
         let rows =
             self.catalog
                 .read()
                 .source_measure_rows(rec.id, 1, source::FINGERPRINT_MAX_FILE)?;
         let samples = match rec.fingerprint.as_deref() {
-            Some(f) => source::decode(f),
-            None => source::from_rows(&rows.identified),
+            Some(f) if !source::measure_pending(Some(f)) => source::decode(f),
+            _ => source::from_rows(&rows.identified),
         };
         Ok((samples, rows.any_identified))
     }
@@ -815,7 +815,7 @@ impl Scanner {
                 root,
                 device,
                 offline: !online,
-                measure: r.fingerprint.is_none(),
+                measure: source::measure_pending(r.fingerprint.as_deref()),
                 lost: AtomicBool::new(false),
                 symlinks_skipped: AtomicU64::new(0),
                 walk_errors: AtomicU64::new(0),
