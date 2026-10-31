@@ -42,7 +42,7 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
-### What's new since 0.3.0
+### What's new in 0.3.1
 
 - **Videos get their poster frames after you install ffmpeg.** Videos catalogued without ffmpeg showed "needs a
   poster-frame tool" for good; now **Fill in previews** (or the next rescan) gives each of them its frame once
@@ -53,7 +53,7 @@ to their resized or re-exported JPEG copies.
   install what you have, and is not tried again on every run; a call that times out, or whose drive is unplugged,
   leaves the video waiting instead. **Try again** in the "Why no preview?" dialog (`photosquirrel-cli previews fill
   --reason poster_failed`) runs ffmpeg once more on such videos and says how many; without ffmpeg it shows how to
-  install it. An older PhotoSquirrel opening the catalog shows those videos as "made by a newer version".
+  install it.
 - **Adobe RGB and wide-gamut photos look right.** Canon `_MG_` JPEGs and the previews of their CR2s, recorded in
   Adobe RGB, no longer look flat next to their `IMG_` neighbours: thumbnails, the filmstrip and the loupe are
   converted to sRGB, as are JPEGs with an embedded colour profile (an iPhone's Display P3 JPEG). The inspector names
@@ -85,6 +85,15 @@ to their resized or re-exported JPEG copies.
   a whole number of hours (or, on FAT and exFAT, lies within the same 2 seconds) is not noticed by a rescan; export
   and cleanup still check every file's content. NTFS drives (ntfs-3g) keep their file ids. The first rescan after
   updating reads nothing new. `sources list --json` shows `stable_file_ids`.
+
+### Upgrading from 0.3.0
+
+Rescan your sources once after the update. That rescan checks every catalogued RAW once for a cut (about 70 KB per
+file, a RAW without a preview read once in full) and the first 256 KB of each file whose name starts with `_` for
+Adobe RGB, as described above; nothing else is read again. Until a source is rescanned, cleanup asks you to rescan
+it first. Videos waiting for ffmpeg get their frames from that rescan or from **Fill in previews**. Once 0.3.1 has
+opened a catalog, 0.3.0 no longer opens it: it says the catalog was written by a newer PhotoSquirrel and leaves it
+unchanged.
 
 ### What's new in 0.3.0
 
