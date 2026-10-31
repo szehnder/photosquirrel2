@@ -65,11 +65,10 @@ pub fn add(ctx: &Ctx, path: &Path) -> Result<()> {
     };
     emit(ctx.json, "sources add", &out, |o| {
         println!(
-            "added source {} at {} ({}, {} sampled for its fingerprint)",
+            "added source {} at {} ({}), not scanned yet: its size and fingerprint are recorded by its first scan",
             o.source.id,
             o.source.root.display(),
             o.source.device,
-            a.source.fingerprint_samples
         );
         if !o.folded.is_empty() {
             println!(

@@ -313,9 +313,6 @@ impl Scanner {
             .collect())
     }
 
-    /// Add a folder as a source (ADR-0006): records its root, volume identity, total size and a fingerprint
-    /// of up to 64 sampled files. Reads the tree, never writes to it. A root inside an existing source is
-    /// refused; existing sources inside the new root are folded into it.
     /// A registered export library, a folder inside one or a folder containing one is never a source: the
     /// library holds the copies PhotoSquirrel made, and the export refuses to write into a source.
     /// Libraries are found by the catalog's registry and on disk (`.photosquirrel/manifest.jsonl`), so one made by
@@ -339,6 +336,10 @@ impl Scanner {
         Ok(())
     }
 
+    /// Add a folder as a source (ADR-0006, ADR-0121): records its root and volume identity at a cost independent of
+    /// the tree (no file is opened, no tree walked); its total size and fingerprint are recorded by its first
+    /// completed scan. Never writes to the tree. A root inside an existing source is refused; existing sources
+    /// inside the new root are folded into it.
     pub fn add_source(&self, path: &Path) -> Result<AddedSource> {
         let meta = match self.options().fs.metadata(path) {
             Ok(m) => m,
@@ -401,8 +402,13 @@ impl Scanner {
                 });
             }
         }
-        let m = source::measure(&self.options().fs, &root).map_err(|e| walk_err(&root, e))?;
-        let mut volume = m.volume.clone();
+        // Constant cost (ADR-0121): the volume facts come from the OS, and the total size and fingerprint are
+        // recorded by the first completed scan. No file is opened and no folder below the root is listed here
+        // (the export-library search lists folder kinds only, within its bounds).
+        let mut volume = VolumeInfo {
+            ids: Some(self.options().fs.probe_ids(&root).ids),
+            ..source::volume_info(&root)
+        };
         if let Some(f) = &self.options().device_class {
             volume.class = f(&root);
         }
@@ -410,8 +416,8 @@ impl Scanner {
             root: path_to_bytes(&root),
             volume_uuid: volume.uuid.clone(),
             device_hint: Some(volume.hint()),
-            total_bytes: Some(m.total_bytes),
-            fingerprint: Some(source::encode(&m.samples)),
+            total_bytes: None,
+            fingerprint: None,
         })?;
         for (inner, prefix) in &fold {
             self.catalog.writer().submit(Command::FoldSource {
@@ -477,12 +483,8 @@ impl Scanner {
         {
             return Err(ScanError::RunActive(a.run));
         }
-        let samples = rec
-            .fingerprint
-            .as_deref()
-            .map(source::decode)
-            .unwrap_or_default();
-        if samples.is_empty() {
+        let (samples, has_results) = self.fingerprint_of(&rec)?;
+        if samples.is_empty() && has_results {
             return Err(ScanError::NoFingerprint(id));
         }
         if !self
@@ -498,6 +500,47 @@ impl Scanner {
             source: e,
         })?;
         self.refuse_export_library(&root)?;
+        // A source no scan identified a file of has no results to protect: its rows are paths and stats only, so it
+        // is re-linked without a check (ADR-0121).
+        if !samples.is_empty() {
+            self.check_fingerprint(id, &root, &samples)?;
+        }
+        let v = VolumeInfo {
+            ids: Some(self.options().fs.probe_ids(&root).ids),
+            ..source::volume_info(&root)
+        };
+        self.catalog.writer().submit(Command::RelinkSource {
+            source: id,
+            root: path_to_bytes(&root),
+            volume_uuid: v.uuid.clone(),
+            device_hint: Some(v.hint()),
+        })?;
+        self.catalog.writer().flush()?;
+        Ok(SourceInfo::from_record(&self.record(id)?))
+    }
+
+    /// The fingerprint a re-link checks (ADR-0121): the recorded one, else the one the source's identified files
+    /// give now (an unfinished first scan), and whether any of its present files has a content identity (results
+    /// a wrong re-link would attach to another drive).
+    fn fingerprint_of(&self, rec: &SourceRecord) -> Result<(Vec<source::Sample>, bool)> {
+        let rows =
+            self.catalog
+                .read()
+                .source_measure_rows(rec.id, 1, source::FINGERPRINT_MAX_FILE)?;
+        let samples = match rec.fingerprint.as_deref() {
+            Some(f) => source::decode(f),
+            None => source::from_rows(&rows.identified),
+        };
+        Ok((samples, rows.any_identified))
+    }
+
+    /// Hash the sampled files under `root` and refuse a mismatch (ADR-0006).
+    fn check_fingerprint(
+        &self,
+        id: SourceId,
+        root: &Path,
+        samples: &[source::Sample],
+    ) -> Result<()> {
         let wanted: std::collections::HashSet<[u8; 32]> =
             samples.iter().map(|s| s.path_hash).collect();
         let mut known: HashMap<[u8; 32], RelPath> = HashMap::new();
@@ -515,27 +558,16 @@ impl Scanner {
             }
             after = page.last().map(|f| f.key.path.clone());
         }
-        let check = source::check(&self.options().fs, &root, &samples, &known)
-            .map_err(|e| walk_err(&root, e))?;
+        let check = source::check(&self.options().fs, root, samples, &known)
+            .map_err(|e| walk_err(root, e))?;
         if !check.accepted() {
             return Err(ScanError::FingerprintMismatch {
-                path: root,
+                path: root.to_path_buf(),
                 mismatched: check.mismatched,
                 samples: check.samples,
             });
         }
-        let v = VolumeInfo {
-            ids: Some(self.options().fs.probe_ids(&root).ids),
-            ..source::volume_info(&root)
-        };
-        self.catalog.writer().submit(Command::RelinkSource {
-            source: id,
-            root: path_to_bytes(&root),
-            volume_uuid: v.uuid.clone(),
-            device_hint: Some(v.hint()),
-        })?;
-        self.catalog.writer().flush()?;
-        Ok(SourceInfo::from_record(&self.record(id)?))
+        Ok(())
     }
 
     /// Remove a source's catalog records after explicit confirmation. Files on disk are never touched.
@@ -783,6 +815,7 @@ impl Scanner {
                 root,
                 device,
                 offline: !online,
+                measure: r.fingerprint.is_none(),
                 lost: AtomicBool::new(false),
                 symlinks_skipped: AtomicU64::new(0),
                 walk_errors: AtomicU64::new(0),

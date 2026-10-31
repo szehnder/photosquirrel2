@@ -98,7 +98,7 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum SourcesCommand {
-    /// Add a folder as a source (reads it to fingerprint it; writes nothing there).
+    /// Add a folder as a source (reads no file and writes nothing there; its first scan fingerprints it).
     Add { path: PathBuf },
     /// List sources with their status and file counts.
     List,

@@ -40,24 +40,22 @@ pub fn find_export_library(fs: &SourceFs, root: &Path) -> Option<PathBuf> {
     }
     let mut queue = std::collections::VecDeque::from([(root.to_path_buf(), 0usize)]);
     let mut seen = 0usize;
-    // One file-id probe per device for the whole search, as in the walk (ADR-0112).
-    let mut ids = IdCache::default();
+    // Folder kinds only (ADR-0121): the search never stats the files it passes, so its cost does not grow with them.
     while let Some((dir, depth)) = queue.pop_front() {
         seen += 1;
         if seen > LIBRARY_SEARCH_MAX_DIRS {
             break;
         }
-        let Ok(entries) = fs.read_dir_cached(&dir, &mut ids) else {
+        let Ok(names) = fs.subfolders(&dir) else {
             continue;
         };
-        for e in entries.into_iter().filter(|e| e.kind == EntryKind::Dir) {
-            let child = dir.join(&e.name);
-            if e.name == LIBRARY_META_DIR {
+        for name in names {
+            if name == LIBRARY_META_DIR {
                 if is_export_library(fs, &dir) {
                     return Some(dir);
                 }
             } else if depth < LIBRARY_SEARCH_DEPTH {
-                queue.push_back((child, depth + 1));
+                queue.push_back((dir.join(&name), depth + 1));
             }
         }
     }

@@ -325,7 +325,9 @@ fn scenario_sources_exfat_source_shows_unstable_file_ids() {
 }
 
 #[test]
-fn library_search_probes_each_device_once() {
+/// The search lists folder kinds only (ADR-0121): it stats no file entry, so it needs no file-id probe either (it
+/// made one per device when it stat-ed every entry).
+fn library_search_stats_no_file() {
     use ps_scan::walk::{LIBRARY_MANIFEST_FILE, LIBRARY_META_DIR, find_export_library};
     let dir = tempfile::tempdir().unwrap();
     for d in ["a", "a/b", "c", "c/d/e"] {
@@ -335,7 +337,8 @@ fn library_search_probes_each_device_once() {
     let (fs, instr) = ps_scan::SourceFs::instrumented();
     assert_eq!(find_export_library(&fs, dir.path()), None);
     assert!(instr.read_dirs() >= 5, "{}", instr.read_dirs());
-    assert_eq!(instr.probe_count(), 1, "one statfs for the one device");
+    assert_eq!(instr.entry_stat_count(), 0, "no file entry stat-ed");
+    assert_eq!(instr.probe_count(), 0, "no file-id probe");
     // A library deeper down is still found.
     let meta = dir.path().join("c/d").join(LIBRARY_META_DIR);
     std::fs::create_dir_all(&meta).unwrap();

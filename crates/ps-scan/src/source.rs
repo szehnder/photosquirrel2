@@ -4,11 +4,13 @@
 //! `/dev/disk/by-uuid`, `/sys/dev/block` on Linux) and the fingerprint from read-only opens through
 //! [`SourceFs`].
 //!
-//! **Fingerprint.** Up to [`FINGERPRINT_SAMPLES`] files are chosen by the BLAKE3 hash of their relative path
-//! (the smallest hashes win, so the choice is stable and does not depend on the mount point), among regular
-//! files of 1 byte to [`FINGERPRINT_MAX_FILE`]. Each sample is stored as 65 bytes: the 32-byte path hash, the
-//! 32-byte content identity (ADR-0011) and its kind byte. Re-linking hashes the same paths under the new root
-//! and counts mismatches.
+//! **Fingerprint.** Recorded by a source's first completed scan from the catalog (ADR-0121, amending ADR-0006):
+//! up to [`FINGERPRINT_SAMPLES`] files are chosen by the BLAKE3 hash of their relative path (the smallest hashes
+//! win, so the choice is stable and does not depend on the mount point), among the present files of 1 byte to
+//! [`FINGERPRINT_MAX_FILE`] the scan gave a content identity. Each sample is stored as 65 bytes: the 32-byte path
+//! hash, the 32-byte content identity (ADR-0011) and its kind byte. Re-linking hashes the same paths under the new
+//! root and counts mismatches. Fingerprints recorded at add time before ADR-0121 (samples among any files) check
+//! the same way.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,7 +19,7 @@ use ps_model::{ContentId, ContentIdKind, DeviceClass, IdStability, RelPath};
 
 use crate::control::Control;
 use crate::fs::SourceFs;
-use crate::walk::{WalkEntry, WalkError, WalkOptions, walk};
+use crate::walk::{WalkError, WalkOptions, walk};
 
 /// Most files sampled into a source fingerprint.
 pub const FINGERPRINT_SAMPLES: usize = 64;
@@ -198,14 +200,19 @@ pub fn path_hash(p: &RelPath) -> [u8; 32] {
     *blake3::hash(p.as_bytes()).as_bytes()
 }
 
-/// Choose the sampled files among walk entries: the [`FINGERPRINT_SAMPLES`] smallest path hashes.
-pub fn choose_samples(entries: &[WalkEntry]) -> Vec<(RelPath, [u8; 32])> {
-    let mut v: Vec<(RelPath, [u8; 32])> = entries
+/// The fingerprint samples among identified files (path, size, catalogued identity; ADR-0121): the
+/// [`FINGERPRINT_SAMPLES`] smallest path hashes among files of 1 byte to [`FINGERPRINT_MAX_FILE`]. Reads nothing.
+pub fn from_rows(rows: &[(RelPath, u64, ContentId)]) -> Vec<Sample> {
+    let mut v: Vec<Sample> = rows
         .iter()
-        .filter(|e| e.stat.size > 0 && e.stat.size <= FINGERPRINT_MAX_FILE)
-        .map(|e| (e.path.clone(), path_hash(&e.path)))
+        .filter(|(_, size, _)| *size > 0 && *size <= FINGERPRINT_MAX_FILE)
+        .map(|(p, _, content)| Sample {
+            path_hash: path_hash(p),
+            content: *content,
+        })
         .collect();
-    v.sort_by_key(|a| a.1);
+    v.sort_by_key(|a| a.path_hash);
+    v.dedup_by_key(|a| a.path_hash);
     v.truncate(FINGERPRINT_SAMPLES);
     v
 }
@@ -254,40 +261,6 @@ pub fn decode(blob: &[u8]) -> Vec<Sample> {
             }
         })
         .collect()
-}
-
-/// A freshly measured source: its walk, total size and fingerprint.
-#[derive(Debug)]
-pub struct Measured {
-    pub files: u64,
-    pub total_bytes: u64,
-    pub samples: Vec<Sample>,
-    pub volume: VolumeInfo,
-}
-
-/// Walk `root` and fingerprint it (read-only).
-pub fn measure(fs: &SourceFs, root: &Path) -> Result<Measured, WalkError> {
-    let ctl = Control::new();
-    let w = walk(fs, root, WalkOptions::default(), &ctl, |_| {})?;
-    let total_bytes = w.entries.iter().map(|e| e.stat.size).sum();
-    let mut samples = Vec::new();
-    for (rel, h) in choose_samples(&w.entries) {
-        if let Ok(content) = hash_file(fs, root, &rel) {
-            samples.push(Sample {
-                path_hash: h,
-                content,
-            });
-        }
-    }
-    Ok(Measured {
-        files: w.entries.len() as u64,
-        total_bytes,
-        samples,
-        volume: VolumeInfo {
-            ids: Some(fs.probe_ids(root).ids),
-            ..volume_info(root)
-        },
-    })
 }
 
 /// The outcome of comparing a stored fingerprint with a candidate root.
@@ -423,6 +396,31 @@ mod tests {
             }
             .accepted()
         );
+    }
+
+    #[test]
+    fn samples_come_from_identified_files_in_range() {
+        let rel = |p: &str| RelPath::from_path(Path::new(p)).expect("rel");
+        let mut rows: Vec<(RelPath, u64, ContentId)> = (0..100u8)
+            .map(|i| (rel(&format!("f{i}.jpg")), 10, ContentId::full([i; 32])))
+            .collect();
+        rows.push((rel("empty.jpg"), 0, ContentId::full([200; 32])));
+        rows.push((
+            rel("big.mov"),
+            FINGERPRINT_MAX_FILE + 1,
+            ContentId::sampled([201; 32]),
+        ));
+        let s = from_rows(&rows);
+        assert_eq!(s.len(), FINGERPRINT_SAMPLES);
+        assert!(s.windows(2).all(|w| w[0].path_hash < w[1].path_hash));
+        assert!(
+            s.iter().all(|x| x.content.digest[0] < 100),
+            "out of range rows left out"
+        );
+        // The same rows in another order give the same samples.
+        rows.reverse();
+        assert_eq!(from_rows(&rows), s);
+        assert!(from_rows(&[]).is_empty());
     }
 
     #[cfg(target_os = "linux")]

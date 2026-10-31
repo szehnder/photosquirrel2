@@ -106,6 +106,12 @@ pub enum Command {
         source: SourceId,
         device_hint: String,
     },
+    /// A source's total size and content fingerprint, recorded by its first completed scan (ADR-0121).
+    SetSourceMeasure {
+        source: SourceId,
+        total_bytes: u64,
+        fingerprint: Vec<u8>,
+    },
     /// Re-link a source to a new root (ADR-0006): new root path and volume facts, status `online`.
     RelinkSource {
         source: SourceId,
@@ -180,6 +186,7 @@ impl Command {
             Command::SetSourceStatus { .. } => "set_source_status",
             Command::SetRunStatus { .. } => "set_run_status",
             Command::InterruptRunning => "interrupt_running",
+            Command::SetSourceMeasure { .. } => "set_source_measure",
             Command::RelinkSource { .. } => "relink_source",
             Command::SetDeviceHint { .. } => "set_device_hint",
             Command::FoldSource { .. } => "fold_source",
@@ -881,6 +888,18 @@ impl WriterThread {
                 let n = c
                     .prepare_cached("UPDATE source SET device_hint = ?2 WHERE id = ?1")?
                     .execute(params![source.0, device_hint])?;
+                expect_one(n, "unknown source")
+            }),
+            Command::SetSourceMeasure {
+                source,
+                total_bytes,
+                fingerprint,
+            } => self.row(name, None, |c| {
+                let n = c
+                    .prepare_cached(
+                        "UPDATE source SET total_bytes = ?2, fingerprint = ?3 WHERE id = ?1",
+                    )?
+                    .execute(params![source.0, total_bytes as i64, fingerprint])?;
                 expect_one(n, "unknown source")
             }),
             Command::RelinkSource {

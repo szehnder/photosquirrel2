@@ -42,7 +42,7 @@ pub use model::{
     MetaReread, NewSource, ProbeResult, Reclassification, Redate, Results, RunRecord, SourceRecord,
 };
 pub use previews::WaitingRule;
-pub use read::{PAGE_SIZE, Readers};
+pub use read::{PAGE_SIZE, Readers, SourceMeasureRows};
 pub use stores::{AiCounts, AiItemState, AiQueueRow, AiResultRow, AiRunState, LibraryRecord};
 pub use thumbs::{THUMBS_FILE, ThumbStore};
 pub use writer::{Command, Writer, WriterConfig, WriterStats};

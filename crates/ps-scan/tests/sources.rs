@@ -34,6 +34,12 @@ fn scenario_sources_add_a_source() {
         ps_model::path::simplify_canonical(std::fs::canonicalize(&root).expect("canonical"))
     );
     assert_eq!(s.status, SourceStatus::Online);
+    // Listed at once; the size and fingerprint wait for the first scan (ADR-0121).
+    assert_eq!(s.total_bytes, None);
+    assert_eq!(s.fingerprint_samples, 0);
+    assert_eq!(e.instr.open_count(), 0, "adding opens no file");
+    completed(&e.scan(&[s.id]));
+    let s = &e.s().sources().expect("sources")[0];
     let total: u64 = truth_under(c, "drive-a").map(|(_, f)| f.size).sum();
     assert_eq!(s.total_bytes, Some(total));
     assert!(
@@ -41,6 +47,165 @@ fn scenario_sources_add_a_source() {
         "{} samples",
         s.fingerprint_samples
     );
+    // The fingerprint came from the scan's own reads: no file was opened twice for it.
+    let mut opens = std::collections::HashMap::new();
+    for o in e.instr.opens() {
+        *opens.entry(o.path).or_insert(0u32) += 1;
+    }
+    assert!(
+        opens.values().all(|n| *n == 1),
+        "a file opened twice: {:?}",
+        opens.iter().find(|(_, n)| **n > 1)
+    );
+    // A rescan of the measured source records nothing again.
+    let before = s.clone();
+    completed(&e.scan(&[s.id]));
+    assert_eq!(e.s().sources().expect("sources")[0], before);
+}
+
+/// A tree of `files` small files spread over `a/`, `a/b/c/d/` and `x/`, plus, when `deep`, folders below the
+/// export-library search's 4 levels (`a/b/c/d/e/f/`).
+fn counted_tree(root: &Path, files: usize, deep: bool) {
+    let dirs: Vec<&str> = if deep {
+        vec!["a", "a/b/c/d", "x", "a/b/c/d/e/f"]
+    } else {
+        vec!["a", "a/b/c/d", "x"]
+    };
+    for d in &dirs {
+        std::fs::create_dir_all(root.join(d)).expect("mkdir");
+    }
+    for i in 0..files {
+        let d = dirs[i % dirs.len()];
+        ps_fixtures::scratch::write(root.join(d).join(format!("f{i:05}.bin")), b"not a photo")
+            .expect("write");
+    }
+}
+
+#[test]
+fn scenario_sources_adding_reads_no_file_whatever_the_tree_size() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let small = tmp.path().join("small");
+    let large = tmp.path().join("large");
+    counted_tree(&small, 6, false);
+    counted_tree(&large, 3_000, true);
+    let e = env();
+    let mut costs = Vec::new();
+    for root in [&small, &large] {
+        e.instr.reset();
+        e.add(root);
+        costs.push((
+            e.instr.open_count(),
+            e.instr.total_bytes(),
+            e.instr.entry_stat_count(),
+            e.instr.stat_count(),
+            e.instr.read_dirs(),
+        ));
+    }
+    println!("add costs (opens, bytes, entry stats, stats, listings): {costs:?}");
+    for (opens, bytes, entry_stats, _, _) in &costs {
+        assert_eq!(*opens, 0, "adding opens no file");
+        assert_eq!(*bytes, 0, "adding reads no byte");
+        assert_eq!(*entry_stats, 0, "adding stats no file entry");
+    }
+    assert_eq!(costs[0].3, costs[1].3, "the same metadata calls");
+    assert_eq!(costs[0].4, costs[1].4, "the same folder listings");
+    for s in e.s().sources().expect("sources") {
+        assert_eq!(s.total_bytes, None);
+    }
+}
+
+#[test]
+fn scenario_sources_interrupted_first_scan_records_the_fingerprint_later() {
+    let _cores = shared();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = small_drive(tmp.path(), "drive");
+    let e = env_with(ps_scan::ScanOptions {
+        read_delay: Some(std::time::Duration::from_millis(20)),
+        ..ps_scan::ScanOptions::default()
+    });
+    let id = e.add(&root);
+    let run = e.s().start_scan(&[id]).expect("start");
+    wait_snapshot(
+        e.s(),
+        std::time::Duration::from_secs(120),
+        "some files done",
+        |s| s.processed >= 3,
+    );
+    e.s().cancel().expect("cancel");
+    assert_eq!(
+        e.s().wait().expect("summary").status,
+        ps_model::RunStatus::Cancelled
+    );
+    let s = &e.s().sources().expect("sources")[0];
+    assert_eq!(s.total_bytes, None, "a cancelled run records no size");
+    assert_eq!(s.fingerprint_samples, 0, "nor a fingerprint");
+    e.s().resume_run(run).expect("resume");
+    completed(&e.s().wait().expect("summary"));
+    let s = &e.s().sources().expect("sources")[0];
+    let total: u64 = snapshot_tree(&root)
+        .values()
+        .filter(|f| !f.dir)
+        .map(|f| f.size)
+        .sum();
+    assert_eq!(s.total_bytes, Some(total));
+    assert!(s.fingerprint_samples > 0 && s.fingerprint_samples <= 64);
+}
+
+#[test]
+fn scenario_sources_never_scanned_source_relinked() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = small_drive(tmp.path(), "drive");
+    let e = env();
+    let id = e.add(&root);
+    let moved = tmp.path().join("drive-moved");
+    ps_fixtures::scratch::rename(&root, &moved).expect("move drive");
+    e.s().refresh_sources().expect("refresh");
+    e.instr.reset();
+    let s = e.s().relink_source(id, &moved).expect("relink");
+    assert_eq!(s.status, SourceStatus::Online);
+    assert_eq!(e.instr.open_count(), 0, "nothing to check, nothing read");
+    completed(&e.scan(&[id]));
+    let s = &e.s().sources().expect("sources")[0];
+    assert!(s.fingerprint_samples > 0, "its first scan records it");
+}
+
+#[test]
+fn scenario_sources_relink_after_an_interrupted_first_scan() {
+    let _cores = shared();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = small_drive(tmp.path(), "drive");
+    let e = env_with(ps_scan::ScanOptions {
+        read_delay: Some(std::time::Duration::from_millis(20)),
+        ..ps_scan::ScanOptions::default()
+    });
+    let id = e.add(&root);
+    e.s().start_scan(&[id]).expect("start");
+    wait_snapshot(
+        e.s(),
+        std::time::Duration::from_secs(120),
+        "some files identified",
+        |s| s.stages.thumbed >= 3,
+    );
+    e.s().cancel().expect("cancel");
+    e.s().wait();
+    assert_eq!(e.s().sources().expect("sources")[0].fingerprint_samples, 0);
+    let moved = tmp.path().join("drive-moved");
+    ps_fixtures::scratch::rename(&root, &moved).expect("move drive");
+    e.s().refresh_sources().expect("refresh");
+    let err = e
+        .s()
+        .relink_source(id, &corpus().root.join("drive-c"))
+        .expect_err("wrong drive");
+    assert!(
+        matches!(err, ScanError::FingerprintMismatch { mismatched, .. } if mismatched > 0),
+        "{err:?}"
+    );
+    assert_eq!(
+        e.s().sources().expect("sources")[0].status,
+        SourceStatus::Offline
+    );
+    let s = e.s().relink_source(id, &moved).expect("relink");
+    assert_eq!(s.status, SourceStatus::Online);
 }
 
 #[test]

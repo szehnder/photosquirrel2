@@ -375,6 +375,52 @@ impl Readers {
         })
     }
 
+    /// What a source's fingerprint and total size are recorded from (ADR-0121): the summed size of its present
+    /// files, and the path, size and content identity of every present file of `min_size..=max_size` bytes that has
+    /// one. One pass over the source's rows; no file is read.
+    pub fn source_measure_rows(
+        &self,
+        source: SourceId,
+        min_size: u64,
+        max_size: u64,
+    ) -> Result<SourceMeasureRows> {
+        self.with(|c| {
+            let total: i64 = c
+                .prepare_cached(
+                    "SELECT coalesce(sum(size), 0) FROM file WHERE source_id = ?1 AND missing_since IS NULL",
+                )?
+                .query_row([source.0], |r| r.get(0))?;
+            let mut stmt = c.prepare_cached(
+                "SELECT rel_path, size, content_id, identity_kind FROM file
+                 WHERE source_id = ?1 AND missing_since IS NULL AND content_id IS NOT NULL
+                   AND size >= ?2 AND size <= ?3",
+            )?;
+            let mut rows = stmt.query(params![source.0, min_size as i64, max_size as i64])?;
+            let mut identified = Vec::new();
+            while let Some(r) = rows.next()? {
+                let path = RelPath::from_bytes(r.get::<_, Vec<u8>>(0)?)
+                    .ok_or_else(|| corrupt("rel_path"))?;
+                let digest: [u8; 32] = r
+                    .get::<_, Vec<u8>>(2)?
+                    .try_into()
+                    .map_err(|_| corrupt("content_id"))?;
+                let kind = codes::identity_kind_from(r.get::<_, Option<i64>>(3)?.unwrap_or(0));
+                identified.push((path, r.get::<_, i64>(1)? as u64, ContentId { digest, kind }));
+            }
+            let any_identified: bool = c
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM file WHERE source_id = ?1 AND missing_since IS NULL
+                                     AND content_id IS NOT NULL)",
+                )?
+                .query_row([source.0], |r| r.get(0))?;
+            Ok(SourceMeasureRows {
+                total_bytes: total.max(0) as u64,
+                identified,
+                any_identified,
+            })
+        })
+    }
+
     /// Thumbed images whose stored perceptual hashes are of another algorithm version (ADR-0012): the
     /// hash-upgrade job recomputes them from `thumbs.db`. Ordered by id.
     pub fn stale_hashes(&self, version: u8) -> Result<Vec<(FileId, ContentId)>> {
@@ -830,4 +876,15 @@ mod date_json {
     /// A string borrowed from the JSON text unless it has escapes.
     #[derive(Deserialize)]
     pub(super) struct Txt<'a>(#[serde(borrow)] pub Cow<'a, str>);
+}
+
+/// [`Readers::source_measure_rows`]: what a source's measure is recorded from (ADR-0121).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceMeasureRows {
+    /// Summed size of the present files.
+    pub total_bytes: u64,
+    /// Present files in the size range with a content identity: path, size, identity.
+    pub identified: Vec<(RelPath, u64, ContentId)>,
+    /// Some present file (of any size) has a content identity.
+    pub any_identified: bool,
 }

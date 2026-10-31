@@ -2,8 +2,9 @@
 //! `scan-control`).
 //!
 //! [`ScanService`] owns the scan engine for one catalog. Every call is cheap and non-blocking except
-//! [`ScanService::wait`], adding/re-linking a source (which walk and fingerprint the folder) and
-//! [`ScanService::upgrade_hashes`]; the UI calls those from a background executor. Progress is pulled as
+//! [`ScanService::wait`], re-linking a source (which hashes its sampled files) and
+//! [`ScanService::upgrade_hashes`]; the UI calls those from a background executor. Adding a source opens no file and
+//! walks no tree (ADR-0121): its first completed scan records its size and fingerprint. Progress is pulled as
 //! [`ProgressSnapshot`]s (at most every 100 ms, ADR-0019), never pushed per file.
 
 use std::path::Path;

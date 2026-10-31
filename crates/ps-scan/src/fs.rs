@@ -116,12 +116,34 @@ impl SourceFs {
 
     /// `stat` following symlinks (roots may be symlinks the user chose).
     pub fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        if let Some(i) = &self.instr {
+            i.stats.fetch_add(1, Ordering::Relaxed);
+        }
         std::fs::metadata(path)
     }
 
     /// `lstat`: symlinks are not followed.
     pub fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
+        if let Some(i) = &self.instr {
+            i.stats.fetch_add(1, Ordering::Relaxed);
+        }
         std::fs::symlink_metadata(path)
+    }
+
+    /// The names of the folders directly in `dir` (not symlinks to folders), sorted by name bytes, from the
+    /// listing's entry types alone: no entry is stat-ed where the filesystem reports types (`d_type`; std falls
+    /// back to `lstat` elsewhere). For searches that need the tree's shape, not its files (ADR-0121).
+    pub fn subfolders(&self, dir: &Path) -> io::Result<Vec<OsString>> {
+        if let Some(i) = &self.instr {
+            i.read_dirs.fetch_add(1, Ordering::Relaxed);
+        }
+        let mut out: Vec<OsString> = std::fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.file_name())
+            .collect();
+        out.sort_by_cached_key(name_bytes);
+        Ok(out)
     }
 
     /// List a folder: every entry with its `lstat` data, sorted by name bytes. The filesystem is probed afresh
@@ -153,6 +175,9 @@ impl SourceFs {
             };
             let name = entry.file_name();
             // `DirEntry::metadata` does not traverse symlinks.
+            if let Some(i) = &self.instr {
+                i.entry_stats.fetch_add(1, Ordering::Relaxed);
+            }
             match entry.metadata() {
                 Ok(m) => {
                     let ft = m.file_type();
@@ -471,6 +496,10 @@ pub struct Instrumentation {
     bytes: Mutex<HashMap<PathBuf, u64>>,
     total_bytes: AtomicU64,
     read_dirs: AtomicU64,
+    /// `stat`/`lstat` calls on a path ([`SourceFs::metadata`], [`SourceFs::symlink_metadata`]).
+    stats: AtomicU64,
+    /// Entries stat-ed by listings ([`SourceFs::read_dir`]): one per file or folder listed.
+    entry_stats: AtomicU64,
     /// File-id probes made ([`SourceFs::probe_ids`]).
     probes: AtomicU64,
     /// Paths whose opens fail with `PermissionDenied` (tests of unreadable files on every platform).
@@ -560,12 +589,24 @@ impl Instrumentation {
         self.read_dirs.load(Ordering::Relaxed)
     }
 
+    /// `stat`/`lstat` calls made on paths.
+    pub fn stat_count(&self) -> u64 {
+        self.stats.load(Ordering::Relaxed)
+    }
+
+    /// Entries stat-ed by folder listings.
+    pub fn entry_stat_count(&self) -> u64 {
+        self.entry_stats.load(Ordering::Relaxed)
+    }
+
     /// Forget everything recorded so far.
     pub fn reset(&self) {
         self.opens.lock().clear();
         self.bytes.lock().clear();
         self.total_bytes.store(0, Ordering::Relaxed);
         self.read_dirs.store(0, Ordering::Relaxed);
+        self.stats.store(0, Ordering::Relaxed);
+        self.entry_stats.store(0, Ordering::Relaxed);
         self.probes.store(0, Ordering::Relaxed);
     }
 

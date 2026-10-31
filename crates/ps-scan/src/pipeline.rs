@@ -62,6 +62,8 @@ pub(crate) struct RunSource {
     pub device: DeviceClass,
     /// Offline before the run started.
     pub offline: bool,
+    /// No fingerprint recorded yet: a completed scan records the total size and fingerprint (ADR-0121).
+    pub measure: bool,
     /// The root disappeared during the run.
     pub lost: AtomicBool,
     pub symlinks_skipped: AtomicU64,
@@ -368,6 +370,9 @@ fn finish(ctx: &Arc<RunCtx>, started: Instant) -> RunSummary {
     } else {
         None
     };
+    if status == RunStatus::Completed && ctx.fill.is_none() {
+        record_measures(ctx);
+    }
     // After the flush and the regroup: the waiting counts are the catalog's.
     let mut summary = summarize(ctx, status, started.elapsed());
     summary.grouping = grouping;
@@ -404,6 +409,41 @@ fn finish(ctx: &Arc<RunCtx>, started: Instant) -> RunSummary {
     ctx.progress.set_status(status);
     ctx.progress.set_phase(ScanPhase::Done);
     summary
+}
+
+/// The first completed scan of a source records its total size and fingerprint from the catalog (ADR-0121): the
+/// present rows' sizes and the identities this and earlier runs computed. No file is read. Sources offline at the
+/// start or lost during the run are left for a later run.
+fn record_measures(ctx: &RunCtx) {
+    for s in ctx
+        .sources
+        .iter()
+        .filter(|s| s.measure && !s.offline && !s.lost.load(Ordering::Acquire))
+    {
+        let rows = match ctx.catalog.read().source_measure_rows(
+            s.id,
+            1,
+            crate::source::FINGERPRINT_MAX_FILE,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                log::error!("scan run {}: measure of source {}: {e}", ctx.run, s.id);
+                continue;
+            }
+        };
+        let samples = crate::source::from_rows(&rows.identified);
+        log::info!(
+            "source {}: total size {} bytes and {} fingerprint samples recorded",
+            s.id,
+            rows.total_bytes,
+            samples.len()
+        );
+        ctx.submit(Command::SetSourceMeasure {
+            source: s.id,
+            total_bytes: rows.total_bytes,
+            fingerprint: crate::source::encode(&samples),
+        });
+    }
 }
 
 fn summarize(ctx: &RunCtx, status: RunStatus, elapsed: Duration) -> RunSummary {
