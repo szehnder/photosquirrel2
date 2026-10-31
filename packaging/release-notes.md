@@ -42,6 +42,19 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
+### What's new since 0.3.1
+
+- **Adding a big folder no longer seems to freeze.** The folder is listed at once with an "Adding…" row and
+  "Adding <folder>…" in the status bar, whichever way you add it (Sources, the Library, Ctrl+O, the first-launch
+  screen or the command palette), and its scan starts straight away. Adding no longer reads the folder twice: it
+  used to walk the whole tree and read up to 64 of its files (about 1.3 GB on a large drive) before the scan even
+  started; the first scan now records the drive's fingerprint from what it reads anyway. The status bar follows the
+  scan from every add path and says "Walking folders" while it lists the folder. A folder added while a scan runs is
+  queued ("Queued, scans next"; "then 1 more source" in the status bar) and scanned next, without rescanning the
+  folder that just finished; whenever a folder has never been scanned, the Sources view's main button scans only
+  the new ones. A new setting, **Scan new sources right away** (on by default), lets you add folders now and scan
+  them later.
+
 ### What's new in 0.3.1
 
 - **Videos get their poster frames after you install ffmpeg.** Videos catalogued without ffmpeg showed "needs a

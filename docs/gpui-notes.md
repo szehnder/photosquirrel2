@@ -500,3 +500,14 @@ loads the details within the grace). Headless tests call `window.render_frame` t
   frame one (its content is read inside the start-up grace); `PHOTOSQUIRREL_GRID_CELL=96` starts the Library
   grid at another tile size (a harmless screenshot hook, in release builds too, which `cargo xtask screenshot`
   runs: the user can zoom the same way); `--gallery-filter no-preview[=<reason>[:<format>]]` starts it filtered.
+
+## Folder pickers and one-task steps in tests (responsive-add-source)
+- `cx.prompt_for_paths(..)` on the test platform queues the prompt; answer it with
+  `TestAppContext::simulate_path_prompt_response(|options| Some(vec![path]))` (`did_prompt_for_paths()` tells whether
+  one is open). Dropping the answer (`None`) is a cancelled picker.
+- `run_until_parked` runs the foreground continuation *and* the background work it spawns, so a state that lives only
+  between them (an "Adding…" row before the add answers) is never observable that way. `cx.executor().tick()` runs a
+  single task: step until the state exists, then `render_frame`.
+- A blocking delay inside a backend method called from `background_spawn` blocks the test thread (background tasks
+  run there): use it only to prove the state was set before the work ran, not to wait in parallel.
+

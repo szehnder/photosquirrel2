@@ -145,6 +145,23 @@ PhotoSquirrel behave as if no decoder were found.
 
 1. Open PhotoSquirrel and add your sources: folders, drives, backups, network shares.
 2. Scan. You can browse the library while it runs, and pause or cancel at any time.
+
+### Adding sources
+
+Adding a folder takes a moment whatever its size: PhotoSquirrel only checks the folder and lists it at once, with
+an "Adding…" row and "Adding <folder>…" in the status bar, and its scan starts right away. The scan walks the
+folder once, and its first complete scan also records the folder's size and the fingerprint that recognises the
+drive at another mount point later.
+
+- **Add a folder while a scan runs** and it is queued: its row says "Queued, scans next", the status bar adds "then
+  1 more source", and it starts by itself when the current scan finishes, without scanning the finished folder
+  again. If you cancel the running scan, the queued folder stays queued and nothing starts until you choose.
+- **Never-scanned folders come first.** Whenever a folder has not finished its first scan, the Sources view's main
+  button scans only those ("Scan “Holiday 2024”", "Scan 3 new sources"); scanning a selection that includes
+  folders you already scanned is the second button, which says how many of them are new ("Scan 3 sources (1 new)").
+- **Scan new sources right away** (Settings, Scanning; on by default): turn it off to add folders now and start
+  their scans later from Sources, where they read "Not scanned yet". `photosquirrel-cli doctor` shows the setting;
+  `photosquirrel-cli sources add` never scans by itself.
 3. Look through **Duplicates**: accept the keepers or pick your own.
 4. Open **Export**, choose an empty library folder and the app you will import into, review the plan and copy.
 5. Check **Reports**, then import the library folder into Apple Photos, Google Photos or Lightroom.
@@ -157,7 +174,7 @@ To try it without your own photos, `photosquirrel-cli demo` makes a small synthe
 to any command for machine-readable output.
 
 ```sh
-photosquirrel-cli sources add /Volumes/Backup         # add a source (read-only)
+photosquirrel-cli sources add /Volumes/Backup         # add a source (instant, read-only; not scanned yet)
 photosquirrel-cli scan                                # scan; Ctrl-C cancels, `scan --resume` continues
 photosquirrel-cli groups list                         # duplicate groups and the space they take
 photosquirrel-cli groups show 42                      # members of a group and why the keeper won

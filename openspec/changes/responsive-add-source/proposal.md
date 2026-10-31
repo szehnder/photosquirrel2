@@ -56,7 +56,7 @@ The owner chose **"Scan at once + setting"**:
   - After a restart, a queued source shows "Not scanned yet".
 - **Never-scanned sources get their own primary action.** Whenever a source has never finished a first scan, the
   Sources view's primary action scans only those ("Scan “Photos 2019”", "Scan 3 new sources"). Rescanning stays a
-  secondary action, labelled with what it covers ("Rescan 2 sources", "Scan 3 sources (1 new)").
+  secondary action, labelled with what it covers ("Scan 3 sources (1 new)").
 - **A setting, "Scan new sources right away"** (`scanning.scan_new_sources`, on by default). When it is off, a new
   source shows "Not scanned yet", and the Sources view selects it for "Scan 1 source". After an add from
   onboarding, the shell opens Sources. The CLI's `doctor` reports the setting. `sources add` has never scanned, and

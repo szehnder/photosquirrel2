@@ -144,11 +144,11 @@ the scan to finish"), shown on the pending row.
 online source has never finished a first scan and is not in an active run, the Sources header's primary action
 targets only those sources, with or without the setting:
 - "Scan “Photos 2019”" for one source, "Scan 3 new sources" for several. The accessible label lists the names.
-- The scan picker's selection-based action becomes secondary, and its label says what it covers: "Rescan 2
-  sources" when every selected source has been scanned, "Scan 3 sources (1 new)" when it mixes them. "Scan 2
-  sources" never appears for a selection where only the new one is meant: the primary action is that.
-- Without never-scanned sources, the header is as before (selection-based "Scan N sources" or "Rescan N sources"
-  as primary).
+- The scan picker's selection-based action becomes secondary, and its label says what it covers: "Scan 3 sources
+  (1 new)" when it mixes scanned and new sources, "Scan 2 sources" otherwise. "Scan 2 sources" never appears for a
+  selection where only the new one is meant: the primary action is that.
+- A source whose first run was cancelled or interrupted reads "First scan not finished" and counts as new.
+- Without never-scanned sources, the header is as before: the selection-based "Scan N sources" is primary.
 
 Starting the primary action removes its sources from the queue.
 
@@ -216,4 +216,33 @@ setting on, onboarding behaves as today: the Library fills in live.
 
 ## Deviations (as built)
 
-(filled in during implementation)
+- **The owner decided the add-during-a-run behaviour mid-change.** D6 was rewritten to record their choice: queue
+  and start after the run with no question; a cancelled run keeps the queue visible and starts nothing. D6b (the
+  never-scanned primary action) and D6c (the shell follows every monitor run) were added, with the scan-progress
+  requirements "Source added during a run is queued" and "Never scanned sources scanned first" and their scenarios.
+- **Labels.** The secondary action reads "Scan N sources (k new)" when it mixes scanned and new sources, else "Scan N
+  sources". There is no "Rescan" wording, so the existing dashboard tests' labels hold. One new source is named in
+  the primary action ("Scan “Holiday 2024”"), several are counted ("Scan 3 new sources").
+- **`first_scan_done`** comes from the run records: a completed scan run (not a fill job) covering the source. A
+  source whose only runs were cancelled reads "First scan not finished" and is a target of the primary action.
+- **The shell follows each run once.** It samples activity when the monitor turns active for a run it has not
+  followed yet (`followed_run`), not on every notification. The test shell engine reports no activity, and
+  re-arming on every sample would have polled it at 10 Hz.
+- **A start that fails for another reason than an active run** (an offline source, an engine error) leaves the
+  sources "Not scanned yet" and shows the error inline on the dashboard. The add itself still counts as done.
+- **The export-library search makes no file-id probe now** (it stats no file). The old test
+  `library_search_probes_each_device_once` became `library_search_stats_no_file`, which asserts 0 entry stats and 0
+  probes. It still finds a library 2 levels down.
+- **`source_measure_rows` also says whether any present row has an identity** (of any size), which D3's "has
+  results" needs. `from_rows` deduplicates path hashes.
+- **Onboarding hides Sources too while the catalog is empty** (`Shell::shows_onboarding`). During an add from
+  onboarding, the feedback is the status bar's "Adding <folder>…" line. The pending row appears once the summary
+  counts the source.
+- **The pending-row test** answers the picker with `simulate_path_prompt_response`, then steps the executor one task
+  at a time (`executor().tick()`) until the pending state exists. It asserts that the add has not run yet, then
+  draws one frame. After the run starts, the new row can be below the test window's fold, so the test asserts it on
+  the monitor's rows.
+- **The walk's status line is "Walking folders"**, with the queue suffix, but without a count of files found: the
+  snapshot counts files only once a source's walk ends.
+- **Screenshots** show the "Not scanned yet" row and the setting. The pending row and the queue exist only after the
+  first frames of a scripted capture, so they are covered by the headless tests (task 6.4).
