@@ -208,11 +208,13 @@ The gate review found two medium and six low findings; each fix has a test. Deci
   fills 4). `ScanOptions::poster_timeout` (default 10 s) lets tests shorten the bound.
 - **LOW-2, a store error.** The stored-kind read before the write is gone: the write is the conditional upsert below,
   and its error reports "could not store its poster frame (...); it keeps its placeholder and waits" and leaves the
-  rows untouched. Test: `a_store_error_leaves_the_rows_waiting` (while the tool runs, the test takes `thumbs.db`'s
-  write lock through rusqlite, the store's own SQLite, for 7 s, longer than the store's 5 s busy timeout: 0 filled,
-  an error, the row still `no_poster_tool`, the thumbnail still a placeholder; the next fill gives it its frame). A
-  first version held the lock from `python3`, whose SQLite on macOS did not block the store's (macOS CI filled the
-  frame). The read that could fail no longer exists, so the test covers the one remaining store call.
+  rows untouched. Test: `a_store_error_leaves_the_rows_waiting` (while the tool runs, the test turns on
+  `ThumbStore::fail_writes_for_tests`, a hidden test hook that makes every write return an error: 0 filled, an
+  error, the row still `no_poster_tool`, the thumbnail still a placeholder; the next fill gives it its frame). Two
+  earlier versions held `thumbs.db`'s write lock longer than the store's 5 s busy timeout, from `python3` and then
+  through rusqlite; on macOS CI the store's write went through both times (it waited out the lock), so the lock is
+  no portable way to make a write fail. The read that could fail no longer exists, so the test covers the one
+  remaining store call.
 - **LOW-3, the replace race.** `ThumbStore::put_many_over_placeholders` (the plain `put_many` and it share one
   `upsert`): `ON CONFLICT (content_id) DO UPDATE ... WHERE thumb.kind = 'placeholder'`, returning per item whether it
   wrote. Used by `poster_item`, `persist_batch` and the re-decode's failure placeholder (a frame written: stamp; not

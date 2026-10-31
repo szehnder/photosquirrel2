@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 use rusqlite::types::Value;
@@ -33,6 +33,8 @@ pub struct ThumbStore {
     writer: Mutex<Connection>,
     readers: Vec<Mutex<Connection>>,
     next: AtomicUsize,
+    /// Test hook: every write fails while set ([`ThumbStore::fail_writes_for_tests`]).
+    fail_writes: AtomicBool,
 }
 
 impl std::fmt::Debug for ThumbStore {
@@ -63,11 +65,19 @@ impl ThumbStore {
             writer: Mutex::new(writer),
             readers,
             next: AtomicUsize::new(0),
+            fail_writes: AtomicBool::new(false),
         })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Test hook: while `on`, every write returns an error and writes nothing, as a full disk or a held lock
+    /// would (the scanner's handling of a store error is tested with it, ADR-0120).
+    #[doc(hidden)]
+    pub fn fail_writes_for_tests(&self, on: bool) {
+        self.fail_writes.store(on, Ordering::SeqCst);
     }
 
     fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -109,6 +119,11 @@ impl ThumbStore {
         items: impl IntoIterator<Item = (&'a ContentId, &'a ThumbnailRecord)>,
         over_placeholders_only: bool,
     ) -> Result<Vec<bool>> {
+        if self.fail_writes.load(Ordering::SeqCst) {
+            return Err(CatalogError::Invalid(
+                "thumbnail writes fail (test hook)".into(),
+            ));
+        }
         let items: Vec<_> = items.into_iter().collect();
         for (_, t) in &items {
             validate(t)?;

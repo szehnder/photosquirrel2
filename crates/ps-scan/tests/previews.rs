@@ -1065,49 +1065,38 @@ mod posters {
         assert!(unrunnable.calls().is_empty());
     }
 
-    /// The thumbnail store cannot be written when the frame comes in (another connection holds its write lock longer
-    /// than the store waits): the rows are left as they were, still waiting, and the next run fills them in
-    /// (ADR-0120). The test holds the lock through the same SQLite library as the store, while the tool runs.
+    /// The thumbnail store cannot be written when the frame comes in (a full disk, a held lock; here the store's
+    /// test hook, turned on while the tool runs): the rows are left as they were, still waiting, and the next run
+    /// fills them in (ADR-0120).
     #[test]
     fn a_store_error_leaves_the_rows_waiting() {
         let _g = shared();
         let v = videos(1);
         let (_src, mut env, id) =
             scanned_without_tool(&[("DCIM/IMG_0100.MOV".to_owned(), v[0].clone())]);
-        let thumbs = env.s().thumbs().path().to_path_buf();
         let marks = tempfile::tempdir().expect("marks");
-        let (started, ready, released) = (
-            marks.path().join("started"),
-            marks.path().join("ready"),
-            marks.path().join("released"),
-        );
-        // The tool signals that it runs, then waits until the lock is held before it prints the frame.
+        let (started, ready) = (marks.path().join("started"), marks.path().join("ready"));
+        // The tool signals that it runs, then waits until the store fails before it prints the frame.
         let tool = Tool::new(&format!(
             "touch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\ncat 'FRAME'",
             started.display(),
             ready.display()
         ));
-        let locker = {
-            let (started, ready, released) = (started.clone(), ready.clone(), released.clone());
+        env.reopen(tool.options());
+        // The store of the reopened scanner.
+        let thumbs = env.s().thumbs().clone();
+        let breaker = {
+            let (started, ready, thumbs) = (started.clone(), ready.clone(), thumbs.clone());
             std::thread::spawn(move || {
                 let t0 = std::time::Instant::now();
                 while !started.exists() {
                     assert!(t0.elapsed() < Duration::from_secs(30), "the tool never ran");
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                let c = rusqlite::Connection::open(&thumbs).expect("open thumbs.db");
-                c.busy_timeout(Duration::from_secs(10))
-                    .expect("busy timeout");
-                c.execute_batch("BEGIN EXCLUSIVE").expect("lock");
+                thumbs.fail_writes_for_tests(true);
                 ps_fixtures::scratch::write(&ready, "").expect("ready");
-                // Longer than the store's 5 s busy timeout.
-                std::thread::sleep(Duration::from_secs(7));
-                c.execute_batch("ROLLBACK").expect("unlock");
-                drop(c);
-                ps_fixtures::scratch::write(&released, "").expect("released");
             })
         };
-        env.reopen(tool.options());
         let s = fill(&env, FillScope::all());
         completed(&s);
         assert_eq!(s.fill.clone().expect("fill").filled, 0, "{s:?}");
@@ -1118,8 +1107,8 @@ mod posters {
             Some(PreviewReason::NoPosterTool),
             "the row is untouched"
         );
-        locker.join().expect("the locker");
-        assert!(released.exists());
+        breaker.join().expect("the breaker");
+        thumbs.fail_writes_for_tests(false);
         assert_eq!(kind(&env, r), ThumbKind::Placeholder);
         let working = Tool::working();
         env.reopen(working.options());
