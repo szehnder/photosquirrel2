@@ -52,12 +52,14 @@ stays 27).
   `photosquirrel-cli demo` catalog plus a fixture folder "Holiday 2024" added by `sources add` (small preset, seed 7):
   `target/agent-review/screenshots/add-source/sources-not-scanned-yet-dark.png` and `-light.png` (the new row "Not
   scanned yet", the primary "Scan “Holiday 2024”", the secondary "Scan 4 sources (1 new)"), and
-  `setting-scan-new-sources-dark.png` (Settings, Scanning: the new toggle at the foot of the section, on). The
+  `setting-scan-new-sources-dark.png` (Settings, Scanning: the new toggle at the head of the section, on, after L6). The
   pending "Adding…" row and the queue were not captured: neither exists by the first frames a scripted capture draws
   (docs/gpui-notes.md), and the headless tests cover both. Not committed; data removed.
 - [x] 6.5 Pushed; GitHub CI green on all five jobs.
   Done: fast-forward to origin main (5e33d0a..ae215fb); run 41219524741 green on all five jobs: Linux (full CI), Build and test (windows-2022), Build and test (macos-15), Oldest libheif (Ubuntu 22.04, libheif 1.12), Performance budgets (relative to the parent commit). This tasks-only commit's run: in the hand-off report.
-- [ ] 6.6 Gate review by a fresh agent that did not write the code.
+- [x] 6.6 Gate review by a fresh agent that did not write the code.
+  Done: PASS-WITH-FIXES (M1-M3, L1-L8; fixed in 6.7, commits 8ccb866..9a9674d). Run 41244180344 on 9a9674d green
+  on all five jobs. Screenshots of the fixed row and setting reviewed, not committed.
 
 - [x] 6.7 Gate-review fixes (PASS-WITH-FIXES): M1-M3 and L1-L8 as listed in design.md, "Gate-review fixes", each
   with its test.
