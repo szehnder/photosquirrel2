@@ -41,8 +41,8 @@ stays 27).
 
 ## 6. Verification
 
-- [ ] 6.1 `cargo xtask ci` green in a clean worktree; every scenario mapped. (GitHub's Linux (full CI) job stands in for a local clean worktree, which does not fit the free disk.)
-  Local checks so far: `cargo fmt --check`; clippy -D warnings (all targets) of ps-scan, ps-catalog, ps-model, ps-service, photosquirrel-cli, ui-workspace and photosquirrel; `cargo xtask layering` (17 crates) and `tokens` OK; `openspec validate --all --strict` 32/32 plus the change; `cargo xtask spec-coverage` 684 scenarios, 684 mapped; every test binary of ps-scan, ps-catalog, ps-model, ps-service, photosquirrel-cli and ui-workspace green.
+- [x] 6.1 `cargo xtask ci` green in a clean worktree; every scenario mapped. (GitHub's Linux (full CI) job stands in for a local clean worktree, which does not fit the free disk.)
+  Done: not run in a local clean worktree (about 18 GB free; a clean GPUI build needs about 50 GB). GitHub's Linux (full CI) job ran `cargo xtask ci` on a fresh checkout of ae215fb: green (run 41219524741). Local checks: `cargo fmt --check`; clippy -D warnings (all targets) of ps-scan, ps-catalog, ps-model, ps-service, photosquirrel-cli, ui-workspace and photosquirrel; `cargo xtask layering` (17 crates) and `tokens` OK; `openspec validate --all --strict` 32/32 plus the change; `cargo xtask spec-coverage` 684 scenarios, 684 mapped; every test binary of ps-scan, ps-catalog, ps-model, ps-service, photosquirrel-cli and ui-workspace green.
 - [x] 6.2 Corpus gate unchanged: release CLI, medium preset seed 42, drive-a/b/c: precision, recall and keeper accuracy 1.0000, 0 violations, 19,741 pairs, 1,903 groups, 8,834 grouped files, 4,166,020,278 reclaimable bytes, 6,338 suggestions.
   Done: release CLI, medium preset seed 42, drive-a/b/c: 10,173 files (5.8 GB) scanned in 21.7 s, 0 errors; `eval-corpus` precision, recall and keeper accuracy 1.0000, 0 must-not-merge violations, 19,741/19,741 pairs, 1,903 keeper groups, gate PASS; `groups list` totals: 8,834 grouped files, 1,903 groups, 4,166,020,278 reclaimable bytes, 6,338 suggestions (the baseline exactly). Each `sources add` printed "not scanned yet"; after the scan `sources list` showed the three sizes (2,026,386,842 + 1,908,887,998 + 1,899,951,228 bytes = the corpus); the unchanged rescan read 0 B; adding drive-a to a fresh catalog took 30 ms (the process included). Corpus removed.
 - [x] 6.3 Budgets: `rescan-nochange-100k` within budget.
@@ -55,5 +55,6 @@ stays 27).
   `setting-scan-new-sources-dark.png` (Settings, Scanning: the new toggle at the foot of the section, on). The
   pending "Adding…" row and the queue were not captured: neither exists by the first frames a scripted capture draws
   (docs/gpui-notes.md), and the headless tests cover both. Not committed; data removed.
-- [ ] 6.5 Pushed; GitHub CI green on all five jobs.
+- [x] 6.5 Pushed; GitHub CI green on all five jobs.
+  Done: fast-forward to origin main (5e33d0a..ae215fb); run 41219524741 green on all five jobs: Linux (full CI), Build and test (windows-2022), Build and test (macos-15), Oldest libheif (Ubuntu 22.04, libheif 1.12), Performance budgets (relative to the parent commit). This tasks-only commit's run: in the hand-off report.
 - [ ] 6.6 Gate review by a fresh agent that did not write the code.
