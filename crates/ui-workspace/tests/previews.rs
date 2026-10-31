@@ -696,6 +696,24 @@ fn a_refused_fill_in_shows_a_toast_and_keeps_the_notice(cx: &mut TestAppContext)
 /// dialog explains the poster-frame tool.
 #[gpui_kit::test]
 fn videos_from_older_catalogs_show_why_they_have_no_preview(cx: &mut TestAppContext) {
+    older_catalog_video(cx, None);
+}
+
+/// [`videos_from_older_catalogs_show_why_they_have_no_preview`] on a machine with ffmpeg: the video can get its
+/// frame now and the dialog offers Fill in previews.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn videos_from_older_catalogs_can_get_their_frame_when_a_tool_is_available(
+    cx: &mut TestAppContext,
+) {
+    let tools = tempfile::tempdir().unwrap();
+    let tool = fake_ffmpeg(tools.path(), "ffmpeg", "");
+    older_catalog_video(cx, Some(tool));
+}
+
+/// The older-catalog video with `default_tool` as the machine's `ffmpeg` (none configured in the settings): the
+/// tool lookup is injected, so both cases run on every machine whatever its `PATH` has.
+fn older_catalog_video(cx: &mut TestAppContext, default_tool: Option<PathBuf>) {
     let mut files = mixed();
     files.push((
         "DCIM/IMG_5000.MOV".into(),
@@ -735,7 +753,17 @@ fn videos_from_older_catalogs_show_why_they_have_no_preview(cx: &mut TestAppCont
     )
     .unwrap();
     drop(c);
-    let (backend, shell, mut cx) = open_app(cx, &d.data, windows_without_hevc());
+    let tool_on_path = default_tool.is_some();
+    let (backend, shell, mut cx) = open_app_with(
+        cx,
+        &d.data,
+        windows_without_hevc(),
+        ScanOptions {
+            poster_tool_default: Some(Arc::new(move || default_tool.clone())),
+            ..ScanOptions::default()
+        },
+        None,
+    );
     library_ready(&mut cx);
     let video = item(&backend, "IMG_5000.MOV");
     let r = backend.scan().unwrap().engine().catalog().read();
@@ -755,9 +783,8 @@ fn videos_from_older_catalogs_show_why_they_have_no_preview(cx: &mut TestAppCont
     let index = cx
         .update(|_, cx| model.read(cx).index.position_of(video))
         .expect("the video is listed");
-    // The app resolves the poster-frame tool from its settings: none is configured here, so `ffmpeg` on this
-    // machine's `PATH` counts when there is one, and the video can get its frame now (ADR-0114).
-    let tool_on_path = ps_media::poster::ffmpeg_on_path().is_some();
+    // The app resolves the poster-frame tool from its settings: none is configured here, so the machine's `ffmpeg`
+    // (the injected lookup) counts when there is one, and the video can get its frame now (ADR-0114).
     let want = if tool_on_path {
         ps_model::PlaceholderStatus::ReadyToFill
     } else {
@@ -907,22 +934,16 @@ fn poster_failed_dialog_shows_the_error_and_tries_again(cx: &mut TestAppContext)
         .expect("the dialog's content");
     assert_eq!(help.reason, PreviewReason::PosterFailed);
     assert_eq!(help.status, ps_model::PlaceholderStatus::Damaged);
+    // The sentence, then ffmpeg's error once, in the box (ADR-0120).
     let reason = label("preview-help-reason", &mut cx).unwrap();
-    assert!(
-        reason.starts_with("ffmpeg could not get a frame from this video: "),
-        "{reason}"
-    );
-    assert!(reason.contains("moov atom not found"), "{reason}");
-    assert!(
-        reason.ends_with("The video is catalogued and exported as usual."),
-        "{reason}"
-    );
-    assert!(
-        !reason.contains("none is set up"),
-        "not the missing-tool text: {reason}"
+    assert_eq!(reason, ps_service::previews::POSTER_FAILED_SENTENCE);
+    assert_eq!(
+        reason,
+        "ffmpeg could not get a frame from this video. The video is catalogued and exported as usual."
     );
     let error = label("preview-help-error", &mut cx).unwrap();
     assert!(error.contains("exit status"), "{error}");
+    assert!(error.contains("moov atom not found"), "{error}");
     assert_eq!(
         label("preview-help-retry-note", &mut cx).as_deref(),
         Some(ui_workspace::views::preview_help::POSTER_RETRY_TEXT)
@@ -931,9 +952,11 @@ fn poster_failed_dialog_shows_the_error_and_tries_again(cx: &mut TestAppContext)
         label("preview-help-others", &mut cx).as_deref(),
         Some("1 other video has no preview for this reason")
     );
+    assert!(!exists("preview-help-fix", &mut cx), "a tool is available");
     assert_eq!(
         label("preview-help-retry", &mut cx).as_deref(),
-        Some("Try again")
+        Some("Try again (2 videos)"),
+        "it says how many failed videos it retries"
     );
     click("preview-help-retry", &mut cx);
     let b = backend.clone();
@@ -956,5 +979,106 @@ fn poster_failed_dialog_shows_the_error_and_tries_again(cx: &mut TestAppContext)
         r.file_by_id(other.into()).unwrap().unwrap().preview,
         None,
         "Try again retried every failed poster"
+    );
+}
+
+/// "Why no preview?" for a failed poster when no poster-frame tool is available now (ffmpeg uninstalled, ADR-0120):
+/// Try again is disabled and the dialog says how to install ffmpeg; clicking it starts nothing.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn poster_failed_dialog_without_a_tool_disables_try_again(cx: &mut TestAppContext) {
+    let tools = tempfile::tempdir().unwrap();
+    let failing = fake_ffmpeg(tools.path(), "ffmpeg-old", "IMG_50");
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("photos");
+    std::fs::create_dir_all(root.join("DCIM")).unwrap();
+    std::fs::write(
+        root.join("DCIM/IMG_5000.MOV"),
+        ps_fixtures::media::movie(&ps_fixtures::media::MovieSpec::iphone()),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("DCIM/IMG_0100.JPG"),
+        ps_fixtures::media::jpeg(800, 600, 40, 85),
+    )
+    .unwrap();
+    let data = tmp.path().join("data");
+    {
+        let svc = ScanService::open(
+            &data,
+            ScanOptions {
+                poster_tool: Some(failing),
+                ..ScanOptions::default()
+            },
+        )
+        .unwrap()
+        .with_decoders(windows_without_hevc());
+        svc.add_source(&root).unwrap();
+        svc.start(&[]).unwrap();
+        assert_eq!(svc.wait().unwrap().status, RunStatus::Completed);
+    }
+    // No tool configured and none on this (injected) machine's `PATH`.
+    let (backend, shell, mut cx) = open_app_with(
+        cx,
+        &data,
+        windows_without_hevc(),
+        ScanOptions {
+            poster_tool_default: Some(Arc::new(|| None)),
+            ..ScanOptions::default()
+        },
+        None,
+    );
+    library_ready(&mut cx);
+    let video = item(&backend, "IMG_5000.MOV");
+    open_dialog(&shell, video, &mut cx);
+    assert_eq!(
+        label("preview-help-reason", &mut cx).as_deref(),
+        Some(ps_service::previews::POSTER_FAILED_SENTENCE)
+    );
+    assert!(
+        label("preview-help-error", &mut cx).is_some_and(|e| e.contains("moov atom not found"))
+    );
+    assert_eq!(
+        label("preview-help-retry-note", &mut cx).as_deref(),
+        Some(ui_workspace::views::preview_help::POSTER_RETRY_NEEDS_TOOL_TEXT)
+    );
+    let fix = label("preview-help-fix", &mut cx);
+    assert!(
+        fix.as_deref().is_some_and(|f| f.contains("ffmpeg")),
+        "the install hint: {fix:?}"
+    );
+    assert_eq!(
+        label("preview-help-retry", &mut cx).as_deref(),
+        Some("Try again (unavailable)"),
+        "disabled, with no count, without a tool"
+    );
+    let help = cx
+        .update(|_, cx| {
+            shell
+                .read(cx)
+                .preview_help()
+                .and_then(|d| d.read(cx).help().cloned())
+        })
+        .expect("the dialog's content");
+    assert!(
+        matches!(
+            help.action,
+            ps_model::PreviewAction::PosterFailed { retry: None, .. }
+        ),
+        "{:?}",
+        help.action
+    );
+    click("preview-help-retry", &mut cx);
+    cx.run_until_parked();
+    let scan = backend.scan().unwrap();
+    assert!(scan.active().is_none(), "Try again started nothing");
+    let r = scan.engine().catalog().read();
+    assert_eq!(
+        r.file_by_id(video.into())
+            .unwrap()
+            .unwrap()
+            .preview
+            .map(|p| p.reason),
+        Some(PreviewReason::PosterFailed)
     );
 }

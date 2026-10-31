@@ -80,10 +80,7 @@ fn sentence(reason: &PreviewReason, detail: Option<&PlaceholderReason>, label: &
             "Videos get their preview frame from a poster-frame tool (ffmpeg), and none is set up."
                 .into()
         }
-        (PreviewReason::PosterFailed, Some(PlaceholderReason::PosterFailed { message })) => {
-            poster_failed_sentence(message)
-        }
-        (PreviewReason::PosterFailed, _) => poster_failed_sentence("no frame"),
+        (PreviewReason::PosterFailed, _) => POSTER_FAILED_SENTENCE.into(),
         (PreviewReason::Sequence, _) => {
             "This is an image sequence without a still image to show.".into()
         }
@@ -93,14 +90,9 @@ fn sentence(reason: &PreviewReason, detail: Option<&PlaceholderReason>, label: &
     }
 }
 
-/// "ffmpeg could not get a frame from this video: <message>. The video is catalogued and exported as usual."
-/// (ADR-0114).
-pub fn poster_failed_sentence(message: &str) -> String {
-    format!(
-        "ffmpeg could not get a frame from this video: {}. The video is catalogued and exported as usual.",
-        message.trim_end_matches('.')
-    )
-}
+/// The reason of a video whose poster frame failed (ADR-0114); the dialog shows ffmpeg's error below it, once.
+pub const POSTER_FAILED_SENTENCE: &str =
+    "ffmpeg could not get a frame from this video. The video is catalogued and exported as usual.";
 
 impl Library {
     /// The "Why no preview?" dialog's content for one item: its format and reason in plain words, what still
@@ -192,12 +184,43 @@ impl Library {
                             .and_then(|e| e.fix.clone()),
                     }
                 }
-                (PreviewReason::PosterFailed, d) => PreviewAction::PosterFailed {
-                    message: match d {
-                        Some(PlaceholderReason::PosterFailed { message }) => message.clone(),
-                        _ => info.as_ref().map(|i| i.note.clone()).unwrap_or_default(),
-                    },
-                },
+                (PreviewReason::PosterFailed, d) => {
+                    let tool = scan.engine().options().poster_tool;
+                    // Try again needs a tool: how many failed videos it runs on, or how to install one.
+                    let (retry, fix) = if tool.is_some() {
+                        let n = scan
+                            .engine()
+                            .catalog()
+                            .read()
+                            .fillable_files(
+                                &rule,
+                                &FillScope {
+                                    format: None,
+                                    reason: Some(PreviewReason::PosterFailed),
+                                },
+                                &[],
+                                true,
+                            )?
+                            .len() as u64;
+                        (Some(n), None)
+                    } else {
+                        let report = ps_media::decoder_report(&decoders, None);
+                        (
+                            None,
+                            report
+                                .entry(ps_model::DecoderFormat::PosterFrames)
+                                .and_then(|e| e.fix.clone()),
+                        )
+                    };
+                    PreviewAction::PosterFailed {
+                        message: match d {
+                            Some(PlaceholderReason::PosterFailed { message }) => message.clone(),
+                            _ => info.as_ref().map(|i| i.note.clone()).unwrap_or_default(),
+                        },
+                        retry,
+                        fix,
+                    }
+                }
                 (PreviewReason::Sequence, _) => PreviewAction::Sequence,
                 (PreviewReason::NeedsNewerVersion, _) => PreviewAction::NewerVersion,
             }

@@ -352,15 +352,22 @@ pub fn apply_scan_settings(settings: &Settings, opts: &mut ScanOptions) {
     let s = &settings.scanning;
     opts.classifier = s.classifier.clone();
     opts.include_hidden = s.include_hidden;
-    opts.poster_tool = resolve_poster_tool(settings);
     let configured = s.poster_frame_tool.clone();
-    opts.poster_tool_resolver = Some(std::sync::Arc::new(move || {
-        ps_media::poster::resolve_tool(configured.as_deref())
-    }));
+    // The default tool where none is configured: `ffmpeg` on `PATH`, or the test hook's.
+    let default = opts.poster_tool_default.clone();
+    let resolve: ps_scan::PosterToolFn = std::sync::Arc::new(move || match &default {
+        Some(find) => configured
+            .clone()
+            .filter(|p| ps_media::poster::is_executable(p))
+            .or_else(|| find()),
+        None => ps_media::poster::resolve_tool(configured.as_deref()),
+    });
+    opts.poster_tool = resolve();
+    opts.poster_tool_resolver = Some(resolve);
 }
 
-/// The poster-frame tool available now (ADR-0114): `scanning.poster_frame_tool` when it is a file, else `ffmpeg` on
-/// `PATH`, else none.
+/// The poster-frame tool available now (ADR-0114): `scanning.poster_frame_tool` when it is an executable file, else
+/// `ffmpeg` on `PATH`, else none.
 pub fn resolve_poster_tool(settings: &Settings) -> Option<std::path::PathBuf> {
     ps_media::poster::resolve_tool(settings.scanning.poster_frame_tool.as_deref())
 }

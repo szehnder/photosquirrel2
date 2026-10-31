@@ -211,7 +211,8 @@ fn previews_fill_retries_failed_posters() {
     };
     run(&["sources", "add", photos.path().to_str().unwrap()]);
     run(&["scan"]);
-    assert_eq!(calls(), 2, "the scan ran ffmpeg once per video");
+    // One call for the readable video, two for the failing one (a second at 0 s, ADR-0120).
+    assert_eq!(calls(), 3, "the scan ran ffmpeg on each video");
     let status: Value =
         serde_json::from_str(run(&["--json", "previews", "status"]).trim()).unwrap();
     let rows = status["data"].as_array().unwrap().clone();
@@ -225,10 +226,10 @@ fn previews_fill_retries_failed_posters() {
     // A plain fill does not run the tool on it again.
     let text = run(&["previews", "fill"]);
     assert!(text.contains("0 previews filled in"), "{text}");
-    assert_eq!(calls(), 2);
+    assert_eq!(calls(), 3);
     // The explicit retry runs it once more (still failing).
     run(&["previews", "fill", "--reason", "poster_failed"]);
-    assert_eq!(calls(), 3);
+    assert_eq!(calls(), 5);
     // After an ffmpeg update the retry gives it its frame.
     write_tool(false);
     let out = run(&["--json", "previews", "fill", "--reason", "poster_failed"]);
@@ -238,7 +239,7 @@ fn previews_fill_retries_failed_posters() {
         .find(|v| v["type"] == "summary")
         .unwrap_or_else(|| panic!("{out}"));
     assert_eq!(summary["data"]["filled"], 1, "{summary}");
-    assert_eq!(calls(), 4);
+    assert_eq!(calls(), 6);
     let status: Value =
         serde_json::from_str(run(&["--json", "previews", "status"]).trim()).unwrap();
     assert!(

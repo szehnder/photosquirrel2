@@ -325,8 +325,13 @@ pub enum PreviewAction {
     /// Videos need a poster-frame tool (ffmpeg).
     PosterTool { fix: Option<Fix> },
     /// The poster-frame tool ran and got no frame (ADR-0114): its error, and Try again (a Fill in previews job
-    /// for the reason `poster_failed`).
-    PosterFailed { message: String },
+    /// for the reason `poster_failed`). `retry`: the failed videos Try again runs the tool on, `None` when no tool is
+    /// available now (Try again is disabled and `fix` says how to install one, ADR-0120).
+    PosterFailed {
+        message: String,
+        retry: Option<u64>,
+        fix: Option<Fix>,
+    },
     /// Image sequences show their first frame in a later version.
     Sequence,
     /// The placeholder was made by a newer version of PhotoSquirrel.

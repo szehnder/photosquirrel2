@@ -63,6 +63,18 @@ pub const POSTER_TOOL_SET_TEXT: &str = "A poster-frame tool is set up now: Fill 
 /// A video whose poster frame failed (ADR-0114): what Try again does.
 pub const POSTER_RETRY_TEXT: &str = "Try again runs ffmpeg once more on each video whose poster frame failed, for \
      example after updating ffmpeg.";
+/// A video whose poster frame failed, with no poster-frame tool available now (ADR-0120): Try again is disabled.
+pub const POSTER_RETRY_NEEDS_TOOL_TEXT: &str =
+    "Try again needs ffmpeg, and none is available now. Install it, then try again.";
+
+/// The Try again button's label: "Try again (3 videos)".
+pub fn try_again_label(retry: Option<u64>) -> String {
+    match retry {
+        Some(1) => "Try again (1 video)".into(),
+        Some(n) if n > 0 => format!("Try again ({n} videos)"),
+        _ => "Try again".into(),
+    }
+}
 pub const DAMAGED_TEXT: &str =
     "The file may be damaged. Try opening it in another app. If it opens there, please report it.";
 
@@ -160,9 +172,10 @@ impl PreviewHelpDialog {
     /// Try again (ADR-0114): a Fill in previews job for the reason "poster frame failed", which runs the tool once
     /// more on each such video.
     pub fn try_again(&mut self, cx: &mut Context<'_, Self>) {
+        // Only with a tool available now (ADR-0120).
         if !matches!(
             self.help().map(|h| &h.action),
-            Some(PreviewAction::PosterFailed { .. })
+            Some(PreviewAction::PosterFailed { retry: Some(_), .. })
         ) {
             return;
         }
@@ -347,7 +360,12 @@ impl PreviewHelpDialog {
                     ),
                 };
             }
-            PreviewAction::PosterFailed { message } => {
+            PreviewAction::PosterFailed {
+                message,
+                retry,
+                fix,
+            } => {
+                let can_retry = retry.is_some() && !self.filling;
                 col = col
                     .child(
                         div()
@@ -368,23 +386,35 @@ impl PreviewHelpDialog {
                     .child(
                         Self::text(
                             "preview-help-retry-note",
-                            POSTER_RETRY_TEXT,
+                            if retry.is_some() {
+                                POSTER_RETRY_TEXT
+                            } else {
+                                POSTER_RETRY_NEEDS_TOOL_TEXT
+                            },
                             colors.text_muted,
                         )
                         .test_support(),
-                    )
-                    .child(
-                        h_flex().child(kit::button(
-                            "preview-help-retry",
-                            "Try again",
-                            Some(IconName::RefreshCw),
-                            Tone::Primary,
-                            (!self.filling)
-                                .then(|| kit::on(cx.listener(|this, _, _, cx| this.try_again(cx))))
-                                .flatten(),
-                            cx,
-                        )),
                     );
+                if let (None, Some(fix)) = (retry, fix) {
+                    col = col.child(crate::views::decoder_fix::fix_panel(
+                        "preview-help-fix",
+                        Some("videos get their preview frame from ffmpeg"),
+                        fix,
+                        cx,
+                    ));
+                }
+                col = col.child(
+                    h_flex().child(kit::button(
+                        "preview-help-retry",
+                        try_again_label(*retry),
+                        Some(IconName::RefreshCw),
+                        Tone::Primary,
+                        can_retry
+                            .then(|| kit::on(cx.listener(|this, _, _, cx| this.try_again(cx))))
+                            .flatten(),
+                        cx,
+                    )),
+                );
                 if let Some(e) = &self.fill_error {
                     col = col.child(
                         Self::text("preview-help-fill-error", e.clone(), colors.danger)
