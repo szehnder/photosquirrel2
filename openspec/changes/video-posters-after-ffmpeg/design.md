@@ -113,3 +113,60 @@ waiting-rule tests are platform-free.
 - [CPU contention with a scan] -> two slots and `-threads 2`; the fill job runs only when asked, and a rescan's
   poster items share the run's lanes.
 - [A permanent failure retried by hand forever] -> only when the user asks, one call per file per retry.
+
+## Deviations (as built)
+
+- **The tool is resolved by a resolver in the options.** `ps_media::poster::resolve_tool(configured)` is the rule
+  (the configured path when it is a file, else `ffmpeg` on `PATH`); `ps_service::settings::resolve_poster_tool`
+  applies it to the settings, and `apply_scan_settings` also hands the engine a closure
+  (`ScanOptions::poster_tool_resolver`) that `Scanner::refresh_poster_tool` runs when a scan or fill run starts
+  (`spawn`), when the counts are read (`Scanner::preview_status`, the Library notice) and when the dialog explains a
+  row (`Library::explain`). Options without a resolver (tests) use `poster_tool` as given. `photosquirrel-cli doctor`
+  reports the same resolved tool.
+- **The generation branch leaves both video reasons alone without a tool** (`NOT (preview_reason IN
+  ('no_poster_tool', 'poster_failed') AND no tool)`), not only `no_poster_tool`: after a poster generation bump a
+  `poster_failed` row with no tool would otherwise be queued and could only become `no_poster_tool`. The placeholder
+  part of the rule is one function, `WaitingRule::placeholder_waits`, which `fillable` and
+  `ps_scan::diff::outdated_placeholder` both call; the SQL is tested against it row by row.
+- **The explicit retry** is `fillable_files(rule, scope, sources, retry_failed)` with
+  `WaitingRule::sql_retrying_failed_posters` and `fillable_retrying_failed_posters` (only with a tool); the fill job
+  retries when its scope's reason is `poster_failed`. The end-of-run `still_waiting` count never includes failed
+  posters. **Try again** retries every failed poster (scope reason `poster_failed`, no format), not only the dialog's
+  video.
+- **`Todo` is a struct**, so the poster item is `Todo.poster: Option<PosterWork { identity, format }>` rather than a
+  `Todo::Poster` variant. The duration comes from the stored placeholder record (the row has none), read by the
+  worker; a failure's placeholder is that record with the new reason, note and this run's generation, so it keeps
+  the clip's duration and date (a minimal video placeholder when the record is gone).
+- **The poster lane is a slot gate, not separate threads.** Poster items run on their source lane's reader threads,
+  which wait for one of the run's `POSTER_SLOTS` (2; 1 per rotational or network source, 2 on solid-state and
+  unknown devices) in `ps_scan::poster::PosterSlots`, checking for a cancel every 20 ms. Pause is
+  `Busy::checkpoint` before the wait, as designed.
+- **Copies.** One poster item per content id: per run for Fill in previews, per source for a rescan; a worker whose
+  content already has pixels in the thumbnail store (a copy on another source done earlier in the run) runs no tool
+  and only clears the rows. `Command::SetPosterPreview` writes the key's row and every thumbed row of the same
+  content (`content_id`, `identity_kind`) whose reason is `no_poster_tool` or `poster_failed`, so other placeholder
+  reasons are never overwritten.
+- **The call.** `-threads 2` is passed as an input and an output option; the seek is formatted in seconds with three
+  decimals; a run that succeeds with no output is `PosterError::NoFrame` ("the poster-frame tool gave no frame"),
+  non-JPEG output stays `Failed`; the message of a failed exit carries the last line of the tool's error output
+  (`exit status 1: x.mov: moov atom not found`), at most 200 characters. A stop check that fires is
+  `PosterError::Cancelled` and records nothing. The analysis path also passes its cancel to the tool
+  (`video_thumbnail_with_stop`), so cancelling a scan no longer waits up to 10 s for a running ffmpeg.
+- **Reporting.** A failed poster is also a run error ("poster frame failed (...); the video is catalogued and
+  exported as usual"), and a file whose size or time changed between the start of a fill job and its poster item is
+  reported as "changed during the scan" and left waiting. `DiffCounts` gains `posters`, `posters_made` and
+  `posters_failed`; the CLI's scan summary prints a line for them; the fill summary counts them in `filled` and
+  `failed`.
+- **Dialog wording.** A video that can get its frame now reads "A poster-frame tool (ffmpeg) is available now, so
+  this video can get its preview frame." with the usual Fill in previews button; the footer says "N other videos"
+  for both video reasons; `POSTER_TOOL_SET_TEXT` (a tool set up while a row is not fillable) now points to Fill in
+  previews. The grid's reason line for `poster_failed` is "ffmpeg could not get a frame from this video".
+- **Tests that depend on the machine.** The app resolves the tool from its settings, so with none configured an
+  `ffmpeg` on the test machine's `PATH` counts. `ui-workspace`'s `videos_from_older_catalogs_show_why_they_have_no_preview`
+  now expects "ready to fill in" and the Fill in previews button when `ffmpeg_on_path()` finds one, and the
+  install guidance otherwise; the new dialog test configures its fake tool in the settings, so it holds either way.
+- **Older versions (task 5.2).** As D2 expected: 0.3.0 maps the unknown `preview_reason` to `NeedsNewerVersion`
+  (`ps_catalog::read`), the record's unknown reason deserialises as `NeedsNewerVersion` (`#[serde(other)]` ignores
+  the `message` field: `an_unknown_reason_with_fields_reads_as_a_newer_version`), so the tile is a placeholder
+  marked "made by a newer version" and the row is not fillable there. Recorded in ADR-0114. A 0.3.0 cannot resume a
+  fill run whose stored scope has the reason `poster_failed`.

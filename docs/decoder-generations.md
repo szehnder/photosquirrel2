@@ -34,5 +34,11 @@ is read again once after a bump.
 | RAW | RAW embedded previews | 1 | `damaged-raw-reason` (0.3.x): cut-short RAWs are damaged, unknown cameras named |
 | Video poster | every video format | 0 | |
 
+Videos waiting for a poster-frame tool do not need a bump: they wait for the tool itself (the tool clause,
+[ADR-0114](adr/0114-videos-wait-for-a-poster-frame-tool-and-failed-posters-are-recorded.md)), so installing ffmpeg
+makes them fillable. Bump the video poster generation for a change that gets frames from videos ffmpeg could not
+read before (a new seek rule, other tool arguments): the bump retries every "poster frame failed" video once, when a
+tool is available.
+
 Add a row here, with the change that bumped it, whenever a generation changes. A forgotten bump loses nothing: the
 old placeholders simply wait until their file changes.

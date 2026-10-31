@@ -44,6 +44,14 @@ to their resized or re-exported JPEG copies.
 
 ### What's new since 0.3.0
 
+- **Videos get their poster frames after you install ffmpeg.** Videos catalogued without ffmpeg showed "needs a
+  poster-frame tool" for good; now **Fill in previews** (or the next rescan) gives each of them its frame once ffmpeg
+  is on your PATH or set in Settings, with no restart: one ffmpeg call per video (at most 10 s, two at a time, one on
+  a hard disk or network share), none of its bytes read by PhotoSquirrel, nothing else about it changed. Short clips
+  (under 2 s) get a frame too. A video ffmpeg cannot read shows "poster frame failed" with ffmpeg's error instead of
+  asking you to install what you have, and is not tried again on every run; **Try again** in the "Why no preview?"
+  dialog (`photosquirrel-cli previews fill --reason poster_failed`) runs ffmpeg once more on such videos. An older
+  PhotoSquirrel opening the catalog shows those videos as "made by a newer version".
 - **Adobe RGB and wide-gamut photos look right.** Canon `_MG_` JPEGs and the previews of their CR2s, recorded in
   Adobe RGB, no longer look flat next to their `IMG_` neighbours: thumbnails, the filmstrip and the loupe are
   converted to sRGB, as are JPEGs with an embedded colour profile (an iPhone's Display P3 JPEG). The inspector names

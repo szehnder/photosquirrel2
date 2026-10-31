@@ -94,7 +94,7 @@ The packages are not code-signed yet, so your system warns you the first time:
   Service keyring (GNOME Keyring, KWallet) to store AI provider keys.
 - **x86_64 CPUs:** about 2009 or newer (x86-64-v2: SSE4.2 and POPCNT).
 - **Optional:** `ffmpeg` on your PATH for video poster frames (without it videos show a placeholder with their
-  length and date).
+  length and date; install it later and Fill in previews gives existing videos their frames).
 
 #### HEIC and AVIF photos
 
@@ -302,7 +302,16 @@ rescan of a source fills them in too. On the command line:
 ```
 photosquirrel-cli previews status            # placeholders by format and reason, and how many can be filled in
 photosquirrel-cli previews fill --format heic # fill in previews (Ctrl-C stops; the rest keeps waiting)
+photosquirrel-cli previews fill --reason poster_failed # run ffmpeg once more on videos whose poster frame failed
 ```
+
+**Videos after installing ffmpeg.** Videos catalogued without a poster-frame tool show "needs a poster-frame tool".
+Install `ffmpeg` (on your PATH, or set its path in Settings), then use **Fill in previews**: each such video gets its
+poster frame from one ffmpeg call (at most 10 s, two at a time, one at a time on a hard disk or network share), and
+PhotoSquirrel reads none of its bytes; the next rescan of a source does the same. No restart is needed. A video
+ffmpeg cannot read (a codec it lacks, a damaged clip) shows "poster frame failed" with ffmpeg's error and is not
+tried again on every run; **Try again** in the "Why no preview?" dialog (or `previews fill --reason poster_failed`)
+runs ffmpeg once more on each such video, for example after updating ffmpeg.
 
 ## Freeing up space (optional)
 
