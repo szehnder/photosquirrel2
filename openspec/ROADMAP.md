@@ -41,6 +41,10 @@ A milestone gate must pass before the next milestone starts. Gates are checked b
 | 33 | 0.3.x | `damaged-raw-reason` | thumbnails, incremental-rescan, scan-progress, cli, completion-report | **build next** (priority 1; proposed, ADR-0115, no migration): a truncated RAW file (a card pulled mid-write, including one whose preview is intact but whose sensor data is cut) is shown as damaged (`unreadable`), not "not supported yet"; an unknown camera still says not supported; already-catalogued RAW placeholders (and nothing else) are re-classified once on rescan (RAW generation 1); the scan summary counts damaged files, also on an unchanged rescan; the report flags them ("100% accounted for, 1 damaged"); 0 damaged on the owner's Canon card; corpus gate unchanged |
 | 34 | 0.3.x | `damaged-raw-preview` | thumbnails, gallery, photo-inspector | a cut RAW whose embedded preview is intact shows that preview with a damaged mark instead of the placeholder; the damaged count, report and cleanup rules unchanged; gallery-scroll p95 unchanged |
 
+**A change that bumps `PERCEPTUAL_HASH_VERSION`** must run `ps_scan::upgrade_hashes` (ADR-0012) when the catalog
+is opened, before any scan: rescans re-analyse only rows whose thumbnail was converted to sRGB (ADR-0119), every other
+row is upgraded from its stored thumbnail or keeps stale hashes.
+
 ## Later (not v1; propose when needed)
 `similar-shots` (burst suggestions UI), `justified-layout`, `video-perceptual-dedup`, `face-clusters`,
 `quick-rescan-dir-mtime`, `map-view`.
