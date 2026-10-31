@@ -25,6 +25,8 @@ const STDERR_LIMIT: u64 = 8 * 1024;
 
 #[derive(Debug, Error)]
 pub enum PosterError {
+    /// The tool could not be started (missing, or without the execute permission): no tool, says nothing about
+    /// the file (ADR-0114).
     #[error("could not start the poster-frame tool: {0}")]
     Spawn(std::io::Error),
     #[error("poster-frame tool timed out after {0:?}")]
@@ -176,14 +178,27 @@ pub fn ffmpeg_on_path() -> Option<PathBuf> {
     };
     std::env::split_paths(&path)
         .flat_map(|d| names.iter().map(move |n| d.join(n)))
-        .find(|p| p.is_file())
+        .find(|p| is_executable(p))
 }
 
-/// The poster-frame tool available now (ADR-0114): the configured path when it is a file, else `ffmpeg` on `PATH`,
-/// else none. Cheap (a few stats); callers resolve it again when each run starts.
+/// A file this process may run: a regular file, with an execute permission on Unix.
+pub fn is_executable(p: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
+}
+
+/// The poster-frame tool available now (ADR-0114): the configured path when it is an executable file, else
+/// `ffmpeg` on `PATH`, else none. Cheap (a few stats); callers resolve it again when each run starts.
 pub fn resolve_tool(configured: Option<&Path>) -> Option<PathBuf> {
     configured
-        .filter(|p| p.is_file())
+        .filter(|p| is_executable(p))
         .map(Path::to_path_buf)
         .or_else(ffmpeg_on_path)
 }
@@ -219,5 +234,19 @@ mod tests {
             resolve_tool(Some(Path::new("/nonexistent/ffmpeg"))),
             ffmpeg_on_path()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_configured_file_without_the_execute_permission_is_not_a_tool() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tool = dir.path().join("ffmpeg");
+        std::fs::write(&tool, "#!/bin/sh\n").expect("write");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(!is_executable(&tool));
+        assert_eq!(resolve_tool(Some(&tool)), ffmpeg_on_path());
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert_eq!(resolve_tool(Some(&tool)), Some(tool));
     }
 }

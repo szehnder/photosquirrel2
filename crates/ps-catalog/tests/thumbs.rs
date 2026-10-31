@@ -173,3 +173,68 @@ fn newer_thumbs_db_refused() {
         Err(CatalogError::NewerSchema { found, .. }) if found == newer
     ));
 }
+
+/// The replace rule of placeholders is one statement (ADR-0109, ADR-0120): a stored poster frame survives a later
+/// failure placeholder of the same content (a copy on another lane whose tool call failed), while a placeholder or
+/// an empty slot takes the new thumbnail.
+#[test]
+fn a_stored_poster_frame_survives_a_later_failure_put() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = ThumbStore::open(tmp.path()).expect("open");
+    let id = identity_of(b"a video");
+    let failed = ThumbnailRecord {
+        kind: ThumbKind::Placeholder,
+        width: 0,
+        height: 0,
+        dominant_rgb: [96, 96, 104],
+        jpeg: Vec::new(),
+        placeholder: Some(PlaceholderInfo {
+            media_kind: MediaKind::Video,
+            format: Some(Format::Mov),
+            duration_ms: Some(3_000),
+            capture_date: None,
+            note: "video (poster frame failed: exit status: 1)".into(),
+            reason: Some(ps_model::PlaceholderReason::PosterFailed {
+                message: "exit status: 1".into(),
+            }),
+            generation: 0,
+        }),
+    };
+    let poster = ThumbnailRecord {
+        kind: ThumbKind::PosterFrame,
+        ..image_thumb(7)
+    };
+    // Nothing stored: written.
+    assert_eq!(
+        store
+            .put_many_over_placeholders([(&id, &failed)])
+            .expect("put"),
+        vec![true]
+    );
+    // A placeholder stored: the poster frame replaces it.
+    assert_eq!(
+        store
+            .put_many_over_placeholders([(&id, &poster)])
+            .expect("put"),
+        vec![true]
+    );
+    // Pixels stored: a later failure placeholder (or other pixels) is not written.
+    let other = identity_of(b"another video");
+    assert_eq!(
+        store
+            .put_many_over_placeholders([(&id, &failed), (&other, &failed)])
+            .expect("put"),
+        vec![false, true]
+    );
+    assert_eq!(store.get(&id).expect("get"), Some(poster.clone()));
+    assert_eq!(
+        store.stored_kind(&other).expect("kind"),
+        Some(ThumbKind::Placeholder)
+    );
+    // The plain put still replaces whatever is stored.
+    store.put(&id, &failed).expect("put");
+    assert_eq!(
+        store.stored_kind(&id).expect("kind"),
+        Some(ThumbKind::Placeholder)
+    );
+}

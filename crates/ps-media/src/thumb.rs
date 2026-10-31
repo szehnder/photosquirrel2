@@ -388,41 +388,61 @@ pub fn make_large_tiff_preview<R: std::io::Read + std::io::Seek>(
 }
 
 /// The thumbnail of a video: a poster frame from the configured tool when available, else a placeholder
-/// carrying duration and capture date: "no poster-frame tool" without a tool, "poster frame failed" with the tool's
-/// error when the tool got no frame (ADR-0114).
+/// carrying duration and capture date: "no poster-frame tool" without a tool (or with one that cannot be started),
+/// "poster frame failed" with the tool's error when the tool got no frame (ADR-0114).
 pub fn video_thumbnail(
     source_path: &std::path::Path,
     probe: &ProbeRecord,
     capture: Option<CaptureTime>,
     tool: Option<&std::path::Path>,
 ) -> ThumbnailRecord {
-    video_thumbnail_with_stop(source_path, probe, capture, tool, &|| false)
-        .unwrap_or_else(|| poster_failed_placeholder(probe, capture, "cancelled"))
+    video_thumbnail_with_stop(
+        source_path,
+        probe,
+        capture,
+        tool,
+        crate::poster::DEFAULT_TIMEOUT,
+        &|| false,
+    )
+    .unwrap_or_else(|| poster_failed_placeholder(probe, capture, "cancelled"))
 }
 
-/// [`video_thumbnail`] whose tool is killed as soon as `stop` returns true; `None` then (a cancelled run: nothing
-/// is recorded about the file).
+/// [`video_thumbnail`] with each tool call bounded by `timeout` and killed as soon as `stop` returns true; `None`
+/// then (a cancelled run: nothing is recorded about the file).
 pub fn video_thumbnail_with_stop(
     source_path: &std::path::Path,
     probe: &ProbeRecord,
     capture: Option<CaptureTime>,
     tool: Option<&std::path::Path>,
+    timeout: std::time::Duration,
     stop: &dyn Fn() -> bool,
 ) -> Option<ThumbnailRecord> {
     let Some(tool) = tool else {
-        return Some(placeholder_for(
-            probe,
-            capture,
-            "video (no poster-frame tool)",
-            Some(PlaceholderReason::NoPosterTool),
-        ));
+        return Some(no_poster_tool_placeholder(probe, capture));
     };
     let duration = probe.video.as_ref().and_then(|v| v.duration_ms);
-    match poster_thumbnail(tool, source_path, duration, stop) {
+    match poster_thumbnail(tool, source_path, duration, timeout, stop) {
         Ok(t) => Some(t),
         Err(crate::poster::PosterError::Cancelled) => None,
+        // A tool that cannot be started is no tool (a file without the execute permission).
+        Err(crate::poster::PosterError::Spawn(_)) => {
+            Some(no_poster_tool_placeholder(probe, capture))
+        }
         Err(e) => Some(poster_failed_placeholder(probe, capture, &e.to_string())),
     }
+}
+
+/// A video placeholder waiting for a poster-frame tool (ADR-0111).
+pub fn no_poster_tool_placeholder(
+    probe: &ProbeRecord,
+    capture: Option<CaptureTime>,
+) -> ThumbnailRecord {
+    placeholder_for(
+        probe,
+        capture,
+        "video (no poster-frame tool)",
+        Some(PlaceholderReason::NoPosterTool),
+    )
 }
 
 /// A video placeholder whose poster-frame tool got no frame, with the tool's error (ADR-0114).
@@ -442,24 +462,26 @@ pub fn poster_failed_placeholder(
 }
 
 /// The poster-frame thumbnail of a video (ADR-0114): one call of `tool` at [`crate::poster::seek_for`] the clip's
-/// duration, and one more at 0 s when the tool succeeds with no frame (a clip shorter than the seek), each bounded
-/// by [`crate::poster::DEFAULT_TIMEOUT`] and killed when `stop` returns true. The source is read by the tool only.
+/// duration and, when that call gave no JPEG with a seek past 0 s, one more at 0 s (real ffmpeg exits with an
+/// error and no output when the seek lies past the end of a clip). A timeout, a cancel or a tool that cannot be
+/// started is not retried. Each call is bounded by `timeout` and killed when `stop` returns true; the error of the
+/// last call is returned. The source is read by the tool only.
 pub fn poster_thumbnail(
     tool: &std::path::Path,
     source_path: &std::path::Path,
     duration_ms: Option<u64>,
+    timeout: std::time::Duration,
     stop: &dyn Fn() -> bool,
 ) -> Result<ThumbnailRecord, crate::poster::PosterError> {
-    use crate::poster::{DEFAULT_TIMEOUT, PosterError, poster_frame, seek_for};
+    use crate::poster::{PosterError, poster_frame, seek_for};
     let seek = seek_for(duration_ms);
-    let jpeg = match poster_frame(tool, source_path, seek, DEFAULT_TIMEOUT, stop) {
-        Err(PosterError::NoFrame) if !seek.is_zero() => poster_frame(
-            tool,
-            source_path,
-            std::time::Duration::ZERO,
-            DEFAULT_TIMEOUT,
-            stop,
-        )?,
+    let jpeg = match poster_frame(tool, source_path, seek, timeout, stop) {
+        Err(PosterError::Timeout(d)) => return Err(PosterError::Timeout(d)),
+        Err(PosterError::Cancelled) => return Err(PosterError::Cancelled),
+        Err(PosterError::Spawn(e)) => return Err(PosterError::Spawn(e)),
+        Err(_) if !seek.is_zero() => {
+            poster_frame(tool, source_path, std::time::Duration::ZERO, timeout, stop)?
+        }
         r => r?,
     };
     let (img, _) = decode::decode_jpeg(&jpeg, THUMB_LONG_EDGE)

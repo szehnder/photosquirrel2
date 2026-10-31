@@ -90,22 +90,51 @@ impl ThumbStore {
         &self,
         items: impl IntoIterator<Item = (&'a ContentId, &'a ThumbnailRecord)>,
     ) -> Result<()> {
+        self.upsert(items, false).map(|_| ())
+    }
+
+    /// Store several thumbnails in one transaction under the replace rule of placeholders (ADR-0109): a thumbnail
+    /// is written where none is stored or a placeholder is, never over stored pixels. The check and the write are
+    /// one statement, so a concurrent writer (a copy of the same content on another lane) cannot slip a placeholder
+    /// over pixels. Returns, per item in order, whether it was written.
+    pub fn put_many_over_placeholders<'a>(
+        &self,
+        items: impl IntoIterator<Item = (&'a ContentId, &'a ThumbnailRecord)>,
+    ) -> Result<Vec<bool>> {
+        self.upsert(items, true)
+    }
+
+    fn upsert<'a>(
+        &self,
+        items: impl IntoIterator<Item = (&'a ContentId, &'a ThumbnailRecord)>,
+        over_placeholders_only: bool,
+    ) -> Result<Vec<bool>> {
         let items: Vec<_> = items.into_iter().collect();
         for (_, t) in &items {
             validate(t)?;
         }
+        let mut written = Vec::with_capacity(items.len());
         let mut conn = self.writer.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         {
-            let mut stmt = tx.prepare_cached(
+            let mut stmt = tx.prepare_cached(if over_placeholders_only {
                 "INSERT INTO thumb (content_id, identity_kind, kind, width, height, dominant_rgb, jpeg,
                                     placeholder, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (content_id) DO UPDATE SET
                     identity_kind = excluded.identity_kind, kind = excluded.kind, width = excluded.width,
                     height = excluded.height, dominant_rgb = excluded.dominant_rgb, jpeg = excluded.jpeg,
-                    placeholder = excluded.placeholder, created_at = excluded.created_at",
-            )?;
+                    placeholder = excluded.placeholder, created_at = excluded.created_at
+                 WHERE thumb.kind = 'placeholder'"
+            } else {
+                "INSERT INTO thumb (content_id, identity_kind, kind, width, height, dominant_rgb, jpeg,
+                                    placeholder, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT (content_id) DO UPDATE SET
+                    identity_kind = excluded.identity_kind, kind = excluded.kind, width = excluded.width,
+                    height = excluded.height, dominant_rgb = excluded.dominant_rgb, jpeg = excluded.jpeg,
+                    placeholder = excluded.placeholder, created_at = excluded.created_at"
+            })?;
             let now = now_ms();
             for (id, t) in &items {
                 let placeholder = t
@@ -115,7 +144,7 @@ impl ThumbStore {
                     .transpose()
                     .map_err(|e| CatalogError::Invalid(e.to_string()))?;
                 let jpeg: Option<&[u8]> = (!t.jpeg.is_empty()).then_some(&t.jpeg[..]);
-                stmt.execute(params![
+                let n = stmt.execute(params![
                     &id.digest[..],
                     codes::identity_kind(id.kind),
                     t.kind.as_str(),
@@ -126,10 +155,11 @@ impl ThumbStore {
                     placeholder,
                     now
                 ])?;
+                written.push(n > 0);
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(written)
     }
 
     /// A thumbnail is stored for this identity (duplicates need no second encode).

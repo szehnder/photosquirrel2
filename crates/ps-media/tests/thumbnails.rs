@@ -350,12 +350,24 @@ fn scenario_thumbnails_failing_tool_records_a_failed_poster() {
         ps_model::PreviewReason::NoPosterTool.label()
     );
     assert_eq!(info.duration_ms, Some(12_500));
-    // A tool that cannot be started and one that succeeds without a frame are failures too.
+    // A tool that cannot be started is no tool (missing, or without the execute permission); one that succeeds
+    // without a frame is a failure.
     let t = thumb::video_thumbnail(&src, &p, None, Some(&dir.path().join("missing-ffmpeg")));
-    assert!(matches!(
+    assert_eq!(
         t.placeholder.and_then(|i| i.reason),
-        Some(ps_model::PlaceholderReason::PosterFailed { .. })
-    ));
+        Some(ps_model::PlaceholderReason::NoPosterTool)
+    );
+    let unrunnable = fake_tool(dir.path(), "unrunnable-ffmpeg", "exit 0");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&unrunnable, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod");
+    }
+    let t = thumb::video_thumbnail(&src, &p, None, Some(&unrunnable));
+    assert_eq!(
+        t.placeholder.and_then(|i| i.reason),
+        Some(ps_model::PlaceholderReason::NoPosterTool)
+    );
     let silent = fake_tool(dir.path(), "silent-ffmpeg", "exit 0");
     let t = thumb::video_thumbnail(&src, &p, None, Some(&silent));
     let reason = t.placeholder.and_then(|i| i.reason);
@@ -374,12 +386,14 @@ fn scenario_thumbnails_short_clip_gets_a_frame() {
     let frame = dir.path().join("frame.jpg");
     std::fs::write(&frame, fx::jpeg(640, 360, 9, 85)).expect("write frame");
     let log = dir.path().join("calls.log");
-    // Frames exist only before the clip's end (0.5 s); every call is logged with its seek.
+    // Frames exist only before the clip's end (0.5 s); every call is logged with its seek. Past the end the tool
+    // fails with no output, as real ffmpeg does (exit 234).
     let tool = fake_tool(
         dir.path(),
         "short-ffmpeg",
         &format!(
-            "echo \"$ss\" >> '{}'\nif awk \"BEGIN {{ exit !($ss < 0.5) }}\"; then cat '{}'; fi",
+            "echo \"$ss\" >> '{}'\nif awk \"BEGIN {{ exit !($ss < 0.5) }}\"; then cat '{}'; else \
+             echo 'Nothing was written into output file' >&2; exit 234; fi",
             log.display(),
             frame.display()
         ),
@@ -414,6 +428,54 @@ fn scenario_thumbnails_short_clip_gets_a_frame() {
     );
 }
 
+/// The real ffmpeg on this machine, when there is one (skipped otherwise): a clip shorter than the 1 s seek gets
+/// its frame from the retry at 0 s, a 3 s clip from the first call, and a clip cut short records the tool's error.
+#[test]
+fn real_ffmpeg_gets_frames_and_retries_a_seek_past_the_end() {
+    let Some(ffmpeg) = ps_media::poster::ffmpeg_on_path() else {
+        eprintln!("skipped: no ffmpeg on PATH");
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let make = |name: &str, secs: &str| {
+        let out = dir.path().join(name);
+        let ok = std::process::Command::new(&ffmpeg)
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg(format!("testsrc=duration={secs}:size=320x240:rate=30"))
+            .args(["-c:v", "mpeg4", "-y"])
+            .arg(&out)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(out)
+    };
+    let (Some(short), Some(long)) = (make("short.mov", "0.5"), make("long.mov", "3")) else {
+        eprintln!("skipped: this ffmpeg cannot make the test clips");
+        return;
+    };
+    let stop = || false;
+    let timeout = ps_media::poster::DEFAULT_TIMEOUT;
+    // Duration unknown: seek 1 s, past the end of the short clip, then 0 s.
+    let t = thumb::poster_thumbnail(&ffmpeg, &short, None, timeout, &stop).expect("short clip");
+    assert_eq!(t.kind, ThumbKind::PosterFrame);
+    assert_eq!((t.width, t.height), (384, 288));
+    let t = thumb::poster_thumbnail(&ffmpeg, &long, Some(3_000), timeout, &stop).expect("3 s clip");
+    assert_eq!(t.kind, ThumbKind::PosterFrame);
+    let bytes = std::fs::read(&long).expect("read");
+    let cut = dir.path().join("cut.mov");
+    std::fs::write(&cut, &bytes[..bytes.len() * 6 / 10]).expect("write cut");
+    let e = thumb::poster_thumbnail(&ffmpeg, &cut, Some(3_000), timeout, &stop)
+        .expect_err("a clip cut short has no frame");
+    assert!(matches!(e, ps_media::poster::PosterError::Failed(_)), "{e}");
+}
+
 /// A stop check kills a running tool within its poll (cancel, ADR-0114).
 #[cfg(unix)]
 #[test]
@@ -435,8 +497,15 @@ fn a_stopped_poster_call_kills_the_tool() {
     let t0 = Instant::now();
     let stop = || t0.elapsed() > std::time::Duration::from_millis(200);
     assert!(
-        thumb::video_thumbnail_with_stop(Path::new("/x.mov"), &p, None, Some(&tool), &stop)
-            .is_none(),
+        thumb::video_thumbnail_with_stop(
+            Path::new("/x.mov"),
+            &p,
+            None,
+            Some(&tool),
+            ps_media::poster::DEFAULT_TIMEOUT,
+            &stop
+        )
+        .is_none(),
         "a cancelled call records nothing"
     );
 }
