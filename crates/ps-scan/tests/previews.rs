@@ -439,3 +439,474 @@ fn redecode_failure_keeps_stored_pixels() {
         "the row shows the stored preview"
     );
 }
+
+/// `video-posters-after-ffmpeg` (ADR-0114): videos catalogued without a poster-frame tool get their frames once a
+/// tool is available, from Fill in previews or a rescan, with one call of the tool each and no byte of them read by
+/// PhotoSquirrel; a failed call is recorded and not repeated until the user asks. The tools are shell scripts in a
+/// temp dir that log every call (Unix only, as `ps-media/tests/thumbnails.rs`).
+#[cfg(unix)]
+mod posters {
+    use super::*;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A fake poster-frame tool: logs the `-i` argument of every call to `calls.log`, then runs `body`
+    /// (`$src` and `$ss` are set).
+    struct Tool {
+        _dir: tempfile::TempDir,
+        path: PathBuf,
+        log: PathBuf,
+        frame: PathBuf,
+    }
+
+    impl Tool {
+        fn new(body: &str) -> Tool {
+            let dir = tempfile::tempdir().expect("tool dir");
+            let frame = dir.path().join("frame.jpg");
+            ps_fixtures::scratch::write(&frame, ps_fixtures::media::jpeg(640, 360, 9, 85))
+                .expect("frame");
+            let log = dir.path().join("calls.log");
+            let path = dir.path().join("fake-ffmpeg");
+            let script = format!(
+                "#!/bin/sh\nss=; src=\nwhile [ $# -gt 0 ]; do case \"$1\" in -ss) ss=$2;; -i) src=$2;; esac; \
+                 shift; done\necho \"$src\" >> '{}'\n{}\n",
+                log.display(),
+                body.replace("FRAME", &frame.display().to_string())
+            );
+            ps_fixtures::scratch::write(&path, script).expect("tool");
+            ps_fixtures::scratch::set_mode(&path, 0o755).expect("chmod");
+            Tool {
+                _dir: dir,
+                path,
+                log,
+                frame,
+            }
+        }
+
+        /// A tool that gives a frame for every video.
+        fn working() -> Tool {
+            Tool::new("cat 'FRAME'")
+        }
+
+        /// The source paths of every call so far.
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(&self.log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        fn options(&self) -> ScanOptions {
+            ScanOptions {
+                poster_tool: Some(self.path.clone()),
+                ..ScanOptions::default()
+            }
+        }
+    }
+
+    /// `n` different videos (the iPhone clip with different creation times).
+    fn videos(n: usize) -> Vec<Vec<u8>> {
+        (0..n)
+            .map(|i| {
+                ps_fixtures::media::movie(&ps_fixtures::media::MovieSpec {
+                    creation_unix: Some(1_562_265_000 + i as i64 * 60),
+                    ..ps_fixtures::media::MovieSpec::iphone()
+                })
+            })
+            .collect()
+    }
+
+    /// 4 videos and 10 photos.
+    fn card() -> Vec<(String, Vec<u8>)> {
+        let mut v: Vec<(String, Vec<u8>)> = (0..10u64)
+            .map(|i| {
+                (
+                    format!("DCIM/IMG_{i:04}.JPG"),
+                    ps_fixtures::media::jpeg(320, 240, 900 + i, 80),
+                )
+            })
+            .collect();
+        for (i, m) in videos(4).into_iter().enumerate() {
+            v.push((format!("DCIM/IMG_{:04}.MOV", 100 + i), m));
+        }
+        v
+    }
+
+    fn video_rows(env: &Env, id: SourceId) -> Vec<(String, ps_catalog::FileRecord)> {
+        env.files(id)
+            .into_iter()
+            .filter(|(p, _)| p.ends_with(".MOV"))
+            .collect()
+    }
+
+    fn kind(env: &Env, r: &ps_catalog::FileRecord) -> ThumbKind {
+        env.s()
+            .thumbs()
+            .get(&r.identity.unwrap())
+            .unwrap()
+            .unwrap()
+            .kind
+    }
+
+    fn reason(env: &Env, r: &ps_catalog::FileRecord) -> Option<ps_model::PlaceholderReason> {
+        env.s()
+            .thumbs()
+            .get(&r.identity.unwrap())
+            .unwrap()
+            .unwrap()
+            .placeholder
+            .and_then(|p| p.reason)
+    }
+
+    fn mov_fillable(env: &Env) -> u64 {
+        env.s()
+            .preview_status(&[])
+            .expect("status")
+            .iter()
+            .filter(|r| r.format == "mov")
+            .map(|r| r.fillable)
+            .sum()
+    }
+
+    /// A card scanned without a poster-frame tool: its videos wait for one.
+    fn scanned_without_tool(files: &[(String, Vec<u8>)]) -> (Source, Env, SourceId) {
+        let src = source("card", files);
+        let env = env_with(ScanOptions::default());
+        let id = env.add(&src.root);
+        completed(&env.scan(&[id]));
+        for (rel, r) in video_rows(&env, id) {
+            assert_eq!(
+                r.preview.map(|p| p.reason),
+                Some(PreviewReason::NoPosterTool),
+                "{rel}"
+            );
+        }
+        (src, env, id)
+    }
+
+    /// Two of the videos as 0.2.0 left them, for migration 25's task (ADR-0111): rows without a reason, placeholder
+    /// records without one.
+    fn as_older_catalog(env: &mut Env, id: SourceId, names: &[&str]) {
+        let rows = env.files(id);
+        for n in names {
+            let r = &rows[*n];
+            let id = r.identity.unwrap();
+            let mut t = env.s().thumbs().get(&id).unwrap().unwrap();
+            if let Some(p) = t.placeholder.as_mut() {
+                p.reason = None;
+                p.generation = 0;
+            }
+            env.s().thumbs().put_many([(&id, &t)]).unwrap();
+        }
+        let dir = env.dir.clone();
+        env.close();
+        let c = rusqlite::Connection::open(dir.join(ps_catalog::CATALOG_FILE)).unwrap();
+        for n in names {
+            c.execute(
+                "UPDATE file SET preview_gen = NULL, preview_reason = NULL WHERE rel_path = CAST(?1 AS BLOB)",
+                [n],
+            )
+            .unwrap();
+        }
+        c.execute(
+            "INSERT INTO catalog_task (name) VALUES ('video_placeholder_reasons')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn scenario_incremental_rescan_fill_in_gives_old_placeholder_videos_their_poster_frames() {
+        let _g = shared();
+        let (_src, mut env, id) = scanned_without_tool(&card());
+        let before = video_rows(&env, id);
+        assert_eq!(before.len(), 4);
+        as_older_catalog(&mut env, id, &["DCIM/IMG_0100.MOV", "DCIM/IMG_0101.MOV"]);
+        let tool = Tool::working();
+        env.reopen(tool.options());
+        // Marked at open (ADR-0111), and every waiting video can be filled in now.
+        for (rel, r) in video_rows(&env, id) {
+            assert_eq!(
+                r.preview,
+                Some(ps_model::PreviewStamp {
+                    generation: 0,
+                    reason: PreviewReason::NoPosterTool
+                }),
+                "{rel}"
+            );
+        }
+        assert_eq!(mov_fillable(&env), 4);
+        let s = fill(&env, FillScope::all());
+        completed(&s);
+        let f = s.fill.expect("a fill summary");
+        assert_eq!(
+            (f.filled, f.failed, f.skipped_offline, f.still_waiting),
+            (4, 0, 0, 0)
+        );
+        assert_eq!((s.diff.posters, s.diff.posters_made), (4, 4));
+        let mut calls = tool.calls();
+        calls.sort();
+        let root = env.root(id);
+        let want: Vec<String> = before
+            .iter()
+            .map(|(rel, _)| under(&root, rel).display().to_string())
+            .collect();
+        assert_eq!(calls, want, "the tool runs once per video");
+        assert_eq!(env.instr.open_count(), 0, "no file opened by PhotoSquirrel");
+        assert_eq!(env.instr.total_bytes(), 0);
+        assert_eq!(env.instr.read_dirs(), 0, "no directory listed");
+        let after = video_rows(&env, id);
+        for ((rel, a), (_, b)) in after.iter().zip(&before) {
+            assert_eq!(a.identity, b.identity, "{rel}: identity unchanged");
+            assert_eq!(a.stat, b.stat, "{rel}");
+            assert_eq!(a.capture_ms, b.capture_ms, "{rel}");
+            assert_eq!(a.preview, None, "{rel}: no placeholder any more");
+            assert_eq!(kind(&env, a), ThumbKind::PosterFrame, "{rel}");
+        }
+        assert_eq!(mov_fillable(&env), 0);
+    }
+
+    #[test]
+    fn scenario_incremental_rescan_rescan_fills_them_in_once() {
+        let _g = shared();
+        let (_src, mut env, id) = scanned_without_tool(&card());
+        let tool = Tool::working();
+        env.reopen(tool.options());
+        let s = env.scan(&[id]);
+        completed(&s);
+        assert_eq!(tool.calls().len(), 4, "one call per waiting video");
+        assert_eq!((s.diff.posters, s.diff.posters_made), (4, 4));
+        assert_eq!(s.diff.changed + s.diff.new, 0);
+        assert_eq!(env.instr.open_count(), 0, "the videos are not read");
+        for (rel, r) in video_rows(&env, id) {
+            assert_eq!(r.preview, None, "{rel}");
+            assert_eq!(kind(&env, &r), ThumbKind::PosterFrame, "{rel}");
+        }
+        let s = env.scan(&[id]);
+        completed(&s);
+        assert_eq!(tool.calls().len(), 4, "the second rescan runs no tool");
+        assert_eq!(s.diff.posters, 0);
+    }
+
+    #[test]
+    fn scenario_incremental_rescan_nothing_waits_without_a_tool() {
+        let _g = shared();
+        let (_src, mut env, id) = scanned_without_tool(&card());
+        // The tool is resolved again when the counts are read and when each run starts (ADR-0114); here nothing
+        // is installed yet.
+        let tool = Tool::working();
+        let installed = Arc::new(AtomicBool::new(false));
+        let resolver: ps_scan::PosterToolFn = {
+            let (installed, path) = (installed.clone(), tool.path.clone());
+            Arc::new(move || installed.load(Ordering::SeqCst).then(|| path.clone()))
+        };
+        env.reopen(ScanOptions {
+            poster_tool_resolver: Some(resolver),
+            ..ScanOptions::default()
+        });
+        assert_eq!(mov_fillable(&env), 0, "Fill in previews offers no video");
+        let s = fill(&env, FillScope::all());
+        completed(&s);
+        assert_eq!(s.fill.expect("fill").filled, 0);
+        let s = env.scan(&[id]);
+        completed(&s);
+        assert_eq!(s.diff.posters, 0, "a rescan runs no tool");
+        assert!(tool.calls().is_empty());
+        for (rel, r) in video_rows(&env, id) {
+            assert_eq!(
+                r.preview.map(|p| p.reason),
+                Some(PreviewReason::NoPosterTool),
+                "{rel}"
+            );
+            assert_eq!(
+                reason(&env, &r),
+                Some(ps_model::PlaceholderReason::NoPosterTool)
+            );
+        }
+        // ffmpeg is installed while the app runs: the counts and the next run see it, no restart.
+        installed.store(true, Ordering::SeqCst);
+        assert_eq!(mov_fillable(&env), 4);
+        let s = fill(&env, FillScope::all());
+        completed(&s);
+        assert_eq!(s.fill.expect("fill").filled, 4);
+        assert_eq!(tool.calls().len(), 4);
+    }
+
+    /// A tool that fails on `IMG_0102.MOV` and gives a frame for the others.
+    fn failing_on_one() -> Tool {
+        Tool::new(
+            "case \"$src\" in *IMG_0102.MOV) echo \"$src: Invalid data found when processing input\" >&2; exit 1;; \
+             esac\ncat 'FRAME'",
+        )
+    }
+
+    #[test]
+    fn scenario_incremental_rescan_failed_extraction_is_not_retried_forever() {
+        let _g = shared();
+        let (_src, mut env, id) = scanned_without_tool(&card());
+        let tool = failing_on_one();
+        env.reopen(tool.options());
+        let s = fill(&env, FillScope::all());
+        completed(&s);
+        let f = s.fill.clone().expect("fill");
+        assert_eq!((f.filled, f.failed, f.still_waiting), (3, 1, 0));
+        assert_eq!((s.diff.posters_made, s.diff.posters_failed), (3, 1));
+        assert_eq!(tool.calls().len(), 4);
+        let rows = env.files(id);
+        let bad = &rows["DCIM/IMG_0102.MOV"];
+        assert_eq!(
+            bad.preview,
+            Some(ps_model::PreviewStamp {
+                generation: 0,
+                reason: PreviewReason::PosterFailed
+            })
+        );
+        let Some(ps_model::PlaceholderReason::PosterFailed { message }) = reason(&env, bad) else {
+            panic!("not a failed poster: {:?}", reason(&env, bad));
+        };
+        assert!(message.contains("exit status"), "{message}");
+        assert!(message.contains("Invalid data found"), "{message}");
+        assert_eq!(PreviewReason::PosterFailed.label(), "poster frame failed");
+        assert!(
+            s.errors > 0,
+            "the failure is reported in the run's errors: {s:?}"
+        );
+        // Neither Fill in previews nor a rescan runs the tool on it again.
+        assert_eq!(mov_fillable(&env), 0);
+        let s = fill(&env, FillScope::all());
+        completed(&s);
+        assert_eq!(s.fill.expect("fill").filled, 0);
+        let s = env.scan(&[id]);
+        completed(&s);
+        assert_eq!(s.diff.posters, 0);
+        assert_eq!(tool.calls().len(), 4, "not run on it again");
+        assert_eq!(
+            env.files(id)["DCIM/IMG_0102.MOV"].preview.map(|p| p.reason),
+            Some(PreviewReason::PosterFailed)
+        );
+    }
+
+    #[test]
+    fn scenario_incremental_rescan_explicit_retry_of_failed_posters() {
+        let _g = shared();
+        let (_src, mut env, id) = scanned_without_tool(&card());
+        let failing = failing_on_one();
+        env.reopen(failing.options());
+        completed(&fill(&env, FillScope::all()));
+        assert_eq!(failing.calls().len(), 4);
+        // The user asks: "poster frame failed", Try again. The tool runs once on each such video and records the new
+        // error when it fails again.
+        let retry = FillScope {
+            format: None,
+            reason: Some(PreviewReason::PosterFailed),
+        };
+        let s = fill(&env, retry.clone());
+        completed(&s);
+        assert_eq!(s.fill.clone().expect("fill").failed, 1);
+        let calls = failing.calls();
+        assert_eq!(calls.len(), 5, "{calls:?}");
+        assert!(calls[4].ends_with("IMG_0102.MOV"), "{calls:?}");
+        // A tool that reads it now (a newer ffmpeg): the explicit retry gives it its frame.
+        let fixed = Tool::working();
+        env.reopen(fixed.options());
+        let s = fill(&env, retry);
+        completed(&s);
+        assert_eq!(s.fill.expect("fill").filled, 1);
+        assert_eq!(fixed.calls().len(), 1);
+        let bad = &env.files(id)["DCIM/IMG_0102.MOV"];
+        assert_eq!(bad.preview, None);
+        assert_eq!(kind(&env, bad), ThumbKind::PosterFrame);
+    }
+
+    #[test]
+    fn scenario_incremental_rescan_offline_videos_are_skipped() {
+        let _g = shared();
+        let v = videos(4);
+        let a = source(
+            "laptop",
+            &[
+                ("IMG_0.MOV".to_owned(), v[0].clone()),
+                ("IMG_1.MOV".to_owned(), v[1].clone()),
+            ],
+        );
+        let b = source(
+            "usb",
+            &[
+                ("x/IMG_2.MOV".to_owned(), v[2].clone()),
+                ("x/IMG_3.MOV".to_owned(), v[3].clone()),
+            ],
+        );
+        let mut env = env_with(ScanOptions::default());
+        let ia = env.add(&a.root);
+        let ib = env.add(&b.root);
+        completed(&env.scan(&[]));
+        ps_fixtures::scratch::rename(&b.root, b.tmp.path().join("unplugged")).expect("unplug");
+        let tool = Tool::working();
+        env.reopen(tool.options());
+        let s = fill(&env, FillScope::all());
+        completed(&s);
+        let f = s.fill.clone().expect("fill");
+        assert_eq!((f.filled, f.skipped_offline), (2, 2));
+        assert!(s.incomplete_sources.contains(&ib), "{s:?}");
+        assert_eq!(tool.calls().len(), 2);
+        for (rel, r) in video_rows(&env, ia) {
+            assert_eq!(r.preview, None, "{rel}");
+        }
+        for (rel, r) in video_rows(&env, ib) {
+            assert_eq!(
+                r.preview.map(|p| p.reason),
+                Some(PreviewReason::NoPosterTool),
+                "{rel} still waits"
+            );
+        }
+        let status = env.s().preview_status(&[ib]).expect("status");
+        assert_eq!(status.iter().map(|r| r.fillable).sum::<u64>(), 2);
+    }
+
+    #[test]
+    fn scenario_incremental_rescan_cancel_stops_a_running_extraction() {
+        let _g = shared();
+        let (_src, mut env, id) = scanned_without_tool(&card());
+        // A tool that hangs: it records its process id, then sleeps far beyond the 10 s timeout.
+        let hanging = Tool::new("echo $$ >> 'FRAME.pids'\nexec sleep 60");
+        let pids = PathBuf::from(format!("{}.pids", hanging.frame.display()));
+        env.reopen(hanging.options());
+        env.s().start_fill(FillScope::all(), &[]).expect("start");
+        wait_until(Duration::from_secs(30), "the tool running", || {
+            std::fs::read_to_string(&pids).is_ok_and(|p| !p.trim().is_empty())
+        });
+        let t0 = std::time::Instant::now();
+        env.s().cancel().expect("cancel");
+        let s = env.s().wait().expect("summary");
+        assert_eq!(s.status, ps_model::RunStatus::Cancelled);
+        assert!(
+            t0.elapsed() < Duration::from_secs(5),
+            "cancel did not wait for the tool's timeout: {:?}",
+            t0.elapsed()
+        );
+        // Every tool process started is gone.
+        for pid in std::fs::read_to_string(&pids).unwrap().lines() {
+            let alive = Path::new(&format!("/proc/{pid}")).exists()
+                || std::process::Command::new("kill")
+                    .args(["-0", pid])
+                    .status()
+                    .is_ok_and(|s| s.success());
+            assert!(!alive, "tool process {pid} still runs");
+        }
+        // That video and the rest still wait; the next run fills them in.
+        for (rel, r) in video_rows(&env, id) {
+            assert_eq!(
+                r.preview.map(|p| p.reason),
+                Some(PreviewReason::NoPosterTool),
+                "{rel} still waits"
+            );
+        }
+        let tool = Tool::working();
+        env.reopen(tool.options());
+        let s = fill(&env, FillScope::all());
+        completed(&s);
+        assert_eq!(s.fill.expect("fill").filled, 4);
+        assert_eq!(tool.calls().len(), 4);
+    }
+}

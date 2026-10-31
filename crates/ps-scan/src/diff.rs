@@ -26,8 +26,11 @@
 //!   decoder (one full read); otherwise it is counted as awaiting a decoder and nothing is read.
 //! - **outdated previews**: an unchanged, thumbed placeholder made by an older decoder generation than this
 //!   version's for its format (`file.preview_gen`, ADR-0109) is re-decoded once (one full read), or analysed again
-//!   from `discovered` when it has no dimensions, is larger than the analysis buffer or is a video. A placeholder
-//!   at the current generation (a variant not supported, data that could not be read) is not read.
+//!   from `discovered` when it has no dimensions or is larger than the analysis buffer. A placeholder at the current
+//!   generation (a variant not supported, data that could not be read, a poster frame that failed) is not read.
+//! - **posters**: an unchanged video waiting for a poster-frame tool this run has (the tool clause, ADR-0114), or a
+//!   video placeholder of an older poster generation, is queued for one call of the tool ([`Todo::poster`]); no byte
+//!   of it is read by PhotoSquirrel and its identity, metadata and hashes stay.
 //! - **re-read for frame identity**: an unchanged, analysed row analysed before frame identity existed
 //!   (`meta_version` 0: RAW-format rows and the Canon camera files of their capture seconds, catalog migration 23)
 //!   has its probe window read again (at most [`ps_media::PROBE_LIMIT`] bytes, read-only, no decode, no hashing)
@@ -98,6 +101,17 @@ pub struct Todo {
     /// With `meta_reread` or `colour_check`: the bytes the diff added to the run's total for this file
     /// (`bytes_to_process`); the pipeline corrects the total by what the checks actually read.
     pub planned: u64,
+    /// A poster item (ADR-0114): a video waiting for a poster-frame tool this run has gets one call of the tool. The
+    /// file is stat'ed, never opened; its poster frame replaces the stored placeholder of its content.
+    pub poster: Option<PosterWork>,
+}
+
+/// What a poster item needs from the catalog row (ADR-0114).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PosterWork {
+    /// The catalogued content identity: the thumbnail store's key.
+    pub identity: ContentId,
+    pub format: Option<ps_model::Format>,
 }
 
 /// The diff of one source.
@@ -219,31 +233,40 @@ fn reread_head(r: &ps_catalog::FileRecord) -> u64 {
     r.stat.size.min(head as u64)
 }
 
-/// A thumbed placeholder an older decoder generation made (ADR-0109): this version may decode it now. Rows waiting
-/// for a decoder or with a recorded decode failure follow their own rules (ADR-0091, ADR-0098).
+/// A thumbed placeholder this run can fill in without a decoder marker (ADR-0109, ADR-0114): one an older decoder
+/// generation made, which this version may decode now, or a video waiting for a poster-frame tool when this run has
+/// one (the tool clause). Video placeholders never count without a tool. Rows waiting for a decoder or with a
+/// recorded decode failure follow their own rules (ADR-0091, ADR-0098). The same rule as
+/// [`ps_catalog::WaitingRule`].
 pub(crate) fn outdated_placeholder(
     r: &ps_catalog::FileRecord,
     generations: &ps_model::Generations,
     poster_tool: bool,
 ) -> bool {
+    let rule = ps_catalog::WaitingRule {
+        decodable: Vec::new(),
+        generations: *generations,
+        poster_tool,
+    };
     r.stage == Stage::Thumbed
         && r.decoder_missing.is_none()
         && r.decode_failure.is_none()
         && r.identity.is_some()
-        && r.preview.is_some_and(|p| {
-            p.generation < generations.of_format(r.format)
-                && !(p.reason == ps_model::PreviewReason::NoPosterTool && !poster_tool)
-        })
+        && r.preview
+            .is_some_and(|p| rule.placeholder_waits(r.format, p))
 }
 
-/// An outdated placeholder that needs a full analysis rather than a re-decode: no dimensions (the probe of an
-/// older version could not read them, ADR-0084), larger than the analysis buffer (a TIFF analysed in one pass,
-/// ADR-0086), or a video (its poster frame comes from the analysis).
+/// A placeholder row of a video: its outdated placeholder is a poster item (ADR-0114), not a re-decode.
+pub(crate) fn is_video(r: &ps_catalog::FileRecord) -> bool {
+    r.format
+        .is_some_and(|f| f.kind() == ps_model::MediaKind::Video)
+}
+
+/// An outdated still placeholder that needs a full analysis rather than a re-decode: no dimensions (the probe of an
+/// older version could not read them, ADR-0084) or larger than the analysis buffer (a TIFF analysed in one pass,
+/// ADR-0086). Videos are poster items ([`is_video`]).
 pub(crate) fn needs_full_analysis(r: &ps_catalog::FileRecord) -> bool {
-    r.width.is_none()
-        || r.stat.size > ps_model::limits::ANALYSIS_BUFFER_MAX_BYTES
-        || r.format
-            .is_some_and(|f| f.kind() == ps_model::MediaKind::Video)
+    !is_video(r) && (r.width.is_none() || r.stat.size > ps_model::limits::ANALYSIS_BUFFER_MAX_BYTES)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -272,6 +295,7 @@ pub fn diff(
         .map(|q| (q.rel_path, (q.size, q.mtime_ns, q.quarantine_rel_path)))
         .collect();
     let mut converted: Option<std::collections::HashSet<ContentId>> = None;
+    let mut posters: std::collections::HashSet<ContentId> = std::collections::HashSet::new();
     let mut page = readers.source_files(source, None, PAGE)?;
     let mut pi = 0usize;
     let mut walk = entries.into_iter().peekable();
@@ -311,6 +335,7 @@ pub fn diff(
                             read_path: Some(q),
                             colour_check: false,
                             planned: reread_head(r),
+                            poster: None,
                         });
                         out.bytes_to_process += reread_head(r);
                     }
@@ -367,6 +392,7 @@ pub fn diff(
                     read_path: None,
                     colour_check: false,
                     planned: 0,
+                    poster: None,
                 };
                 match rec {
                     None => {
@@ -451,13 +477,28 @@ pub fn diff(
                                 && let Some(id) = r.identity
                                 && outdated_placeholder(r, generations, poster_tool)
                             {
-                                out.counts.outdated_previews += 1;
-                                out.counts.redecode += 1;
-                                out.todo.push(Todo {
-                                    redecode: Some(id),
-                                    ..todo(r.stage, false)
-                                });
-                                out.bytes_to_process += w.stat.size;
+                                if is_video(r) {
+                                    // A video waiting for a poster-frame tool (ADR-0114): one call of the tool, no
+                                    // byte read here. One item per content in a source; copies get its frame.
+                                    if posters.insert(id) {
+                                        out.counts.posters += 1;
+                                        out.todo.push(Todo {
+                                            poster: Some(PosterWork {
+                                                identity: id,
+                                                format: r.format,
+                                            }),
+                                            ..todo(r.stage, false)
+                                        });
+                                    }
+                                } else {
+                                    out.counts.outdated_previews += 1;
+                                    out.counts.redecode += 1;
+                                    out.todo.push(Todo {
+                                        redecode: Some(id),
+                                        ..todo(r.stage, false)
+                                    });
+                                    out.bytes_to_process += w.stat.size;
+                                }
                                 redecoding = true;
                             }
                             if let Some(k) = r.decoder_missing.filter(|_| r.stage == Stage::Thumbed)

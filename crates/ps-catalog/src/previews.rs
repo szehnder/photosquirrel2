@@ -2,14 +2,17 @@
 //! placeholders can become previews now, the counts by format and reason, and the rows a Fill in previews job
 //! reads.
 //!
-//! A placeholder row can be filled in now when either holds:
+//! A placeholder row can be filled in now when any holds:
 //! - it waits for a decoder (`decoder_missing = k`) and this machine can decode `k` (ADR-0091);
 //! - it has no decoder marker and no recorded decode failure (those follow ADR-0091 and ADR-0098), and its
-//!   `preview_gen` is below the running version's generation of its format's family, unless it is a video waiting
-//!   for a poster-frame tool and none is configured.
+//!   `preview_gen` is below the running version's generation of its format's family, unless it is a video
+//!   placeholder (`no_poster_tool`, `poster_failed`) and no poster-frame tool is available;
+//! - it is a video waiting for a poster-frame tool (`no_poster_tool`) and a tool is available now, whatever its
+//!   generation (the tool clause, ADR-0114).
 //!
-//! Current-generation placeholders whose variant is not supported or whose data could not be read wait for a
-//! change of the file (the normal diff) or of the generation. Missing files never count.
+//! Current-generation placeholders whose variant is not supported, whose data could not be read or whose poster
+//! frame failed wait for a change of the file (the normal diff) or of the generation; a failed poster is also
+//! retried when the user asks (`retry_failed` of [`Readers::fillable_files`]). Missing files never count.
 
 use rusqlite::params;
 use rusqlite::types::Value;
@@ -29,7 +32,7 @@ pub struct WaitingRule {
     pub decodable: Vec<DecoderKey>,
     /// The running version's decoder generations.
     pub generations: Generations,
-    /// A poster-frame tool is configured.
+    /// A poster-frame tool is available now (resolved when each run starts, ADR-0114).
     pub poster_tool: bool,
 }
 
@@ -51,12 +54,31 @@ impl WaitingRule {
         } else {
             format!("decoder_missing IN ({})", decodable.join(", "))
         };
+        let (no_tool, tool) = if self.poster_tool {
+            ("0", "1")
+        } else {
+            ("1", "0")
+        };
         format!(
             "(stage = 3 AND missing_since IS NULL AND ({missing}
               OR (decoder_missing IS NULL AND decode_failure IS NULL AND preview_gen IS NOT NULL
                   AND preview_reason IS NOT NULL AND preview_gen < {gen_case}
-                  AND NOT (coalesce(preview_reason, '') = 'no_poster_tool' AND {}))))",
-            if self.poster_tool { "0" } else { "1" }
+                  AND NOT (coalesce(preview_reason, '') IN ('no_poster_tool', 'poster_failed') AND {no_tool}))
+              OR (decoder_missing IS NULL AND decode_failure IS NULL AND preview_gen IS NOT NULL
+                  AND coalesce(preview_reason, '') = 'no_poster_tool' AND {tool})))"
+        )
+    }
+
+    /// [`WaitingRule::sql`] with the explicit retry of failed posters (ADR-0114): `poster_failed` rows too, when a
+    /// tool is available.
+    pub fn sql_retrying_failed_posters(&self) -> String {
+        if !self.poster_tool {
+            return self.sql();
+        }
+        format!(
+            "({} OR (stage = 3 AND missing_since IS NULL AND decoder_missing IS NULL AND decode_failure IS NULL
+                     AND preview_gen IS NOT NULL AND coalesce(preview_reason, '') = 'poster_failed'))",
+            self.sql()
         )
     }
 
@@ -71,13 +93,32 @@ impl WaitingRule {
         if r.decode_failure.is_some() {
             return false;
         }
-        match r.preview {
-            Some(p) => {
-                p.generation < self.generations.of_format(r.format)
-                    && !(p.reason == PreviewReason::NoPosterTool && !self.poster_tool)
-            }
-            None => false,
-        }
+        r.preview
+            .is_some_and(|p| self.placeholder_waits(r.format, p))
+    }
+
+    /// The placeholder part of the rule, for a row without a decoder marker or a recorded decode failure: its
+    /// generation is below this run's for `format` (a video placeholder only with a tool), or it is a video waiting
+    /// for a poster-frame tool and one is available (the tool clause, ADR-0114). The rescan's diff uses it too.
+    pub fn placeholder_waits(&self, format: Option<Format>, p: ps_model::PreviewStamp) -> bool {
+        let video = matches!(
+            p.reason,
+            PreviewReason::NoPosterTool | PreviewReason::PosterFailed
+        );
+        (p.generation < self.generations.of_format(format) && !(video && !self.poster_tool))
+            || (p.reason == PreviewReason::NoPosterTool && self.poster_tool)
+    }
+
+    /// [`WaitingRule::fillable`] with the explicit retry of failed posters ([`WaitingRule::sql_retrying_failed_posters`]).
+    pub fn fillable_retrying_failed_posters(&self, r: &FileRecord) -> bool {
+        self.fillable(r)
+            || (self.poster_tool
+                && r.stage == ps_model::Stage::Thumbed
+                && r.missing_since_ms.is_none()
+                && r.decoder_missing.is_none()
+                && r.decode_failure.is_none()
+                && r.preview
+                    .is_some_and(|p| p.reason == PreviewReason::PosterFailed))
     }
 }
 
@@ -180,19 +221,25 @@ impl Readers {
     }
 
     /// Present files that can be filled in now within `scope` and `sources` (all when empty), by source and path
-    /// (each lane reads in path order). The Fill in previews job's work list.
+    /// (each lane reads in path order). The Fill in previews job's work list. `retry_failed`: also the videos whose
+    /// poster frame failed, when a tool is available (the explicit retry, ADR-0114).
     pub fn fillable_files(
         &self,
         rule: &WaitingRule,
         scope: &FillScope,
         sources: &[SourceId],
+        retry_failed: bool,
     ) -> Result<Vec<FileRecord>> {
         if self.schema_version()? < crate::db::PREVIEW_GEN_MIGRATION.version {
             return Ok(Vec::new());
         }
         let mut sql = format!(
             "SELECT {FILE_COLUMNS} FROM file WHERE preview_reason IS NOT NULL AND {}",
-            rule.sql()
+            if retry_failed {
+                rule.sql_retrying_failed_posters()
+            } else {
+                rule.sql()
+            }
         );
         let mut args = Vec::new();
         scope_sql(scope, &mut sql, &mut args);

@@ -14,6 +14,10 @@ use crate::memory::{DEFAULT_DECODE_MEMORY_CAP, DEFAULT_MEMORY_CAP};
 /// Decides a source root's device class (default: [`crate::source::volume_info`]).
 pub type DeviceClassFn = Arc<dyn Fn(&Path) -> DeviceClass + Send + Sync>;
 
+/// Resolves the poster-frame tool available now (ADR-0114: the configured one when it is a file, else `ffmpeg` on
+/// `PATH`).
+pub type PosterToolFn = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+
 /// How the engine scans.
 #[derive(Clone)]
 pub struct ScanOptions {
@@ -22,6 +26,9 @@ pub struct ScanOptions {
     /// Video poster-frame tool (ffmpeg). `None`: videos get placeholders. The tool opens source files itself
     /// (read-only) and is outside the instrumented file layer.
     pub poster_tool: Option<PathBuf>,
+    /// Resolves `poster_tool` again when each run starts and when the waiting counts are read (ADR-0114), so a tool
+    /// installed after the app started counts without a restart. `None`: `poster_tool` is used as it is (tests).
+    pub poster_tool_resolver: Option<PosterToolFn>,
     /// Walk hidden folders (names starting with `.`) too (ADR-0052: on by default, so nothing a source holds is
     /// missed; `scanning.include_hidden` in settings).
     pub include_hidden: bool,
@@ -68,6 +75,7 @@ impl Default for ScanOptions {
         ScanOptions {
             classifier: ClassifierSettings::default(),
             poster_tool: None,
+            poster_tool_resolver: None,
             include_hidden: true,
             cpu_threads: default_cpu_threads(),
             memory_cap: DEFAULT_MEMORY_CAP,
@@ -92,6 +100,7 @@ impl std::fmt::Debug for ScanOptions {
         f.debug_struct("ScanOptions")
             .field("classifier", &self.classifier)
             .field("poster_tool", &self.poster_tool)
+            .field("poster_tool_resolver", &self.poster_tool_resolver.is_some())
             .field("include_hidden", &self.include_hidden)
             .field("cpu_threads", &self.cpu_threads)
             .field("memory_cap", &self.memory_cap)

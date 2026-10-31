@@ -621,10 +621,22 @@ impl Scanner {
     /// The placeholders of `sources` (all when empty) by format and reason, with how many this scanner's
     /// decoders, generations and poster-frame tool can fill in now (ADR-0109).
     pub fn preview_status(&self, sources: &[SourceId]) -> Result<Vec<ps_model::PreviewStatusRow>> {
+        self.refresh_poster_tool();
         Ok(self
             .catalog
             .read()
             .preview_status(&self.waiting_rule(), sources)?)
+    }
+
+    /// Resolve the poster-frame tool again with the options' resolver (ADR-0114), when they have one: the
+    /// configured tool when it is a file, else `ffmpeg` on `PATH`. Runs when a run starts and when the waiting
+    /// counts are read; a few stats.
+    pub fn refresh_poster_tool(&self) {
+        let resolver = self.opts.lock().poster_tool_resolver.clone();
+        if let Some(resolve) = resolver {
+            let tool = resolve();
+            self.opts.lock().poster_tool = tool;
+        }
     }
 
     /// The waiting rule of the options the next run starts with.
@@ -733,6 +745,8 @@ impl Scanner {
         refresh: bool,
         fill: Option<ps_model::FillScope>,
     ) -> Result<Arc<ActiveRun>> {
+        // The poster-frame tool available now (ADR-0114): installing ffmpeg needs no restart.
+        self.refresh_poster_tool();
         let opts = self.options();
         let mut sources = Vec::with_capacity(records.len());
         for r in &records {
@@ -776,6 +790,7 @@ impl Scanner {
             });
         }
         let ids: Vec<SourceId> = sources.iter().map(|s| s.id).collect();
+        let posters = crate::poster::PosterSlots::new(sources.iter().map(|s| s.device));
         let ctx = Arc::new(RunCtx {
             run,
             catalog: self.catalog.clone(),
@@ -800,6 +815,7 @@ impl Scanner {
             filled: AtomicU64::new(0),
             fill_failed: AtomicU64::new(0),
             skipped_offline: AtomicU64::new(0),
+            posters,
         });
         let thread = std::thread::Builder::new()
             .name(format!("ps-scan-run-{run}"))

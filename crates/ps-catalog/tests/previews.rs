@@ -176,7 +176,7 @@ fn the_waiting_rule_row_by_row() {
         Option<&str>,
         bool,
         bool,
-    ); 11] = [
+    ); 12] = [
         // An old TIFF placeholder: generation 0 below TIFF 1.
         (
             "old.tif",
@@ -283,6 +283,18 @@ fn the_waiting_rule_row_by_row() {
             false,
             false,
         ),
+        // A video whose poster frame failed with a tool present (ADR-0114): waits for a change or an explicit retry.
+        (
+            "failed.mov",
+            "mov",
+            1,
+            Some(0),
+            Some("poster_failed"),
+            None,
+            None,
+            false,
+            false,
+        ),
         // A real thumbnail.
         ("ok.tif", "tiff", 0, None, None, None, None, false, false),
         // A generation without a reason (never written; the row reads as having a preview): not fillable, and
@@ -329,7 +341,7 @@ fn the_waiting_rule_row_by_row() {
     };
     let fillable: Vec<String> = cat
         .read()
-        .fillable_files(&rule, &FillScope::all(), &[])
+        .fillable_files(&rule, &FillScope::all(), &[], false)
         .unwrap()
         .into_iter()
         .map(|r| String::from_utf8_lossy(r.key.path.as_bytes()).into_owned())
@@ -358,7 +370,7 @@ fn the_waiting_rule_row_by_row() {
     // Current-generation unreadable rows are not fillable, and stay so with the TIFF generation unchanged.
     let tiff = cat
         .read()
-        .fillable_files(&rule, &FillScope::format(Format::Tiff), &[])
+        .fillable_files(&rule, &FillScope::format(Format::Tiff), &[], false)
         .unwrap();
     assert_eq!(tiff.len(), 1, "only the old TIFF placeholder");
     // A bump of the TIFF generation makes every TIFF placeholder fillable once.
@@ -368,7 +380,7 @@ fn the_waiting_rule_row_by_row() {
     };
     let tiff = cat
         .read()
-        .fillable_files(&bumped, &FillScope::format(Format::Tiff), &[])
+        .fillable_files(&bumped, &FillScope::format(Format::Tiff), &[], false)
         .unwrap();
     assert_eq!(tiff.len(), 3, "old, BigTIFF and damaged TIFF");
     // The counts by format and reason.
@@ -400,18 +412,83 @@ fn the_waiting_rule_row_by_row() {
             reason: PreviewReason::UnsupportedVariant
         })
     );
-    // A poster tool does not make generation-0 videos fillable (the poster generation is 0).
+    // The tool clause (ADR-0114): with a poster-frame tool available, the video waiting for one is fillable whatever
+    // its generation (the poster generation is 0); the failed poster is not, until the explicit retry.
     let tool = WaitingRule {
         poster_tool: true,
-        ..rule
+        ..rule.clone()
     };
-    assert_eq!(
+    let names = |rule: &WaitingRule, retry: bool| -> Vec<String> {
         cat.read()
-            .fillable_files(&tool, &FillScope::format(Format::Mov), &[])
+            .fillable_files(rule, &FillScope::format(Format::Mov), &[], retry)
             .unwrap()
-            .len(),
-        0
-    );
+            .into_iter()
+            .map(|r| String::from_utf8_lossy(r.key.path.as_bytes()).into_owned())
+            .collect()
+    };
+    assert_eq!(names(&tool, false), ["clip.mov"]);
+    assert_eq!(names(&tool, true), ["clip.mov", "failed.mov"]);
+    // Without a tool nothing waits for one, retry or not.
+    assert!(names(&rule, false).is_empty());
+    assert!(names(&rule, true).is_empty());
+    // A bump of the poster generation retries the failed poster, but only with a tool.
+    let bumped_tool = WaitingRule {
+        generations: generations().with(DecodeFamily::VideoPoster, 1),
+        ..tool.clone()
+    };
+    assert_eq!(names(&bumped_tool, false), ["clip.mov", "failed.mov"]);
+    let bumped_no_tool = WaitingRule {
+        poster_tool: false,
+        ..bumped_tool.clone()
+    };
+    assert!(names(&bumped_no_tool, false).is_empty());
+    // The Rust rule agrees with the SQL rule on every row, for every one of these rules.
+    for r in [&tool, &bumped_tool, &bumped_no_tool] {
+        let all: Vec<String> = cat
+            .read()
+            .fillable_files(r, &FillScope::all(), &[], false)
+            .unwrap()
+            .into_iter()
+            .map(|r| String::from_utf8_lossy(r.key.path.as_bytes()).into_owned())
+            .collect();
+        let retry: Vec<String> = cat
+            .read()
+            .fillable_files(r, &FillScope::all(), &[], true)
+            .unwrap()
+            .into_iter()
+            .map(|r| String::from_utf8_lossy(r.key.path.as_bytes()).into_owned())
+            .collect();
+        for (name, ..) in &rows {
+            let rec = cat
+                .read()
+                .file(&ps_catalog::FileKey::new(
+                    ps_model::SourceId(1),
+                    ps_model::RelPath::from_bytes(name.as_bytes().to_vec()).unwrap(),
+                ))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                r.fillable(&rec),
+                all.iter().any(|n| n == name),
+                "{name} {r:?}"
+            );
+            assert_eq!(
+                r.fillable_retrying_failed_posters(&rec),
+                retry.iter().any(|n| n == name),
+                "{name} {r:?} (retry)"
+            );
+        }
+    }
+    // The counts: the waiting video counts as fillable with a tool, the failed one never does.
+    let status = cat.read().preview_status(&tool, &[]).unwrap();
+    let row = |r: PreviewReason| {
+        status
+            .iter()
+            .find(|s| s.format == "mov" && s.reason == r)
+            .map(|s| (s.count, s.fillable))
+    };
+    assert_eq!(row(PreviewReason::NoPosterTool), Some((1, 1)));
+    assert_eq!(row(PreviewReason::PosterFailed), Some((1, 0)));
 }
 
 /// Migration 25 records its task only when the catalog has a thumbed video without a placeholder reason.
@@ -498,4 +575,84 @@ fn damaged_count_reads_the_partial_index() {
     );
     assert_eq!(r.damaged_count(&[ps_model::SourceId(2)]).unwrap(), 1);
     assert_eq!(r.damaged_count(&[]).unwrap(), 3, "every source");
+}
+
+/// A poster item's outcome (ADR-0114) reaches every thumbed copy of the content still waiting for a poster, and no
+/// other row.
+#[test]
+fn a_poster_outcome_reaches_the_waiting_copies_of_its_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("catalog.db");
+    drop(Catalog::open_file(&path, Default::default()).unwrap());
+    let c = Connection::open(&path).unwrap();
+    c.execute(
+        "INSERT INTO source (id, root_path, added_at) VALUES (1, CAST('/mnt/card' AS BLOB), 100)",
+        [],
+    )
+    .unwrap();
+    // (name, content, preview_gen, preview_reason)
+    let rows: [(&str, u8, Option<i64>, Option<&str>); 4] = [
+        ("a.mov", 1, Some(0), Some("no_poster_tool")),
+        ("copy/a.mov", 1, Some(0), Some("poster_failed")),
+        ("b.mov", 2, Some(0), Some("no_poster_tool")),
+        ("c.jpg", 1, Some(0), Some("unreadable")),
+    ];
+    for (i, (name, content, g, r)) in rows.iter().enumerate() {
+        c.execute(
+            "INSERT INTO file (id, source_id, rel_path, name, size, mtime_ns, stage, class, reasons, format,
+                               media_kind, kflags, content_id, identity_kind, preview_gen, preview_reason)
+             VALUES (?1, 1, ?2, ?2, 10, 1, 3, 0, '[]', 'mov', 1, 0, ?3, 0, ?4, ?5)",
+            params![
+                i as i64 + 1,
+                name.as_bytes(),
+                [*content; 32].to_vec(),
+                g,
+                r
+            ],
+        )
+        .unwrap();
+    }
+    drop(c);
+    let cat = Catalog::open_file(&path, Default::default()).unwrap();
+    let key = |n: &str| {
+        ps_catalog::FileKey::new(
+            ps_model::SourceId(1),
+            ps_model::RelPath::from_bytes(n.as_bytes().to_vec()).unwrap(),
+        )
+    };
+    let preview = |n: &str| cat.read().file(&key(n)).unwrap().unwrap().preview;
+    let failed = PreviewStamp {
+        generation: 0,
+        reason: PreviewReason::PosterFailed,
+    };
+    cat.writer()
+        .submit(ps_catalog::Command::SetPosterPreview(vec![(
+            key("a.mov"),
+            Some(failed),
+        )]))
+        .unwrap();
+    cat.writer().flush().unwrap();
+    assert_eq!(preview("a.mov"), Some(failed));
+    assert_eq!(preview("copy/a.mov"), Some(failed));
+    assert_eq!(
+        preview("b.mov").map(|p| p.reason),
+        Some(PreviewReason::NoPosterTool),
+        "another content"
+    );
+    assert_eq!(
+        preview("c.jpg").map(|p| p.reason),
+        Some(PreviewReason::Unreadable),
+        "not a poster placeholder"
+    );
+    cat.writer()
+        .submit(ps_catalog::Command::SetPosterPreview(vec![(
+            key("copy/a.mov"),
+            None,
+        )]))
+        .unwrap();
+    cat.writer().flush().unwrap();
+    assert_eq!(preview("a.mov"), None);
+    assert_eq!(preview("copy/a.mov"), None);
+    assert!(preview("b.mov").is_some());
+    assert!(preview("c.jpg").is_some());
 }

@@ -81,6 +81,9 @@ struct Diff {
     colour_checked: AtomicU64,
     recoloured: AtomicU64,
     colour_bytes: AtomicU64,
+    posters: AtomicU64,
+    posters_made: AtomicU64,
+    posters_failed: AtomicU64,
 }
 
 impl Diff {
@@ -107,6 +110,9 @@ impl Diff {
             colour_checked: self.colour_checked.load(Ordering::Relaxed),
             recoloured: self.recoloured.load(Ordering::Relaxed),
             colour_bytes: self.colour_bytes.load(Ordering::Relaxed),
+            posters: self.posters.load(Ordering::Relaxed),
+            posters_made: self.posters_made.load(Ordering::Relaxed),
+            posters_failed: self.posters_failed.load(Ordering::Relaxed),
         }
     }
 
@@ -129,9 +135,10 @@ impl Diff {
             .store(d.decode_retries, Ordering::Relaxed);
         self.outdated_previews
             .store(d.outdated_previews, Ordering::Relaxed);
-        // `refreshed`, `redecoded`, `frame_reread`, `colour_checked` and `recoloured` count during the run
-        // (Progress::refreshed, Progress::redecoded, Progress::frame_reread, Progress::colour_checked), after the
-        // diff.
+        self.posters.store(d.posters, Ordering::Relaxed);
+        // `refreshed`, `redecoded`, `frame_reread`, `colour_checked`, `recoloured`, `posters_made` and
+        // `posters_failed` count during the run (Progress::refreshed, Progress::redecoded, Progress::frame_reread,
+        // Progress::colour_checked, Progress::poster), after the diff.
     }
 }
 
@@ -363,6 +370,16 @@ impl Progress {
         d.colour_bytes.fetch_add(bytes, Ordering::Relaxed);
         if recoloured {
             d.recoloured.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// A poster item ended (ADR-0114): a poster frame stored (`made`), or the tool got no frame.
+    pub fn poster(&self, idx: usize, made: bool) {
+        let d = &self.sources[idx].diff;
+        if made {
+            d.posters_made.fetch_add(1, Ordering::Relaxed);
+        } else {
+            d.posters_failed.fetch_add(1, Ordering::Relaxed);
         }
     }
 

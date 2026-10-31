@@ -99,6 +99,8 @@ pub(crate) struct RunCtx {
     pub filled: AtomicU64,
     pub fill_failed: AtomicU64,
     pub skipped_offline: AtomicU64,
+    /// The poster lane's slots (ADR-0114): poster-frame tool calls in flight.
+    pub posters: crate::poster::PosterSlots,
 }
 
 impl RunCtx {
@@ -212,14 +214,16 @@ pub(crate) fn waiting_rule(opts: &ScanOptions) -> ps_catalog::WaitingRule {
 /// The work of a Fill in previews job (ADR-0109): the run's sources' placeholders that can be filled in now, in
 /// path order per source, read from the catalog (no folder is listed). Rows of offline sources are counted and
 /// left waiting. A row the re-decode can fill is queued as a re-decode (its identity checked against the bytes
-/// read); one without dimensions, larger than the analysis buffer or a video is analysed again from
-/// `discovered`, as a rescan does.
+/// read); one without dimensions or larger than the analysis buffer is analysed again from `discovered`, as a
+/// rescan does; a video is a poster item (ADR-0114: one call of the tool, one item per content). A fill for the
+/// reason `poster_failed` also retries the failed posters, once.
 fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput>> {
     let ids: Vec<SourceId> = ctx.sources.iter().map(|s| s.id).collect();
+    let retry = scope.reason == Some(ps_model::PreviewReason::PosterFailed);
     let rows = match ctx
         .catalog
         .read()
-        .fillable_files(&waiting_rule(&ctx.opts), scope, &ids)
+        .fillable_files(&waiting_rule(&ctx.opts), scope, &ids, retry)
     {
         Ok(r) => r,
         Err(e) => {
@@ -228,6 +232,7 @@ fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput
         }
     };
     let mut outs: Vec<DiffOutput> = ctx.sources.iter().map(|_| DiffOutput::default()).collect();
+    let mut posters = std::collections::HashSet::new();
     for r in rows {
         let Some(idx) = ctx.sources.iter().position(|s| s.id == r.key.source) else {
             continue;
@@ -239,6 +244,37 @@ fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput
         }
         let out = &mut outs[idx];
         let Some(identity) = r.identity else { continue };
+        if crate::diff::is_video(&r) {
+            // A poster item (ADR-0114): nothing read; copies of the same content get its frame.
+            if posters.insert(identity) {
+                out.counts.unchanged += 1;
+                out.counts.posters += 1;
+                *out.stages.get_mut(r.stage) += 1;
+                out.present += 1;
+                let order = out.todo.len() as u32;
+                out.todo.push(Todo {
+                    path: r.key.path.clone(),
+                    stat: r.stat,
+                    order,
+                    thumbs_db_sibling: false,
+                    stage: r.stage,
+                    is_new: false,
+                    refresh: false,
+                    redecode: None,
+                    prior_failure: None,
+                    meta_reread: false,
+                    structure_only: false,
+                    colour_check: false,
+                    planned: 0,
+                    read_path: None,
+                    poster: Some(crate::diff::PosterWork {
+                        identity,
+                        format: r.format,
+                    }),
+                });
+            }
+            continue;
+        }
         let full = crate::diff::needs_full_analysis(&r);
         let order = out.todo.len() as u32;
         let mut todo = Todo {
@@ -256,6 +292,7 @@ fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput
             colour_check: false,
             planned: 0,
             read_path: None,
+            poster: None,
         };
         out.counts.unchanged += 1;
         if full {
@@ -347,7 +384,7 @@ fn finish(ctx: &Arc<RunCtx>, started: Instant) -> RunSummary {
         } else {
             ctx.catalog
                 .read()
-                .fillable_files(&waiting_rule(&ctx.opts), scope, &online)
+                .fillable_files(&waiting_rule(&ctx.opts), scope, &online, false)
                 .map_or(0, |r| r.len() as u64)
         };
         summary.fill = Some(ps_model::FillSummary {
@@ -1055,6 +1092,10 @@ fn process_file(
     {
         return;
     }
+    if let Some(work) = t.poster {
+        poster_item(ctx, idx, reader, &busy, &t, work);
+        return;
+    }
     let rel = t.path.to_path_buf();
     let abs = t.read_path.as_ref().unwrap_or(&t.path).under(&src.root);
     let mut file = match ctx.opts.fs.open(&abs) {
@@ -1515,6 +1556,164 @@ fn process_file(
     };
     ctx.progress.set_dir(idx, reader, None);
     send_job(&busy, cpu_tx, job);
+}
+
+/// A poster item (ADR-0114): one call of the run's poster-frame tool for a video waiting for one. The file is
+/// stat'ed through the scan's file layer, never opened: a changed size or time leaves it to the normal diff (the
+/// fill job leaves it waiting). Pause is honoured before the call, which waits for one of the run's poster slots;
+/// cancel kills a running tool and records nothing. The poster frame replaces the stored placeholder of the content
+/// (stored pixels are never replaced, ADR-0109); a failed call records "poster frame failed" with the tool's error
+/// at this run's generation, so it is not retried until the file or the generation changes, or the user asks.
+fn poster_item(
+    ctx: &RunCtx,
+    idx: usize,
+    reader: usize,
+    busy: &Busy<'_>,
+    t: &Todo,
+    work: crate::diff::PosterWork,
+) {
+    let src = &ctx.sources[idx];
+    let key = FileKey::new(src.id, t.path.clone());
+    let abs = t.path.under(&src.root);
+    match ctx.opts.fs.metadata(&abs) {
+        Ok(m) if ctx.opts.fs.fingerprint(&m).unchanged(&t.stat) => {}
+        Ok(_) => {
+            changed_during_scan(ctx, idx, t);
+            return;
+        }
+        Err(e) => {
+            if !ctx.root_available(idx) {
+                ctx.lose(idx);
+            } else if e.kind() == io::ErrorKind::NotFound {
+                ctx.submit(Command::MarkMissing {
+                    files: vec![key],
+                    at_ms: now_ms(),
+                });
+                ctx.progress.vanished(idx, t.stage);
+                ctx.progress.file_done(idx);
+            } else {
+                redecode_unreadable(ctx, idx, t, &io_message(&e));
+            }
+            return;
+        }
+    }
+    let Some(tool) = ctx.opts.poster_tool.as_deref() else {
+        // The rule queues poster items only with a tool; nothing to run.
+        ctx.progress.file_done(idx);
+        return;
+    };
+    // Another copy of the content already got its frame (another source of this run): the rows only.
+    if matches!(
+        ctx.thumbs.stored_kind(&work.identity),
+        Ok(Some(k)) if k != ps_model::ThumbKind::Placeholder
+    ) {
+        ctx.submit(Command::SetPosterPreview(vec![(key, None)]));
+        ctx.progress.file_done(idx);
+        return;
+    }
+    if busy.checkpoint().is_err() {
+        return;
+    }
+    let cancelled = || ctx.ctl.is_cancelled();
+    let Some(slot) = ctx.posters.acquire(idx, &cancelled) else {
+        return;
+    };
+    ctx.progress.set_dir(
+        idx,
+        reader,
+        Some(
+            t.path
+                .parent()
+                .map(|p| p.display().into_owned())
+                .unwrap_or_default(),
+        ),
+    );
+    let stored = ctx.thumbs.get(&work.identity).ok().flatten();
+    let info = stored.as_ref().and_then(|s| s.placeholder.clone());
+    let duration = info.as_ref().and_then(|i| i.duration_ms);
+    let made = ps_media::thumb::poster_thumbnail(tool, &abs, duration, &cancelled);
+    drop(slot);
+    ctx.progress.set_dir(idx, reader, None);
+    let (thumb, outcome) = match made {
+        Err(ps_media::poster::PosterError::Cancelled) => return,
+        Ok(thumb) => (thumb, None),
+        Err(e) => {
+            let message = e.to_string();
+            let generation = ctx.opts.generations.of_format(work.format);
+            let reason = ps_model::PlaceholderReason::PosterFailed {
+                message: message.clone(),
+            };
+            let mut record = stored.clone().unwrap_or(ThumbnailRecord {
+                kind: ps_model::ThumbKind::Placeholder,
+                width: 0,
+                height: 0,
+                dominant_rgb: [96, 96, 104],
+                jpeg: Vec::new(),
+                placeholder: None,
+            });
+            let base = info.clone().unwrap_or(ps_model::PlaceholderInfo {
+                media_kind: MediaKind::Video,
+                format: work.format,
+                duration_ms: None,
+                capture_date: None,
+                note: String::new(),
+                reason: None,
+                generation,
+            });
+            record.placeholder = Some(ps_model::PlaceholderInfo {
+                note: format!("video (poster frame failed: {message})"),
+                reason: Some(reason),
+                generation,
+                ..base
+            });
+            let stamp = ps_model::PreviewStamp {
+                generation,
+                reason: ps_model::PreviewReason::PosterFailed,
+            };
+            (record, Some((stamp, message)))
+        }
+    };
+    // The thumbnail store's replace rule (ADR-0109): a placeholder, or nothing, is replaced; pixels are kept.
+    let replace = matches!(
+        ctx.thumbs.stored_kind(&work.identity),
+        Ok(None | Some(ps_model::ThumbKind::Placeholder))
+    );
+    if replace && let Err(e) = ctx.thumbs.put_many([(&work.identity, &thumb)]) {
+        ctx.progress.error(RecentError {
+            source: src.id,
+            path: t.path.clone(),
+            stage: t.stage,
+            message: format!(
+                "could not store its poster frame ({e}); it keeps its placeholder and waits"
+            ),
+        });
+        ctx.progress.file_done(idx);
+        return;
+    }
+    match outcome {
+        None => {
+            ctx.submit(Command::SetPosterPreview(vec![(key, None)]));
+            ctx.progress.poster(idx, true);
+            ctx.filled.fetch_add(1, Ordering::Relaxed);
+        }
+        Some((stamp, message)) => {
+            ctx.submit(Command::SetPosterPreview(vec![(
+                key,
+                replace.then_some(stamp),
+            )]));
+            ctx.progress.poster(idx, false);
+            ctx.fill_failed.fetch_add(1, Ordering::Relaxed);
+            ctx.progress.error(RecentError {
+                source: src.id,
+                path: t.path.clone(),
+                stage: t.stage,
+                message: format!(
+                    "poster frame failed ({message}); the video is catalogued and exported as usual"
+                ),
+            });
+        }
+    }
+    ctx.progress.file_done(idx);
 }
 
 /// Hand a job to the CPU workers, giving up on cancel.
@@ -1988,15 +2187,15 @@ fn analyze(ctx: &RunCtx, job: CpuJob, busy: &Busy<'_>) -> Option<Persist> {
     let mut decoder_missing = None;
     let mut decode_failure = None;
     let (hashes, mut thumb) = if probe.kind() == Some(MediaKind::Video) {
-        (
-            None,
-            ps_media::thumb::video_thumbnail(
-                &abs,
-                &probe,
-                capture,
-                ctx.opts.poster_tool.as_deref(),
-            ),
-        )
+        // The tool is killed on cancel (ADR-0114); the file then stays `probed`, like a cancelled decode.
+        let thumb = ps_media::thumb::video_thumbnail_with_stop(
+            &abs,
+            &probe,
+            capture,
+            ctx.opts.poster_tool.as_deref(),
+            &|| ctx.ctl.is_cancelled(),
+        )?;
+        (None, thumb)
     } else if let Some(decoded) = decoded {
         // Decoded in one pass by the reader (ADR-0086); a decode error keeps the identity, with a placeholder.
         match decoded.and_then(|d| {

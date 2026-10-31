@@ -144,6 +144,10 @@ pub enum Command {
     /// is not filled in again until the file or the generation changes), `None` clears them (a preview now). Only
     /// thumbed rows are written.
     SetPreview(Vec<(FileKey, Option<ps_model::PreviewStamp>)>),
+    /// A poster item's outcome (ADR-0114), for the key's thumbed row and every thumbed row of the same content still
+    /// waiting for a poster frame (`no_poster_tool` or `poster_failed`): `None` clears the placeholder stamp (the
+    /// poster frame is stored for the content), `Some` stamps `poster_failed` with this run's generation.
+    SetPosterPreview(Vec<(FileKey, Option<ps_model::PreviewStamp>)>),
     /// A one-time catalog task is done (`catalog_task`, migration 25, ADR-0111): its row is removed.
     FinishCatalogTask(String),
     /// The user's include/exclude decision about a file (`None` clears it). Needs catalog migration 7
@@ -185,6 +189,7 @@ impl Command {
             Command::Redecoded(_) => "redecoded",
             Command::ClearDecoderMissing(_) => "clear_decoder_missing",
             Command::SetPreview(_) => "set_preview",
+            Command::SetPosterPreview(_) => "set_poster_preview",
             Command::FinishCatalogTask(_) => "finish_catalog_task",
             Command::DecodeFailed(_) => "decode_failed",
             Command::SetUserDecision { .. } => "set_user_decision",
@@ -972,6 +977,29 @@ impl WriterThread {
                             p.map(|p| i64::from(p.generation)),
                             p.map(|p| p.reason.as_str())
                         ])?;
+                        Ok(())
+                    });
+                }
+            }
+            Command::SetPosterPreview(rows) => {
+                for (k, p) in &rows {
+                    self.row(name, Some(k), |c| {
+                        let (g, r) = (
+                            p.map(|p| i64::from(p.generation)),
+                            p.map(|p| p.reason.as_str()),
+                        );
+                        c.prepare_cached(
+                            "UPDATE file SET preview_gen = ?3, preview_reason = ?4
+                             WHERE source_id = ?1 AND rel_path = ?2 AND stage = 3",
+                        )?
+                        .execute(params![k.source.0, k.path.as_bytes(), g, r])?;
+                        c.prepare_cached(
+                            "UPDATE file SET preview_gen = ?3, preview_reason = ?4
+                             WHERE (content_id, identity_kind) = (SELECT content_id, identity_kind FROM file
+                                                                  WHERE source_id = ?1 AND rel_path = ?2)
+                               AND stage = 3 AND preview_reason IN ('no_poster_tool', 'poster_failed')",
+                        )?
+                        .execute(params![k.source.0, k.path.as_bytes(), g, r])?;
                         Ok(())
                     });
                 }
