@@ -42,21 +42,23 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
-### What's new since 0.3.1
-
-- **Adding a big folder no longer seems to freeze.** The folder shows at once as "Adding <folder>…" in the status
-  bar, and as an "Adding…" row in the source list where it is shown, whichever way you add it (Sources, the Library,
-  Ctrl+O, the first-launch screen or the command palette), and its scan starts straight away. Adding no longer reads the folder twice: it
-  used to walk the whole tree and read up to 64 of its files (about 1.3 GB on a large drive) before the scan even
-  started; the first scan now records the drive's fingerprint from what it reads anyway. The status bar follows the
-  scan from every add path and says "Walking folders" while it lists the folder. A folder added while a scan runs is
-  queued ("Queued, scans next"; "then 1 more source" in the status bar) and scanned next, without rescanning the
-  folder that just finished; whenever a folder has never been scanned, the Sources view's main button scans only
-  the new ones. A new setting, **Scan new sources right away** (on by default), lets you add folders now and scan
-  them later.
-
 ### What's new in 0.3.1
 
+- **Adding a big folder no longer seems to freeze.** The folder shows at once as "Adding <folder>…" in the status bar,
+  and as an "Adding…" row in the source list where it is shown, whichever way you add it (Sources, the Library,
+  Ctrl+O, the first-launch screen or the command palette), and its scan starts straight away. Adding no longer reads
+  the folder twice: it used to walk the whole tree and read up to 64 of its files (about 1.3 GB on a large drive)
+  before the scan even started; the first scan now records the drive's fingerprint from what it reads anyway. The
+  status bar follows the scan from every add path and says "Walking folders" while it lists the folder. A folder added
+  while a scan runs is queued ("Queued, scans next"; "then 1 more source" in the status bar) and scanned next, without
+  rescanning the folder that just finished; whenever a folder has never been scanned, the Sources view's main button
+  scans only the new ones. A new setting, **Scan new sources right away** (on by default), lets you add folders now
+  and scan them later.
+- **Large catalogs stay quick to open after the update.** Upgrading a catalog of hundreds of thousands of photos
+  writes a temporary file of a gigabyte or more beside it, which every later launch would have read before showing the
+  gallery (about 0.7 s more on a million photos). PhotoSquirrel now folds that file back into the catalog in the
+  background a few seconds after it opens, and keeps it small after every scan, so later launches are as quick as
+  before.
 - **Videos get their poster frames after you install ffmpeg.** Videos catalogued without ffmpeg showed "needs a
   poster-frame tool" for good; now **Fill in previews** (or the next rescan) gives each of them its frame once
   ffmpeg is on your PATH or set in Settings, with no restart: up to two ffmpeg calls per video (at most 10 s each;
@@ -103,10 +105,11 @@ to their resized or re-exported JPEG copies.
 
 Rescan your sources once after the update. That rescan checks every catalogued RAW once for a cut (about 70 KB per
 file, a RAW without a preview read once in full) and the first 256 KB of each file whose name starts with `_` for
-Adobe RGB, as described above; nothing else is read again. Until a source is rescanned, cleanup asks you to rescan
-it first. Videos waiting for ffmpeg get their frames from that rescan or from **Fill in previews**. Once 0.3.1 has
-opened a catalog, 0.3.0 no longer opens it: it says the catalog was written by a newer PhotoSquirrel and leaves it
-unchanged.
+Adobe RGB, as described above; nothing else is read again. Until a source is rescanned, cleanup asks you to rescan it
+first. Videos waiting for ffmpeg get their frames from that rescan or from **Fill in previews**. On a large catalog,
+the first launch after the update takes a few seconds longer while the catalog is upgraded, and later launches are as
+fast as before. Once 0.3.1 has opened a catalog, 0.3.0 no longer opens it: it says the catalog was written by a newer
+PhotoSquirrel and leaves it unchanged.
 
 ### What's new in 0.3.0
 

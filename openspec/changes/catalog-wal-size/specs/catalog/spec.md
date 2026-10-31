@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Small write-ahead log
-The catalog SHALL keep its write-ahead log small: a log that is reset SHALL shrink to at most 64 MiB, and the log SHALL be folded into the database and truncated after migrations, at the end of each scan run and when the catalog is closed. When the catalog or thumbnail store is opened with a log over 8 MiB, it SHALL be folded and truncated on a background thread, without delaying opening or blocking readers.
+The catalog SHALL keep its write-ahead log small: a log that is reset SHALL shrink to at most 64 MiB, and the log SHALL be folded into the database and truncated after migrations, at the end of each scan run and when the catalog is closed. When the catalog or thumbnail store is migrated or opened with a log over 8 MiB, the log SHALL be folded and truncated on a background thread a few seconds after opening, without delaying opening, blocking readers or failing writes.
 
 #### Scenario: Migrated catalog leaves an empty log
 - **WHEN** a catalog with 30,000 analysed files at the schema before the colour migration is opened and migrated

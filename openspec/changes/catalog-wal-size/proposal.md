@@ -31,7 +31,7 @@ the current HEAD (one desktop run: 290.6 MB), against a 250 MB budget (ADR-0026)
   - A TRUNCATE checkpoint after migrations, at the end of each scan run and at shutdown, waiting only briefly for
     readers.
   - When a catalog or thumbnail store is opened with a log over 8 MiB, or a migration ran, a background thread folds
-    the log into the database and truncates it. It runs a PASSIVE pass first, which blocks nobody, then a short
+    the log into the database and truncates it, 5 s after opening. It runs a PASSIVE pass first, which blocks nobody, then a short
     TRUNCATE. Opening never waits for it, and neither does the UI thread.
 - **Idle-memory budget 320 MB (new ADR-0123, supersedes the idle-RSS part of ADR-0026).** This updates
   `perf-budgets.toml`, the app-shell "Fast start" requirement and its scenario (renamed "Idle memory within 320 MB",
@@ -52,8 +52,9 @@ the current HEAD (one desktop run: 290.6 MB), against a 250 MB budget (ADR-0026)
 
 ## Impact
 
-- `crates/ps-catalog`: `db.rs` (pragma, checkpoint helpers, the background shrink), `writer.rs` (run end,
+- `crates/ps-catalog`: new `wal.rs` (checkpoint helpers, the background shrink), `db.rs` (the pragma), `writer.rs` (run end,
   shutdown), `lib.rs` (`Catalog` starts and joins the shrink), `thumbs.rs` (the same at open).
+- `crates/ps-service/src/library/synthetic.rs`: the bench catalog is settled before a measured launch.
 - No migration, and no change to the file format or schema. The next free migration number stays 27.
 - `perf-budgets.toml`, `xtask/src/bench.rs`, `crates/photosquirrel/tests/budgets.rs`, `docs/performance.md`,
   `packaging/release-notes.md`, `openspec/ROADMAP.md` (row 36).
