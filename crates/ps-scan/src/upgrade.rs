@@ -4,7 +4,8 @@
 //!
 //! A thumbnail converted to sRGB from another colour space (ADR-0113) is not the decode the hashes are defined on, so
 //! its rows are left out: their hashes stay of the old version, and the next rescan of their source analyses them
-//! again (`diff`: a stale hash version on a row whose colour is not sRGB).
+//! again (`diff`: a stale hash version on a row of a converted content). Every other row is upgraded here only, so a
+//! version change must run this before the next scans (ADR-0119).
 
 use ps_catalog::{Catalog, Command, ThumbStore};
 use ps_hash::{ImageView, PixelLayout};

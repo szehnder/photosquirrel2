@@ -254,6 +254,7 @@ fn fill_work(ctx: &RunCtx, scope: &ps_model::FillScope) -> Vec<Option<DiffOutput
             meta_reread: false,
             structure_only: false,
             colour_check: false,
+            planned: 0,
             read_path: None,
         };
         out.counts.unchanged += 1;
@@ -886,6 +887,8 @@ struct Controlled<'a> {
     progress: &'a Progress,
     idx: usize,
     delay: Option<Duration>,
+    /// The bytes read through this reader (one file): what a one-time check corrects the run's total by.
+    read: u64,
 }
 
 impl Read for Controlled<'_> {
@@ -908,6 +911,7 @@ impl Read for Controlled<'_> {
             w.1.push(dt);
         }
         self.progress.bytes_read(self.idx, got as u64);
+        self.read += got as u64;
         Ok(got)
     }
 }
@@ -1101,6 +1105,7 @@ fn process_file(
         progress: &ctx.progress,
         idx,
         delay: ctx.opts.chunk_delay,
+        read: 0,
     };
 
     // A header re-read for frame identity (ADR-0105): the probe window, read-only, plus bounded targeted reads of
@@ -1151,6 +1156,7 @@ fn process_file(
         let (facts, structure, probe) = match read {
             Ok(found) => found,
             Err(e) => {
+                ctx.progress.rebudget(idx, t.planned, r.read);
                 if !is_cancel(&e) {
                     if ctx.root_available(idx) {
                         reread_unreadable(ctx, idx, &t, &e);
@@ -1165,17 +1171,21 @@ fn process_file(
         // A RAW found cut gets the "could not be read" placeholder below: its colour is recorded, nothing remade.
         let colour = if t.colour_check {
             let cut = matches!(structure, ps_media::raw_check::Structure::Cut(_));
-            match colour_recheck(
+            colour_recheck(
                 ctx, idx, reader, &busy, &t, &key, &probe, head, size, cut, &mut r,
-            ) {
-                Some(c) => Some(c),
-                // Cancelled, or the source went away: nothing is written.
-                None if t.meta_reread => None,
-                None => return,
-            }
+            )
         } else {
             None
         };
+        // The run's total had the diff's plan for this file; it is corrected by every byte the checks read (the head,
+        // the structure check's directory reads, a RAW's preview or a JPEG's rest), so `bytes_to_read` ends equal to
+        // `bytes_read`.
+        let file_bytes = r.read;
+        ctx.progress.rebudget(idx, t.planned, file_bytes);
+        // Cancelled, or the source went away: nothing is written.
+        if t.colour_check && colour.is_none() && !t.meta_reread {
+            return;
+        }
         drop(file);
         // `Err(())`: found cut, but the placeholder could not be stored; the structure check stays due.
         let damaged = match &structure {
@@ -1259,8 +1269,8 @@ fn process_file(
                 (None, Err(())) => {}
             }
         }
-        if let Some((c, read)) = colour {
-            c.submit(ctx, idx, &t, &key, read);
+        if let Some(c) = colour {
+            c.submit(ctx, idx, &t, &key, file_bytes);
         }
         ctx.progress.file_done(idx);
         ctx.progress.set_dir(idx, reader, None);
@@ -1648,15 +1658,37 @@ impl Recheck {
     }
 }
 
-/// Read `len` bytes at `offset` of the file `r` reads, reusing `head` (its first bytes) where the range lies in it.
+/// A RAW preview the colour re-check reads into memory: at most the analysis buffer. A longer one is recorded
+/// unconverted (ADR-0119).
+fn preview_fits(len: u64) -> bool {
+    len <= ANALYSIS_BUFFER_MAX_BYTES
+}
+
+/// The hashes of a RAW preview's unconverted decode and a row's stored ones are of the same shot: within the
+/// derivative thresholds grouping uses (ADR-0013), so a recompressed or rescaled preview of the same picture passes
+/// and another picture does not.
+fn same_shot(a: &ps_model::PerceptualHash, b: &ps_model::PerceptualHash) -> bool {
+    a.phash_distance(b) <= ps_dedup::edges::MAX_PHASH_DISTANCE
+        && a.dhash_distance(b) <= ps_dedup::edges::MAX_DHASH_DISTANCE
+}
+
+/// Read `len` bytes at `offset` of the file `r` reads, reusing `head` (its first bytes) for the part of the range that
+/// lies in it, so no byte is read twice. The caller bounds `len` (and holds the memory budget for it).
 fn read_range(r: &mut Controlled<'_>, head: &[u8], offset: u64, len: u64) -> io::Result<Vec<u8>> {
     let end = offset.saturating_add(len);
-    if end <= head.len() as u64 {
+    let held = head.len() as u64;
+    if end <= held {
         return Ok(head[offset as usize..end as usize].to_vec());
     }
-    r.seek(SeekFrom::Start(offset))?;
-    let mut v = Vec::with_capacity(len.min(ANALYSIS_BUFFER_MAX_BYTES) as usize);
-    (&mut *r).take(len).read_to_end(&mut v)?;
+    let mut v = Vec::with_capacity(len as usize);
+    let from = if offset < held {
+        v.extend_from_slice(&head[offset as usize..]);
+        held
+    } else {
+        offset
+    };
+    r.seek(SeekFrom::Start(from))?;
+    (&mut *r).take(end - from).read_to_end(&mut v)?;
     if (v.len() as u64) < len {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -1668,13 +1700,16 @@ fn read_range(r: &mut Controlled<'_>, head: &[u8], offset: u64, len: u64) -> io:
 
 /// The one-time colour re-check (ADR-0113) of the file `r` reads, whose probe window is `head`: its colour space
 /// from the probe. When it is not sRGB the thumbnail of its content is made again, converted, and stored:
-/// - a RAW from its embedded preview alone (the probe's preview range): the sensor data is not read. The unchanged
+/// - a RAW with stored perceptual hashes of the current version from its embedded preview alone (the probe's preview
+///   range, at most the analysis buffer, with the memory budget held): the sensor data is not read. The unchanged
 ///   stat fingerprint stands for the content, as on every rescan (ADR-0007); the re-probed format must still be the
-///   catalogued one and the preview must decode;
-/// - any other file (a JPEG, a RAW without a usable preview) is read whole: decoding it needs all of it, and its
-///   BLAKE3 identity is compared with the catalog's, so a thumbnail is never stored under another content's id.
+///   catalogued one, the preview must decode, and the hashes of its unconverted decode must be within the
+///   near-duplicate thresholds of the row's (ADR-0119): the thumbnail is stored under the content id every identical
+///   copy shares, so a different shot under the same size and modification time is a mismatch;
+/// - any other file (a JPEG, a RAW without a usable preview or without current hashes) is read whole: decoding it
+///   needs all of it, and its BLAKE3 identity is compared with the catalog's, so a thumbnail is never stored under
+///   another content's id.
 ///
-/// The run's byte total is corrected by what was read (`Progress::rebudget`), which is returned with the finding.
 /// Perceptual hashes, metadata and the dedup stamp are not touched. `None` when the run was cancelled or the source
 /// lost.
 #[allow(clippy::too_many_arguments)]
@@ -1690,30 +1725,6 @@ fn colour_recheck(
     size: u64,
     cut: bool,
     r: &mut Controlled<'_>,
-) -> Option<(Recheck, u64)> {
-    let planned = crate::diff::colour_check_budget(probe.format, size);
-    let mut read = head.len() as u64;
-    let found = colour_recheck_inner(
-        ctx, idx, reader, busy, t, key, probe, head, size, cut, r, &mut read,
-    )?;
-    ctx.progress.rebudget(idx, planned, read);
-    Some((found, read))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn colour_recheck_inner(
-    ctx: &RunCtx,
-    idx: usize,
-    reader: usize,
-    busy: &Busy<'_>,
-    t: &Todo,
-    key: &FileKey,
-    probe: &ProbeRecord,
-    head: Vec<u8>,
-    size: u64,
-    cut: bool,
-    r: &mut Controlled<'_>,
-    read: &mut u64,
 ) -> Option<Recheck> {
     use ps_model::StoredColour;
     let space = probe.colour.clone();
@@ -1759,28 +1770,54 @@ fn colour_recheck_inner(
             }
         }
     };
-    // A RAW: its embedded preview only.
+    // A RAW: its embedded preview only, checked against the row's hashes.
     if let Some(range) = ps_media::thumb::raw_preview_range(probe)
         && row.format == probe.format
         && range.end() <= size
+        && let Some(stored) = row
+            .hashes
+            .filter(|h| h.version == ps_hash::PERCEPTUAL_HASH_VERSION)
     {
+        if !preview_fits(range.len) {
+            log::info!(
+                "{}: recorded in {space:?} but its preview is too large to read here; converted when it is analysed \
+                 again",
+                t.path
+            );
+            return Some(Recheck::Recorded(StoredColour::Unconverted(space)));
+        }
+        let _permit = ctx
+            .budget
+            .acquire(range.len, (idx, reader), &|| busy.checkpoint())
+            .ok()?;
         let preview = match read_range(r, &head, range.offset, range.len) {
             Ok(p) => p,
             Err(e) => return unreadable(e),
         };
-        if range.end() > head.len() as u64 {
-            *read += range.len;
+        let undecodable = || {
+            log::info!(
+                "{}: in {space:?}, but its preview did not decode; the stored thumbnail is kept",
+                t.path
+            );
+            Recheck::Recorded(StoredColour::Unconverted(space.clone()))
+        };
+        // The analysis decode of a RAW is this preview at the analysis size: its hashes are the row's for the same
+        // shot.
+        let Some(hashes) = ps_media::decode::decode_preview_jpeg(
+            &preview,
+            probe,
+            ps_media::decode::ANALYSIS_MIN_LONG_EDGE,
+        )
+        .and_then(|d| still_hashes(&d.image)) else {
+            return Some(undecodable());
+        };
+        if !same_shot(&hashes, &stored) {
+            return Some(Recheck::Mismatch);
         }
         return Some(
             match ps_media::thumb::raw_thumbnail_from_preview(&head, &preview, probe) {
                 Some(thumb) => store(&thumb),
-                None => {
-                    log::info!(
-                        "{}: in {space:?}, but its preview did not decode; the stored thumbnail is kept",
-                        t.path
-                    );
-                    Recheck::Recorded(StoredColour::Unconverted(space))
-                }
+                None => undecodable(),
             },
         );
     }
@@ -1802,7 +1839,6 @@ fn colour_recheck_inner(
     let rest = r
         .seek(SeekFrom::Start(start))
         .and_then(|_| read_rest(r, &mut buf, size));
-    *read = buf.len() as u64;
     if let Err(e) = rest {
         return unreadable(e);
     }
@@ -2495,4 +2531,29 @@ pub(crate) fn now_ms() -> i64 {
 /// `canonicalize` returns, so stored roots match what users and the rest of the app see.
 pub(crate) fn normalize_root(p: &Path) -> std::io::Result<PathBuf> {
     std::fs::canonicalize(p).map(ps_model::path::simplify_canonical)
+}
+
+#[cfg(test)]
+mod colour_recheck_tests {
+    use super::*;
+
+    #[test]
+    fn a_raw_preview_beyond_the_analysis_buffer_is_not_read() {
+        assert!(preview_fits(ANALYSIS_BUFFER_MAX_BYTES));
+        assert!(!preview_fits(ANALYSIS_BUFFER_MAX_BYTES + 1));
+    }
+
+    #[test]
+    fn the_same_shot_is_within_the_derivative_thresholds() {
+        let h = |phash, dhash| ps_model::PerceptualHash {
+            phash,
+            dhash,
+            version: ps_hash::PERCEPTUAL_HASH_VERSION,
+        };
+        let a = h(0, 0);
+        assert!(same_shot(&a, &a));
+        assert!(same_shot(&a, &h(0b11_1111, 0xFF)), "6 and 8 bits apart");
+        assert!(!same_shot(&a, &h(0b111_1111, 0)), "7 pHash bits");
+        assert!(!same_shot(&a, &h(0, 0x1FF)), "9 dHash bits");
+    }
 }

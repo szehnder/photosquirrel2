@@ -19,6 +19,8 @@
 //! - **re-analysed**: an unchanged plain TIFF an earlier version catalogued as thumbed without dimensions (its
 //!   directories were beyond the probe window, ADR-0084) is processed again from `discovered`, like a changed
 //!   file. The new probe reads such directories, so the row cannot stay without dimensions and is re-read once.
+//!   So is an unchanged row with perceptual hashes of another version whose content's thumbnail was converted to sRGB
+//!   (ADR-0113, ADR-0119): the hash upgrade does not hash it, the analysis hashes the decode.
 //! - **re-decoded**: an unchanged, thumbed file analysed without the decoder its format needs (its
 //!   `decoder_missing` marker, ADR-0091) is queued for a re-decode when the run's decoder registry has that
 //!   decoder (one full read); otherwise it is counted as awaiting a decoder and nothing is read.
@@ -93,6 +95,9 @@ pub struct Todo {
     /// RAW's embedded preview, or a JPEG whole (identity checked), is then read and its thumbnail made again.
     /// Nothing regrouped.
     pub colour_check: bool,
+    /// With `meta_reread` or `colour_check`: the bytes the diff added to the run's total for this file
+    /// (`bytes_to_process`); the pipeline corrects the total by what the checks actually read.
+    pub planned: u64,
 }
 
 /// The diff of one source.
@@ -145,15 +150,25 @@ fn catalogued_without_dimensions(r: &ps_catalog::FileRecord, stat: &StatFingerpr
         && stat.size > ps_media::PROBE_LIMIT as u64
 }
 
-/// A thumbed row whose perceptual hashes are of another algorithm version and that the hash upgrade (which hashes
-/// stored thumbnails, ADR-0012) leaves alone because its thumbnail is not the unconverted decode: a colour other than
-/// sRGB (ADR-0113: converted, or a copy of converted content). It is analysed again, which hashes the decode.
-fn needs_rehash_by_analysis(r: &ps_catalog::FileRecord) -> bool {
+/// A thumbed, present row whose perceptual hashes are of another algorithm version: a candidate for
+/// [`needs_rehash_by_analysis`].
+fn stale_hashes(r: &ps_catalog::FileRecord) -> bool {
     r.stage == Stage::Thumbed
         && r.missing_since_ms.is_none()
-        && r.colour.as_deref() != Some("srgb")
         && r.hashes
             .is_some_and(|h| h.version != ps_hash::PERCEPTUAL_HASH_VERSION)
+}
+
+/// A row with stale hashes ([`stale_hashes`]) that the hash upgrade (which hashes stored thumbnails, ADR-0012) leaves
+/// alone because its content's thumbnail was converted to sRGB from another colour space (ADR-0113): `converted` is
+/// [`Readers::converted_preview_contents`]. It is analysed again, which hashes the decode. Rows whose colour is
+/// `NULL`, `unchecked`, sRGB or `unconverted:` keep a thumbnail the upgrade can hash, so a hash-version change does
+/// not read them (ADR-0119).
+fn needs_rehash_by_analysis(
+    r: &ps_catalog::FileRecord,
+    converted: &std::collections::HashSet<ContentId>,
+) -> bool {
+    stale_hashes(r) && r.identity.is_some_and(|id| converted.contains(&id))
 }
 
 /// An analysed row whose stored metadata predates the metadata rules it needs ([`ps_model::meta_reread_due`]):
@@ -256,6 +271,7 @@ pub fn diff(
         .filter(|q| q.source == source)
         .map(|q| (q.rel_path, (q.size, q.mtime_ns, q.quarantine_rel_path)))
         .collect();
+    let mut converted: Option<std::collections::HashSet<ContentId>> = None;
     let mut page = readers.source_files(source, None, PAGE)?;
     let mut pi = 0usize;
     let mut walk = entries.into_iter().peekable();
@@ -294,6 +310,7 @@ pub fn diff(
                             structure_only: r.meta_version >= ps_model::FRAME_META_VERSION,
                             read_path: Some(q),
                             colour_check: false,
+                            planned: reread_head(r),
                         });
                         out.bytes_to_process += reread_head(r);
                     }
@@ -320,6 +337,18 @@ pub fn diff(
                 let key = FileKey::new(source, w.path.clone());
                 let unchanged =
                     rec.is_some_and(|r| r.stat.unchanged_with(&w.stat, FatTime(w.fat_time)));
+                // The converted contents are read once, and only when a row with stale hashes turns up.
+                let rehash = match rec.filter(|r| unchanged && stale_hashes(r)) {
+                    Some(r) => {
+                        if converted.is_none() {
+                            converted = Some(readers.converted_preview_contents()?);
+                        }
+                        converted
+                            .as_ref()
+                            .is_some_and(|c| needs_rehash_by_analysis(r, c))
+                    }
+                    None => false,
+                };
                 if unchanged && rec.is_some_and(|r| r.stat != w.stat) {
                     out.stat_refresh.push((key.clone(), w.stat));
                 }
@@ -337,6 +366,7 @@ pub fn diff(
                     structure_only: false,
                     read_path: None,
                     colour_check: false,
+                    planned: 0,
                 };
                 match rec {
                     None => {
@@ -353,10 +383,7 @@ pub fn diff(
                         out.bytes_to_process += w.stat.size;
                         *out.stages.get_mut(Stage::Discovered) += 1;
                     }
-                    Some(r)
-                        if catalogued_without_dimensions(r, &w.stat)
-                            || needs_rehash_by_analysis(r) =>
-                    {
+                    Some(r) if catalogued_without_dimensions(r, &w.stat) || rehash => {
                         out.counts.unchanged += 1;
                         out.counts.reanalyzed += 1;
                         out.upserts.push(FileRow::discovered(key, w.stat));
@@ -476,18 +503,20 @@ pub fn diff(
                             let meta = needs_frame_reread(r);
                             let colour = needs_colour_check(r);
                             if (meta || colour) && !redecoding && !refreshing {
+                                let planned = if colour {
+                                    colour_check_budget(r.format, r.stat.size)
+                                } else {
+                                    reread_head(r)
+                                };
                                 out.todo.push(Todo {
                                     meta_reread: meta,
                                     structure_only: meta
                                         && r.meta_version >= ps_model::FRAME_META_VERSION,
                                     colour_check: colour,
+                                    planned,
                                     ..todo(r.stage, false)
                                 });
-                                out.bytes_to_process += if colour {
-                                    colour_check_budget(r.format, r.stat.size)
-                                } else {
-                                    reread_head(r)
-                                };
+                                out.bytes_to_process += planned;
                             }
                             if r.date_version < DATE_LOGIC_VERSION && r.capture_provenance.is_some()
                             {

@@ -191,10 +191,15 @@ fn scenario_thumbnails_rescan_recolours_old_adobe_rgb_thumbnails_only() {
     );
     let cr2 = &card.files[ADOBE_CR2];
     let preview = ps_media::probe_buffer(cr2, None).preview.unwrap().range;
+    assert!(
+        preview.offset < ps_media::PROBE_LIMIT as u64
+            && preview.end() > ps_media::PROBE_LIMIT as u64,
+        "the preview starts in the probe window and ends beyond it: {preview:?}"
+    );
     assert_eq!(
         read[&under(&root, ADOBE_CR2)],
-        ps_media::PROBE_LIMIT as u64 + preview.len,
-        "the CR2's probe window and its preview ({} bytes of {})",
+        preview.end(),
+        "the CR2's probe window and the rest of its preview, no byte twice ({} bytes of {})",
         preview.len,
         cr2.len()
     );
@@ -317,6 +322,14 @@ fn a_raw_due_both_checks_is_opened_once() {
         1,
         "one open serves both checks"
     );
+    // Every byte the two checks read is in the run's total: the structure check's directory reads too.
+    let snap = env.s().snapshot().unwrap();
+    assert_eq!(snap.bytes_to_read, snap.bytes_read, "{snap:?}");
+    assert_eq!(
+        snap.bytes_read,
+        env.instr.bytes_per_file().values().sum::<u64>()
+    );
+    assert_eq!(s.diff.colour_bytes, snap.bytes_read);
     let f = &env.files(id)[ADOBE_CR2];
     assert_eq!(f.meta_version, ps_model::META_LOGIC_VERSION);
     assert_eq!(f.colour.as_deref(), Some("adobe_rgb"));
@@ -549,4 +562,143 @@ fn a_filled_in_placeholder_records_its_colour() {
         fresh_thumb(&cr2),
         "converted"
     );
+}
+
+/// A hash-version change re-reads only rows whose content's thumbnail was converted (the hash upgrade leaves those
+/// alone); a row whose colour is unchecked, not read yet, sRGB or kept unconverted keeps a thumbnail the upgrade can
+/// hash, so no rescan reads it for its hashes (ADR-0119).
+#[test]
+fn a_stale_hash_version_re_reads_only_converted_rows() {
+    let _h = hook();
+    let _s = shared();
+    let adobe = |seed| {
+        cfx::with_exif(
+            &ps_fixtures::media::jpeg(1200, 800, seed, 92),
+            0xFFFF,
+            Some("R03"),
+            Some(2),
+        )
+    };
+    let srgb = |seed| {
+        cfx::with_exif(
+            &ps_fixtures::media::jpeg(1200, 800, seed, 92),
+            1,
+            None,
+            Some(1),
+        )
+    };
+    let files = [
+        ("_MG_0001.JPG", adobe(51)),
+        ("IMG_0002.JPG", srgb(52)),
+        ("IMG_0003.JPG", srgb(53)),
+        ("IMG_0004.JPG", srgb(54)),
+        ("IMG_0005.JPG", adobe(55)),
+    ];
+    let named: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+    let (_tmp, root) = card_of(&named);
+    let mut env = env_with(ScanOptions::default());
+    let id = env.add(&root);
+    completed(&env.scan(&[id]));
+    assert_eq!(
+        env.files(id)["_MG_0001.JPG"].colour.as_deref(),
+        Some("adobe_rgb")
+    );
+    sql(
+        &mut env,
+        "UPDATE file SET hash_version = 0;
+         UPDATE file SET colour = 'unchecked' WHERE name = CAST('IMG_0003.JPG' AS BLOB);
+         UPDATE file SET colour = NULL WHERE name = CAST('IMG_0004.JPG' AS BLOB);
+         UPDATE file SET colour = 'unconverted:adobe_rgb' WHERE name = CAST('IMG_0005.JPG' AS BLOB);",
+    );
+    env.instr.reset();
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!(s.diff.reanalyzed, 1, "{:?}", s.diff);
+    let read = env.instr.bytes_per_file();
+    assert_eq!(
+        read.keys().collect::<Vec<_>>(),
+        [&under(&env.root(id), "_MG_0001.JPG")],
+        "only the converted row is read"
+    );
+    let files = env.files(id);
+    assert_eq!(
+        files["_MG_0001.JPG"].hashes.unwrap().version,
+        ps_hash::PERCEPTUAL_HASH_VERSION
+    );
+    for rel in [
+        "IMG_0002.JPG",
+        "IMG_0003.JPG",
+        "IMG_0004.JPG",
+        "IMG_0005.JPG",
+    ] {
+        assert_eq!(
+            files[rel].hashes.unwrap().version,
+            0,
+            "{rel}: left to the hash upgrade"
+        );
+    }
+}
+
+/// A RAW replaced in place by another shot under the same size and modification time: the hashes of its new preview's
+/// decode are not the row's, so its thumbnail, shared by every identical copy, is left as it was; only its row is
+/// marked unchecked and the run reports it. The sensor data is still not read.
+#[test]
+fn a_raw_replaced_by_another_shot_keeps_its_thumbnail() {
+    let _h = hook();
+    let _s = shared();
+    let raw = |seed| {
+        cfx::canon_cr2_with_sensor(
+            &ps_fixtures::media::jpeg(1600, 1066, seed, 92),
+            (1600, 1066),
+            2,
+            2 * 1024 * 1024,
+        )
+    };
+    let (mut first, mut other) = (raw(61), raw(62));
+    // The same length (trailing bytes after the last directory's data are not read by anything).
+    let len = first.len().max(other.len());
+    first.resize(len, 0);
+    other.resize(len, 0);
+    assert_ne!(first, other);
+    let (_tmp, root) = card_of(&[("_MG_0002.CR2", &first), ("copy/IMG_0002.CR2", &first)]);
+    let (env, id) = catalog_before_the_change(&root);
+    let before = thumb(&env, id, "_MG_0002.CR2");
+    ps_fixtures::writer::rewrite_keeping_stat(&under(&env.root(id), "_MG_0002.CR2"), &other)
+        .unwrap();
+    env.instr.reset();
+    let s = env.scan(&[id]);
+    completed(&s);
+    assert_eq!(
+        (s.diff.colour_checked, s.diff.recoloured),
+        (1, 0),
+        "{:?}",
+        s.diff
+    );
+    assert_eq!(s.errors, 1, "reported");
+    let snap = env.s().snapshot().unwrap();
+    assert!(
+        snap.recent_errors[0]
+            .message
+            .contains("differ from the catalogued content"),
+        "{:?}",
+        snap.recent_errors
+    );
+    let files = env.files(id);
+    assert_eq!(
+        files["_MG_0002.CR2"].colour.as_deref(),
+        Some(COLOUR_UNCHECKED)
+    );
+    assert_eq!(
+        thumb(&env, id, "copy/IMG_0002.CR2"),
+        before,
+        "the shared thumbnail is untouched"
+    );
+    let preview = ps_media::probe_buffer(&other, None).preview.unwrap().range;
+    let n = env.instr.bytes_per_file()[&under(&env.root(id), "_MG_0002.CR2")];
+    assert_eq!(
+        n,
+        preview.end().max(ps_media::PROBE_LIMIT as u64),
+        "the sensor data is not read"
+    );
+    assert!(n < len as u64 / 2, "{n} of {len}");
 }
