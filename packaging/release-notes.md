@@ -44,9 +44,9 @@ to their resized or re-exported JPEG copies.
 
 ### What's new since 0.3.1
 
-- **Adding a big folder no longer seems to freeze.** The folder is listed at once with an "Adding…" row and
-  "Adding <folder>…" in the status bar, whichever way you add it (Sources, the Library, Ctrl+O, the first-launch
-  screen or the command palette), and its scan starts straight away. Adding no longer reads the folder twice: it
+- **Adding a big folder no longer seems to freeze.** The folder shows at once as "Adding <folder>…" in the status
+  bar, and as an "Adding…" row in the source list where it is shown, whichever way you add it (Sources, the Library,
+  Ctrl+O, the first-launch screen or the command palette), and its scan starts straight away. Adding no longer reads the folder twice: it
   used to walk the whole tree and read up to 64 of its files (about 1.3 GB on a large drive) before the scan even
   started; the first scan now records the drive's fingerprint from what it reads anyway. The status bar follows the
   scan from every add path and says "Walking folders" while it lists the folder. A folder added while a scan runs is

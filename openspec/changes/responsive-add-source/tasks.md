@@ -58,3 +58,25 @@ stays 27).
 - [x] 6.5 Pushed; GitHub CI green on all five jobs.
   Done: fast-forward to origin main (5e33d0a..ae215fb); run 41219524741 green on all five jobs: Linux (full CI), Build and test (windows-2022), Build and test (macos-15), Oldest libheif (Ubuntu 22.04, libheif 1.12), Performance budgets (relative to the parent commit). This tasks-only commit's run: in the hand-off report.
 - [ ] 6.6 Gate review by a fresh agent that did not write the code.
+
+- [x] 6.7 Gate-review fixes (PASS-WITH-FIXES): M1-M3 and L1-L8 as listed in design.md, "Gate-review fixes", each
+  with its test.
+  Done: the 6 new scenarios and their tests pass: sources "Source empty at its first scan records the fingerprint
+  later"; scan-progress "Onboarding add unavailable while pending", "Removed queued source leaves the queue",
+  "Offline queued source is dropped", "Start refused by another operation says why" and "Source offline during a
+  completed run stays never scanned". The changed tests pass: setting off, primary action, status bar follows Add
+  Source (the fake engine reports activity), scan_real `exercise`, settings_scan battery.
+  Local checks: `cargo fmt --check`; clippy -D warnings (all targets) of ps-catalog, ps-scan, ps-service,
+  photosquirrel-cli, ui-workspace and photosquirrel; `cargo xtask layering` and `tokens` OK; `openspec validate
+  --all --strict` 32/32 plus the change; spec coverage 690 scenarios, 690 mapped. Every test binary of ps-catalog,
+  ps-scan, ps-service, photosquirrel-cli and ui-workspace is green, including `dashboard_controls_on_the_real_engine`
+  with `--ignored`.
+  Corpus gate (release CLI, medium preset seed 42, drive-a/b/c), exactly the baseline: precision, recall and keeper
+  accuracy 1.0000, 0 must-not-merge violations, 19,741/19,741 pairs, 1,903 groups, 8,834 grouped files,
+  4,166,020,278 reclaimable bytes, 6,338 suggestions. First scan 23.0 s; the unchanged rescan read 0 B.
+  `rescan-nochange-100k`: 0.51 s (budget 4 s).
+  Screenshots retaken, not committed, under `target/agent-review/screenshots/add-source/`:
+  `sources-not-scanned-yet-{dark,light}.png` (the new row shows only "Not scanned yet") and
+  `setting-scan-new-sources-{dark,light}.png` (the toggle heads the Scanning section).
+  CI for these commits: in the hand-off report.
+

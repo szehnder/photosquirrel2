@@ -246,3 +246,57 @@ setting on, onboarding behaves as today: the Library fills in live.
   snapshot counts files only once a source's walk ends.
 - **Screenshots** show the "Not scanned yet" row and the setting. The pending row and the queue exist only after the
   first frames of a scripted capture, so they are covered by the headless tests (task 6.4).
+
+### Gate-review fixes
+
+The gate review (task 6.6) passed with fixes; each is below with its test.
+
+- **M1, an empty fingerprint was permanent.** A first scan with no file to sample (an empty folder, or only files
+  outside 1 B to 64 MB) stored an empty fingerprint. It was never measured again, so once photos arrived a re-link
+  failed with `NoFingerprint` for good. Now `record_measures` leaves the fingerprint NULL when the sample set is
+  empty and still records `total_bytes`. A stored empty blob counts as pending (`source::measure_pending`), both
+  for measuring and for the re-link check, so catalogs written before the fix heal on their next completed scan.
+  Tests: `scenario_sources_source_empty_at_its_first_scan_records_the_fingerprint_later` covers an empty folder
+  scanned to completion, an empty blob stored directly as an old catalog would have it, photos copied in and
+  rescanned, then a re-link refused for drive-c with a mismatch count and accepted for the moved path. Unit test:
+  `empty_or_missing_fingerprint_is_measured_again`.
+- **M2, the queue was never pruned.** Every source list now goes through `ScanMonitor::set_sources`, which keeps
+  only queued ids that are present and online. A queued source that goes offline is dropped, so its row reads "Not
+  scanned yet" and it never starts by surprise. `status_line` counts `queued_now()`, which is empty while the list
+  is not loaded. `start_queued` lists the sources first on a background task and starts only what is still queued
+  after that; it starts nothing when the list cannot be read. Tests:
+  `scenario_scan_progress_removed_queued_source_leaves_the_queue` and
+  `scenario_scan_progress_offline_queued_source_is_dropped`.
+- **M3, offline sources counted as scanned.** `first_scan_done` is now `fingerprint recorded || a completed scan
+  run that covered the source and did not list it in incomplete_sources`. An empty folder whose first scan
+  completed still counts, through the run. `last_scan_ms` also ignores runs that reported the source offline, so
+  the row reads "Not scanned yet" rather than "First scan not finished". Test:
+  `scenario_scan_progress_source_offline_during_a_completed_run_stays_never_scanned` (real engine; scan_real.rs,
+  not ignored).
+- **L1:** rows with no completed first scan show only their state ("Not scanned yet", "Queued, scans next", "First
+  scan not finished"), with no bar, percentage or counts; the accessible label drops the percentage too. Checked by
+  the absence of `source-progress-<id>` in the primary-action and setting-off tests.
+- **L2:** the selection's scan is hidden when the selection equals the never-scanned set. The setting-off test now
+  asserts that `scan-start` is absent. `exercise` in scan_real.rs and the battery test in settings_scan.rs click
+  `scan-new`, since their sources were never scanned.
+- **L3:** the requirement and the release note now say "the status bar, and the source list where it is shown".
+  The onboarding button is unavailable while the picker is open or an add is pending: it reads "Adding…", is drawn
+  neutral and opens no picker. Test: `scenario_scan_progress_onboarding_add_unavailable_while_pending`.
+- **L4:** "has results" (`any_identified`) counts identified rows whether present or missing.
+- **L5:** `SourceFs::subfolders` documents that filesystems without `d_type` fall back to one `lstat` per entry
+  inside std. The guard test cannot see those calls; the search's depth and folder limits still bound the cost.
+- **L6:** "Scan new sources right away" is the first setting of the Scanning section. Screenshots retaken (task
+  6.7).
+- **L7:** README "Adding sources" now follows Quick start step 5 and the demo line, so the numbered list is no
+  longer split.
+- **L8, a start refused by the operations lock (the smaller option).** Adding is itself refused while an export or
+  a cleanup holds the lock (`ScanService::unless_busy`). The refused start can therefore only happen when one
+  begins between the add and the start, and allowing source changes during an export would undo that rule.
+  Queueing behind the lock, which would also need the lock's end observed, was disproportionate for that window.
+  The start error is matched on `ScanError::Busy`. The dashboard and the add's toast say "Added “X”, not scanned:
+  an export is running. Scan it when it finishes.", and the row waits as "Not scanned yet". Test:
+  `scenario_scan_progress_start_refused_by_another_operation_says_why` (`DemoBackend::start_busy`).
+- **The status-bar test is stronger.** The shell's fake engine now reports activity. The test checks that the
+  status bar's text equals the monitor's line, that the shell holds the engine's activity snapshot, and that the
+  analysis line carries the new source's own counts ("of 1,200 files").
+
