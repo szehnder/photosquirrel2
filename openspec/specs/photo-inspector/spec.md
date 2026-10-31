@@ -117,3 +117,14 @@ The "Why no preview?" dialog SHALL name the file's format and its placeholder re
 #### Scenario: Show files with the same reason
 - **WHEN** the user clicks "Show them" in a dialog that says 12 other files have no preview for this reason
 - **THEN** the dialog closes and the Library shows the 13 files through the No preview filter
+
+### Requirement: Colour space shown
+The inspector's File section SHALL show a photo's colour space when it is not sRGB (Adobe RGB (1998), Display P3, or the embedded profile's description), and the loupe SHALL show the preview converted to sRGB.
+
+#### Scenario: Adobe RGB photo names its colour space
+- **WHEN** the Canon Adobe RGB JPEG fixture is selected
+- **THEN** the File section shows "Colour: Adobe RGB (1998)" and the loupe shows the converted preview
+
+#### Scenario: sRGB photo shows no colour row
+- **WHEN** an untagged JPEG is selected
+- **THEN** the File section shows no colour row
