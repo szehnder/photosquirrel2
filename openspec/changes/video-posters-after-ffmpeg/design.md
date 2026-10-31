@@ -149,7 +149,7 @@ waiting-rule tests are platform-free.
 - **The call.** `-threads 2` is passed as an input and an output option; the seek is formatted in seconds with three
   decimals; a run that succeeds with no output is `PosterError::NoFrame` ("the poster-frame tool gave no frame"),
   non-JPEG output stays `Failed`; the message of a failed exit carries the last line of the tool's error output
-  (`exit status 1: x.mov: moov atom not found`), at most 200 characters. A stop check that fires is
+  (`exit status: 1: x.mov: moov atom not found`), at most 200 characters. A stop check that fires is
   `PosterError::Cancelled` and records nothing. The analysis path also passes its cancel to the tool
   (`video_thumbnail_with_stop`), so cancelling a scan no longer waits up to 10 s for a running ffmpeg.
 - **Reporting.** A failed poster is also a run error ("poster frame failed (...); the video is catalogued and
@@ -170,3 +170,8 @@ waiting-rule tests are platform-free.
   the `message` field: `an_unknown_reason_with_fields_reads_as_a_newer_version`), so the tile is a placeholder
   marked "made by a newer version" and the row is not fillable there. Recorded in ADR-0114. A 0.3.0 cannot resume a
   fill run whose stored scope has the reason `poster_failed`.
+- **Short clips and the classifier.** The real check (task 7.4) showed that the classifier skips videos shorter than
+  2 s (ADR-0015's minimum duration), so they are never thumbed and the `min(1 s, duration / 2)` seek changes nothing
+  for catalogued videos today (every one is at least 2 s long, so the seek is 1 s). It matters for a lower minimum
+  in the settings and, with the retry at 0 s, for clips whose duration the probe could not read; the media scenario
+  `scenario_thumbnails_short_clip_gets_a_frame` covers it directly.

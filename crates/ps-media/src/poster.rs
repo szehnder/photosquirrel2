@@ -139,10 +139,11 @@ pub fn poster_frame(
         .map(|b| last_line(&b))
         .unwrap_or_default();
     if !status.success() {
+        // `ExitStatus` displays as "exit status: 1" (or "signal: 9").
         return Err(PosterError::Failed(if err.is_empty() {
-            format!("exit status {status}")
+            status.to_string()
         } else {
-            format!("exit status {status}: {err}")
+            format!("{status}: {err}")
         }));
     }
     if out.is_empty() {
