@@ -23,6 +23,7 @@ pub mod previews;
 mod read;
 pub mod stores;
 pub mod thumbs;
+pub mod wal;
 mod writer;
 
 use std::path::{Path, PathBuf};
@@ -45,6 +46,7 @@ pub use previews::WaitingRule;
 pub use read::{PAGE_SIZE, Readers, SourceMeasureRows};
 pub use stores::{AiCounts, AiItemState, AiQueueRow, AiResultRow, AiRunState, LibraryRecord};
 pub use thumbs::{THUMBS_FILE, ThumbStore};
+pub use wal::{WalCheckpoint, WalShrink};
 pub use writer::{Command, Writer, WriterConfig, WriterStats};
 
 /// File name of the catalog inside the data directory.
@@ -101,6 +103,8 @@ pub const LOCK_FILE: &str = "catalog.db.lock";
 #[derive(Debug)]
 pub struct Catalog {
     path: PathBuf,
+    // Declared first: the background log checkpoint (ADR-0122) is joined before the writer stops.
+    wal: wal::ShrinkTask,
     // Declared before `readers` so the writer commits and stops before the readers close.
     writer: Writer,
     readers: Arc<Readers>,
@@ -164,14 +168,18 @@ impl Catalog {
     /// another process owns it).
     pub fn open_file(path: &Path, opts: OpenOptions) -> Result<Catalog> {
         // Refuse before anything opens the file for writing, so a newer catalog stays byte-identical.
-        db::refuse_newer(path, db::CATALOG_MIGRATIONS)?;
+        let found = db::refuse_newer(path, db::CATALOG_MIGRATIONS)?;
         let lock = lock_catalog(path)?;
         let mut conn = db::open_writer(path)?;
-        db::migrate(&mut conn, path, db::CATALOG_MIGRATIONS, None)?;
+        let version = db::migrate(&mut conn, path, db::CATALOG_MIGRATIONS, None)?;
         let readers = Arc::new(Readers::open(path, opts.readers)?);
         let writer = Writer::spawn(conn, opts.writer)?;
+        // An upgrade's log, or a large one left by a process that never checkpointed, is folded and truncated in
+        // the background once the first queries are served (`wal::SHRINK_DELAY`): opening does not wait for it.
+        let wal = wal::ShrinkTask::start_if_needed(path, found > 0 && version > found);
         Ok(Catalog {
             path: path.to_path_buf(),
+            wal,
             writer,
             readers,
             _lock: Some(lock),
@@ -186,6 +194,7 @@ impl Catalog {
         Ok(Catalog {
             readers: Arc::new(Readers::open(&path, readers)?),
             path,
+            wal: wal::ShrinkTask::none(),
             writer: Writer::read_only(),
             _lock: None,
         })
@@ -240,7 +249,14 @@ impl Catalog {
     /// Flush, stop the writer thread and checkpoint the WAL. Dropping the catalog does the same, but this
     /// reports errors.
     pub fn close(self) -> Result<()> {
+        let _ = self.wal.wait();
         self.writer.shutdown()
+    }
+
+    /// Start the background log checkpoint of the open (ADR-0122) now if it is still waiting for its delay, wait for
+    /// it and return how it ended; `None` when opening started none (the log was small, a new file, an observer).
+    pub fn wait_for_wal_shrink(&self) -> Option<WalShrink> {
+        self.wal.wait()
     }
 }
 

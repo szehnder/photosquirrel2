@@ -29,6 +29,8 @@ const READERS: usize = 2;
 
 /// The thumbnail store.
 pub struct ThumbStore {
+    // Declared first: the background log checkpoint (ADR-0122) is joined before the connections close.
+    wal: crate::wal::ShrinkTask,
     path: PathBuf,
     writer: Mutex<Connection>,
     readers: Vec<Mutex<Connection>>,
@@ -54,13 +56,17 @@ impl ThumbStore {
 
     /// Open a store at an explicit path. A store with a newer schema is refused unmodified.
     pub fn open_file(path: &Path) -> Result<ThumbStore> {
-        db::refuse_newer(path, THUMB_MIGRATIONS)?;
+        let found = db::refuse_newer(path, THUMB_MIGRATIONS)?;
         let mut writer = db::open_writer(path)?;
-        db::migrate(&mut writer, path, THUMB_MIGRATIONS, None)?;
+        let version = db::migrate(&mut writer, path, THUMB_MIGRATIONS, None)?;
         let readers = (0..READERS)
             .map(|_| db::open_reader(path).map(Mutex::new))
             .collect::<Result<Vec<_>>>()?;
+        // The store has no checkpoint of its own beyond SQLite's automatic one: a large leftover log is folded and
+        // truncated in the background, like the catalog's (ADR-0122).
+        let wal = crate::wal::ShrinkTask::start_if_needed(path, found > 0 && version > found);
         Ok(ThumbStore {
+            wal,
             path: path.to_path_buf(),
             writer: Mutex::new(writer),
             readers,
@@ -71,6 +77,12 @@ impl ThumbStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Start the background log checkpoint of the open (ADR-0122) now if it is still waiting for its delay, wait for
+    /// it and return how it ended; `None` when opening started none (the log was small, a new file, an observer).
+    pub fn wait_for_wal_shrink(&self) -> Option<crate::WalShrink> {
+        self.wal.wait()
     }
 
     /// Test hook: while `on`, every write returns an error and writes nothing, as a full disk or a held lock

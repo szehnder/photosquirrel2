@@ -159,6 +159,7 @@ pub fn ensure(items: u64) -> anyhow::Result<PathBuf> {
 pub fn ensure_at(dir: PathBuf, items: u64) -> anyhow::Result<PathBuf> {
     let done = dir.join(".complete");
     if done.exists() {
+        settle(&dir)?;
         return Ok(dir);
     }
     if dir.exists() {
@@ -183,6 +184,19 @@ pub fn ensure_at(dir: PathBuf, items: u64) -> anyhow::Result<PathBuf> {
     build(&dir, items)?;
     std::fs::write(&done, b"ok")?;
     Ok(dir)
+}
+
+/// Bring a reused catalog to this build's schema and fold its leftover logs into it before a measured launch. The
+/// measured app quits without closing its catalog, so a migration's log, or the last run's, would otherwise be
+/// recovered at every measured start (a 1 GB log left by migration 26 made the first gallery frame 1.2 s instead of
+/// 0.48 s, ADR-0122). On an up-to-date catalog with an empty log this costs a few milliseconds.
+fn settle(dir: &Path) -> anyhow::Result<()> {
+    let cat = Catalog::open(dir)?;
+    let _ = cat.wait_for_wal_shrink();
+    cat.close()?;
+    let thumbs = ThumbStore::open(dir)?;
+    let _ = thumbs.wait_for_wal_shrink();
+    Ok(())
 }
 
 pub fn build(dir: &Path, items: u64) -> anyhow::Result<()> {
@@ -249,5 +263,31 @@ mod tests {
             ours.join("keep.txt").is_file(),
             "only its own files are removed"
         );
+    }
+
+    /// A reused catalog's leftover log (the measured app never closes its catalog) is folded in before the launch.
+    #[test]
+    fn ensure_folds_a_leftover_log_into_a_reused_catalog() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let dir = tmp.path().join("ours");
+        ensure_at(dir.clone(), 3).expect("built");
+        let db = dir.join(ps_catalog::CATALOG_FILE);
+        {
+            let c = rusqlite::Connection::open(&db).expect("open");
+            c.set_db_config(
+                rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+                true,
+            )
+            .expect("config");
+            c.execute_batch(
+                "CREATE TABLE junk(b BLOB);
+                 INSERT INTO junk VALUES (randomblob(100000));
+                 DROP TABLE junk;",
+            )
+            .expect("write");
+        }
+        assert!(ps_catalog::wal::wal_len(&db) > 0);
+        ensure_at(dir.clone(), 3).expect("reused");
+        assert_eq!(ps_catalog::wal::wal_len(&db), 0);
     }
 }

@@ -583,10 +583,8 @@ impl WriterThread {
             }
         }
         self.commit_batch();
-        if let Err(e) = self
-            .conn
-            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))
-        {
+        // Readers close after the writer and cannot checkpoint, so empty the log now (ADR-0122).
+        if let Err(e) = crate::wal::truncate(&self.conn, crate::wal::SHUTDOWN_WAIT) {
             log::warn!("catalog checkpoint at shutdown failed: {e}");
         }
     }
@@ -868,11 +866,12 @@ impl WriterThread {
                     Ok(())
                 });
                 if terminal {
-                    // Keep the WAL from growing across runs (design: passive checkpoint after each run).
+                    // Fold the run's writes into the database and empty the log (ADR-0122); a reader in the
+                    // way only makes it a passive checkpoint.
                     self.commit_batch();
-                    let _ = self
-                        .conn
-                        .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+                    if let Err(e) = crate::wal::truncate(&self.conn, crate::wal::RUN_END_WAIT) {
+                        log::warn!("catalog checkpoint after a run failed: {e}");
+                    }
                 }
             }
             Command::InterruptRunning => self.row(name, None, |c| {

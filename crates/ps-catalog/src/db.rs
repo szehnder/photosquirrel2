@@ -1,7 +1,6 @@
 //! Connections, pragmas and numbered migrations (`PRAGMA user_version`, ADR-0005).
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 
@@ -311,7 +310,7 @@ pub(crate) fn open_writer(path: &Path) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(crate::wal::BUSY_TIMEOUT)?;
     let mode: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
     if !mode.eq_ignore_ascii_case("wal") {
         return Err(CatalogError::Corrupt(format!(
@@ -327,6 +326,8 @@ pub(crate) fn open_writer(path: &Path) -> Result<Connection> {
          PRAGMA cache_size = -131072;
          PRAGMA wal_autocheckpoint = 16384;",
     )?;
+    // A reset log is cut back to one checkpoint interval (ADR-0122).
+    conn.pragma_update(None, "journal_size_limit", crate::wal::WAL_SIZE_LIMIT)?;
     conn.set_prepared_statement_cache_capacity(64);
     Ok(conn)
 }
@@ -337,13 +338,14 @@ pub(crate) fn open_reader(path: &Path) -> Result<Connection> {
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(crate::wal::BUSY_TIMEOUT)?;
     conn.execute_batch(
         // Readers do not memory-map the file and keep a 2 MiB page cache each. Mapped pages count in the
         // process's RSS once per reader that touched them: with a 256 MiB map per reader the idle app showed
-        // ~440 MB of file-backed RSS on a 1M-file catalog (692 MB in all, budget 250 MB, ADR-0026). Without the
-        // map the same reads come from the OS page cache, which the kernel shares and reclaims; the 1M ID list
-        // (126 ms vs 132 ms), the first gallery frame (median 495 ms vs 548 ms) and the no-change rescan held.
+        // ~440 MB of file-backed RSS on a 1M-file catalog (692 MB in all, against the 250 MB budget of then,
+        // ADR-0026). Without the map the same reads come from the OS page cache, which the kernel shares and
+        // reclaims; the 1M ID list (126 ms vs 132 ms), the first gallery frame (median 495 ms vs 548 ms) and the
+        // no-change rescan held.
         "PRAGMA query_only = 1;
          PRAGMA temp_store = MEMORY;
          PRAGMA mmap_size = 0;
