@@ -1065,41 +1065,48 @@ mod posters {
         assert!(unrunnable.calls().is_empty());
     }
 
-    /// The thumbnail store cannot be written when the frame comes in (another process holds its write lock longer
+    /// The thumbnail store cannot be written when the frame comes in (another connection holds its write lock longer
     /// than the store waits): the rows are left as they were, still waiting, and the next run fills them in
-    /// (ADR-0120). Skipped without `python3`, which holds the lock.
+    /// (ADR-0120). The test holds the lock through the same SQLite library as the store, while the tool runs.
     #[test]
     fn a_store_error_leaves_the_rows_waiting() {
         let _g = shared();
-        if !std::process::Command::new("python3")
-            .args(["-c", "import sqlite3"])
-            .status()
-            .is_ok_and(|s| s.success())
-        {
-            eprintln!("skipped: no python3");
-            return;
-        }
         let v = videos(1);
         let (_src, mut env, id) =
             scanned_without_tool(&[("DCIM/IMG_0100.MOV".to_owned(), v[0].clone())]);
         let thumbs = env.s().thumbs().path().to_path_buf();
         let marks = tempfile::tempdir().expect("marks");
-        let (ready, released) = (marks.path().join("ready"), marks.path().join("released"));
-        let locker = format!(
-            "import sqlite3, time\nc = sqlite3.connect(r'{db}', isolation_level=None, timeout=10)\n\
-             c.execute('BEGIN EXCLUSIVE')\nopen(r'{ready}', 'w').close()\ntime.sleep(7)\nc.execute('ROLLBACK')\n\
-             c.close()\nopen(r'{released}', 'w').close()\n",
-            db = thumbs.display(),
-            ready = ready.display(),
-            released = released.display()
+        let (started, ready, released) = (
+            marks.path().join("started"),
+            marks.path().join("ready"),
+            marks.path().join("released"),
         );
-        let script = marks.path().join("lock.py");
-        ps_fixtures::scratch::write(&script, locker).expect("script");
+        // The tool signals that it runs, then waits until the lock is held before it prints the frame.
         let tool = Tool::new(&format!(
-            "python3 '{}' </dev/null >/dev/null 2>&1 &\nwhile [ ! -e '{}' ]; do sleep 0.05; done\ncat 'FRAME'",
-            script.display(),
+            "touch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\ncat 'FRAME'",
+            started.display(),
             ready.display()
         ));
+        let locker = {
+            let (started, ready, released) = (started.clone(), ready.clone(), released.clone());
+            std::thread::spawn(move || {
+                let t0 = std::time::Instant::now();
+                while !started.exists() {
+                    assert!(t0.elapsed() < Duration::from_secs(30), "the tool never ran");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let c = rusqlite::Connection::open(&thumbs).expect("open thumbs.db");
+                c.busy_timeout(Duration::from_secs(10))
+                    .expect("busy timeout");
+                c.execute_batch("BEGIN EXCLUSIVE").expect("lock");
+                ps_fixtures::scratch::write(&ready, "").expect("ready");
+                // Longer than the store's 5 s busy timeout.
+                std::thread::sleep(Duration::from_secs(7));
+                c.execute_batch("ROLLBACK").expect("unlock");
+                drop(c);
+                ps_fixtures::scratch::write(&released, "").expect("released");
+            })
+        };
         env.reopen(tool.options());
         let s = fill(&env, FillScope::all());
         completed(&s);
@@ -1111,9 +1118,8 @@ mod posters {
             Some(PreviewReason::NoPosterTool),
             "the row is untouched"
         );
-        wait_until(Duration::from_secs(30), "the lock released", || {
-            released.exists()
-        });
+        locker.join().expect("the locker");
+        assert!(released.exists());
         assert_eq!(kind(&env, r), ThumbKind::Placeholder);
         let working = Tool::working();
         env.reopen(working.options());
