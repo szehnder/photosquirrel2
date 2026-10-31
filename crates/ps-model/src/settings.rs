@@ -211,6 +211,9 @@ pub struct Scanning {
     pub preview_cache_gb: f64,
     /// Scan hidden folders (dot-folders) too (ADR-0052: on by default).
     pub include_hidden: bool,
+    /// Start scanning a source as soon as it is added ("Scan new sources right away", on by default). Off: an added
+    /// source waits, "Not scanned yet", until the user starts it from Sources. The CLI's `sources add` never scans.
+    pub scan_new_sources: bool,
 }
 
 impl Default for Scanning {
@@ -220,6 +223,7 @@ impl Default for Scanning {
             poster_frame_tool: None,
             preview_cache_gb: 4.0,
             include_hidden: true,
+            scan_new_sources: true,
         }
     }
 }

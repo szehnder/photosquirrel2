@@ -75,6 +75,8 @@ struct DoctorOut {
     keychain_detail: String,
     llm_provider: Provider,
     power: Power,
+    /// `scanning.scan_new_sources`: the app starts a source's scan as soon as it is added (`sources add` never does).
+    scan_new_sources: bool,
     network_used: bool,
 }
 
@@ -152,6 +154,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
                 pause_on_battery: settings.general.pause_on_battery,
             }
         },
+        scan_new_sources: settings.scanning.scan_new_sources,
         network_used: false,
     };
     emit(ctx.json, "doctor", &out, |o| {
@@ -237,6 +240,14 @@ pub fn run(ctx: &Ctx) -> Result<()> {
                 "on mains"
             },
             if p.pause_on_battery { "on" } else { "off" }
+        );
+        println!(
+            "new sources: {} (the app's \"Scan new sources right away\"; `sources add` never scans)",
+            if o.scan_new_sources {
+                "scanned right away"
+            } else {
+                "not scanned until started"
+            }
         );
     })
 }

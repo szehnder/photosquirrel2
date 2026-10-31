@@ -1109,3 +1109,36 @@ fn scenario_cli_no_notice_when_every_photo_is_decoded() {
     let out = String::from_utf8_lossy(&ok(data.path(), &["--json", "scan"]).stdout).into_owned();
     assert!(!out.contains("\"undecoded\""), "{out}");
 }
+
+#[test]
+fn scenario_settings_scan_new_sources_setting_persists() {
+    let data = tempfile::tempdir().unwrap();
+    let doctor =
+        |dir: &Path| json(&ok(dir, &["--json", "doctor"]))["data"]["scan_new_sources"].clone();
+    // Defaults from an empty configuration directory: on.
+    assert_eq!(doctor(data.path()), true);
+    let store = ps_service::settings::SettingsStore::in_dir(data.path().join("config"));
+    assert!(store.load().settings.scanning.scan_new_sources);
+    store
+        .update(|s| s.scanning.scan_new_sources = false)
+        .unwrap();
+    // Read again by a new store (the app restarting) and by the CLI.
+    let again = ps_service::settings::SettingsStore::in_dir(data.path().join("config"));
+    assert!(!again.load().settings.scanning.scan_new_sources);
+    assert_eq!(doctor(data.path()), false);
+    let text = String::from_utf8(ok(data.path(), &["doctor"]).stdout).unwrap();
+    assert!(
+        text.contains("new sources: not scanned until started"),
+        "{text}"
+    );
+    // `sources add` registers without scanning, and says so.
+    let added = String::from_utf8(
+        ok(
+            data.path(),
+            &["sources", "add", corpus().join("drive-a").to_str().unwrap()],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert!(added.contains("not scanned yet"), "{added}");
+}
