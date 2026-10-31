@@ -1384,7 +1384,10 @@ fn set_analyzed(c: &Connection, k: &FileKey, a: &AnalysisResult) -> rusqlite::Re
 }
 
 /// `file.colour` of the row at the stamp's key and, with [`ColourStamp::copies`], of every other row with its content
-/// (ADR-0113). Returns the rows written at the key (0 or 1).
+/// (ADR-0113). A converted colour space (the shared thumbnail was made again from it) is written to every copy; sRGB
+/// or a colour kept unconverted only to copies that know nothing yet (`NULL` or `unchecked`), so a copy whose
+/// converted thumbnail stands is never marked down by a re-check that kept it (ADR-0119). Returns the rows written at
+/// the key (0 or 1).
 fn set_colour(c: &Connection, s: &ColourStamp) -> rusqlite::Result<usize> {
     let k = &s.key;
     let text = s.colour.storage();
@@ -1395,13 +1398,19 @@ fn set_colour(c: &Connection, s: &ColourStamp) -> rusqlite::Result<usize> {
         )?
         .execute(params![k.source.0, k.path.as_bytes(), text])?;
     if n > 0 && s.copies {
-        c.prepare_cached(
+        let sql = if s.colour.preview_converted() {
             "UPDATE file SET colour = ?3
              WHERE (content_id, identity_kind) = (SELECT content_id, identity_kind FROM file
                                                   WHERE source_id = ?1 AND rel_path = ?2)
-               AND colour IS NOT ?3",
-        )?
-        .execute(params![k.source.0, k.path.as_bytes(), text])?;
+               AND colour IS NOT ?3"
+        } else {
+            "UPDATE file SET colour = ?3
+             WHERE (content_id, identity_kind) = (SELECT content_id, identity_kind FROM file
+                                                  WHERE source_id = ?1 AND rel_path = ?2)
+               AND (colour IS NULL OR colour = 'unchecked')"
+        };
+        c.prepare_cached(sql)?
+            .execute(params![k.source.0, k.path.as_bytes(), text])?;
     }
     Ok(n)
 }

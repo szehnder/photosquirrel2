@@ -153,12 +153,78 @@ fn analysis_writes_the_colour_and_the_re_check_stamps_every_copy() {
     assert_eq!(colour(&keys[0]).as_deref(), Some("display_p3"));
     assert_eq!(colour(&keys[1]).as_deref(), Some("display_p3"));
     assert_eq!(colour(&other).as_deref(), Some("srgb"));
-    stamp(
-        &keys[1],
-        StoredColour::Unconverted(ColourSpace::AdobeRgb),
-        true,
+    // A converted space reaches every copy, whatever it recorded.
+    stamp(&keys[0], StoredColour::Space(ColourSpace::AdobeRgb), true);
+    assert_eq!(colour(&keys[1]).as_deref(), Some("adobe_rgb"));
+}
+
+/// A re-check that kept a thumbnail (`unconverted:`) or found sRGB stamps only the copies that know nothing yet: a
+/// copy whose converted thumbnail stands keeps its colour.
+#[test]
+fn a_kept_or_srgb_stamp_never_marks_down_a_converted_copy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cat = Catalog::open(tmp.path()).unwrap();
+    let src = add_source(&cat, "/mnt/a");
+    let mut a = analysis_of(1);
+    a.colour = Some(ColourSpace::AdobeRgb);
+    let keys: Vec<FileKey> = [
+        "_MG_0001.JPG",
+        "a/_MG_0001.JPG",
+        "b/_MG_0001.JPG",
+        "c/_MG_0001.JPG",
+    ]
+    .iter()
+    .map(|n| FileKey::new(src, rel(n)))
+    .collect();
+    for (i, k) in keys.iter().enumerate() {
+        let mut a = a.clone();
+        if i == 2 {
+            // Analysed before colour spaces were read.
+            a.colour = None;
+        }
+        write_analyzed(&cat, k, 1, a);
+    }
+    let stamp = |k: &FileKey, colour| {
+        cat.writer()
+            .submit(Command::SetColour(vec![ColourStamp {
+                key: k.clone(),
+                colour,
+                copies: false,
+            }]))
+            .unwrap();
+        cat.writer().flush().unwrap();
+    };
+    // keys[0] converted (adobe_rgb, from its analysis), keys[1] unchecked, keys[2] not checked yet, keys[3] sRGB.
+    stamp(&keys[1], StoredColour::Unchecked);
+    let colour = |k: &FileKey| cat.read().file(k).unwrap().unwrap().colour;
+    stamp(&keys[3], StoredColour::Space(ColourSpace::Srgb));
+    assert_eq!(colour(&keys[2]), None);
+    let copies = |k: &FileKey, colour| {
+        cat.writer()
+            .submit(Command::SetColour(vec![ColourStamp {
+                key: k.clone(),
+                colour,
+                copies: true,
+            }]))
+            .unwrap();
+        cat.writer().flush().unwrap();
+    };
+    copies(&keys[3], StoredColour::Unconverted(ColourSpace::AdobeRgb));
+    assert_eq!(colour(&keys[3]).as_deref(), Some("unconverted:adobe_rgb"));
+    assert_eq!(
+        colour(&keys[0]).as_deref(),
+        Some("adobe_rgb"),
+        "not marked down"
     );
-    assert_eq!(colour(&keys[0]).as_deref(), Some("unconverted:adobe_rgb"));
+    assert_eq!(colour(&keys[1]).as_deref(), Some("unconverted:adobe_rgb"));
+    assert_eq!(colour(&keys[2]).as_deref(), Some("unconverted:adobe_rgb"));
+    copies(&keys[3], StoredColour::Space(ColourSpace::Srgb));
+    assert_eq!(colour(&keys[3]).as_deref(), Some("srgb"));
+    assert_eq!(
+        colour(&keys[0]).as_deref(),
+        Some("adobe_rgb"),
+        "not marked down"
+    );
     assert_eq!(colour(&keys[1]).as_deref(), Some("unconverted:adobe_rgb"));
 }
 
