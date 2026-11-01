@@ -48,14 +48,15 @@ log and truncates it. When the wait runs out, SQLite carries on as a PASSIVE che
 fails; D1's limit shrinks the log at the next reset.
 
 Waits:
-- the end of a run: 250 ms, so the next queued run does not stall behind a reader;
+- the end of a run: 100 ms, after the writer's queue has been quiet for 100 ms (D5);
 - shutdown: 500 ms, so quitting is never held up for seconds;
 - the background shrink: 1 s per try (D3).
 
 ### D3. Background shrink at open
 
 `Catalog::open_file` and `ThumbStore::open_file` start a `catalog-wal` thread when they migrated an existing file,
-or when the log file is over 8 MiB (`wal::SHRINK_AT_OPEN`). A new file and an observer start none. The thread:
+or when more than 8 MiB of log is committed (`wal::SHRINK_AT_OPEN`, counted in frames with
+`PRAGMA wal_checkpoint(NOOP)` after the opening connection's recovery, because a reset log keeps its file size). A new file and an observer start none. The thread:
 1. waits `wal::SHRINK_DELAY` (5 s) after opening, so the first gallery frame and its thumbnails come first;
 2. opens its own read-write connection (`journal_size_limit` set) and runs a PASSIVE checkpoint. This is the long
    copy, 5-8 s for the bench catalog's 1.09 GB including the fsyncs. It takes no write lock, so the writer and the
@@ -69,8 +70,9 @@ The thread logs the log size before and after, and the time it took.
 `wait_for_wal_shrink()` (on `Catalog` and `ThumbStore`) starts a waiting shrink at once, joins it and returns its
 `WalShrink` (`before`, `after`, `complete`, `elapsed`). Tests and the synthetic bench setup (D6) use it.
 
-`Catalog` and `ThumbStore` keep the task as their first field. Dropping it cancels a shrink that has not started,
-and joins one that has, before the writer shuts down and the owner lock is released. No second connection
+`Catalog` and `ThumbStore` keep the task as their first field. Dropping it, or `Catalog::close`, cancels a shrink that
+has not started, stops one that runs between its TRUNCATE tries, and joins it (`close_after_wal_shrink` lets it end
+first; the join can take as long as the PASSIVE copy, so neither is for the UI thread), before the writer shuts down and the owner lock is released. No second connection
 outlives the owner, and a short CLI command does not wait 5 s at exit. The writer's shutdown TRUNCATE (D5) then
 empties the catalog's log anyway. A process that quits without dropping the catalog just ends the thread. SQLite
 checkpoints are crash-safe: pages are copied before the log is reset.
@@ -98,7 +100,11 @@ seconds, and the first frame of an upgrade launch should not wait for it.
 
 ### D5. Run end and shutdown
 
-The PASSIVE checkpoint after a terminal `SetRunStatus` becomes D2's TRUNCATE (250 ms). At writer shutdown, PASSIVE
+The PASSIVE checkpoint after a terminal `SetRunStatus` becomes D2's TRUNCATE (100 ms wait). It does not run inside the
+status write: the scanner submits the final status, flushes, and only then reports the run done, so a wait there
+(a reader holding the log) would be part of every cancel (control latency budget 250 ms; CI once measured 130 ms
+against a baseline of 81 ms). The status write sets a flag, and the writer checkpoints when its queue has been quiet
+for 100 ms (`wal::RUN_END_QUIET`), so after the flush. At writer shutdown, PASSIVE
 becomes TRUNCATE (500 ms), so `Catalog::close` and drop leave an empty log even though the readers close last.
 
 ### D6. The synthetic bench catalog is settled before a measured launch
@@ -154,3 +160,24 @@ used a fresh copy.
 `perf-baseline.json` `idle-rss` stays 209.6. A reliable measurement needs the release app's window on the owner's
 unlocked desktop (`--measure-idle-memory`). The numbers in ADR-0123 come from the coordinator's runs, which are not
 a baseline run of `cargo xtask bench --update-baseline`.
+
+
+### Gate-review fixes: control latency, idle-rss baseline
+
+Control latency with the run-end checkpoint inside the status write versus after the flush (release, `ps-scan`
+`control_latencies`, 20 trials of cancel and pause at random moments, two runs each; the readers variant has two
+threads reading the catalog throughout, as the gallery does):
+
+| | without readers | with readers |
+|---|---|---|
+| checkpoint inside the status write (wait 250 ms) | 94.8-112.8 ms | 101.1-120.4 ms |
+| checkpoint after the flush (this change) | 72.9-81.1 ms | 77.7-83.8 ms |
+
+CI's single measurement (130 ms against 81 ms) was runner noise (single runs 74-171 ms), but the table shows the
+in-path wait costs 20-30 ms at p95 even locally, so the checkpoint left the control path.
+
+`idle-rss` in `perf-baseline.json` stays 209.6 MB. ADR-0123 raises the budget to 320 MB, but a local
+`cargo xtask bench --check` of the release app measures 267-290 MB, which is more than 15% and 5% of the budget above
+that baseline, so it reports a relative regression until the owner runs `cargo xtask bench --update-baseline` on the
+reference desktop (it needs the unlocked desktop). CI skips app measurements, so it does not show it. The baseline
+file is not edited by guess.

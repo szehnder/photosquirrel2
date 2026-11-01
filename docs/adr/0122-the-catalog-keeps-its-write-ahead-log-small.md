@@ -35,24 +35,31 @@ regrow the file at every reset. It applies to the catalog and to `thumbs.db`, bo
 `PRAGMA wal_checkpoint(TRUNCATE)` with the busy timeout set to `wait`, then restores the 5 s timeout. When readers
 outlast the wait, SQLite finishes as a PASSIVE checkpoint and reports `busy`. Nothing fails, and the size limit
 applies at the next reset. It is used:
-- after a terminal run status, waiting 250 ms, so a queued run does not stall behind a reader;
+- after a terminal run status, waiting 100 ms. The writer does it only once its queue has been quiet for 100 ms, so
+  after the scanner's final status write and flush, never inside them: a reader holding the log would otherwise
+  delay the final status, and with it a cancel. A queued run does not stall behind a reader for more than that wait;
 - at writer shutdown, waiting 500 ms, so `Catalog::close` and drop leave an empty log although the readers close
   last.
 
 **A background shrink at open.** When `Catalog::open_file` or `ThumbStore::open_file` migrated an existing file, or
-finds its log over 8 MiB, a `catalog-wal` thread folds and truncates the log. The threshold of 8 MiB is about 5 ms
-of WAL recovery (about 0.66 ms per MiB), noise against the first-frame budget. The thread:
+finds more than 8 MiB of committed log, a `catalog-wal` thread folds and truncates the log. The size is counted in
+committed frames as the opening connection sees them after recovery (`PRAGMA wal_checkpoint(NOOP)`), not in file
+bytes: a log that was reset keeps its file size under `journal_size_limit` but costs the next open nothing, and
+would otherwise start the thread at every launch. 8 MiB of committed log is about 5 ms of WAL recovery (about
+0.66 ms per MiB), noise against the first-frame budget. The thread:
 1. waits 5 s after opening (`SHRINK_DELAY`), so the first gallery frame and its thumbnails are drawn first;
 2. opens its own read-write connection and runs a PASSIVE checkpoint. This is the long copy, 5-8 s for 1.09 GB
    including the fsyncs, and it takes no write lock;
-3. runs TRUNCATE tries of at most 1 s each, up to 10, 250 ms apart. Only these hold the write lock, and only for the
+3. runs TRUNCATE tries of at most 1 s each, up to 10, 250 ms apart (a cancel stops it between tries). Only these hold the write lock, and only for the
    pages written since step 2. Each try is shorter than the writer's own 5 s busy timeout, so a write that collides
    with one waits and never fails.
 
 Opening never waits for the thread. `wait_for_wal_shrink()` starts it at once if it is still waiting, and returns
-how it ended. Tests and the synthetic bench setup use it. Dropping the catalog or store cancels a shrink that has
-not started, and joins one that has, before the writer stops and the owner lock is released. The writer's shutdown
-TRUNCATE covers a cancelled one.
+how it ended. Tests and the synthetic bench setup use it. Dropping the catalog or store, and `Catalog::close`, cancel a shrink that has
+not started, stop one that is running between its tries (the PASSIVE copy itself cannot be interrupted), and join
+it, before the writer stops and the owner lock is released; `Catalog::close_after_wal_shrink` lets it finish
+first. The join can take as long as the copy of a large log, so the catalog must not be dropped on the UI thread.
+The writer's shutdown TRUNCATE covers a cancelled shrink.
 
 A migration's log is handled by the same background thread, not by a synchronous checkpoint in `open_file`.
 Folding 1 GB costs seconds, and an upgrade launch should not wait for it.

@@ -57,8 +57,8 @@ to their resized or re-exported JPEG copies.
 - **Large catalogs stay quick to open after the update.** Upgrading a catalog of hundreds of thousands of photos
   writes a temporary file of a gigabyte or more beside it, which every later launch would have read before showing the
   gallery (about 0.7 s more on a million photos). PhotoSquirrel now folds that file back into the catalog in the
-  background a few seconds after it opens, and keeps it small after every scan, so later launches are as quick as
-  before.
+  background, once the app has been open for about 15 seconds, and keeps it small after every scan, so later launches
+  are as quick as before.
 - **Videos get their poster frames after you install ffmpeg.** Videos catalogued without ffmpeg showed "needs a
   poster-frame tool" for good; now **Fill in previews** (or the next rescan) gives each of them its frame once
   ffmpeg is on your PATH or set in Settings, with no restart: up to two ffmpeg calls per video (at most 10 s each;
