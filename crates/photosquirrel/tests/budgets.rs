@@ -63,12 +63,6 @@ fn scenario_app_shell_cold_start_within_400_ms() {
     );
 }
 
-/// The scenario's name in the main app-shell spec until `catalog-wal-size` is archived (ADR-0123 renamed it to "Idle
-/// memory within 320 MB"); spec coverage maps the main spec by name. Removed with the archive.
-#[test]
-#[ignore = "renamed to scenario_app_shell_idle_memory_within_320_mb (ADR-0123)"]
-fn scenario_app_shell_idle_memory_within_250_mb() {}
-
 #[test]
 fn scenario_app_shell_idle_memory_within_320_mb() {
     if !gui_tests_enabled() {

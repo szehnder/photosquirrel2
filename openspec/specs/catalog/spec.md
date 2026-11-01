@@ -103,3 +103,30 @@ The catalog SHALL store each file's exclusion category, and keep it current when
 #### Scenario: Damaged photo is not unsupported
 - **WHEN** a file named "IMG_9999.JPG" whose first bytes are damaged is scanned
 - **THEN** its category is "could not be read", not "not a supported file", and the Excluded view lists it by default
+
+### Requirement: Small write-ahead log
+The catalog SHALL keep its write-ahead log small: a log that is reset SHALL shrink to at most 64 MiB, and the log SHALL be folded into the database and truncated after migrations, at the end of each scan run and when the catalog is closed. When the catalog or thumbnail store is migrated or opened with more than 8 MiB of committed log, the log SHALL be folded and truncated on a background thread a few seconds after opening, without delaying opening, blocking readers or failing writes.
+
+#### Scenario: Migrated catalog leaves an empty log
+- **WHEN** a catalog with 30,000 analysed files at the schema before the colour migration is opened and migrated
+- **THEN** once the background checkpoint has ended the log file is empty and all 30,000 rows read back with their colour state
+
+#### Scenario: Large leftover log emptied after open
+- **WHEN** a catalog whose log holds over 32 MiB of committed pages, left by a process that never checkpointed, is opened
+- **THEN** opening returns, the catalog's rows read back unchanged, and once the background checkpoint has ended the log file is empty
+
+#### Scenario: Large leftover thumbnail log emptied after open
+- **WHEN** a thumbnail store whose log holds over 32 MiB of committed pages is opened
+- **THEN** once the background checkpoint has ended its log file is empty and every stored thumbnail reads back
+
+#### Scenario: Small leftover log left to normal checkpoints
+- **WHEN** a catalog whose log is under 8 MiB is opened
+- **THEN** no background checkpoint is started
+
+#### Scenario: Scan run end empties the log
+- **WHEN** 30,000 file rows are written during a scan run while readers are open and the run is marked completed
+- **THEN** the log file is empty shortly after the writer has committed the completion and the scanner's final flush has returned
+
+#### Scenario: Closed catalog leaves an empty log
+- **WHEN** 30,000 file rows are written and the catalog is closed while its readers are still open
+- **THEN** the log file is empty

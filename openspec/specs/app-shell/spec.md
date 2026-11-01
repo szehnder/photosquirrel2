@@ -13,17 +13,6 @@ The main window SHALL show a navigator (Sources, Library, Duplicates, Excluded, 
 - **WHEN** the application opens with a scanned small-corpus catalog
 - **THEN** the navigator lists all seven entries, the Library view is active and the status bar shows the photo count
 
-### Requirement: Fast start
-The application SHALL draw its first frame within 400 ms of a cold start and SHALL stay at or below 250 MB resident memory when idle with a 1,000,000-item catalog.
-
-#### Scenario: Cold start within 400 ms
-- **WHEN** the release application is started with its startup measurement flag
-- **THEN** the reported time to first frame, recorded as a budget measurement, is at most 400 ms
-
-#### Scenario: Idle memory within 250 MB
-- **WHEN** the release application is started with its idle-memory measurement flag on a 1,000,000-item catalog
-- **THEN** the reported resident memory, recorded as a budget measurement, is at most 250 MB
-
 ### Requirement: First-launch onboarding
 With an empty catalog the application SHALL show an onboarding view that explains that sources are only read, never changed, and offers "Add a source". When a source added from onboarding is not scanned at once, the application SHALL show the Sources view with that source's scan as the primary action.
 
@@ -73,3 +62,14 @@ The application MUST NOT open any network connection at start-up or while idle.
 #### Scenario: No network at startup
 - **WHEN** the application starts and idles for 10 s with outbound connections recorded
 - **THEN** no network connection was attempted
+
+### Requirement: Start-up time and idle memory
+The application SHALL draw its first frame within 400 ms of a cold start and SHALL stay at or below 320 MB resident memory when idle with a 1,000,000-item catalog.
+
+#### Scenario: Cold start within 400 ms
+- **WHEN** the release application is started with its startup measurement flag
+- **THEN** the reported time to first frame, recorded as a budget measurement, is at most 400 ms
+
+#### Scenario: Idle memory within 320 MB
+- **WHEN** the release application is started with its idle-memory measurement flag on a 1,000,000-item catalog
+- **THEN** the reported resident memory, recorded as a budget measurement, is at most 320 MB
