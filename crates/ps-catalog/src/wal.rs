@@ -5,8 +5,9 @@
 //! - [`truncate`] folds the log into the database and empties it, waiting at most a given time for readers; when
 //!   the wait runs out SQLite carries on as a PASSIVE checkpoint and reports `busy`, and nothing fails. The writer
 //!   uses it at the end of each scan run and at shutdown.
-//! - A background thread does the same when a catalog or store is opened with a log over [`SHRINK_AT_OPEN`] or
-//!   after a migration, [`SHRINK_DELAY`] after opening: a PASSIVE pass (the long copy, no write lock) and then a
+//! - A background thread does the same when a catalog or store is opened with more than [`SHRINK_AT_OPEN`] of
+//!   committed log (counted in frames, not file size: a reset log keeps its file size) or after a migration,
+//!   [`SHRINK_DELAY`] after opening: a PASSIVE pass (the long copy, no write lock) and then a
 //!   short TRUNCATE. Opening never waits for it.
 //!
 //! A leftover log costs its WAL recovery at every open (the first connection rebuilds the log index from every
@@ -32,8 +33,12 @@ pub const SHRINK_AT_OPEN: u64 = 8 << 20;
 /// The busy timeout of every catalog connection.
 pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long the TRUNCATE at the end of a scan run waits for readers (the next queued run must not stall).
-pub(crate) const RUN_END_WAIT: Duration = Duration::from_millis(250);
+/// How long the writer's queue must be quiet after a run ended before it checkpoints the log. The scanner's final
+/// flush and status update arrive within this, so the checkpoint never delays them.
+pub(crate) const RUN_END_QUIET: Duration = Duration::from_millis(100);
+
+/// How long the TRUNCATE after a scan run waits for readers (the next queued run must not stall behind it).
+pub(crate) const RUN_END_WAIT: Duration = Duration::from_millis(100);
 
 /// How long the TRUNCATE at writer shutdown waits for readers (quitting must not be held up).
 pub(crate) const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
@@ -120,13 +125,30 @@ struct Shared {
 }
 
 impl Shared {
-    /// Move a waiting shrink on to `to` (a started or cancelled one stays as it is).
+    /// Move a waiting shrink on to `to`. A cancel also reaches a running one, which stops between its tries; a
+    /// started one is never started again.
     fn release(&self, to: Gate) {
         let mut g = self.gate.lock();
-        if *g == Gate::Waiting {
+        if *g == Gate::Waiting || to == Gate::Cancelled {
             *g = to;
         }
         self.cv.notify_all();
+    }
+
+    fn cancelled(&self) -> bool {
+        *self.gate.lock() == Gate::Cancelled
+    }
+
+    /// Sleep `d` unless cancelled meanwhile; true when cancelled.
+    fn pause(&self, d: Duration) -> bool {
+        let deadline = Instant::now() + d;
+        let mut g = self.gate.lock();
+        while *g != Gate::Cancelled {
+            if self.cv.wait_until(&mut g, deadline).timed_out() {
+                break;
+            }
+        }
+        *g == Gate::Cancelled
     }
 }
 
@@ -137,8 +159,15 @@ impl Shared {
 #[derive(Debug, Default)]
 pub(crate) struct ShrinkTask {
     shared: Option<Arc<Shared>>,
-    handle: Mutex<Option<JoinHandle<Option<WalShrink>>>>,
-    result: Mutex<Option<WalShrink>>,
+    /// The thread and, once joined, its result. Held while joining, so a second concurrent waiter blocks until the
+    /// first has stored the result and then sees it too.
+    state: Mutex<TaskState>,
+}
+
+#[derive(Debug, Default)]
+struct TaskState {
+    handle: Option<JoinHandle<Option<WalShrink>>>,
+    result: Option<WalShrink>,
 }
 
 impl ShrinkTask {
@@ -147,16 +176,22 @@ impl ShrinkTask {
         ShrinkTask::default()
     }
 
-    /// Start a shrink of the database at `path` when `migrated` or its log is over [`SHRINK_AT_OPEN`].
-    pub(crate) fn start_if_needed(path: &Path, migrated: bool) -> ShrinkTask {
-        if !migrated && wal_len(path) <= SHRINK_AT_OPEN {
+    /// Start a shrink of the database at `path`, just opened as `conn`, when `migrated` or more than
+    /// [`SHRINK_AT_OPEN`] of committed log is left.
+    pub(crate) fn start_if_needed(path: &Path, conn: &Connection, migrated: bool) -> ShrinkTask {
+        if !migrated && committed_log_bytes(conn, path) <= SHRINK_AT_OPEN {
             return ShrinkTask::none();
         }
+        Self::start(path)
+    }
+
+    fn start(path: &Path) -> ShrinkTask {
         let shared = Arc::new(Shared {
             gate: Mutex::new(Gate::Waiting),
             cv: Condvar::new(),
         });
         let gate = shared.clone();
+        let task_shared = shared.clone();
         let p = path.to_path_buf();
         match std::thread::Builder::new()
             .name("catalog-wal".into())
@@ -170,12 +205,14 @@ impl ShrinkTask {
                 }
                 let go = *g == Gate::Go;
                 drop(g);
-                go.then(|| shrink(&p))
+                go.then(|| shrink(&p, &task_shared))
             }) {
             Ok(h) => ShrinkTask {
                 shared: Some(shared),
-                handle: Mutex::new(Some(h)),
-                result: Mutex::new(None),
+                state: Mutex::new(TaskState {
+                    handle: Some(h),
+                    result: None,
+                }),
             },
             Err(e) => {
                 log::warn!(
@@ -193,13 +230,48 @@ impl ShrinkTask {
         self.finish(Gate::Go)
     }
 
+    /// Cancel a waiting shrink, stop a running one between its tries, and join it.
+    pub(crate) fn cancel(&self) {
+        let _ = self.finish(Gate::Cancelled);
+    }
+
+    /// Tell a waiting or running shrink to stop (between its tries) without waiting for it.
+    #[cfg(test)]
+    fn cancel_signal(&self) {
+        if let Some(s) = &self.shared {
+            s.release(Gate::Cancelled);
+        }
+    }
+
+    /// True once the shrink has been started (or cancelled).
+    #[cfg(test)]
+    fn started(&self) -> bool {
+        self.shared
+            .as_ref()
+            .is_some_and(|s| *s.gate.lock() != Gate::Waiting)
+    }
+
     fn finish(&self, to: Gate) -> Option<WalShrink> {
         let shared = self.shared.as_ref()?;
         shared.release(to);
-        if let Some(h) = self.handle.lock().take() {
-            *self.result.lock() = h.join().ok().flatten();
+        let mut st = self.state.lock();
+        if let Some(h) = st.handle.take() {
+            st.result = h.join().ok().flatten();
         }
-        *self.result.lock()
+        st.result
+    }
+}
+
+/// The committed part of the log, in bytes, as the connection that just opened the database sees it after WAL
+/// recovery. A reset log keeps its file size (`journal_size_limit`) but holds no committed frames, and costs the next
+/// open nothing; only committed frames are recovered. Falls back to the file size when SQLite cannot report it.
+fn committed_log_bytes(conn: &Connection, path: &Path) -> u64 {
+    let page: i64 = conn
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .unwrap_or(4096);
+    match checkpoint(conn, "NOOP") {
+        Ok(c) if c.log_frames >= 0 => c.log_frames as u64 * (page as u64 + 24),
+        _ => wal_len(path),
     }
 }
 
@@ -209,10 +281,10 @@ impl Drop for ShrinkTask {
     }
 }
 
-fn shrink(path: &Path) -> WalShrink {
+fn shrink(path: &Path, task: &Shared) -> WalShrink {
     let started = Instant::now();
     let before = wal_len(path);
-    let complete = shrink_on_own_connection(path).unwrap_or_else(|e| {
+    let complete = shrink_on_own_connection(path, task).unwrap_or_else(|e| {
         log::warn!("{}: log checkpoint failed: {e}", path.display());
         false
     });
@@ -239,7 +311,7 @@ fn shrink(path: &Path) -> WalShrink {
 
 /// The PASSIVE pass copies every committed page without taking the write lock (the writer and readers carry on);
 /// the TRUNCATE tries then hold the write lock only for what was written meanwhile and the truncation.
-fn shrink_on_own_connection(path: &Path) -> rusqlite::Result<bool> {
+fn shrink_on_own_connection(path: &Path, task: &Shared) -> rusqlite::Result<bool> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -248,11 +320,14 @@ fn shrink_on_own_connection(path: &Path) -> rusqlite::Result<bool> {
     conn.busy_timeout(SHRINK_WAIT)?;
     checkpoint(&conn, "PASSIVE")?;
     for attempt in 0..SHRINK_TRIES {
+        if task.cancelled() {
+            break;
+        }
         if !truncate(&conn, SHRINK_WAIT)?.busy {
             return Ok(true);
         }
-        if attempt + 1 < SHRINK_TRIES {
-            std::thread::sleep(SHRINK_PAUSE);
+        if attempt + 1 < SHRINK_TRIES && task.pause(SHRINK_PAUSE) {
+            break;
         }
     }
     Ok(false)
@@ -313,35 +388,98 @@ mod tests {
         assert!(wal_len(path) > SHRINK_AT_OPEN, "{}", wal_len(path));
     }
 
+    fn open_for_check(path: &Path) -> Connection {
+        crate::db::open_writer(path).unwrap()
+    }
+
     #[test]
     fn a_shrink_waits_for_its_delay_and_drop_cancels_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("catalog.db");
         leftover_log(&path);
-        let t = Instant::now();
-        let task = ShrinkTask::start_if_needed(&path, false);
+        let conn = open_for_check(&path);
+        let task = ShrinkTask::start_if_needed(&path, &conn, false);
+        assert!(!task.started(), "waits for its delay");
         std::thread::sleep(Duration::from_millis(100));
-        assert!(
-            wal_len(&path) > SHRINK_AT_OPEN,
-            "not started before its delay"
-        );
+        assert!(!task.started(), "still waiting for its delay");
+        assert!(wal_len(&path) > SHRINK_AT_OPEN);
         drop(task);
-        assert!(
-            t.elapsed() < SHRINK_DELAY / 2,
-            "drop did not wait for the delay"
-        );
         assert!(
             wal_len(&path) > SHRINK_AT_OPEN,
             "a cancelled shrink copies nothing"
         );
-        // Waiting starts it at once.
-        let task = ShrinkTask::start_if_needed(&path, false);
-        let r = task.wait().expect("started");
+        // Waiting starts it at once; a second waiter sees the same result.
+        let task = ShrinkTask::start_if_needed(&path, &conn, false);
+        let (a, b) = std::thread::scope(|s| {
+            let a = s.spawn(|| task.wait());
+            let b = s.spawn(|| task.wait());
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        let r = a.expect("started");
         assert!(r.complete && r.after == 0, "{r:?}");
-        assert!(
-            t.elapsed() < SHRINK_DELAY,
-            "wait did not wait for the delay"
-        );
+        assert_eq!(a, b, "both concurrent waiters get the result");
+        assert_eq!(task.wait(), a);
+    }
+
+    #[test]
+    fn a_reset_log_keeps_its_file_size_but_starts_no_shrink() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        {
+            let c = crate::db::open_writer(&path).unwrap();
+            c.set_db_config(
+                rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+                true,
+            )
+            .unwrap();
+            // No size limit and no automatic checkpoint: the log grows, is folded, then restarts from its first
+            // frame on the next write, and the file keeps its size.
+            c.pragma_update(None, "journal_size_limit", -1).unwrap();
+            c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+            c.execute_batch(
+                "CREATE TABLE junk(b BLOB);
+                 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2600)
+                 INSERT INTO junk SELECT randomblob(4000) FROM n;",
+            )
+            .unwrap();
+            checkpoint(&c, "PASSIVE").unwrap();
+            c.execute_batch("CREATE TABLE small(x);").unwrap();
+        }
+        assert!(wal_len(&path) > SHRINK_AT_OPEN, "{}", wal_len(&path));
+        let c = open_for_check(&path);
+        assert!(committed_log_bytes(&c, &path) < SHRINK_AT_OPEN);
+        let task = ShrinkTask::start_if_needed(&path, &c, false);
+        assert!(task.shared.is_none(), "no committed log, no shrink");
+    }
+
+    /// A reader keeps every TRUNCATE try busy; a cancel stops the shrink between tries instead of after all ten.
+    #[test]
+    fn a_cancel_stops_a_running_shrink_between_tries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        leftover_log(&path);
+        // Without a snapshot-holding reader the TRUNCATE would succeed: read inside a transaction.
+        let reader = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM junk;")
+            .unwrap();
+        let c = open_for_check(&path);
+        let task = ShrinkTask::start_if_needed(&path, &c, false);
+        std::thread::scope(|s| {
+            let w = s.spawn(|| task.wait());
+            // Wait until it is running its tries (it has started), then cancel.
+            while !task.started() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            task.cancel_signal();
+            let t = Instant::now();
+            let r = w.join().unwrap().expect("started");
+            assert!(!r.complete, "{r:?}");
+            // Ten tries of a second each would be more than ten seconds.
+            assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());
+        });
+        reader.execute_batch("COMMIT").unwrap();
     }
 
     #[test]

@@ -6,6 +6,8 @@
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use common::*;
@@ -155,6 +157,37 @@ fn scenario_incremental_rescan_no_change_rescan_under_4_s() {
 fn scenario_scan_control_control_latency_within_budget() {
     let _cores = exclusive();
     let trials = env_count("PS_SCAN_LATENCY_TRIALS", 20, 20);
+    let lat = control_latencies(trials, false);
+    println!("control latencies: {lat:?}");
+    let p95 = p95_of(lat);
+    budget("control-latency-p95", p95.as_secs_f64() * 1e3, "ms", 250.0);
+}
+
+/// The same cancel and pause latencies while two threads keep reading the catalog, as the gallery does: the log
+/// checkpoint at the end of a run (ADR-0122) must not make a reader hold up the final status. Not a recorded budget;
+/// it must stay within the same 250 ms.
+#[test]
+fn control_latency_with_concurrent_readers_stays_within_budget() {
+    let _cores = exclusive();
+    let trials = env_count("PS_SCAN_LATENCY_TRIALS", 20, 20);
+    let lat = control_latencies(trials, true);
+    println!("control latencies with readers: {lat:?}");
+    let p95 = p95_of(lat);
+    println!(
+        "control-latency-p95 with readers = {:.3} ms",
+        p95.as_secs_f64() * 1e3
+    );
+    assert!(p95 < Duration::from_millis(250), "{p95:?}");
+}
+
+fn p95_of(mut lat: Vec<Duration>) -> Duration {
+    lat.sort();
+    lat[((lat.len() as f64 * 0.95).ceil() as usize).saturating_sub(1)]
+}
+
+/// Cancel (even trials) or pause (odd trials) a scan at a random moment of its analysis, `trials` times; the time
+/// until the scanner is idle. With `readers`, two threads read the catalog throughout.
+fn control_latencies(trials: usize, readers: bool) -> Vec<Duration> {
     let roots: Vec<PathBuf> = {
         let c = corpus();
         c.truth.drives.iter().map(|d| c.root.join(d)).collect()
@@ -165,6 +198,19 @@ fn scenario_scan_control_control_latency_within_budget() {
         let e = env();
         for r in &roots {
             e.add(r);
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut readers_running = Vec::new();
+        if readers {
+            for _ in 0..2 {
+                let (rd, stop) = (e.s().catalog().readers(), stop.clone());
+                readers_running.push(std::thread::spawn(move || {
+                    while !stop.load(Ordering::SeqCst) {
+                        let _ = rd.sources();
+                        let _ = rd.runs();
+                    }
+                }));
+            }
         }
         e.s().start_scan(&[]).expect("start");
         // A random moment during the analysis phase.
@@ -194,6 +240,10 @@ fn scenario_scan_control_control_latency_within_budget() {
             t.elapsed()
         };
         lat.push(d);
+        stop.store(true, Ordering::SeqCst);
+        for h in readers_running {
+            h.join().expect("reader");
+        }
         let snap = e.s().snapshot().expect("snapshot");
         assert_eq!(snap.active_workers, 0);
         assert!(
@@ -202,8 +252,5 @@ fn scenario_scan_control_control_latency_within_budget() {
                 .all(|f| f.stage != Stage::Analyzed || f.identity.is_some())
         );
     }
-    println!("control latencies: {lat:?}");
-    lat.sort();
-    let p95 = lat[((lat.len() as f64 * 0.95).ceil() as usize).saturating_sub(1)];
-    budget("control-latency-p95", p95.as_secs_f64() * 1e3, "ms", 250.0);
+    lat
 }

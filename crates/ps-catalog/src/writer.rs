@@ -303,6 +303,7 @@ impl Writer {
                     errors: WriteErrors::default(),
                     stats: thread_stats,
                     constraints_dirty: false,
+                    checkpoint_due: false,
                 };
                 w.run(rx);
             })
@@ -533,6 +534,9 @@ struct WriterThread {
     stats: Arc<Stats>,
     /// The open batch holds a write that changes what decides cleanup safety.
     constraints_dirty: bool,
+    /// A run ended and its writes are not yet folded into the database: the log is checkpointed when the queue has
+    /// been quiet for [`crate::wal::RUN_END_QUIET`] (ADR-0122), never inside the final status write or its flush.
+    checkpoint_due: bool,
 }
 
 impl WriterThread {
@@ -543,6 +547,18 @@ impl WriterThread {
                     Ok(m) => m,
                     Err(RecvTimeoutError::Timeout) => {
                         self.commit_batch();
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            } else if self.checkpoint_due {
+                match rx.recv_timeout(crate::wal::RUN_END_QUIET) {
+                    Ok(m) => m,
+                    Err(RecvTimeoutError::Timeout) => {
+                        self.checkpoint_due = false;
+                        if let Err(e) = crate::wal::truncate(&self.conn, crate::wal::RUN_END_WAIT) {
+                            log::warn!("catalog checkpoint after a run failed: {e}");
+                        }
                         continue;
                     }
                     Err(RecvTimeoutError::Disconnected) => break,
@@ -866,12 +882,10 @@ impl WriterThread {
                     Ok(())
                 });
                 if terminal {
-                    // Fold the run's writes into the database and empty the log (ADR-0122); a reader in the
-                    // way only makes it a passive checkpoint.
-                    self.commit_batch();
-                    if let Err(e) = crate::wal::truncate(&self.conn, crate::wal::RUN_END_WAIT) {
-                        log::warn!("catalog checkpoint after a run failed: {e}");
-                    }
+                    // Fold the run's writes into the database and empty the log (ADR-0122), but after the
+                    // scanner's final flush and status update: a reader holding the log would make this wait, and
+                    // the wait must not be part of a cancel (control latency).
+                    self.checkpoint_due = true;
                 }
             }
             Command::InterruptRunning => self.row(name, None, |c| {

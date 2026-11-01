@@ -173,10 +173,10 @@ impl Catalog {
         let mut conn = db::open_writer(path)?;
         let version = db::migrate(&mut conn, path, db::CATALOG_MIGRATIONS, None)?;
         let readers = Arc::new(Readers::open(path, opts.readers)?);
-        let writer = Writer::spawn(conn, opts.writer)?;
         // An upgrade's log, or a large one left by a process that never checkpointed, is folded and truncated in
         // the background once the first queries are served (`wal::SHRINK_DELAY`): opening does not wait for it.
-        let wal = wal::ShrinkTask::start_if_needed(path, found > 0 && version > found);
+        let wal = wal::ShrinkTask::start_if_needed(path, &conn, found > 0 && version > found);
+        let writer = Writer::spawn(conn, opts.writer)?;
         Ok(Catalog {
             path: path.to_path_buf(),
             wal,
@@ -247,8 +247,18 @@ impl Catalog {
     }
 
     /// Flush, stop the writer thread and checkpoint the WAL. Dropping the catalog does the same, but this
-    /// reports errors.
+    /// reports errors. A background log checkpoint that has not started yet is cancelled, and one that is running
+    /// stops between its tries; use [`Catalog::close_after_wal_shrink`] to let it finish first.
+    ///
+    /// Closing or dropping joins the writer thread and a running log checkpoint, which can take as long as the
+    /// copy of a large log (seconds): do not do it on the UI thread.
     pub fn close(self) -> Result<()> {
+        self.wal.cancel();
+        self.writer.shutdown()
+    }
+
+    /// [`Catalog::close`] after the background log checkpoint of the open (if any) has run to its end.
+    pub fn close_after_wal_shrink(self) -> Result<()> {
         let _ = self.wal.wait();
         self.writer.shutdown()
     }

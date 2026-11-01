@@ -109,8 +109,13 @@ fn scenario_catalog_large_leftover_log_emptied_after_open() {
     assert!(wal_len(&path) > 32 * MIB);
 
     let cat = Catalog::open(dir.path()).unwrap();
-    // Opening returned; the readers answer meanwhile.
+    // Opening returned without folding the log (the shrink waits for its delay), and the readers answer meanwhile.
     assert_eq!(count(cat.path(), "SELECT count(*) FROM file"), before);
+    assert!(
+        wal_len(&path) > 32 * MIB,
+        "opening did not wait for the log to be folded: {}",
+        wal_len(&path)
+    );
     let shrink = cat
         .wait_for_wal_shrink()
         .expect("a large log starts the checkpoint");
@@ -196,8 +201,56 @@ fn scenario_catalog_scan_run_end_empties_the_log() {
         })
         .unwrap();
     cat.writer().flush().unwrap();
-    assert_eq!(wal_len(cat.path()), 0);
+    // The checkpoint follows the final flush once the queue is quiet (it is not part of the flush).
+    wait_until(|| wal_len(cat.path()) == 0);
     assert_eq!(count(cat.path(), "SELECT count(*) FROM file"), ROWS as i64);
+}
+
+/// Poll `f` for up to 20 s.
+fn wait_until(f: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !f() {
+        assert!(std::time::Instant::now() < deadline, "condition not met");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// The run's final status and flush (the scanner's cancel path) do not wait for readers that hold the log: the log
+/// checkpoint follows them. A reader inside a transaction would make a checkpoint inside the status write wait for
+/// its whole busy timeout; the flush must return long before that.
+#[test]
+fn the_run_end_checkpoint_does_not_delay_the_final_flush() {
+    let dir = tempfile::tempdir().unwrap();
+    let cat = Catalog::open(dir.path()).unwrap();
+    let src = add_source(&cat, "/mnt/a");
+    // Hold a read transaction open on its own connection for the whole test.
+    let reader = Connection::open_with_flags(cat.path(), OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM file;")
+        .unwrap();
+    let mut best = std::time::Duration::MAX;
+    for _ in 0..5 {
+        let run = cat.writer().start_run(vec![src]).unwrap();
+        write_rows(&cat, src, 0..2_000, 2, full_row);
+        let t = std::time::Instant::now();
+        cat.writer()
+            .submit(Command::SetRunStatus {
+                run,
+                status: RunStatus::Cancelled,
+                stats: None,
+            })
+            .unwrap();
+        cat.writer().flush().unwrap();
+        best = best.min(t.elapsed());
+        // Let the checkpoint (which waits for the reader) pass before the next round.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }
+    // A checkpoint inside the status write would take at least its 100 ms wait every time.
+    assert!(
+        best < std::time::Duration::from_millis(90),
+        "the final flush took {best:?}"
+    );
+    reader.execute_batch("COMMIT").unwrap();
 }
 
 #[test]
@@ -212,6 +265,33 @@ fn scenario_catalog_closed_catalog_leaves_an_empty_log() {
     // `close` stops the writer while the reader pool is still open (it closes last and cannot checkpoint).
     cat.close().unwrap();
     assert_eq!(wal_len(&path), 0);
+}
+
+/// Opening a thumbnail store whose log file is large but holds no committed frames (a reset log keeps its size)
+/// starts no background checkpoint, so it does not run again at every launch.
+#[test]
+fn a_reset_thumbnail_log_starts_no_checkpoint_at_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = ThumbStore::open(dir.path()).unwrap().path().to_path_buf();
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+            .unwrap();
+        conn.pragma_update(None, "journal_size_limit", -1).unwrap();
+        conn.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE junk(b BLOB);
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2600)
+             INSERT INTO junk SELECT randomblob(4000) FROM n;",
+        )
+        .unwrap();
+        conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))
+            .unwrap();
+        conn.execute_batch("CREATE TABLE small(x);").unwrap();
+    }
+    assert!(wal_len(&path) > SHRINK_AT_OPEN, "{}", wal_len(&path));
+    let store = ThumbStore::open(dir.path()).unwrap();
+    assert_eq!(store.wait_for_wal_shrink(), None);
 }
 
 /// The background shrink holds the write lock only for short tries, below the writer's busy timeout: writes made while

@@ -64,7 +64,8 @@ impl ThumbStore {
             .collect::<Result<Vec<_>>>()?;
         // The store has no checkpoint of its own beyond SQLite's automatic one: a large leftover log is folded and
         // truncated in the background, like the catalog's (ADR-0122).
-        let wal = crate::wal::ShrinkTask::start_if_needed(path, found > 0 && version > found);
+        let wal =
+            crate::wal::ShrinkTask::start_if_needed(path, &writer, found > 0 && version > found);
         Ok(ThumbStore {
             wal,
             path: path.to_path_buf(),
