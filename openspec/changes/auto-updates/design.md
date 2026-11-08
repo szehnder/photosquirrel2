@@ -262,7 +262,9 @@ undoes the work:
 - **macos-app**
   1. Extract the `.app.tar.gz` into `<parent>/.PhotoSquirrel-update-<ver>/PhotoSquirrel.app`, on the same volume
      as the installed bundle.
-  2. Check that its `Contents/MacOS/photosquirrel{,-cli} --version` print the version.
+  2. Check that its `Contents/MacOS/photosquirrel{,-cli} --version` print the version. When the installed bundle is
+     Developer ID signed (change `macos-signing`, ADR-0128), the staged bundle must also pass `codesign --verify
+     --strict` with the same TeamIdentifier, otherwise the install is refused and the version is skipped.
   3. `renamex_np(installed, staged, RENAME_SWAP)`, through `rustix` or `libc`. This is one atomic swap.
   4. Move the old bundle, now at the staging path, into `previous/<cur>/`: a rename on the same volume, otherwise a
      copy and then a removal of the staging copy only. Remove the hidden staging folder.
@@ -396,7 +398,8 @@ VAR]`:
   against the packages.
 
 `release.yml` changes:
-- **`sign` job:** needs `package`, `contents: read`.
+- **`sign` job:** needs `package`, and also `verify-macos` whenever that job runs (change `macos-signing`), so the
+  manifest hashes the signed macOS packages. `contents: read`.
   - For a pushed tag it runs in `environment: release-signing` and reads `UPDATE_SIGNING_KEY` and
     `UPDATE_SIGNING_PASSWORD`.
   - For a dry run it generates a throwaway key and uploads its public half.
@@ -446,9 +449,9 @@ tagging 0.4.0 (owner tasks 9.x):
 - **A broken updater in 0.4.0 strands every user.** Mitigated by the RC round trips (D11), the CI fake-layout tests
   on all three OSes, and the pre-publish round trip from the previous release from 0.4.1 on. The release notes keep
   the manual download path.
-- **macOS App Management (13+) may prompt or refuse an unsigned bundle swap.** Mitigated by the D6 fallback, which
-  never leaves a half-swapped bundle and is asked once per version. OS signing (a separate change) is the real fix,
-  and ADR-0126 names it in "Revisit when".
+- **macOS App Management (13+) may prompt or refuse an unsigned bundle swap.** With `macos-signing` (ADR-0128) the
+  bundles are Developer ID signed, and a same-Team-ID self-update is not stopped, so the fallback stays for unsigned
+  installations only. For those, the D6 fallback never leaves a half-swapped bundle and is asked once per version.
 - **The AppImage smoke test runs the GUI binary.** `--version` exits before any window opens (clap), and the
   AppImage's AppRun runs the main binary. Reaching the CLI inside the AppImage needs the runtime's
   `--appimage-extract-and-run` or the runtime's argv0 dispatch. Task 5.1 decides between: (a) the main binary's

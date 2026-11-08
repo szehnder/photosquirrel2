@@ -221,6 +221,13 @@ The application SHALL record each check, download, install, trial, rollback and 
 - **WHEN** a check, download, install and successful trial complete
 - **THEN** the history file has one line for each in order, with versions and times, and the CLI's update status lists the last ones
 
+### Requirement: Signed bundles keep their signer
+When the installed macOS bundle is signed with a Developer ID, the application SHALL install a new bundle only when its code signature verifies strictly and its Team ID equals the installed bundle's. Otherwise it SHALL refuse the update and keep the installed version.
+
+#### Scenario: Bundle from another signer refused
+- **WHEN** a signed fake bundle is offered a payload that passes the manifest checks but is ad-hoc signed or signed with another Team ID
+- **THEN** the install is refused with "the update is not signed by the same developer", the installed bundle is unchanged, and the version is skipped
+
 ### Requirement: Blocked bundle swap falls back
 When the operating system refuses to let the application replace its own bundle, the application SHALL keep the installed version unchanged, and offer the verified update in the downloads folder with instructions to replace the app by hand. It SHALL ask once, not on every quit.
 

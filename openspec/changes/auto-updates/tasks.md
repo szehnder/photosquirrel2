@@ -84,8 +84,10 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   each recorded step).
 - [ ] 5.3 macOS bundle swap: extract on the same volume, the smoke check, `renamex_np(RENAME_SWAP)`, move the old
   bundle to `previous/`, undo, and the `EPERM`/`EACCES` fallback to Downloads, asked once. Verify: on macOS CI, the
-  bundle cases of 5.2's scenarios and `scenario_app_updates_refused_swap_falls_back_to_a_manual_install` (the swap
-  fails through a test hook, and through a parent folder made read-only).
+  bundle cases of 5.2's scenarios, `scenario_app_updates_refused_swap_falls_back_to_a_manual_install` (the swap
+  fails through a test hook, and through a parent folder made read-only) and
+  `scenario_app_updates_bundle_from_another_signer_refused` (fake bundles signed ad hoc on the runner, with an
+  injected Team ID check).
 - [ ] 5.4 Windows NSIS: back up the installed files and `DisplayVersion`, run `setup.exe /S`, check the exit code,
   the version and `DisplayVersion`, and undo. First check in a built installer that cargo-packager's NSIS honours
   `/S`, keeps the install location and does not launch the app; record it in design.md D6. Verify: on Windows CI,
@@ -151,6 +153,7 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   `scenario_release_packaging_notes_taken_from_the_release_notes`.
 - [ ] 9.3 `release.yml`:
   - a `sign` job (the `release-signing` environment for tags, a throwaway key for dry runs, read-only, xtask only);
+  - the `sign` job also needs `verify-macos` when that job runs (`macos-signing`);
   - an `update-roundtrip` matrix job (tags only; it succeeds with a notice when no previous release has a manifest);
   - the release job needs the round trip, checks 8 packages, rechecks the envelope with `minisign -V` and
     `sha256sum -c`, and attaches `update-manifest.json`.
@@ -173,7 +176,8 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 - [ ] 10.1 Tag `v0.4.0-rc.1` and `v0.4.0-rc.2` (prereleases, real key). On Linux (an AppImage in `~/Applications`),
   macOS 14 or 15 (`/Applications`, a standard user and an admin user) and Windows 11 (the NSIS per-user install),
-  install rc.1 by hand, serve rc.2 locally through `PHOTOSQUIRREL_UPDATE_SERVER`, then check: update on quit, Restart
+  install rc.1 by hand, serve rc.2 locally through `PHOTOSQUIRREL_UPDATE_SERVER`, (with no Mac at hand, the macOS
+  part runs on a GitHub macOS runner instead: rc.1 in a temp `Applications` folder, updated to rc.2), then check: update on quit, Restart
   now, a trial, manual rollback, and the App Management behaviour on macOS. Verify: findings recorded in design.md,
   with "Measurements and findings" per OS. If macOS prompts or refuses, the fallback path is confirmed and the README
   says so.

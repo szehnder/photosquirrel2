@@ -80,9 +80,9 @@ architectural and privacy decision, so it needs its own ADR. The owner has chose
 
 ## Out of scope
 
-- OS code signing and notarization (Apple Developer ID, Windows Authenticode). That is a separate change. Until
-  then, on macOS 13+, if the OS blocks an unsigned self-swap ("App Management"), the app falls back to downloading,
-  verifying and revealing the new version.
+- OS code signing and notarization. macOS signing is its own change, `macos-signing` (ROADMAP row 38); Windows
+  Authenticode is not planned yet. On an unsigned macOS installation, if the OS blocks the self-swap ("App
+  Management"), the app falls back to downloading, verifying and revealing the new version.
 - Beta or prerelease channels, staged rollouts and delta updates. The manifest format leaves room for channels
   later.
 - Updating through package managers: an APT repository, Homebrew, winget, Flatpak or Snap.

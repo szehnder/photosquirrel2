@@ -34,6 +34,8 @@ The owner chose "install on quit" as the default.
   - After two failed trials, the next start restores the kept version, unless any catalog this installation used has
     a format newer than the kept version opens.
   - Manual rollback (Settings, `update rollback`) uses the same guard.
+- **Signer pinning.** When the installed bundle is Developer ID signed (ADR-0128), a new bundle must pass
+  `codesign --verify --strict` with the same Team ID.
 - **Scope.** The updater writes only the installation and its update folder. No source, library, quarantine,
   catalog, thumbnail store or settings file is touched (ADR-0004).
 
