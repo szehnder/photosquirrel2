@@ -37,7 +37,9 @@ The owner chose "install on quit" as the default.
 - **Signer pinning.** When the installed bundle is Developer ID signed (ADR-0128), a new bundle must pass
   `codesign --verify --strict` with the same Team ID.
 - **Scope.** The updater writes only the installation and its update folder. No source, library, quarantine,
-  catalog, thumbnail store or settings file is touched (ADR-0004).
+  catalog, thumbnail store or settings file is touched (ADR-0004). Its file operations (rename, remove) are
+  allowed by the layering check's `MOVE_ALLOWED` table, per module of `ps-update` with this reason, and
+  nowhere else.
 
 ## Alternatives considered
 - **Install while running, Sparkle style, then relaunch** - it can interrupt work, and Windows cannot replace running

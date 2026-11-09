@@ -166,11 +166,11 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\NASM"
       - run: cargo build --workspace --locked
       # Platform-only code (cfg'd for macOS or Windows) gets the same lint bar as Linux.
-      - run: cargo clippy --locked -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service -p photosquirrel-cli -p xtask -- -D warnings
+      - run: cargo clippy --locked -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-update -p ps-service -p photosquirrel-cli -p xtask -- -D warnings
       # Engine crates are platform-sensitive (paths, file ids, fsync, renames); UI tests run on Linux.
       # The 1M-row catalog tests run at a tenth of the scale here: these runners take about an hour per test at
       # full scale, which Linux CI and `cargo xtask bench` cover.
-      - run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service
+      - run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-update -p ps-service
         env:
           PHOTOSQUIRREL_TEST_SCALE: reduced
           # ImageIO is always present on macOS: its tests must pass there; Windows runners may lack the HEIF/HEVC
@@ -179,6 +179,6 @@ jobs:
       # The engine crates' wall-clock budget tests (`ignore = "timing"`, ADR-0075 and ADR-0076), alone and one at a
       # time after the main tests. Same packages as above, so cargo resolves the same features and rebuilds nothing.
       - name: Timing pass (engine crates)
-        run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-service --test control -- --ignored --exact --test-threads=1 scenario_scan_control_cancel_within_250_ms scenario_scan_control_pause_within_250_ms cancel_reaches_a_long_tiff_decode_within_250_ms cancel_reaches_a_hung_avif_decode_within_250_ms
+        run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-update -p ps-service --test control -- --ignored --exact --test-threads=1 scenario_scan_control_cancel_within_250_ms scenario_scan_control_pause_within_250_ms cancel_reaches_a_long_tiff_decode_within_250_ms cancel_reaches_a_hung_avif_decode_within_250_ms
         env:
           PHOTOSQUIRREL_TEST_SCALE: reduced

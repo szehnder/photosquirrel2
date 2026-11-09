@@ -1,0 +1,39 @@
+[package]
+name = "ps-update"
+description = "Update checks, signed manifests, downloads and installs (spec app-updates; ADR-0124..0127)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# The test key (tests/data/test-key.pub) is trusted besides the release keys. Never in a release build:
+# `cargo xtask package` fails if a shipped binary contains it (ADR-0125).
+test-key = []
+# Test support for this and dependent crates: the test key, signing with it, and a loopback HTTP server.
+testing = ["test-key", "dep:minisign"]
+
+[dependencies]
+ps-model.workspace = true
+# Blocking HTTPS on the updater's own thread: no async runtime (ADR-0127).
+ureq = { workspace = true, features = ["platform-verifier"] }
+minisign-verify = "0.3"
+semver = "1"
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+directories.workspace = true
+minisign = { version = "0.10", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[dev-dependencies]
+ps-update = { path = ".", features = ["testing"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

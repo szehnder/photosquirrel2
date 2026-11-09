@@ -22,6 +22,7 @@ ps-scan = { path = "crates/ps-scan" }
 ps-llm = { path = "crates/ps-llm" }
 ps-export = { path = "crates/ps-export" }
 ps-service = { path = "crates/ps-service" }
+ps-update = { path = "crates/ps-update" }
 ui-theme = { path = "crates/ui-theme" }
 ui-gallery = { path = "crates/ui-gallery" }
 ui-workspace = { path = "crates/ui-workspace" }
