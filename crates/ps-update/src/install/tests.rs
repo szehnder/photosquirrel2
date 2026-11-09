@@ -3,7 +3,7 @@
 //! in for the NSIS installer.
 #![cfg(unix)]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::os::unix::fs::PermissionsExt;
 
 use super::*;
@@ -12,6 +12,8 @@ use crate::state::Ready;
 thread_local! {
     /// Make the bundle exchange fail as macOS App Management would.
     pub(super) static REFUSE_EXCHANGE: Cell<bool> = const { Cell::new(false) };
+    /// A stand-in for `codesign`.
+    pub(super) static CODESIGN: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 const OLD: &str = "0.4.0";
@@ -341,6 +343,75 @@ fn scenario_app_updates_refused_swap_falls_back_to_a_manual_install() {
         !state.is_skipped(NEW),
         "the user can still install it by hand"
     );
+}
+
+/// A fake `codesign`: a bundle's Team ID is the text of its `team` file; `adhoc` or no file is an ad-hoc
+/// signature (no Team ID), and only a bundle with a `team` file verifies.
+fn fake_codesign(root: &Path) -> PathBuf {
+    let path = root.join("bin/codesign");
+    script(
+        &path,
+        "case \"$1\" in\n\
+         -dv) t=$(cat \"$2/team\" 2>/dev/null)\n\
+              if [ -n \"$t\" ] && [ \"$t\" != adhoc ]; then echo \"TeamIdentifier=$t\" >&2;\n\
+              else echo 'TeamIdentifier=not set' >&2; fi ;;\n\
+         --verify) [ -f \"$3/team\" ] ;;\n\
+         esac",
+    );
+    path
+}
+
+/// Sign the installed bundle with `installed` and the offered one with `offered`, then re-pack the payload.
+fn sign_bundles(f: &Fake, installed: &str, offered: &str) {
+    fs::write(f.location.join("team"), installed).unwrap();
+    let src = f.root.join("payload-src");
+    fs::write(src.join("PhotoSquirrel.app/team"), offered).unwrap();
+    let payload = f
+        .dir
+        .ready_dir(NEW)
+        .join("PhotoSquirrel-0.4.1-macos-universal.app.tar.gz");
+    let ok = Command::new("tar")
+        .arg("-czf")
+        .arg(&payload)
+        .arg("-C")
+        .arg(&src)
+        .arg("PhotoSquirrel.app")
+        .status()
+        .unwrap();
+    assert!(ok.success());
+}
+
+#[test]
+fn scenario_app_updates_bundle_from_another_signer_refused() {
+    for offered in ["adhoc", "OTHERTEAM1"] {
+        let f = Fake::new(Kind::MacApp, NEW);
+        CODESIGN.with(|c| *c.borrow_mut() = Some(fake_codesign(&f.root)));
+        sign_bundles(&f, "TEAMID1234", offered);
+        let before = f.snapshot();
+        let e = f.finish(None).expect_err("refused");
+        CODESIGN.with(|c| *c.borrow_mut() = None);
+        assert!(
+            e.to_string()
+                .contains("the update is not signed by the same developer"),
+            "{offered}: {e}"
+        );
+        assert_eq!(
+            f.snapshot(),
+            before,
+            "{offered}: the installed bundle is unchanged"
+        );
+        assert!(
+            UpdateState::load(&f.dir).is_skipped(NEW),
+            "{offered}: the version is skipped"
+        );
+    }
+    // The same Team ID installs.
+    let f = Fake::new(Kind::MacApp, NEW);
+    CODESIGN.with(|c| *c.borrow_mut() = Some(fake_codesign(&f.root)));
+    sign_bundles(&f, "TEAMID1234", "TEAMID1234");
+    let done = f.finish(None);
+    CODESIGN.with(|c| *c.borrow_mut() = None);
+    assert_eq!(done.unwrap(), Step::Done);
 }
 
 #[test]

@@ -12,12 +12,17 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use ps_model::settings::UpdateMode;
-use ps_update::check::{Outcome, Updater};
+// The update types the UI shows are re-exported, so UI crates reach them through this facade (ADR-0027).
+pub use ps_update::check::{Outcome, Updater};
+pub use ps_update::deliver::ManualInstall;
+use ps_update::history;
+pub use ps_update::history::Entry as HistoryEntry;
 use ps_update::install;
 use ps_update::kind::Probe;
-use ps_update::kind::{Installation, Kind};
-use ps_update::state::{CheckRecord, Failure, FailureReason, UpdateState};
-use ps_update::{UpdateDir, UpdateError, history};
+pub use ps_update::kind::{Installation, Kind};
+use ps_update::state::UpdateState;
+pub use ps_update::state::{CheckRecord, Failure, FailureReason};
+pub use ps_update::{UpdateDir, UpdateError, now_secs};
 
 /// No request before this many seconds after start ("Quiet start").
 pub const FIRST_CHECK_AFTER_S: i64 = 60;
@@ -167,6 +172,8 @@ struct Shared {
     busy: Mutex<Option<Busy>>,
     stop: AtomicBool,
     wake: (Mutex<bool>, Condvar),
+    /// The installer helper was started (Restart now, Go back): quitting must not start another.
+    handed_off: AtomicBool,
 }
 
 /// The app's update service. Cheap to clone.
@@ -206,6 +213,7 @@ impl UpdateService {
                 busy: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 wake: (Mutex::new(false), Condvar::new()),
+                handed_off: AtomicBool::new(false),
             }),
         }
     }
@@ -254,6 +262,19 @@ impl UpdateService {
         &self.shared.installation
     }
 
+    /// This user's update folder.
+    pub fn dir(&self) -> &UpdateDir {
+        &self.shared.updater.dir
+    }
+
+    /// The most recent update history entries, newest first (Settings, and the Details of a failure).
+    pub fn history(&self, n: usize) -> Vec<history::Entry> {
+        let mut all = history::read(&self.shared.updater.dir);
+        all.reverse();
+        all.truncate(n);
+        all
+    }
+
     /// Tell the service how to see a running scan, export or cleanup (ADR-0065).
     pub fn set_busy_probe(&self, probe: BusyProbe) {
         *self
@@ -278,7 +299,8 @@ impl UpdateService {
             .ok_or_else(|| UpdateError::Failed("no installed CLI to install with".into()))
     }
 
-    fn blocked_by(&self) -> Option<&'static str> {
+    /// The scan, export or cleanup that "Restart now" waits for, if one runs now (ADR-0065).
+    pub fn blocked_by(&self) -> Option<&'static str> {
         let probe = self
             .shared
             .busy_probe
@@ -301,6 +323,9 @@ impl UpdateService {
     /// mode, or "Install on quit"), the installation installs itself, and that version's install was not already
     /// handed to the user. Returns whether the installer was started.
     pub fn on_quit(&self) -> bool {
+        if self.shared.handed_off.load(Ordering::SeqCst) {
+            return false;
+        }
         let mode = (self.shared.mode)();
         let state = UpdateState::load(&self.shared.updater.dir);
         let Some(ready) = state.ready.as_ref() else {
@@ -330,7 +355,45 @@ impl UpdateService {
             &self.shared.installation,
             &cli,
             relaunch,
-        )
+        )?;
+        self.shared.handed_off.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// "Download" for an installation that does not update itself (a `.deb`): download and verify the
+    /// available package, save it as a new file in Downloads, reveal it, and return it with the command that
+    /// installs it.
+    pub fn save_for_manual_install(
+        &self,
+    ) -> Result<ps_update::deliver::ManualInstall, UpdateError> {
+        let state = UpdateState::load(&self.shared.updater.dir);
+        let manifest = state
+            .available
+            .ok_or_else(|| UpdateError::Failed("no newer version is available".into()))?;
+        let downloads = ps_update::deliver::downloads_dir()
+            .ok_or_else(|| UpdateError::Failed("this system has no Downloads folder".into()))?;
+        self.set_busy(Some(Busy::Downloading));
+        let r = self.shared.updater.prepare_manual_install(
+            &manifest,
+            self.shared.installation.kind,
+            &downloads,
+        );
+        self.set_busy(None);
+        let manual = r?;
+        ps_update::deliver::reveal(&manual.file);
+        Ok(manual)
+    }
+
+    /// "Go back to <kept>": put the kept version back once the app has quit, then start it. Refused while a
+    /// scan, export or cleanup runs, and by the catalog guard. The caller quits the app when this returns `Ok`.
+    pub fn go_back(&self) -> Result<(), UpdateError> {
+        if let Some(op) = self.blocked_by() {
+            return Err(UpdateError::Failed(format!("Available when {op} finishes")));
+        }
+        let cli = self.cli()?;
+        rollback_after_exit(&self.shared.updater, &self.shared.installation, &cli, true)?;
+        self.shared.handed_off.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Check, download and hand the install to the helper now, for `--update-now` (the release round trip): the
@@ -486,7 +549,8 @@ impl UpdateService {
         status.busy = busy;
     }
 
-    fn refresh(&self, now: i64) {
+    /// Recompute the status snapshot at `now` (after a mode change, for example).
+    pub fn refresh(&self, now: i64) {
         let busy = *self.shared.busy.lock().unwrap_or_else(|e| e.into_inner());
         let mut status = compute_status(
             &self.shared.updater,
@@ -624,6 +688,21 @@ fn record(dir: &UpdateDir, failure: Failure) {
         log::warn!("update state not saved: {e}");
     }
     history::record(dir, "failure", Some(&version), &message);
+}
+
+/// "Restart now" and "Go back" wait for this: a running scan, export or cleanup of `library`, if its engine is
+/// open (ADR-0065). Cheap: two mutex reads.
+pub fn busy_probe(library: Arc<crate::library::Library>) -> BusyProbe {
+    Arc::new(move || {
+        let engine = library.opened()?;
+        if engine.active().is_some() {
+            return Some("the scan");
+        }
+        engine.current_operation().map(|op| match op {
+            crate::ops::Operation::Export => "the export",
+            _ => "the cleanup",
+        })
+    })
 }
 
 /// This build's updater, with this user's update folder.

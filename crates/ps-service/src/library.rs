@@ -331,6 +331,9 @@ pub struct Library {
     dispositions: Mutex<Option<Arc<Dispositions>>>,
     insight_index: Mutex<Option<InsightIndex>>,
     insight_index_stats: Mutex<InsightIndexStats>,
+    /// While held, opening the engine waits ([`Library::defer_open`]): a trial start of a new version opens the
+    /// catalog for writing only after its first frame (ADR-0126).
+    open_gate: (Mutex<bool>, std::sync::Condvar),
 }
 
 impl std::fmt::Debug for Library {
@@ -360,7 +363,30 @@ impl Library {
             dispositions: Mutex::new(None),
             insight_index: Mutex::new(None),
             insight_index_stats: Mutex::new(InsightIndexStats::default()),
+            open_gate: (Mutex::new(false), std::sync::Condvar::new()),
         }
+    }
+
+    /// Hold back opening the catalog: every call that needs the engine waits until [`Library::allow_open`].
+    /// Used on a trial start of a new version, so the catalog is migrated only once the new version has drawn
+    /// its first frame (spec `app-updates`, "Failed start restores the previous version").
+    pub fn defer_open(&self) {
+        *lock(&self.open_gate.0) = true;
+    }
+
+    /// Let the catalog open (after [`Library::defer_open`]).
+    pub fn allow_open(&self) {
+        *lock(&self.open_gate.0) = false;
+        self.open_gate.1.notify_all();
+    }
+
+    fn wait_until_open_allowed(&self) {
+        let (held, cv) = &self.open_gate;
+        let held = lock(held);
+        drop(
+            cv.wait_while(held, |h| *h)
+                .unwrap_or_else(|p| p.into_inner()),
+        );
     }
 
     /// A library over an already opened engine (tests with custom scan options, such as a slow device).
@@ -391,6 +417,9 @@ impl Library {
 
     /// The engine (opened on first use, with the applied settings' scanner options).
     pub fn scan(&self) -> Result<&ScanService> {
+        if self.engine.get().is_none() {
+            self.wait_until_open_allowed();
+        }
         let engine = self
             .engine
             .get_or_init(|| {

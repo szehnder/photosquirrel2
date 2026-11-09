@@ -486,6 +486,42 @@ mod trial {
     }
 
     #[test]
+    fn scenario_app_updates_trial_start_opens_the_catalog_after_the_first_frame() {
+        // No catalog yet: opening creates and migrates one, which a trial start must not do before its first
+        // frame (the app holds the library back from `main()` and lets it go at the first frame).
+        let i = installed(None);
+        let u = new_version(&i);
+        let library = Arc::new(crate::library::Library::new(&i.data));
+        library.defer_open();
+        assert_eq!(
+            trial_start(&u, &i.installation, Some(&i.cli)),
+            TrialStart::Trial
+        );
+        let lib = library.clone();
+        let summary = std::thread::spawn(move || lib.summary().map(|s| s.photos));
+        std::thread::sleep(Duration::from_millis(300));
+        let catalog = i.data.join(ps_catalog::CATALOG_FILE);
+        assert!(
+            !catalog.exists(),
+            "the catalog is not opened before the first frame"
+        );
+        assert!(
+            !summary.is_finished(),
+            "the summary waits for the first frame"
+        );
+        assert!(library.opened().is_none());
+        // The first frame: the trial is recorded, then the catalog opens and is migrated.
+        trial_succeeded(&u.dir);
+        assert!(UpdateState::load(&u.dir).trial.unwrap().ok);
+        library.allow_open();
+        assert_eq!(summary.join().unwrap().unwrap(), 0);
+        assert_eq!(
+            ps_catalog::db::stored_version(&catalog).unwrap(),
+            Some(ps_catalog::latest_schema_version())
+        );
+    }
+
+    #[test]
     fn scenario_app_updates_successful_trial_keeps_the_new_version() {
         let i = installed(Some(27));
         let u = new_version(&i);
@@ -659,6 +695,7 @@ fn scenario_app_updates_quit_installs_a_ready_update() {
     run(&s, t0, t0 + HOUR);
     assert_eq!(s.status().ready.as_deref(), Some("0.4.1"));
     assert!(s.on_quit(), "the installer starts at quit");
+    assert!(!s.on_quit(), "one installer, however often quit is called");
     // The helper was started to carry out the plan; it runs once the app has exited.
     let mut args = String::new();
     for _ in 0..200 {

@@ -794,7 +794,7 @@ fn check_same_signer(installed: &Path, staged: &Path) -> Result<(), UpdateError>
     let Some(team) = team_id(installed) else {
         return Ok(());
     };
-    let verified = Command::new("codesign")
+    let verified = codesign()
         .args(["--verify", "--strict"])
         .arg(staged)
         .status()
@@ -808,13 +808,18 @@ fn check_same_signer(installed: &Path, staged: &Path) -> Result<(), UpdateError>
     }
 }
 
+/// Apple's `codesign` (tests put a fake in its place).
+fn codesign() -> Command {
+    #[cfg(test)]
+    if let Some(fake) = tests::CODESIGN.with(|c| c.borrow().clone()) {
+        return Command::new(fake);
+    }
+    Command::new("codesign")
+}
+
 /// The TeamIdentifier of a signed bundle, if it has one.
 fn team_id(bundle: &Path) -> Option<String> {
-    let out = Command::new("codesign")
-        .arg("-dv")
-        .arg(bundle)
-        .output()
-        .ok()?;
+    let out = codesign().arg("-dv").arg(bundle).output().ok()?;
     let text = String::from_utf8_lossy(&out.stderr);
     text.lines()
         .find_map(|l| l.strip_prefix("TeamIdentifier="))
