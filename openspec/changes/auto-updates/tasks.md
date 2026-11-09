@@ -155,10 +155,15 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   path (backup, `setup /S /NS`, `--version` of both programs, copying the backup back and restoring
   `DisplayVersion`) runs in the scenarios with a script standing in for the installer. A real NSIS run is task
   10.1's.
-- [ ] 5.5 Install on quit and Restart now: the quit hook, the ADR-0065 slot check, and relaunch for Restart now only.
+- [x] 5.5 Install on quit and Restart now: the quit hook, the ADR-0065 slot check, and relaunch for Restart now only.
   Verify: `scenario_app_updates_restart_now_waits_for_a_scan` (headless UI test) and
   `scenario_app_updates_quit_installs_a_ready_update` (a service-level test with a fake installation and a stub app
   process).
+  Done: `ui_workspace::updates_ui` registers `cx.on_app_quit`, which calls `UpdateService::on_quit`; "Restart now"
+  and "Go back to" (`Shell::restart_for_update`) hand the plan to the helper with relaunch, save the layout and
+  quit, and the service starts the helper once per run. The button reads "Available when the scan finishes" while
+  the ADR-0065 slot is held (`ps_service::updates::busy_probe`). Passing: the service scenarios and the headless
+  `restart_now_button_waits_for_a_scan`; the app's hidden `--update-now` drives `update_now` for the round trip.
 - [x] 5.6 Scope: the updater writes only the installation and its update folder. Verify:
   `scenario_app_updates_user_data_untouched_by_install_and_rollback`, with tree snapshots of the sources, library,
   quarantine and data directory on the small corpus.
@@ -169,9 +174,14 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 ## 6. Trials and rollback
 
-- [ ] 6.1 The early trial check in `photosquirrel` `main()`, before GPU selection, and the trial-ok mark at the first
+- [x] 6.1 The early trial check in `photosquirrel` `main()`, before GPU selection, and the trial-ok mark at the first
   frame. On a trial start, `CatalogBackend::warm` waits until the trial-ok mark. Verify:
   `scenario_app_updates_trial_start_opens_the_catalog_after_the_first_frame` and
+  `scenario_app_updates_successful_trial_keeps_the_new_version`.
+  Done: `photosquirrel/src/updates.rs` counts the start before the window; on a trial start `Library::defer_open`
+  holds every catalog open, and the first-frame hook records the trial, then lets the catalog open and warm.
+  Passing: `scenario_app_updates_trial_start_opens_the_catalog_after_the_first_frame` (no catalog file and a
+  waiting summary until the trial is recorded; migrated after) and
   `scenario_app_updates_successful_trial_keeps_the_new_version`.
 - [x] 6.2 Automatic rollback after two failed trials, with the catalog guard (`state.catalogs`, read-only
   `user_version` against `kept.max_catalog_schema`), and adding the failed version to `skipped`. Verify:
@@ -191,20 +201,30 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 ## 7. UI
 
-- [ ] 7.1 The consent card in onboarding and the one-time banner after an upgrade (at most 3 shows, then off).
+- [x] 7.1 The consent card in onboarding and the one-time banner after an upgrade (at most 3 shows, then off).
   Verify: `scenario_app_shell_first_launch_shows_onboarding`,
   `scenario_app_updates_keep_me_up_to_date_enables_automatic_updates` and `scenario_app_updates_upgraded_user_asked_once`.
-- [ ] 7.2 The banners, status-bar item and toasts of design D8 (ready, available, cannot install, urgent, updated,
+  Done: the onboarding card (`updates-question`) and the banner for upgraded users; the third close without an
+  answer sets the mode to off. Passing: the three scenarios and `the_question_banner_stops_asking_after_three_closes`.
+- [x] 7.2 The banners, status-bar item and toasts of design D8 (ready, available, cannot install, urgent, updated,
   failed), the What's new dialog, and "Check for updates…" in the palette, all with ui-theme tokens. Verify:
   `scenario_app_updates_urgent_notice_persists`, headless tests for each D8 state, and `cargo xtask tokens`.
-- [ ] 7.3 The Settings > General > Updates group. Verify: `scenario_settings_updates_group_shows_the_update_state`
+  Done, as design D8 "as built" says (one banner for every notice, What's new opens the release page). Headless
+  tests of the ready, available, urgent, deb, failed states and the palette check pass; `cargo xtask tokens` is
+  run with task 11.1.
+- [x] 7.3 The Settings > General > Updates group. Verify: `scenario_settings_updates_group_shows_the_update_state`
   and `scenario_settings_search_filters_settings` (unchanged).
+  Done: the `updates.mode` setting row and the `settings-updates` group. Passing:
+  `scenario_settings_updates_group_shows_the_update_state`.
 - [ ] 7.4 Quiet start: extend `crates/ui-workspace/tests/network.rs` with the undecided, off and automatic cases,
   using the recording transport and the socket check, and extend the HTTP-client manifest check to `photosquirrel` and
   `ui-*`. Verify: `scenario_app_shell_no_network_at_startup`,
   `scenario_app_shell_no_network_while_updates_are_undecided_or_off` and
   `scenario_app_shell_only_the_update_host_while_updates_are_on`. `cargo xtask bench --check` shows `cold-start` and
   `idle-rss` within budget and not regressed against the baseline.
+  Progress: the three scenarios pass (48 h undecided, then 48 h off: no request through the recording transport and
+  no socket; automatic: nothing in the first 60 s, then only the manifest address), and the HTTP-client check
+  covers `photosquirrel`, `ui-gallery` and `ui-theme`. Still open: the bench on the reference desktop (task 10.2).
 - [ ] 7.5 Screenshots of the consent card, the ready banner and the Settings group in dark and light themes (`cargo
   xtask screenshot`). Verify: a screenshot review shows no overflow, and every text names versions.
 
@@ -271,9 +291,9 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   `scenario_release_packaging_readme_explains_updates`,
   `scenario_release_packaging_runbook_covers_withdrawal_and_key_events`,
   `scenario_release_packaging_readme_screenshots_exist` and `scenario_release_packaging_heic_fallback_noted` pass.
-- [ ] 9.5 `docs/gpui-notes.md`: add anything surprising about the first-frame hook, the quit hook or the detached
+- [x] 9.5 `docs/gpui-notes.md`: add anything surprising about the first-frame hook, the quit hook or the detached
   spawn from a GPUI app. Verify: the note exists, or tasks.md records "nothing new".
-
+  Done: "App time, the quit hook and the first frame" in `docs/gpui-notes.md`.
 ## 10. Release candidates (owner)
 
 - [ ] 10.1 Tag `v0.4.0-rc.1` and `v0.4.0-rc.2` (prereleases, real key). On Linux (an AppImage in `~/Applications`),
