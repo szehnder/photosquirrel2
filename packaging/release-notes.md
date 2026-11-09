@@ -161,12 +161,10 @@ the runtime against a modified libfuse, the source of the runtime itself and of 
 
 ### First launch
 
-These builds are not code-signed yet, so the first launch shows a warning:
-
-- **macOS** says the app "can't be opened" or "is damaged". Right-click PhotoSquirrel in Applications and choose
-  **Open**. If that doesn't work, go to **System Settings → Privacy & Security** and click **Open Anyway**. Or
-  run `xattr -dr com.apple.quarantine /Applications/PhotoSquirrel.app`.
-- **Windows** SmartScreen says it "protected your PC". Click **More info → Run anyway**.
+- **macOS:** the app is signed with a Developer ID and notarized by Apple. The first time you open it, macOS only
+  asks whether to open an app downloaded from the internet; click **Open**.
+- **Windows:** the installer is not code-signed yet, so SmartScreen says it "protected your PC". Click
+  **More info → Run anyway**.
 
 ### Requirements
 

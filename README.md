@@ -80,12 +80,11 @@ license notices of the open-source components they include (`THIRD-PARTY-LICENSE
 
 ### First launch
 
-The packages are not code-signed yet, so your system warns you the first time:
-
-- **macOS** says the app "can't be opened" or "is damaged". Right-click PhotoSquirrel in Applications and choose
-  **Open**. If that doesn't work, open **System Settings → Privacy & Security** and click **Open Anyway**, or run
-  `xattr -dr com.apple.quarantine /Applications/PhotoSquirrel.app` in Terminal.
-- **Windows** SmartScreen says it "protected your PC". Click **More info → Run anyway**.
+- **macOS:** the app is signed with a Developer ID and notarized by Apple (releases after 0.3.1). The first time
+  you open it, macOS only asks whether to open an app downloaded from the internet; click **Open**. For 0.3.1 and
+  earlier, which were not signed, right-click PhotoSquirrel in Applications and choose **Open**.
+- **Windows:** the installer is not code-signed yet, so SmartScreen says it "protected your PC". Click
+  **More info → Run anyway**.
 
 ### Requirements
 
