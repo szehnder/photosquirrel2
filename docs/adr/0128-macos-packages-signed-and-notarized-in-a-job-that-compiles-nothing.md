@@ -14,8 +14,9 @@ away from compiling jobs. cargo-packager 0.11.8 can sign, but only inside that b
 the DMG, and it skips notarization with a warning when credentials are missing.
 
 ## Decision
-- For tagged releases, and approved dry runs on `main`, a `sign-macos` job in the protected GitHub environment
-  `macos-signing` does the signing. That environment has a required reviewer, and only `main` and `v*` may use it.
+- For tagged releases, and approved dry runs with the `sign_macos` input, a `sign-macos` job in the protected GitHub
+  environment `macos-signing` does the signing. That environment has a required reviewer, and its deployment rules
+  admit `main` and `v*` (and any branch the owner adds while testing).
   - It signs the unsigned `.app` that the build job produced: Developer ID Application, inside-out, hardened runtime,
     secure timestamp, no `--deep`, and no entitlements.
   - It notarizes with an App Store Connect team API key (`notarytool --wait`), staples the app, builds the DMG with
@@ -24,7 +25,7 @@ the DMG, and it skips notarization with a warning when credentials are missing.
   - Its temporary keychain and key files are deleted on every outcome.
 - A `verify-macos` job without secrets checks the signature, Team ID (pinned by the repository variable
   `APPLE_TEAM_ID`), hardened runtime, timestamp, Gatekeeper acceptance as "Notarized Developer ID", and stapling.
-  It runs the signed programs, and rebuilds the macOS archives from the signed app.
+  It runs the signed programs (`--version`), and rebuilds the macOS archives from the signed app.
 - A tag publishes macOS packages only from `verify-macos`, and fails without them. Other dry runs stay unsigned and
   say so.
 - Windows and Linux signing are not decided here.
@@ -40,7 +41,8 @@ the DMG, and it skips notarization with a warning when credentials are missing.
 - The Developer ID key can sign only what the repository's script passes to `codesign`, and only after the owner
   approves the deployment.
 - The DMG is built by `hdiutil` rather than cargo-packager, so its window layout may change.
-- A tag cannot be released until the macOS signing secrets exist. The certificate must be renewed every 5 years.
+- A tag cannot be released until the macOS signing secrets exist. The certificate must be renewed about yearly
+  (Apple issues it for about 13 months).
 - The updater (ADR-0126) pins a signed installation to its Team ID.
 
 ## Revisit when

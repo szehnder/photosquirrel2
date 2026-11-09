@@ -29,20 +29,18 @@ machine and GitHub Actions. macOS runner minutes are free for a public repositor
     builds, signs, notarizes and staples the DMG. Its throwaway keychain and the key files are deleted at the end,
     even when it fails.
   - **`verify-macos`** has no secrets. It checks the signature, hardened runtime, Team ID, notarization, stapling
-    and Gatekeeper acceptance of the app and the DMG. It runs the signed binaries (`--version`, plus a short
-    headless start of the app), then rebuilds the `.tar.gz` (and `.app.tar.gz`) from the signed app with new
+    and Gatekeeper acceptance of the app and the DMG. It runs the signed binaries with `--version`, then rebuilds the `.tar.gz` (and `.app.tar.gz`) from the signed app with new
     checksums.
 - **A tag without signing fails.** A release takes its macOS packages only from `verify-macos`.
-  - A manual dry run on `main` uses the environment (after the owner's approval) and signs for real, so signing can
-    be proven before a tag.
-  - A dry run from any other ref signs nothing, produces the unsigned packages as today and says so in the job
-    summary.
+  - A manual dry run signs only when its `sign_macos` input is ticked, and only for a ref the environment's
+    deployment rules admit (after the owner's approval), so signing can be proven before a tag.
+  - A dry run without it signs nothing, produces the unsigned packages as today and says so in the job summary.
 - **Notarization uses an App Store Connect API key** (a team key with Developer access). That avoids an Apple ID
   password, app-specific passwords and two-factor prompts in CI.
 - **Docs.** The README's macOS "First launch" note changes (no warning, only the standard "downloaded from the
   internet" prompt). The release notes change the same way. `docs/releasing.md` gets a "macOS signing" section: how
-  to create the certificate and key from Windows and a browser, the secret names, renewing the certificate (it is
-  valid for 5 years), and what to do if it leaks (revoke it at Apple, then replace the secrets).
+  to create the certificate and key from Windows and a browser, the secret names, renewing the certificate (Apple
+  now issues it for about 13 months), and what to do if it leaks (revoke it at Apple, then replace the secrets).
 - **`auto-updates`, folded in.**
   - A signed installed bundle accepts only a new bundle that passes signature verification with the same Team ID.
   - The update manifest is signed after `verify-macos`, so it lists the signed macOS packages.

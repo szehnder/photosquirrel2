@@ -41,7 +41,9 @@
 
 **`sign-macos`** (`macos-15`):
 - `needs: package`, `environment: macos-signing`, `permissions: contents: read`.
-- It runs when `startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'`.
+- It runs for a pushed `v*` tag, or for a manual run with the `sign_macos` input ticked. The environment's
+  deployment rules (`main` and `v*`, plus any branch the owner adds while testing) decide whether that ref may use
+  the secrets.
 - The steps are a checkout (`persist-credentials: false`), downloading the unsigned app, and
   `packaging/macos/sign.sh`.
 - It has no `cargo`, no `rustup` and no third-party action other than the pinned checkout and artifact actions.
@@ -53,8 +55,9 @@
   --out target/packages`. This step compiles only xtask, with `--locked`. It:
   1. Runs the checks of D3 and fails on any of them.
   2. Checks that the signed app's file list and `Info.plist` match the unsigned app's.
-  3. Runs `Contents/MacOS/photosquirrel{,-cli} --version`, and runs `photosquirrel --exit-after 3` (macOS runners
-     have a GUI session). This proves the hardened runtime and library validation do not stop the app.
+  3. Runs `Contents/MacOS/photosquirrel{,-cli} --version`. dyld loads every linked framework before `main`, so
+     this proves the hardened runtime and library validation do not stop the programs. A GUI start was dropped,
+     because GitHub's macOS VMs may have no usable GPU.
   4. Rebuilds `PhotoSquirrel-<v>-macos-universal.tar.gz` (through `package.rs` `archive()`, with the binaries from
      the signed app) and, once `auto-updates` has landed, the `.app.tar.gz`.
   5. Copies the DMG and writes new `.sha256` files.
@@ -63,9 +66,9 @@
 **`release`** (the publishing job):
 - For a tag, it needs `verify-macos` and downloads `packages-macos-signed` instead of `packages-macos`. It fails if
   any macOS package is missing.
-- For a dry run from `main`, it does the same.
-- For a dry run from any other ref, it uses `packages-macos` and the summary says "macOS packages are NOT signed (dry
-  run outside main)".
+- For a dry run with `sign_macos`, it does the same.
+- For a dry run without it, it uses `packages-macos` and the summary says "macOS packages are NOT signed (dry run
+  without sign_macos)".
 - The `auto-updates` manifest `sign` job needs `verify-macos` on the same condition, so the manifest hashes the signed
   files.
 
@@ -126,7 +129,8 @@ so a wrong certificate in the secrets fails the release.
 
 ### D4. The owner's setup, with no Mac (tasks 1.x)
 
-Run in PowerShell, with Git for Windows' OpenSSL (`$env:Path += ";C:\Program Files\Git\usr\bin"`), in a folder that is
+Run in PowerShell, with Git for Windows' OpenSSL (`$env:Path += ";C:\Program Files\Git\ucrt64\bin"`; older Git
+versions keep it in `usr\bin`), in a folder that is
 not synced to the cloud:
 
 1. **Key and CSR:**
@@ -162,8 +166,8 @@ not synced to the cloud:
    - Add the repository **variable** `APPLE_TEAM_ID`.
 6. **Back up and clean up.** Put `devid.key`, `devid.p12` with its password, and the `.p8` in a password manager
    or other encrypted storage, then delete the working folder.
-7. **Prove it:** run `gh workflow run release.yml --ref main`, approve the `macos-signing` deployment, and check that
-   `verify-macos` is green.
+7. **Prove it:** run `gh workflow run release.yml --ref main -f sign_macos=true`, approve the `macos-signing`
+   deployment, and check that `verify-macos` is green.
 
 ### D5. Effect on `auto-updates`
 
@@ -180,8 +184,9 @@ These are folded into that change's artifacts:
 
 - **Notarization latency.** It is usually minutes and sometimes over 30 min. The `--timeout 45m` limit and one manual
   rerun are documented. Notarization is never skipped silently.
-- **The certificate expires after 5 years**, and an expired one fails `security find-identity`. The runbook has a
-  renewal section, and stapled tickets of older releases stay valid.
+- **The certificate expires after about 13 months** (Apple's current Developer ID validity, seen on 2026-11-08), and
+  an expired one fails `security find-identity`. The runbook has a yearly renewal section. Releases signed with a
+  secure timestamp and stapled keep opening after it expires.
 - **A leaked certificate.** Revoke it at developer.apple.com, which also invalidates already-signed releases'
   signatures for new launches until they are re-signed. Re-issue it, update the secrets, and cut a release. The
   required reviewer limits who can start the job.
@@ -207,7 +212,7 @@ cargo test -p xtask macos_signing
 ```
 
 ```bash
-gh workflow run release.yml --ref main
+gh workflow run release.yml --ref main -f sign_macos=true
 ```
 
 ```bash
@@ -215,6 +220,6 @@ cargo xtask ci
 ```
 
 - `cargo test -p xtask macos_signing` runs the parsers on the recorded outputs.
-- The `main` dry run with approval must show `sign-macos` and `verify-macos` green and `spctl` "Notarized Developer
+- The `sign_macos` dry run with approval must show `sign-macos` and `verify-macos` green and `spctl` "Notarized Developer
   ID" for the app and the DMG.
 - A dry run from another branch must show signing skipped and the summary note.

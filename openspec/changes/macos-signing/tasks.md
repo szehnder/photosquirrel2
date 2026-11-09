@@ -20,41 +20,53 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
 
 - [ ] 2.1 `package (macos)` also uploads `macos-app-unsigned` (a `ditto` zip of the `.app` from the packager staging
   folder). Verify: a dry-run artifact holds `PhotoSquirrel.app` whose `Contents/MacOS` has both programs.
-- [ ] 2.2 `packaging/macos/sign.sh` (D2) and the `sign-macos` job (D1): the environment, `contents: read`, no cargo,
+- [x] 2.2 `packaging/macos/sign.sh` (D2) and the `sign-macos` job (D1): the environment, `contents: read`, no cargo,
   the `trap` clean-up, and no `set -x`. Verify: `scenario_release_packaging_signing_job_isolated_from_the_build` (an
   xtask test that reads the workflow and the script), and `shellcheck packaging/macos/sign.sh` passes.
+  Done: the script and the job, which runs for a pushed tag or a dry run with the `sign_macos` input. The scenario
+  passes, and `shellcheck` and `bash -n` are clean. The first real run is task 3.4.
 - [ ] 2.3 The DMG from `hdiutil`, with the Applications link. Compare it with the packager's DMG (window, icon,
   link) and record the result in design.md. Verify: the dry-run DMG mounts with `PhotoSquirrel.app` and an
   `Applications` link.
 
 ## 3. Verification job
 
-- [ ] 3.1 `cargo xtask macos-signed`: the D3 parsers and checks, the file-list and `Info.plist` comparison with the
-  unsigned app, and `--version` and `--exit-after 3` runs of the signed programs. Verify:
+- [x] 3.1 `cargo xtask macos-signed`: the D3 parsers and checks, the file-list and `Info.plist` comparison with the
+  unsigned app, and `--version` runs of the signed programs (a GUI start was dropped, design D1). Verify:
   `scenario_release_packaging_signed_app_accepted_by_gatekeeper` and
   `scenario_release_packaging_unsigned_or_wrongly_signed_app_fails_the_release`, on outputs recorded in
   `xtask/tests/data/macos-signing/`. The failing cases are captured from the ad-hoc dry-run build, and from edits of
   one line each.
-- [ ] 3.2 Rebuild the `.tar.gz` (and, once `auto-updates` has landed, the `.app.tar.gz`) from the signed app through
+  Done: `xtask/src/macos_signing.rs`. Both scenarios pass on hand-written recordings in Apple's formats (task 3.4
+  replaces them). The failing cases are the ad-hoc recording and edits of one line each: runtime, team, timestamp,
+  rejected, not stapled. `macos_signing.rs` is in the layering `MOVE_ALLOWED` table for its scratch folder.
+- [x] 3.2 Rebuild the `.tar.gz` (and, once `auto-updates` has landed, the `.app.tar.gz`) from the signed app through
   `archive()`, with new `.sha256` files. Verify: `scenario_release_packaging_archive_binaries_come_from_the_signed_app`.
-- [ ] 3.3 The `verify-macos` job and the release job's selection of the signed macOS packages, plus the summary
+  Done: `rebuild_archive` calls `package::archive` with the signed app's `Contents/MacOS` and its notices. The
+  scenario passes with stand-in programs on Linux.
+- [x] 3.3 The `verify-macos` job and the release job's selection of the signed macOS packages, plus the summary
   line for an unsigned dry run. Verify: `scenario_release_packaging_release_requires_the_signed_macos_packages` and
   `scenario_release_packaging_dry_run_without_signing_says_so` (both read the workflow).
-- [ ] 3.4 First real run: `gh workflow run release.yml --ref main`, approved. Record the actual `codesign`, `spctl` and
-  `stapler` outputs into `xtask/tests/data/macos-signing/`, replacing any hand-written recording, and the
-  notarization time into design.md. Verify: `sign-macos` and `verify-macos` are green, and `spctl` shows
-  `source=Notarized Developer ID` for the app and the DMG.
+  Done: both pass, and `scenario_release_packaging_release_workflow_covers_every_platform` expects the new `needs`.
+- [ ] 3.4 First real run: `gh workflow run release.yml -f sign_macos=true` from a ref the environment admits,
+  approved. Record the actual `codesign`, `spctl` and `stapler` outputs into `xtask/tests/data/macos-signing/`,
+  replacing the hand-written recordings, and the notarization time into design.md. Verify: `sign-macos` and
+  `verify-macos` are green, and `spctl` shows `source=Notarized Developer ID` for the app and the DMG.
 
 ## 4. Docs and the updater
 
-- [ ] 4.1 README "First launch": macOS is the notarized app; remove `xattr` and "is damaged"; keep the Windows
+- [x] 4.1 README "First launch": macOS is the notarized app; remove `xattr` and "is damaged"; keep the Windows
   SmartScreen note. Do the same in `packaging/release-notes.md`. Verify:
   `scenario_release_packaging_no_quarantine_workaround_for_macos`.
-- [ ] 4.2 `docs/releasing.md` "macOS signing": D4 as the setup, the secret names, renewal (5 years), revocation and
-  replacement, and notarization timeouts. If `auto-updates` has not created the file yet, create it with this
-  section. Verify: the section exists and names every secret and the variable.
-- [ ] 4.3 Fold design D5 into `auto-updates` (its spec, design D6/D10 and tasks 5.3, 9.3 and 10.1), if not already
+  Done: the scenario passes. The README says macOS releases after 0.3.1 are notarized, and keeps right-click
+  **Open** for 0.3.1 and earlier.
+- [x] 4.2 `docs/releasing.md` "macOS signing": D4 as the setup, the secret names, renewal (about 13 months),
+  revocation and replacement, and notarization timeouts. If `auto-updates` has not created the file yet, create it
+  with this section. Verify: the section exists and names every secret and the variable.
+  Done: `docs/releasing.md` created, with "Cutting a release" and "macOS signing".
+- [x] 4.3 Fold design D5 into `auto-updates` (its spec, design D6/D10 and tasks 5.3, 9.3 and 10.1), if not already
   done with this change's spec commit. Verify: `openspec validate auto-updates --strict`.
+  Done in 919dab7.
 
 ## 5. Verification
 

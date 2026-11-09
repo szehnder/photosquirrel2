@@ -25,14 +25,14 @@ The Developer ID certificate, its password and the notarization key SHALL be rea
 - **THEN** only the macOS signing job references the signing secrets, it runs in the `macos-signing` environment, runs no `cargo` command, has `contents: read`, and its clean-up step runs on every outcome, deleting the keychain, the certificate file and the key file
 
 ### Requirement: Unsigned dry runs and signed tags
-A tagged release SHALL take its macOS packages only from the verified signed output and SHALL fail without them. A manual dry run SHALL sign when it runs from the default branch and the environment is approved. Otherwise it SHALL build the unsigned packages and state in its summary that they are unsigned.
+A tagged release SHALL take its macOS packages only from the verified signed output and SHALL fail without them. A manual dry run SHALL sign only when its signing input is set, for a ref the protected environment admits. Otherwise it SHALL use the unsigned packages and state in its summary that they are unsigned.
 
 #### Scenario: Release requires the signed macOS packages
 - **WHEN** the release workflow definition is read
 - **THEN** the publishing job needs the macOS verification job for a tag, downloads the macOS packages from its output only, and fails when they are missing
 
 #### Scenario: Dry run without signing says so
-- **WHEN** the release workflow definition is read for a manual run from a branch other than the default branch
+- **WHEN** the release workflow definition is read for a manual run without the signing input
 - **THEN** the signing and verification jobs are skipped, the unsigned macOS packages are used, and the summary step writes that the macOS packages are not signed
 
 ### Requirement: README first launch matches signing
