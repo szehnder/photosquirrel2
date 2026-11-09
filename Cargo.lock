@@ -8732,6 +8732,7 @@ dependencies = [
  "ps-media",
  "ps-model",
  "ps-service",
+ "ps-update",
  "rusqlite",
  "rustix",
  "serde",
