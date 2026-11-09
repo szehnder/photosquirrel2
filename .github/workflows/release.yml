@@ -4,7 +4,7 @@ name: Release
 # signs and notarizes the macOS app and DMG (ADR-0128) and publishes a GitHub Release. Running the workflow by hand (`gh workflow run release.yml`, from any ref, a tag
 # included) is a dry run: it builds the same packages, checks the full set, its checksums and the LGPL sources and
 # uploads them with the release notes as workflow artifacts, without creating a release. A dry run signs the macOS
-# packages only when `sign_macos` is ticked and the `macos-signing` environment admits the ref (its deployment rules).
+# packages only when `sign_macos` is ticked and the `macos_signing` environment admits the ref (its deployment rules).
 #
 # The build compiles hundreds of third-party crates, so the token is read-only everywhere except the step that
 # publishes, no checkout keeps it in .git/config, and every action is pinned to a commit.
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       sign_macos:
-        description: "Sign and notarize the macOS packages (needs the macos-signing environment's approval for this ref)"
+        description: "Sign and notarize the macOS packages (needs the macos_signing environment's approval for this ref)"
         type: boolean
         default: false
 
@@ -110,14 +110,14 @@ jobs:
           if-no-files-found: error
 
   # Signs, notarizes and staples the macOS app and DMG (ADR-0128). The only job that can read the signing secrets:
-  # it runs in the protected macos-signing environment, compiles nothing (Apple's tools and one script from this
+  # it runs in the protected macos_signing environment, compiles nothing (Apple's tools and one script from this
   # repository) and deletes its keychain and key files on every outcome.
   sign-macos:
     name: Sign and notarize (macOS)
     needs: package
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.sign_macos)
     runs-on: macos-15
-    environment: macos-signing
+    environment: macos_signing
     permissions:
       contents: read
     steps:

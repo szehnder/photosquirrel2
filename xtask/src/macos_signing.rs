@@ -538,7 +538,7 @@ mod tests {
     fn scenario_release_packaging_signing_job_isolated_from_the_build() {
         let text = release_workflow();
         let sign = job(&text, "sign-macos");
-        assert!(sign.contains("environment: macos-signing"), "{sign}");
+        assert!(sign.contains("environment: macos_signing"), "{sign}");
         assert!(sign.contains("contents: read"), "{sign}");
         assert!(!sign.contains("contents: write"));
         assert!(

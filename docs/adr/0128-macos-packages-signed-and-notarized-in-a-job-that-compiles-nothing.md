@@ -15,7 +15,7 @@ the DMG, and it skips notarization with a warning when credentials are missing.
 
 ## Decision
 - For tagged releases, and approved dry runs with the `sign_macos` input, a `sign-macos` job in the protected GitHub
-  environment `macos-signing` does the signing. That environment has a required reviewer, and its deployment rules
+  environment `macos_signing` does the signing. That environment has a required reviewer, and its deployment rules
   admit `main` and `v*` (and any branch the owner adds while testing).
   - It signs the unsigned `.app` that the build job produced: Developer ID Application, inside-out, hardened runtime,
     secure timestamp, no `--deep`, and no entitlements.

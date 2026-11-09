@@ -6,13 +6,13 @@ parts that need the owner. The `auto-updates` change will add sections on the up
 ## Cutting a release
 
 1. Bump `version` in the root `Cargo.toml`, update `packaging/release-notes.md`, and commit.
-2. Push the tag `v<version>`. The workflow builds every platform, then waits for approval of the `macos-signing`
+2. Push the tag `v<version>`. The workflow builds every platform, then waits for approval of the `macos_signing`
    deployment. Approve it in the run's page.
 3. When `sign-macos`, `verify-macos` and the release job are green, the GitHub Release is published.
 
 A manual run (`Actions → Release → Run workflow`) is a dry run: it builds and checks everything and uploads the files
 as workflow artifacts, without publishing. Tick **sign_macos** to sign and notarize as well. The ref must be one the
-`macos-signing` environment admits.
+`macos_signing` environment admits.
 
 ## macOS signing (ADR-0128)
 
@@ -23,7 +23,7 @@ OpenSSL and a browser.
 
 ### Secrets and variable
 
-Six secrets in the environment `macos-signing` (Settings → Environments). Its rules: the owner is required reviewer,
+Six secrets in the environment `macos_signing` (Settings → Environments). Its rules: the owner is required reviewer,
 and its deployment branches and tags are `main` and `v*`.
 
 | Secret | Content |

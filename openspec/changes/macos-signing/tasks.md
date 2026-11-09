@@ -12,7 +12,7 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
   and the subject is `Developer ID Application: … (<TEAMID>)`.
 - [ ] 1.3 Owner: create the App Store Connect team API key (Developer access) and save the `.p8`, the Key ID and the
   Issuer ID (D4 step 4). Verify: the key is listed as active in App Store Connect.
-- [ ] 1.4 Owner: create the `macos-signing` environment (required reviewer; `main` and `v*`), its six secrets and the
+- [ ] 1.4 Owner: create the `macos_signing` environment (required reviewer; `main` and `v*`), its six secrets and the
   `APPLE_TEAM_ID` variable, then back up and delete the working files (D4 steps 5-6). Verify: Settings >
   Environments shows the rules and six secrets, and Variables shows `APPLE_TEAM_ID`.
 

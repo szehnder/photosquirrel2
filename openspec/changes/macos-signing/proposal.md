@@ -24,7 +24,7 @@ machine and GitHub Actions. macOS runner minutes are free for a public repositor
     signed app.
 - **Secrets never meet the build.** Signing is split into its own jobs:
   - **`package (macos)`** is unchanged: it builds the unsigned app and has no secrets.
-  - **`sign-macos`** runs in a protected `macos-signing` environment. It compiles nothing and runs only Apple's tools
+  - **`sign-macos`** runs in a protected `macos_signing` environment. It compiles nothing and runs only Apple's tools
     from a script in the repository, `packaging/macos/sign.sh`. It signs, notarizes and staples the app, then
     builds, signs, notarizes and staples the DMG. Its throwaway keychain and the key files are deleted at the end,
     even when it fails.
@@ -78,7 +78,7 @@ machine and GitHub Actions. macOS runner minutes are free for a public repositor
   - `xtask`: a new `macos-signed` command, which verifies, rebuilds the archives and writes checksums, with its
     parsers unit-tested on recorded `codesign`, `spctl` and `stapler` output; it reuses `package.rs` `archive()`.
   - `README.md`, `packaging/release-notes.md` and `docs/releasing.md`.
-- The owner's side: the Developer ID Application certificate, the API key and the `macos-signing` environment (tasks
+- The owner's side: the Developer ID Application certificate, the API key and the `macos_signing` environment (tasks
   1.x). All of it can be done in a browser and on Windows, with no Mac needed.
 - No app code, settings or catalog change. Budgets unchanged.
 - `openspec/ROADMAP.md`: row 38. It is independent of row 37 and can be applied before it. Doing it first makes the

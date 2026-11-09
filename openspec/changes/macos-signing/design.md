@@ -40,7 +40,7 @@
 `macos-app-unsigned` (a `ditto -c -k --keepParent` zip, which keeps the bundle's attributes and symlinks).
 
 **`sign-macos`** (`macos-15`):
-- `needs: package`, `environment: macos-signing`, `permissions: contents: read`.
+- `needs: package`, `environment: macos_signing`, `permissions: contents: read`.
 - It runs for a pushed `v*` tag, or for a manual run with the `sign_macos` input ticked. The environment's
   deployment rules (`main` and `v*`, plus any branch the owner adds while testing) decide whether that ref may use
   the secrets.
@@ -153,7 +153,7 @@ not synced to the cloud:
    "PhotoSquirrel notarization" and access **Developer**. Download `AuthKey_<KEYID>.p8`; Apple offers it only once.
    Note the Key ID and the Issuer ID.
 5. **GitHub (browser, or `gh` on Windows):**
-   - Settings > Environments > **New environment** `macos-signing`. Set **Required reviewers** to the owner, and
+   - Settings > Environments > **New environment** `macos_signing`. Set **Required reviewers** to the owner, and
      **Deployment branches and tags** to selected: branch `main` and tag pattern `v*`.
    - Add the environment secrets `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`,
      `MACOS_SIGNING_IDENTITY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` and `APPLE_API_KEY_P8`.
@@ -161,12 +161,12 @@ not synced to the cloud:
        `[Convert]::ToBase64String([IO.File]::ReadAllBytes("devid.p12"))`.
      - `APPLE_API_KEY_P8` is the whole `.p8` text.
 
-     With `gh`: `Get-Content -Raw AuthKey_XXXX.p8 | gh secret set APPLE_API_KEY_P8 --env macos-signing --repo
+     With `gh`: `Get-Content -Raw AuthKey_XXXX.p8 | gh secret set APPLE_API_KEY_P8 --env macos_signing --repo
      szehnder/photosquirrel2`. Piping keeps the value off the command line.
    - Add the repository **variable** `APPLE_TEAM_ID`.
 6. **Back up and clean up.** Put `devid.key`, `devid.p12` with its password, and the `.p8` in a password manager
    or other encrypted storage, then delete the working folder.
-7. **Prove it:** run `gh workflow run release.yml --ref main -f sign_macos=true`, approve the `macos-signing`
+7. **Prove it:** run `gh workflow run release.yml --ref main -f sign_macos=true`, approve the `macos_signing`
    deployment, and check that `verify-macos` is green.
 
 ### D5. Effect on `auto-updates`

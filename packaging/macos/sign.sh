@@ -9,7 +9,7 @@
 # <out>/PhotoSquirrel-<version>-macos-universal.dmg (signed, notarized, stapled). `cargo xtask macos-signed`
 # then checks both in a job without secrets.
 #
-# Environment (secrets of the `macos-signing` environment):
+# Environment (secrets of the `macos_signing` environment):
 #   MACOS_CERTIFICATE_P12_BASE64  Developer ID Application certificate and key, .p12, base64
 #   MACOS_CERTIFICATE_PASSWORD    its export password
 #   MACOS_SIGNING_IDENTITY        "Developer ID Application: <Name> (<TEAMID>)"
@@ -30,7 +30,7 @@ out=$2
 for var in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY \
   APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8; do
   if [ -z "${!var:-}" ]; then
-    echo "::error::$var is not set (a secret of the macos-signing environment)" >&2
+    echo "::error::$var is not set (a secret of the macos_signing environment)" >&2
     exit 1
   fi
 done
