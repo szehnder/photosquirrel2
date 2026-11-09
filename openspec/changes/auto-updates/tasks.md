@@ -224,13 +224,23 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 ## 9. Release pipeline and docs
 
-- [ ] 9.1 `cargo xtask package`: build the macOS `.app.tar.gz` and its `.sha256`, set
+- [x] 9.1 `cargo xtask package`: build the macOS `.app.tar.gz` and its `.sha256`, set
   `PHOTOSQUIRREL_RELEASE_BUILD=1`, and check that release binaries embed only the release keys. Verify:
   `scenario_release_packaging_app_archive_matches_the_dmg_s_bundle` and
   `scenario_release_packaging_release_binaries_embed_only_the_release_key`.
-- [ ] 9.2 `cargo xtask update-manifest` (generate, sign, `--check`), with the notes taken from "What's new in
+  Done: `build()` sets the marker, also inside the Linux image; `check_update_keys` runs after the programs are
+  built (a tag fails while `packaging/update-key.pub` holds none); `app_archive_from_dmg` mounts the DMG (answering
+  its agreement) and archives its bundle; `verify-macos` rebuilds the archive from the signed app. Both scenarios
+  pass: the archive one on a fake bundle with a symlink; the DMG itself is checked by the macOS package job on the
+  next run.
+- [x] 9.2 `cargo xtask update-manifest` (generate, sign, `--check`), with the notes taken from "What's new in
   <version>". Verify: `scenario_release_packaging_manifest_matches_the_packages` and
   `scenario_release_packaging_notes_taken_from_the_release_notes`.
+  Done: `xtask/src/update_manifest.rs` (`cargo xtask update-manifest --packages --tag [--key-env --password-env |
+  --throwaway-key] [--check <pub>...]`). Both scenarios and `release_times_are_rfc3339` pass. A run on eight fake
+  packages wrote, signed and checked a manifest, and stock `minisign` 0.11 verified it (trusted comment
+  `photosquirrel-update 0.3.1`). The notes are cut at a whole bullet past 4,000 characters instead of failing the
+  release (0.3.1's notes are 5,906 characters); the spec says so.
 - [ ] 9.3 `release.yml`:
   - a `sign` job (the `release-signing` environment for tags, a throwaway key for dry runs, read-only, xtask only);
   - the `sign` job also needs `verify-macos` when that job runs (`macos-signing`);
@@ -243,12 +253,24 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   `scenario_release_packaging_previous_release_updates_to_the_candidate` (all read the workflow and the round-trip
   script), and a dry run with `gh workflow run release.yml` that is green, uses a throwaway key and holds 8 packages
   and the manifest.
-- [ ] 9.4 Docs: the README "Updates" section, a release notes "Updates" section with the 0.4.0 "last manual install"
+  Progress: the three jobs and the release job's checks are in `release.yml`, with
+  `packaging/use-signed-macos.sh` and `packaging/update-roundtrip.sh` (shellcheck clean).
+  `scenario_release_packaging_release_workflow_covers_every_platform` (8 packages, the manifest published, its
+  sign job read-only), `scenario_release_packaging_signing_job_isolated` and
+  `scenario_release_packaging_previous_release_updates_to_the_candidate` pass. Still open: a green dry run (the owner
+  starts it), and the app's `--update-now` that the round trip runs (task 5.5).
+- [x] 9.4 Docs: the README "Updates" section, a release notes "Updates" section with the 0.4.0 "last manual install"
   note and a "What's new in 0.4.0" section, the new `docs/releasing.md` runbook, and ROADMAP row 37 (added with the
   spec commit). Verify: `scenario_release_packaging_readme_screenshots_exist` (unchanged),
   `scenario_release_packaging_readme_explains_updates`,
   `scenario_release_packaging_runbook_covers_withdrawal_and_key_events` and
   `scenario_release_packaging_heic_fallback_noted` (unchanged).
+  Done: the README "Updates" section and its "No telemetry" bullet, the release notes "Updates" section and a "What's
+  new since 0.3.1" (renamed to "What's new in 0.4.0" when the version is bumped, per the runbook), and
+  `docs/releasing.md` with the update key, manual verification, withdrawing, rotation and a lost or exposed key.
+  `scenario_release_packaging_readme_explains_updates`,
+  `scenario_release_packaging_runbook_covers_withdrawal_and_key_events`,
+  `scenario_release_packaging_readme_screenshots_exist` and `scenario_release_packaging_heic_fallback_noted` pass.
 - [ ] 9.5 `docs/gpui-notes.md`: add anything surprising about the first-frame hook, the quit hook or the detached
   spawn from a GPUI app. Verify: the note exists, or tasks.md records "nothing new".
 

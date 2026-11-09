@@ -24,8 +24,10 @@ and copies those best copies into one clean library folder ready for Apple Photo
 - **Nothing of yours is deleted.** PhotoSquirrel never deletes or moves your source files or the finished copies
   in your library. The only files it ever removes are ones it made itself: unfinished `.partial` export copies,
   preview-cache entries and its own temporary and control files.
-- **No telemetry.** The app sends nothing anywhere: no analytics, crash reports or update checks. The only
-  network traffic is the optional AI feature below, and only after you start it.
+- **No telemetry.** The app sends nothing about you or your photos anywhere: no analytics and no crash reports.
+  It checks for updates only if you said yes when it asked, and a check sends nothing about you (see
+  [Updates](#updates)). The only other network traffic is the optional AI feature below, and only after you
+  start it.
 
 ## What it does
 
@@ -85,6 +87,32 @@ license notices of the open-source components they include (`THIRD-PARTY-LICENSE
   earlier, which were not signed, right-click PhotoSquirrel in Applications and choose **Open**.
 - **Windows:** the installer is not code-signed yet, so SmartScreen says it "protected your PC". Click
   **More info → Run anyway**.
+
+### Updates
+
+PhotoSquirrel asks once, on first launch (or the first time you open it after updating to a version with
+updates), whether to keep itself up to date. **Nothing is sent before you answer.**
+
+- **What a check sends.** Once a day at most, and never in the first minute after you open the app, PhotoSquirrel
+  downloads one small file, `update-manifest.json`, from this project's GitHub Releases. The request carries no
+  identifier, no version, no cookie and nothing about your photos or catalog: GitHub sees an IP address and a
+  download, the same as opening the release page in a browser.
+- **Only genuine updates are installed.** The manifest is signed with the project's update key, which is built
+  into the app; every download must match the size and SHA-256 the signed manifest gives. An older version is
+  never offered.
+- **Updates never interrupt your work.** An update downloads in the background and installs when you quit (or
+  when you click **Restart now**, which waits while a scan, export or cleanup runs). The previous version is kept:
+  if the new one fails to start twice, the previous one is put back by itself. Settings → General → Updates can
+  also go back to it, unless the new version has already upgraded your catalog.
+- **Which packages update themselves:** the macOS app in a folder you can write to (Applications), the Windows
+  installer's per-user installation and the AppImage. The Debian package is updated by `apt`: PhotoSquirrel
+  downloads and verifies the new `.deb` into your Downloads folder and shows the one command to run,
+  `sudo apt install '<the file>'`. The `.tar.gz` and `.zip` archives are not changed: PhotoSquirrel tells you
+  about the new version and links to it.
+- **Turning checks off.** Settings → General → Updates: **Automatic**, **Tell me** (check and tell you; download
+  and install only when you ask) or **Off**. **Check for updates** (Settings, or the command palette) always
+  works, whatever you chose. From the command line: `photosquirrel-cli update status` (no network),
+  `update check`, `update install --yes` and `update rollback --yes`.
 
 ### Requirements
 

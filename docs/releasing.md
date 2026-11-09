@@ -1,14 +1,19 @@
 # Releasing PhotoSquirrel
 
 How a release is built and published is in `.github/workflows/release.yml` (ADR-0030). This runbook covers the
-parts that need the owner. The `auto-updates` change will add sections on the update key and withdrawing a release.
+parts that need the owner: cutting a release, the macOS signing certificate (ADR-0128), the update key (ADR-0125),
+withdrawing a release, and what to do when a key is lost or exposed.
 
 ## Cutting a release
 
-1. Bump `version` in the root `Cargo.toml`, update `packaging/release-notes.md`, and commit.
+1. Bump `version` in the root `Cargo.toml`, update `packaging/release-notes.md`, and commit. Rename "What's new
+   since <previous>" to "What's new in <version>": that section becomes the in-app update notes (cut at a whole
+   bullet past 4,000 characters).
 2. Push the tag `v<version>`. The workflow builds every platform, then waits for approval of the `macos_signing`
-   deployment. Approve it in the run's page.
-3. When `sign-macos`, `verify-macos` and the release job are green, the GitHub Release is published.
+   and `release-signing` deployments. Approve them in the run's page.
+3. The previous release that has an updater updates itself to this one on Linux, macOS and Windows
+   (`update-roundtrip`). When that and the release job are green, the GitHub Release is published with
+   `update-manifest.json`, and from then on installed copies find the new version within about a day.
 
 A manual run (`Actions → Release → Run workflow`) is a dry run: it builds and checks everything and uploads the files
 as workflow artifacts, without publishing. Tick **sign_macos** to sign and notarize as well. The ref must be one the
@@ -94,3 +99,61 @@ If the API key leaks, revoke it in App Store Connect, generate a new one, and re
 `sign-macos` waits up to 45 minutes for Apple. A timeout fails the job: rerun it. A rejected submission prints
 Apple's log, which names each file and the reason (usually a Mach-O file signed without the hardened runtime or
 timestamp).
+
+## The update key (ADR-0125)
+
+Updates are trusted only through `update-manifest.json`, an envelope holding the manifest text and a minisign
+signature of exactly that text. The app has the public keys of `packaging/update-key.pub` and
+`packaging/update-key-next.pub` built in (a slot reads `none` when empty). A tagged release fails to package while
+`packaging/update-key.pub` holds no key.
+
+### Making the key (once)
+
+Any OS with [minisign](https://jedisct1.github.io/minisign/) (Windows: the release zip, or `scoop install minisign`):
+
+1. `minisign -G -p update-key.pub -s update-key.sec`, with a long password.
+2. Commit `update-key.pub` as `packaging/update-key.pub`. The public key is not a secret.
+3. In GitHub, Settings → Environments → **New environment** `release-signing`. Set **Required reviewers** to the
+   owner, and **Deployment branches and tags** to the tag pattern `v*`. Add two environment secrets:
+   `UPDATE_SIGNING_KEY` (the whole text of `update-key.sec`) and `UPDATE_SIGNING_PASSWORD`.
+4. Back up `update-key.sec` and its password offline (a password manager and a second copy). Without it,
+   installed copies cannot be moved to a new release.
+
+Only the `update-manifest` job reads these secrets, for a pushed tag, after the owner's approval. A dry run signs
+with a throwaway key it generates (`dry-run-update-key.pub` in its artifacts).
+
+### Checking a manifest by hand
+
+```bash
+jq -r .manifest update-manifest.json > m.json
+jq -r .signature update-manifest.json > m.json.minisig
+minisign -Vm m.json -p packaging/update-key.pub
+```
+
+The trusted comment must read `photosquirrel-update <version>`.
+
+## Withdrawing a release
+
+Installed copies check GitHub's **latest** release, which skips prereleases. To stop offering a bad release:
+
+1. Edit the release on GitHub and tick **Set as a pre-release** (or delete its `update-manifest.json` asset).
+   `latest` falls back to the previous release, whose manifest offers nothing newer than what the fixed copies
+   have.
+2. Ship a fixed version as soon as possible. Copies that already installed the bad one are not moved back
+   (versions only move forward); a version that failed to start was already put back by itself.
+
+## Rotating the update key
+
+1. Make a new key (as above) and commit its public key as `packaging/update-key-next.pub`. Release that version:
+   it trusts both keys.
+2. Two releases later, when most copies trust both, store the new secret key in `release-signing` (replacing
+   `UPDATE_SIGNING_KEY` and `UPDATE_SIGNING_PASSWORD`) and move it to `packaging/update-key.pub`, with
+   `update-key-next.pub` back to `none`.
+
+## A lost or exposed update key
+
+- **Exposed:** rotate at once (above), signing the next release with the old key one last time so copies learn
+  the new one. Until they update, copies still trust the exposed key: say so in the release notes and keep the
+  release cadence short.
+- **Lost:** installed copies cannot be moved forward. Make a new key, release, and ask users (release notes,
+  README) to download that version by hand once; from it on, updates work again.

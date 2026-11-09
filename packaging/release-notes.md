@@ -42,6 +42,16 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
+### What's new since 0.3.1
+
+- **PhotoSquirrel keeps itself up to date, if you want it to.** It asks once whether to check for updates;
+  nothing is sent before you answer. A check downloads one small signed file from GitHub and sends nothing about
+  you. Updates download in the background, are checked against the project's signature, and install when you
+  quit, never during a scan, export or cleanup. If a new version cannot start, the previous one is put back by
+  itself. The Debian package gets the verified `.deb` and the `apt` command; the archives get a link. See
+  "Updates" below. This is the last version you need to download by hand.
+- **The macOS app is signed and notarized.** It opens without the "damaged" warning or any Terminal command.
+
 ### What's new in 0.3.1
 
 - **Adding a big folder no longer seems to freeze.** The folder shows at once as "Adding <folder>…" in the status bar,
@@ -158,6 +168,15 @@ The Linux AppImage also starts with the AppImage runtime (the program that mount
 ({{runtime_sources}}): the libfuse source it was built from and the patch the runtime applies to it, and, to relink
 the runtime against a modified libfuse, the source of the runtime itself and of squashfuse. The AppImage's
 `THIRD-PARTY-LICENSES` names every component of the runtime with its version and license and says how to relink.
+
+### Updates
+
+PhotoSquirrel asks once whether to keep itself up to date; nothing is sent before you answer, and you can change
+it in Settings → General → Updates (Automatic, Tell me, or Off). A check, at most once a day, downloads
+`update-manifest.json` from this project's GitHub Releases and sends no identifier and nothing about your photos.
+Every update is checked against the project's update signature before it is installed. The macOS app, the
+Windows installation and the AppImage update themselves when you quit; the Debian package gets the verified
+`.deb` and `sudo apt install '<file>'`; the `.tar.gz` and `.zip` archives get a link to the new version.
 
 ### First launch
 

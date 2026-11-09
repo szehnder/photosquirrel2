@@ -2537,6 +2537,62 @@ mod tests {
         assert!(script.contains("no earlier release has an updater"));
     }
 
+    #[test]
+    fn scenario_release_packaging_readme_explains_updates() {
+        let readme = fs::read_to_string(root().join("README.md")).expect("README");
+        let section = readme
+            .split("### Updates\n")
+            .nth(1)
+            .and_then(|s| s.split("\n### ").next())
+            .expect("an Updates section");
+        // Line wraps do not matter.
+        let section = section.split_whitespace().collect::<Vec<_>>().join(" ");
+        // What a check sends, how to turn checks off, which packages update themselves, the .deb command.
+        for needle in [
+            "no identifier, no version, no cookie",
+            "update-manifest.json",
+            "**Off**",
+            "Settings → General → Updates",
+            "Applications",
+            "per-user installation",
+            "AppImage",
+            "sudo apt install",
+            "archives are not changed",
+        ] {
+            assert!(
+                section.contains(needle),
+                "the Updates section lacks {needle:?}"
+            );
+        }
+        let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("It checks for updates only if you said yes"));
+    }
+
+    #[test]
+    fn scenario_release_packaging_runbook_covers_withdrawal_and_key_events() {
+        let runbook = fs::read_to_string(root().join("docs/releasing.md")).expect("runbook");
+        for heading in [
+            "## Cutting a release",
+            "## Withdrawing a release",
+            "## Rotating the update key",
+            "## A lost or exposed update key",
+        ] {
+            assert!(runbook.contains(heading), "no {heading}");
+        }
+        for needle in [
+            "packaging/update-key.pub",
+            "packaging/update-key-next.pub",
+            "release-signing",
+            "UPDATE_SIGNING_KEY",
+            "Set as a pre-release",
+        ] {
+            assert!(
+                runbook.contains(needle),
+                "the runbook does not name {needle}"
+            );
+        }
+    }
+
     fn release_workflow() -> String {
         fs::read_to_string(root().join(".github/workflows/release.yml")).expect("release.yml")
     }
