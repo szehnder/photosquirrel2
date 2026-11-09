@@ -10,14 +10,15 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 - [ ] 1.1 Owner: review ADR-0124..0127 (written as `proposed` together with this change), then set them to
   `accepted` and drop "(proposed)" from their index rows. Verify: the four files read `Status: accepted`, and
   `docs/adr/README.md` lists 0124-0127.
-- [ ] 1.2 Owner: generate the release update key (`minisign -G`). Commit `packaging/update-key.pub` and set
+- [x] 1.2 Owner: generate the release update key (`minisign -G`). Commit `packaging/update-key.pub` and set
   `packaging/update-key-next.pub` to `none`. Store the secret key and its password as `UPDATE_SIGNING_KEY` and
   `UPDATE_SIGNING_PASSWORD` in a new GitHub environment `release-signing` (required reviewer: owner; deployment
   branches and tags: `v*`). Keep an offline backup. Verify: `minisign -Vm` of a test file signed with the key passes
   with `packaging/update-key.pub`, and the environment shows its protection rules.
   Progress: the owner generated the key (id `B0325BA81F06368C`); `packaging/update-key.pub` holds it, and the
-  `ps-update` key tests and the 90 xtask tests pass with it. Still open: the `release-signing` environment and its
-  two secrets (owner), then tick.
+  `ps-update` key tests and the 90 xtask tests pass with it. The owner created the `release-signing` environment with
+  `UPDATE_SIGNING_KEY` and `UPDATE_SIGNING_PASSWORD`; the first tagged release's `update-manifest` job is what
+  exercises them (dry runs sign with a throwaway key).
 - [x] 1.3 Generate the test key into `crates/ps-update/tests/data/test-key.{pub,sec}`, unencrypted and marked
   "TEST ONLY" in its untrusted comment. Verify: `ps-update` unit test `test_key_signs_and_verifies`.
   Done: generated with the `minisign` crate (0.10); `crates/ps-update/tests/data/test-key.{pub,sec}`, key id
