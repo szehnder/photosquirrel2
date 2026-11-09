@@ -27,8 +27,9 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
   Done: the script and the job, which runs for a pushed tag or a dry run with the `sign_macos` input. The scenario
   passes, and `shellcheck` and `bash -n` are clean. The first real run is task 3.4.
 - [ ] 2.3 The DMG from `hdiutil`, with the Applications link. Compare it with the packager's DMG (window, icon,
-  link) and record the result in design.md. Verify: the dry-run DMG mounts with `PhotoSquirrel.app` and an
-  `Applications` link.
+  link) and record the result in design.md. The packager's DMG also shows the licence agreement (`licenseFile`) on
+  open; the `hdiutil` DMG does not. Decide whether to keep that. The notices stay inside the app either way. Verify:
+  the dry-run DMG mounts with `PhotoSquirrel.app` and an `Applications` link.
 
 ## 3. Verification job
 

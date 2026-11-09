@@ -94,7 +94,9 @@ jobs:
             echo "::error::expected one macOS DMG in target/packages, found: $dmgs"; exit 1
           fi
           mnt=$(mktemp -d)
-          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmgs"
+          # The DMG carries the licence agreement (`licenseFile`), which `hdiutil attach` pages and asks to accept;
+          # answer it on stdin, as xtask's licence check does.
+          printf 'Y\n' | PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmgs" >/dev/null
           trap 'hdiutil detach "$mnt" || true' EXIT
           if [ ! -d "$mnt/PhotoSquirrel.app" ]; then
             echo "::error::the DMG has no PhotoSquirrel.app"; ls -la "$mnt"; exit 1
