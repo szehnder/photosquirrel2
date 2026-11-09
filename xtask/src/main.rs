@@ -9,6 +9,7 @@ mod screenshot;
 mod spec_coverage;
 mod timing;
 mod tokens;
+mod update_manifest;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -66,6 +67,27 @@ enum Cmd {
         /// The folder to write the signed macOS packages and their checksums to.
         #[arg(long)]
         out: PathBuf,
+    },
+    /// Write and sign a release's update-manifest.json, and/or check it against public keys (ADR-0125).
+    UpdateManifest {
+        /// The folder holding the eight packages; the manifest is written there.
+        #[arg(long)]
+        packages: PathBuf,
+        /// The release tag, `v<workspace version>`.
+        #[arg(long)]
+        tag: String,
+        /// Sign with the minisign secret key in this environment variable (its file text).
+        #[arg(long, value_name = "VAR", requires = "password_env")]
+        key_env: Option<String>,
+        /// The environment variable holding that key's password.
+        #[arg(long, value_name = "VAR")]
+        password_env: Option<String>,
+        /// Sign with a throwaway key (dry runs) and write its public key to this file.
+        #[arg(long, value_name = "FILE", conflicts_with = "key_env")]
+        throwaway_key: Option<PathBuf>,
+        /// Check the manifest against these public key files (repeatable).
+        #[arg(long = "check", value_name = "PUBKEY")]
+        check: Vec<PathBuf>,
     },
     /// Fetch and check the AppImage runtime's pinned source archives into a folder (the release attaches them).
     RuntimeSources {
@@ -147,6 +169,23 @@ fn main() -> Result<()> {
         ),
         Cmd::Timing { runs } => timing::run(&root, runs),
         Cmd::RuntimeSources { out } => package::runtime_sources(&root, &out),
+        Cmd::UpdateManifest {
+            packages,
+            tag,
+            key_env,
+            password_env,
+            throwaway_key,
+            check,
+        } => {
+            let signer = match (key_env, password_env, throwaway_key) {
+                (Some(key), Some(password), _) => {
+                    Some(update_manifest::Signer::Env { key, password })
+                }
+                (_, _, Some(out)) => Some(update_manifest::Signer::Throwaway(out)),
+                _ => None,
+            };
+            update_manifest::run(&root, &packages, &tag, signer, &check)
+        }
         Cmd::MacosSigned {
             signed,
             unsigned_app,

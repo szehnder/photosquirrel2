@@ -419,8 +419,12 @@ pub fn run(root: &Path, signed: &Path, unsigned_app: &Path, team: &str, out: &Pa
     fs::copy(&dmg, out.join(&dmg_name))?;
     write_checksum(out, &dmg_name)?;
     let archive = rebuild_archive(root, &app, out, &work.join("staging"), &version)?;
+    // The update payload (ADR-0126): the signed, stapled bundle.
+    let app_archive = package::app_archive_name(&version);
+    package::tar_app(&app, &out.join(&app_archive))?;
+    write_checksum(out, &app_archive)?;
     eprintln!(
-        "macOS packages signed by team {team}, notarized and stapled: {dmg_name}, {archive} ({machos} Mach-O files)"
+        "macOS packages signed by team {team}, notarized and stapled: {dmg_name}, {archive}, {app_archive} ({machos} Mach-O files)"
     );
     fs::remove_dir_all(&work).ok();
     Ok(())
@@ -733,7 +737,7 @@ mod tests {
         let text = release_workflow();
         let release = job(&text, "release");
         assert!(
-            release.contains("needs: [package, runtime-sources, verify-macos]"),
+            release.contains("needs: [package, runtime-sources, verify-macos, update-manifest"),
             "{release}"
         );
         assert!(release.contains("name: signed-macos-packages"));

@@ -35,7 +35,7 @@ Every release SHALL carry `update-manifest.json`, holding the manifest text and 
 
 #### Scenario: Notes taken from the release notes
 - **WHEN** the manifest is generated from the release notes template
-- **THEN** its notes are the "What's new in <version>" section, at most 4,000 characters, and generation fails when that section is missing
+- **THEN** its notes are the "What's new in <version>" section; a longer one is cut before the first bullet that does not fit in 4,000 characters and points to the release page; and generation fails when that section is missing
 
 ### Requirement: Update signing key kept apart
 The update signing key SHALL be used only by a signing job that runs in a protected environment, compiles nothing outside the repository's tooling, and has no write permission. A dry run SHALL sign with a throwaway key it generates and SHALL NOT read the release key. Release binaries SHALL embed only the repository's public update keys and never the test key.

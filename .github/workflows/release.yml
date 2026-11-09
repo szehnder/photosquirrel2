@@ -174,6 +174,138 @@ jobs:
           path: signed-packages/*
           if-no-files-found: error
 
+  # The signed update manifest of a tagged release (ADR-0125). The release update key is readable only here, in the
+  # protected release-signing environment, and only by the step that signs, after xtask is built.
+  update-manifest:
+    name: Sign the update manifest
+    needs: [package, verify-macos]
+    if: >-
+      always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
+      needs.package.result == 'success' && needs.verify-macos.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: packages
+          pattern: packages-*
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.verify-macos.result == 'success'
+        with:
+          name: signed-macos-packages
+          path: signed-macos
+      - name: Use the signed macOS packages
+        run: bash packaging/use-signed-macos.sh packages signed-macos
+      - name: Build xtask
+        run: cargo build -p xtask --locked
+      - name: Write, sign and check the manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_SIGNING_PASSWORD: ${{ secrets.UPDATE_SIGNING_PASSWORD }}
+        run: >-
+          target/debug/xtask update-manifest --packages packages --tag "$GITHUB_REF_NAME"
+          --key-env UPDATE_SIGNING_KEY --password-env UPDATE_SIGNING_PASSWORD
+          --check packaging/update-key.pub --check packaging/update-key-next.pub
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: update-manifest
+          path: packages/update-manifest.json
+          if-no-files-found: error
+
+  # A dry run's manifest, signed with a throwaway key it generates: the release key is never read.
+  update-manifest-dry:
+    name: Update manifest (dry run, throwaway key)
+    needs: [package, verify-macos]
+    if: >-
+      always() && github.event_name != 'push' && needs.package.result == 'success' &&
+      (needs.verify-macos.result == 'success' || (needs.verify-macos.result == 'skipped' && !inputs.sign_macos))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: packages
+          pattern: packages-*
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.verify-macos.result == 'success'
+        with:
+          name: signed-macos-packages
+          path: signed-macos
+      - name: Use the signed macOS packages
+        run: bash packaging/use-signed-macos.sh packages signed-macos
+      - name: Write, sign with a throwaway key and check the manifest
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          cargo xtask update-manifest --packages packages --tag "v$version" \
+            --throwaway-key packages/dry-run-update-key.pub --check packages/dry-run-update-key.pub
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: update-manifest
+          path: |
+            packages/update-manifest.json
+            packages/dry-run-update-key.pub
+          if-no-files-found: error
+
+  # Before a tagged release is published, the previous release that has an updater updates itself to this one on
+  # every OS (spec release-packaging "Update round trip before publishing"). Succeeds with a notice when no earlier
+  # release has an updater.
+  update-roundtrip:
+    name: Update round trip (${{ matrix.name }})
+    needs: [package, verify-macos, update-manifest]
+    if: always() && needs.update-manifest.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+          - name: macos
+            os: macos-15
+          - name: windows
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: candidate
+          pattern: packages-*
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.verify-macos.result == 'success'
+        with:
+          name: signed-macos-packages
+          path: signed-macos
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: update-manifest
+          path: candidate
+      - name: Use the signed macOS packages
+        shell: bash
+        run: bash packaging/use-signed-macos.sh candidate signed-macos
+      - name: Update the previous release to this one
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash packaging/update-roundtrip.sh ${{ matrix.name }} candidate
+
   # The AppImage runtime's source archives (ADR-0073, ADR-0077), fetched and checked by xtask in a read-only job so
   # the job that can publish compiles nothing.
   runtime-sources:
@@ -194,13 +326,16 @@ jobs:
 
   release:
     name: Check and publish the release
-    needs: [package, runtime-sources, verify-macos]
+    needs: [package, runtime-sources, verify-macos, update-manifest, update-manifest-dry, update-roundtrip]
     # verify-macos is skipped only on a dry run that did not ask to sign; a tag, or a dry run with sign_macos, needs
-    # it (the step below also fails without the signed packages).
+    # it (the step below also fails without the signed packages). A tag needs the signed update manifest and the
+    # round trip; a dry run its throwaway-key manifest.
     if: >-
       always() && needs.package.result == 'success' && needs.runtime-sources.result == 'success' &&
       (needs.verify-macos.result == 'success' ||
-      (needs.verify-macos.result == 'skipped' && github.event_name != 'push' && !inputs.sign_macos))
+      (needs.verify-macos.result == 'skipped' && github.event_name != 'push' && !inputs.sign_macos)) &&
+      (needs.update-manifest.result == 'success' || needs.update-manifest-dry.result == 'success') &&
+      (needs.update-roundtrip.result == 'success' || (needs.update-roundtrip.result == 'skipped' && github.event_name != 'push'))
     runs-on: ubuntu-24.04
     # The only write permission: creating the release.
     permissions:
@@ -245,11 +380,43 @@ jobs:
           ls -l
           count=$(ls PhotoSquirrel-* | grep -vc '\.sha256$')
           sums=$(ls PhotoSquirrel-*.sha256 | wc -l)
-          # Linux AppImage, .deb, .tar.gz; macOS .dmg, .tar.gz; Windows setup .exe, .zip.
-          if [ "$count" -ne 7 ] || [ "$sums" -ne 7 ]; then
-            echo "::error::expected 7 packages and 7 .sha256 files, found $count and $sums"; exit 1
+          # Linux AppImage, .deb, .tar.gz; macOS .dmg, .tar.gz, .app.tar.gz (the update payload); Windows setup .exe,
+          # .zip.
+          if [ "$count" -ne 8 ] || [ "$sums" -ne 8 ]; then
+            echo "::error::expected 8 packages and 8 .sha256 files, found $count and $sums"; exit 1
           fi
           sha256sum -c PhotoSquirrel-*.sha256
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: update-manifest
+          path: manifest
+      # The manifest again, with the stock minisign tool (ADR-0125): the signature over the exact manifest text, by
+      # the release key for a tag (a dry run's throwaway key otherwise), and every package's size and SHA-256.
+      - name: Check the update manifest
+        run: |
+          sudo apt-get install -y -qq minisign >/dev/null
+          python3 - <<'PY'
+          import json
+          e = json.load(open("manifest/update-manifest.json"))
+          open("manifest/m.json", "w").write(e["manifest"])
+          open("manifest/m.json.minisig", "w").write(e["signature"])
+          PY
+          if [ "$GITHUB_EVENT_NAME" = push ]; then key=packaging/update-key.pub; else key=manifest/dry-run-update-key.pub; fi
+          key_line=$(grep -v '^untrusted comment:' "$key" | grep -v '^none$' | head -n 1)
+          minisign -Vm manifest/m.json -P "$key_line"
+          python3 - <<'PY'
+          import hashlib, json, os
+          m = json.loads(json.load(open("manifest/update-manifest.json"))["manifest"])
+          n = 0
+          for kinds in m["packages"].values():
+              for p in kinds.values():
+                  data = open(os.path.join("packages", p["name"]), "rb").read()
+                  assert len(data) == p["size"] and hashlib.sha256(data).hexdigest() == p["sha256"], p["name"]
+                  n += 1
+          assert n == 8, n
+          print(f"update manifest for {m['version']}: signature and {n} packages verified")
+          PY
+          cp manifest/update-manifest.json packages/update-manifest.json
       # LGPL-2.1 components are linked statically; the release carries the source of each one at the version in
       # Cargo.lock (ADR-0060). The download is checked against Cargo.lock's checksum. Every platform lists its own
       # LGPL crates (lgpl-sources-<os>.txt); the lists are merged and must agree.
@@ -316,5 +483,6 @@ jobs:
           prerelease=""
           if [[ "$version" == *-* ]]; then prerelease="--prerelease"; fi
           gh release create "$GITHUB_REF_NAME" packages/PhotoSquirrel-* packages/*.crate packages/runtime-source/* \
+            packages/update-manifest.json \
             $prerelease \
             --title "PhotoSquirrel $version" --notes-file notes.md
