@@ -10,9 +10,10 @@ gpui-kit in I/O crates and tokio in core crates. The "Quiet start" test asserts 
 client. `ps-llm` uses async `reqwest`, but the updater runs a few requests a day on a plain thread.
 
 ## Decision
-- A new I/O crate, `crates/ps-update`. It depends on `ps-model`, `ureq` 3 (rustls, with the platform verifier or
-  `webpki-roots`), `minisign-verify`, `semver`, SHA-256, `serde_json`, `tar`+`flate2` (macOS only), `rustix` and
-  `windows-sys`. There is no tokio.
+- A new I/O crate, `crates/ps-update`. It depends on `ps-model`, `ureq` 3 (rustls with the platform verifier),
+  `minisign-verify`, `semver`, SHA-256, `serde_json` and `rustix` (Unix). There is no tokio. The macOS bundle is
+  unpacked with the system `tar`, and the Windows registry is read with `reg query`, so neither needs a crate or
+  `unsafe`.
 - `ps-service` exposes `UpdateService` to the UI. `photosquirrel-cli` uses `ps-update` directly. The UI crates
   depend on neither `ps-update` nor any HTTP client.
 - xtask gains `minisign` (signing) for `cargo xtask update-manifest`. It is not a dependency of any shipped binary.
