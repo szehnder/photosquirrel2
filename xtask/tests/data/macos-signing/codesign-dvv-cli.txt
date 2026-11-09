@@ -1,0 +1,14 @@
+Executable=/Users/runner/work/photosquirrel2/photosquirrel2/target/tmp/macos-signed-1338/signed/PhotoSquirrel.app/Contents/MacOS/photosquirrel-cli
+Identifier=photosquirrel-cli
+Format=Mach-O universal (x86_64 arm64)
+CodeDirectory v=20500 size=162269 flags=0x10000(runtime) hashes=5065+2 location=embedded
+Signature size=9044
+Authority=Developer ID Application: Sean Zehnder (MD988WZMG9)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+Timestamp=Nov 9, 2026 at 10:22:46 PM
+Info.plist=not bound
+TeamIdentifier=MD988WZMG9
+Runtime Version=15.5.0
+Sealed Resources=none
+Internal requirements count=1 size=180

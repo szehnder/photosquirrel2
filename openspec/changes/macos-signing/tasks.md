@@ -74,9 +74,13 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
   `verify-macos` passed every D3 check against Apple's real tools ("signed by team MD988WZMG9, notarized and
   stapled", 2 Mach-O files), and the release job used the signed packages. That commit did not yet print the tool
   outputs (b982790 adds that), so the hand-written recordings stay until task 3.5.
-- [ ] 3.5 Owner: on the next signed run (any later dry run with `sign_macos`, or the first tagged release), copy the
+- [x] 3.5 Owner: on the next signed run (any later dry run with `sign_macos`, or the first tagged release), copy the
   `codesign`, `spctl` and `stapler` groups of the `verify-macos` log into `xtask/tests/data/macos-signing/` (or ask
   an agent to). Verify: both signing scenarios pass on the real recordings.
+  Done: the accepted cases are the `verify-macos` outputs of run 42707503988 (signed by team MD988WZMG9, app and
+  DMG "Notarized Developer ID", both tickets stapled), plus the CLI's `codesign -dvv`; the refused cases stay
+  hand-written. All xtask tests pass on them. That run is also the first with the gate-review fixes to `sign.sh` and
+  the DMG check, and it is green.
 
 ## 4. Docs and the updater
 
@@ -100,8 +104,10 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
   this change mapped.
   Done: fmt clean; clippy -D warnings (xtask, all targets) clean; `cargo test -p xtask` 80 passed; shellcheck clean;
   `openspec validate --all --strict` 33/33; spec coverage maps all 7 scenarios of this change.
-- [ ] 5.2 Push. GitHub CI is green on all jobs (draft PR szehnder/photosquirrel2#1), and an approved dry run with
+- [x] 5.2 Push. GitHub CI is green on all jobs (draft PR szehnder/photosquirrel2#1), and an approved dry run with
   `sign_macos` is green, including signing and verification (run 42603578237).
+  Done: CI green on `1fea2f2` (Linux full CI, macOS, Windows, oldest libheif); release run 42707503988 with
+  `sign_macos` green: notarized app and DMG, `verify-macos` passed, 8 packages and the throwaway-key manifest.
 - [ ] 5.3 `cargo xtask ci` passes.
 - [x] 5.4 Gate review by a fresh agent that did not write the code. It covers in particular: secrets referenced only
   in `sign-macos`, no cargo in that job, clean-up on every outcome, the Team ID pinned, and the release unable to

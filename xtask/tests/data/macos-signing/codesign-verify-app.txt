@@ -1,2 +1,4 @@
-/Users/runner/work/_temp/signed/PhotoSquirrel.app: valid on disk
-/Users/runner/work/_temp/signed/PhotoSquirrel.app: satisfies its Designated Requirement
+--prepared:/Users/runner/work/photosquirrel2/photosquirrel2/target/tmp/macos-signed-1338/signed/PhotoSquirrel.app/Contents/MacOS/photosquirrel-cli
+--validated:/Users/runner/work/photosquirrel2/photosquirrel2/target/tmp/macos-signed-1338/signed/PhotoSquirrel.app/Contents/MacOS/photosquirrel-cli
+/Users/runner/work/photosquirrel2/photosquirrel2/target/tmp/macos-signed-1338/signed/PhotoSquirrel.app: valid on disk
+/Users/runner/work/photosquirrel2/photosquirrel2/target/tmp/macos-signed-1338/signed/PhotoSquirrel.app: satisfies its Designated Requirement

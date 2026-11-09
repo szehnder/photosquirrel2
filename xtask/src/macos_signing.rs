@@ -478,6 +478,8 @@ mod tests {
     fn scenario_release_packaging_signed_app_accepted_by_gatekeeper() {
         check_signature("app", &recorded("codesign-dvv-app.txt"), TEAM, true)
             .expect("app signature");
+        check_signature("cli", &recorded("codesign-dvv-cli.txt"), TEAM, true)
+            .expect("the CLI inside the bundle");
         check_signature("dmg", &recorded("codesign-dvv-dmg.txt"), TEAM, false)
             .expect("dmg signature");
         check_verify("app", &recorded("codesign-verify-app.txt")).expect("verify");
