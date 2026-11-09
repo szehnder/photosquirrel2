@@ -85,8 +85,9 @@ The request:
   OS keeps working. Integrity does not depend on TLS (D3).
 - The system proxy from `HTTPS_PROXY`/`https_proxy` is honoured.
 - Up to 5 redirects, each to an `https` URL whose host is on the release-host allowlist: `github.com`,
-  `objects.githubusercontent.com`, `release-assets.githubusercontent.com`. Task 2.2 confirms the current GitHub
-  redirect hosts with a live request before the list is fixed in code. Anything else fails with "redirect to an
+  `objects.githubusercontent.com`, `release-assets.githubusercontent.com`. Confirmed on 2026-11-09: `latest/download`
+  redirects to `github.com/.../download/v<version>/...`, which redirects to `objects.githubusercontent.com` (2 hops).
+  `release-assets` stays on the list because GitHub is moving downloads there. Anything else fails with "redirect to an
   untrusted host". This is narrower than ADR-0047's "no redirects" for AI, because GitHub release downloads always
   redirect to signed CDN URLs.
 - Limits: connect 15 s, idle read 30 s, at most 64 KiB for the manifest, and at most the manifest's `size` for a
@@ -173,10 +174,15 @@ Alternatives considered:
 
 ### D4. Download and staging
 
-The update folder is per user and per installation, independent of `--data-dir`:
-- Linux: `$XDG_DATA_HOME/photosquirrel/updates`
-- macOS: `~/Library/Application Support/PhotoSquirrel/updates`
-- Windows: `%LOCALAPPDATA%\PhotoSquirrel\updates`
+The update folder is per user, independent of `--data-dir`: `updates/` in the local data folder of the existing
+`directories::ProjectDirs("io.github", "szehnder", "photosquirrel")`, the convention the catalog and settings
+already use:
+- Linux: `~/.local/share/photosquirrel/updates`
+- macOS: `~/Library/Application Support/io.github.szehnder.photosquirrel/updates`
+- Windows: `%LOCALAPPDATA%\szehnder\photosquirrel\data\updates`
+
+Its file operations (rename, remove) are listed in the layering check's `MOVE_ALLOWED` table, per `ps-update`
+module, under ADR-0126.
 
 It holds:
 - `state.json`: written atomically, by a temp file then a rename.
@@ -349,8 +355,11 @@ Every message uses the D5 reasons and names versions.
 
 **New I/O crate `crates/ps-update`** (no gpui-kit). It depends on:
 - `ps-model`: the settings and update state types.
-- `ureq` 3, with rustls and `rustls-platform-verifier`, or `webpki-roots` if the platform verifier adds too much.
-  Task 2.1 measures both. `ureq` keeps the updater free of tokio and lets it run on a plain thread.
+- `ureq` 3, with rustls and `rustls-platform-verifier`. Decided in task 2.1: the verifier adds only the OS
+  bindings per platform (`security-framework` on macOS, `schannel` on Windows, `rustls-native-certs` and
+  `openssl-probe` on Linux; `jni` only on Android). It lets a root certificate installed in the OS (corporate TLS
+  inspection) work, which Mozilla's bundled roots would refuse. Every license is on `about.toml`'s accepted list.
+  `ureq` keeps the updater free of tokio and lets it run on a plain thread. It reads `HTTPS_PROXY` by default.
 - `minisign-verify`: verification only, no dependencies.
 - `semver`, `sha2` (or the workspace's existing SHA-256 used by xtask's checksums), `serde_json`.
 - `tar` + `flate2`, for macOS only, on `cfg(target_os = "macos")`.

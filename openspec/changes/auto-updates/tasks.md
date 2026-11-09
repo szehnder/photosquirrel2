@@ -15,38 +15,59 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   `UPDATE_SIGNING_PASSWORD` in a new GitHub environment `release-signing` (required reviewer: owner; deployment
   branches and tags: `v*`). Keep an offline backup. Verify: `minisign -Vm` of a test file signed with the key passes
   with `packaging/update-key.pub`, and the environment shows its protection rules.
-- [ ] 1.3 Generate the test key into `crates/ps-update/tests/data/test-key.{pub,sec}`, unencrypted and marked
+- [x] 1.3 Generate the test key into `crates/ps-update/tests/data/test-key.{pub,sec}`, unencrypted and marked
   "TEST ONLY" in its untrusted comment. Verify: `ps-update` unit test `test_key_signs_and_verifies`.
+  Done: generated with the `minisign` crate (0.10); `crates/ps-update/tests/data/test-key.{pub,sec}`, key id
+  7DDE363640B95F1F, comment "TEST ONLY". `test_key_signs_and_verifies` passes.
 
 ## 2. `ps-update`: transport, manifest and versions
 
-- [ ] 2.1 Create the crate `crates/ps-update` (I/O layer) with the dependencies of ADR-0127. Add it to `cargo xtask
+- [x] 2.1 Create the crate `crates/ps-update` (I/O layer) with the dependencies of ADR-0127. Add it to `cargo xtask
   layering`, which forbids it to core and `ui-*` crates. Check the licences with cargo-about. Measure the release
   binary size of `rustls-platform-verifier` against `webpki-roots`, and pick one; record the choice in design.md.
   Verify: `cargo xtask layering`, and `cargo xtask package` locally renders notices for `minisign-verify` and `tar`
   with no new licence kind.
-- [ ] 2.2 Transport: HTTPS only, the release-host redirect allowlist, at most 5 redirects, connect and idle
+  Done: `crates/ps-update` (I/O layer; `cargo xtask layering` OK, 18 crates; behind the facade like `ps-llm`).
+  Its update-folder file operations are listed in `MOVE_ALLOWED` per module (ADR-0126 says so). The platform
+  verifier was chosen over Mozilla's roots (design D9). Every new crate's license is on `about.toml`'s accepted list
+  (MIT, Apache-2.0, ISC); the rendered notices are checked by the next `cargo xtask package` run.
+- [x] 2.2 Transport: HTTPS only, the release-host redirect allowlist, at most 5 redirects, connect and idle
   timeouts, size limits enforced while reading, user agent `PhotoSquirrel`, no cookies, `HTTPS_PROXY`, and the
   loopback-only `PHOTOSQUIRREL_UPDATE_SERVER`. First confirm the current GitHub redirect hosts with one live `curl -sI`
   of a release asset, and record them in design.md D2. Verify: `scenario_app_updates_check_request_carries_no_identifiers`,
   `scenario_app_updates_redirect_to_an_unknown_host_refused`, `scenario_app_updates_oversized_response_cut_off`, and
   a unit test that an override to a non-loopback host is refused.
-- [ ] 2.3 The manifest envelope and its parsing, signature verification against the built-in keys plus the test
+  Done: `transport.rs` (`Http`, `Endpoint`). The redirect hosts were confirmed live on 2026-11-09 (design D2). The
+  three scenarios and `only_loopback_servers_override_github`, `too_many_redirects_fail` and
+  `locations_resolve_against_their_request` pass.
+- [x] 2.3 The manifest envelope and its parsing, signature verification against the built-in keys plus the test
   key under `cfg(test)`/`test-key`, the trusted-comment check, and the package URL prefix check. Verify:
   `scenario_app_updates_tampered_manifest_rejected`, `scenario_app_updates_either_built_in_key_accepted`, and a unit
   test that a URL outside `releases/download/v<version>/` is rejected.
-- [ ] 2.4 Version rules: semver precedence, `highest_accepted`, pre-release only to pre-release installs, and
+  Done: `manifest.rs`, `keys.rs`. Both scenarios and `urls_outside_the_release_are_rejected` pass; the
+  either-key test uses two throwaway keys as the two slots.
+- [x] 2.4 Version rules: semver precedence, `highest_accepted`, pre-release only to pre-release installs, and
   `skipped`. Verify: `scenario_app_updates_older_or_replayed_manifest_ignored` and
   `scenario_app_updates_stable_install_ignores_a_release_candidate`.
-- [ ] 2.5 Download: background low priority, `.part` resume with `Range`, SHA-256 while streaming, a free-space check
+  Done: `version.rs`. Both scenarios and `skipped_versions_are_not_offered` pass.
+- [x] 2.5 Download: background low priority, `.part` resume with `Range`, SHA-256 while streaming, a free-space check
   for 3 times the size, a single staged version, and removal on mismatch. Verify:
   `scenario_app_updates_corrupted_download_never_installed`, `scenario_app_updates_interrupted_download_resumes` and
   `scenario_app_updates_low_disk_space_defers_the_download`.
-- [ ] 2.6 The update folder, `state.json` (atomic writes) and `history.jsonl` (the last 200 entries). Verify:
+  Done: `download.rs` (`Updater::download`). The three scenarios, `a_download_is_verified_and_staged`,
+  `an_oversized_payload_is_refused` and `only_one_version_is_staged` pass. The low-priority background thread is
+  the service's (task 3.2).
+- [x] 2.6 The update folder, `state.json` (atomic writes) and `history.jsonl` (the last 200 entries). Verify:
   `scenario_app_updates_history_records_an_update_s_life`, plus a unit test that a torn `state.json.tmp` is ignored
   and the previous state is used.
-- [ ] 2.7 Developer builds: `PHOTOSQUIRREL_RELEASE_BUILD` through `option_env!`, set by `cargo xtask package`.
+  Done: `dir.rs`, `state.rs`, `history.rs`. The scenario,
+  `state_round_trips_and_a_torn_temporary_file_is_ignored`, `only_the_last_200_entries_are_kept` and
+  `at_most_sixteen_catalogs_are_remembered` pass. The folder follows the existing `ProjectDirs` convention (design
+  D4).
+- [x] 2.7 Developer builds: `PHOTOSQUIRREL_RELEASE_BUILD` through `option_env!`, set by `cargo xtask package`.
   Verify: `scenario_app_updates_developer_build_refuses_to_check`, run in a normal `cargo test` build.
+  Done: `build.rs` (`RELEASE_BUILD`, a `rerun-if-env-changed` build script). The scenario passes: `check` and
+  `download` refuse with no request. `cargo xtask package` sets the variable in task 9.1.
 
 ## 3. Settings and the service
 
