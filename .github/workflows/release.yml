@@ -195,11 +195,12 @@ jobs:
   release:
     name: Check and publish the release
     needs: [package, runtime-sources, verify-macos]
-    # verify-macos is skipped on a dry run that does not sign; a tag always needs it (the step below fails without
-    # the signed packages).
+    # verify-macos is skipped only on a dry run that did not ask to sign; a tag, or a dry run with sign_macos, needs
+    # it (the step below also fails without the signed packages).
     if: >-
       always() && needs.package.result == 'success' && needs.runtime-sources.result == 'success' &&
-      (needs.verify-macos.result == 'success' || (needs.verify-macos.result == 'skipped' && github.event_name != 'push'))
+      (needs.verify-macos.result == 'success' ||
+      (needs.verify-macos.result == 'skipped' && github.event_name != 'push' && !inputs.sign_macos))
     runs-on: ubuntu-24.04
     # The only write permission: creating the release.
     permissions:
@@ -224,13 +225,15 @@ jobs:
           path: signed-macos
       # A release takes its macOS packages from verify-macos only (ADR-0128).
       - name: Use the signed macOS packages
+        env:
+          SIGN_MACOS: ${{ inputs.sign_macos }}
         run: |
           if [ -d signed-macos ]; then
             rm packages/PhotoSquirrel-*-macos-*
             mv signed-macos/* packages/
             echo "macOS packages: signed, notarized and stapled." >> "$GITHUB_STEP_SUMMARY"
           else
-            if [ "$GITHUB_EVENT_NAME" = push ]; then
+            if [ "$GITHUB_EVENT_NAME" = push ] || [ "$SIGN_MACOS" = true ]; then
               echo "::error::a release needs the signed macOS packages (verify-macos)"; exit 1
             fi
             echo "::warning::macOS packages are NOT signed (dry run without sign_macos)"

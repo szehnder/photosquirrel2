@@ -119,28 +119,29 @@ pub fn check_app_version(output: &str, version: &str) -> Result<()> {
 
 /// The relative paths of every file and symlink in a bundle, without the signature files signing adds.
 pub fn bundle_files(app: &Path) -> Result<Vec<String>> {
-    fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) -> Result<()> {
-        for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-            let path = entry?.path();
-            let rel = path
-                .strip_prefix(base)
-                .expect("under base")
-                .to_string_lossy()
-                .replace('\\', "/");
-            let meta = fs::symlink_metadata(&path)?;
-            if meta.is_dir() {
-                walk(&path, base, out)?;
-            } else {
-                out.push(rel);
-            }
-        }
-        Ok(())
-    }
     let mut out = Vec::new();
-    walk(app, app, &mut out)?;
+    walk_bundle(app, app, &mut out)?;
     out.retain(|p| !p.starts_with("Contents/_CodeSignature/") && p != "Contents/CodeResources");
     out.sort();
     Ok(out)
+}
+
+fn walk_bundle(dir: &Path, base: &Path, out: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = entry?.path();
+        let rel = path
+            .strip_prefix(base)
+            .expect("under base")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let meta = fs::symlink_metadata(&path)?;
+        if meta.is_dir() {
+            walk_bundle(&path, base, out)?;
+        } else {
+            out.push(rel);
+        }
+    }
+    Ok(())
 }
 
 /// Rebuild the macOS `.tar.gz` from the signed app's programs and notices, and write its checksum. Returns the
@@ -196,6 +197,60 @@ fn output(cmd: &mut Command) -> Result<(bool, String)> {
     Ok((out.status.success(), text))
 }
 
+/// Run one of Apple's tools that must succeed: a non-zero exit fails the check whatever it printed.
+fn checked(label: &str, cmd: &mut Command) -> Result<String> {
+    let (ok, text) = output(cmd)?;
+    if !ok {
+        bail!("{label}: {:?} failed: {}", cmd.get_program(), text.trim());
+    }
+    Ok(text)
+}
+
+/// Whether two bundles hold the same files with the same bytes (symlinks by their targets).
+pub fn same_bundle(a: &Path, b: &Path) -> Result<Vec<String>> {
+    let (fa, fb) = (bundle_files_all(a)?, bundle_files_all(b)?);
+    let mut differ: Vec<String> = fa
+        .iter()
+        .filter(|p| !fb.contains(p))
+        .chain(fb.iter().filter(|p| !fa.contains(p)))
+        .cloned()
+        .collect();
+    for rel in fa.iter().filter(|p| fb.contains(p)) {
+        let (pa, pb) = (a.join(rel), b.join(rel));
+        let same = match (fs::read_link(&pa), fs::read_link(&pb)) {
+            (Ok(ta), Ok(tb)) => ta == tb,
+            (Err(_), Err(_)) => fs::read(&pa)? == fs::read(&pb)?,
+            _ => false,
+        };
+        if !same {
+            differ.push(rel.clone());
+        }
+    }
+    differ.sort();
+    Ok(differ)
+}
+
+/// Every file of a bundle, the signature files included.
+fn bundle_files_all(app: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    walk_bundle(app, app, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+/// Unmounts a disk image when dropped, also after a failed check.
+struct Mounted(PathBuf);
+
+impl Drop for Mounted {
+    fn drop(&mut self) {
+        let _ = Command::new("hdiutil")
+            .arg("detach")
+            .arg(&self.0)
+            .arg("-force")
+            .output();
+    }
+}
+
 fn unzip(zip: &Path, dest: &Path) -> Result<PathBuf> {
     fs::remove_dir_all(dest).ok();
     fs::create_dir_all(dest)?;
@@ -219,6 +274,7 @@ fn is_macho(path: &Path) -> bool {
             0xfeedface_u32,
             0xfeedfacf,
             0xcafebabe,
+            0xcafebabf,
             0xcefaedfe,
             0xcffaedfe,
         ]
@@ -261,37 +317,43 @@ pub fn run(root: &Path, signed: &Path, unsigned_app: &Path, team: &str, out: &Pa
     }
 
     // Every Mach-O file and the bundle: Developer ID by the team, hardened runtime, secure timestamp.
-    let mut checked = 0;
+    let mut machos = 0;
     for rel in &a {
         let path = app.join(rel);
         if is_macho(&path) {
-            let (_, text) = output(Command::new("codesign").arg("-dvv").arg(&path))?;
+            let text = checked(rel, Command::new("codesign").arg("-dvv").arg(&path))?;
             check_signature(rel, &text, team, true)?;
-            checked += 1;
+            machos += 1;
         }
     }
-    if checked == 0 {
+    if machos == 0 {
         bail!("no Mach-O file in the signed app");
     }
-    let (_, text) = output(Command::new("codesign").arg("-dvv").arg(&app))?;
+    let text = checked(
+        "PhotoSquirrel.app",
+        Command::new("codesign").arg("-dvv").arg(&app),
+    )?;
     check_signature("PhotoSquirrel.app", &text, team, true)?;
-    let (_, text) = output(
+    let text = checked(
+        "PhotoSquirrel.app",
         Command::new("codesign")
             .args(["--verify", "--strict", "--deep", "-vv"])
             .arg(&app),
     )?;
     check_verify("PhotoSquirrel.app", &text)?;
-    let (_, text) = output(Command::new("codesign").arg("-dvv").arg(&dmg))?;
+    let text = checked(&dmg_name, Command::new("codesign").arg("-dvv").arg(&dmg))?;
     check_signature(&dmg_name, &text, team, false)?;
 
     // Gatekeeper and the stapled tickets.
-    let (_, text) = output(
+    let text = checked(
+        "PhotoSquirrel.app",
         Command::new("spctl")
             .args(["--assess", "--type", "execute", "-vv"])
             .arg(&app),
     )?;
     check_gatekeeper("PhotoSquirrel.app", &text)?;
-    let (_, text) = output(
+    let text = checked(
+        &dmg_name,
         Command::new("spctl")
             .args([
                 "--assess",
@@ -305,13 +367,38 @@ pub fn run(root: &Path, signed: &Path, unsigned_app: &Path, team: &str, out: &Pa
     )?;
     check_gatekeeper(&dmg_name, &text)?;
     for (label, path) in [("PhotoSquirrel.app", &app), (dmg_name.as_str(), &dmg)] {
-        let (_, text) = output(
+        let text = checked(
+            label,
             Command::new("xcrun")
                 .args(["stapler", "validate"])
                 .arg(path),
         )?;
         check_stapled(label, &text)?;
     }
+
+    // The app users get is the one inside the DMG: it must be the verified app, byte for byte.
+    let mount = work.join("dmg");
+    fs::create_dir_all(&mount)?;
+    checked(
+        &dmg_name,
+        Command::new("hdiutil")
+            .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
+            .arg(&mount)
+            .arg(&dmg),
+    )?;
+    let mounted = Mounted(mount.clone());
+    let in_dmg = mount.join("PhotoSquirrel.app");
+    if !in_dmg.is_dir() {
+        bail!("{dmg_name} holds no PhotoSquirrel.app");
+    }
+    if !fs::symlink_metadata(mount.join("Applications")).is_ok_and(|m| m.file_type().is_symlink()) {
+        bail!("{dmg_name} has no Applications link");
+    }
+    let differ = same_bundle(&in_dmg, &app)?;
+    if !differ.is_empty() {
+        bail!("the app in {dmg_name} differs from the verified app: {differ:?}");
+    }
+    drop(mounted);
 
     // The signed programs start under the hardened runtime (dyld loads every linked framework before main).
     let (ok, text) =
@@ -333,7 +420,7 @@ pub fn run(root: &Path, signed: &Path, unsigned_app: &Path, team: &str, out: &Pa
     write_checksum(out, &dmg_name)?;
     let archive = rebuild_archive(root, &app, out, &work.join("staging"), &version)?;
     eprintln!(
-        "macOS packages signed by team {team}, notarized and stapled: {dmg_name}, {archive} ({checked} Mach-O files)"
+        "macOS packages signed by team {team}, notarized and stapled: {dmg_name}, {archive} ({machos} Mach-O files)"
     );
     fs::remove_dir_all(&work).ok();
     Ok(())
@@ -526,6 +613,32 @@ mod tests {
         fs::remove_dir_all(&base).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn same_bundle_compares_bytes_and_links() {
+        let base = crate::temp_dir(&root())
+            .expect("tmp")
+            .join(format!("macos-same-{}", std::process::id()));
+        fs::remove_dir_all(&base).ok();
+        let make = |name: &str, body: &str| {
+            let app = base.join(name);
+            fs::create_dir_all(app.join("Contents/MacOS")).expect("dirs");
+            fs::write(app.join("Contents/MacOS/photosquirrel"), body).expect("file");
+            std::os::unix::fs::symlink("MacOS/photosquirrel", app.join("Contents/link"))
+                .expect("link");
+            app
+        };
+        let (a, b, c) = (make("a", "one"), make("b", "one"), make("c", "two"));
+        assert!(same_bundle(&a, &b).expect("same").is_empty());
+        assert_eq!(
+            same_bundle(&a, &c).expect("differ"),
+            ["Contents/MacOS/photosquirrel"]
+        );
+        fs::write(b.join("Contents/extra"), "x").expect("extra");
+        assert_eq!(same_bundle(&a, &b).expect("extra"), ["Contents/extra"]);
+        fs::remove_dir_all(&base).ok();
+    }
+
     #[test]
     fn bundle_files_ignore_signature_files() {
         let base = crate::temp_dir(&root())
@@ -624,8 +737,29 @@ mod tests {
             "{release}"
         );
         assert!(release.contains("name: signed-macos-packages"));
-        // A pushed tag without the signed packages fails.
-        assert!(release.contains("if [ \"$GITHUB_EVENT_NAME\" = push ]; then"));
+        // The step guard: a tag, or a dry run that asked to sign, fails without the signed packages.
+        assert!(release.contains("SIGN_MACOS: ${{ inputs.sign_macos }}"));
+        assert!(
+            release.contains(
+                "if [ \"$GITHUB_EVENT_NAME\" = push ] || [ \"$SIGN_MACOS\" = true ]; then"
+            )
+        );
+        // The job condition: verify-macos may be skipped only on a dry run that did not ask to sign.
+        let release_if = release
+            .split("    if: >-\n")
+            .nth(1)
+            .and_then(|r| r.split("    runs-on:").next())
+            .expect("release if");
+        assert!(
+            release_if.contains("needs.verify-macos.result == 'success'"),
+            "{release_if}"
+        );
+        assert!(
+            release_if.contains(
+                "(needs.verify-macos.result == 'skipped' && github.event_name != 'push' && !inputs.sign_macos)"
+            ),
+            "{release_if}"
+        );
         assert!(release.contains("::error::a release needs the signed macOS packages"));
         assert!(release.contains("rm packages/PhotoSquirrel-*-macos-*"));
         let sign = job(&text, "sign-macos");
@@ -641,6 +775,11 @@ mod tests {
             "verify-macos must hold no secrets"
         );
         assert!(!verify.contains("environment:"));
+        // verify-macos runs whenever sign-macos succeeded: it has no condition of its own.
+        assert!(
+            !verify.lines().any(|l| l.trim_start().starts_with("if:")),
+            "verify-macos must not have its own condition"
+        );
     }
 
     #[test]

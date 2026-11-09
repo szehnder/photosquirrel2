@@ -37,7 +37,8 @@
 ### D1. Three jobs: build unsigned, sign without compiling, verify without secrets (ADR-0128)
 
 **`package (macos)`** is unchanged, apart from also uploading the unsigned `PhotoSquirrel.app` as
-`macos-app-unsigned` (a `ditto -c -k --keepParent` zip, which keeps the bundle's attributes and symlinks).
+`macos-app-unsigned`. That is a `ditto -c -k --keepParent` zip, which keeps the bundle's attributes and symlinks, of
+the app taken from the built DMG: cargo-packager deletes its intermediate `.app`.
 
 **`sign-macos`** (`macos-15`):
 - `needs: package`, `environment: macos_signing`, `permissions: contents: read`.
@@ -50,23 +51,29 @@
 - It uploads `macos-signed`: the stapled app as a zip, and the stapled DMG.
 
 **`verify-macos`** (`macos-15`):
-- `needs: sign-macos`, `permissions: contents: read`, no environment and no secrets.
-- It runs `cargo xtask macos-signed --signed <dir> --unsigned-packages <dir> --team-id ${{ vars.APPLE_TEAM_ID }}
-  --out target/packages`. This step compiles only xtask, with `--locked`. It:
-  1. Runs the checks of D3 and fails on any of them.
+- `needs: [package, sign-macos]`, no `if:` of its own (it runs whenever `sign-macos` succeeded),
+  `permissions: contents: read`, no environment and no secrets.
+- It runs `cargo xtask macos-signed --signed signed --unsigned-app unsigned/macos-app-unsigned.zip --team-id
+  "${{ vars.APPLE_TEAM_ID }}" --out signed-packages`. This step compiles only xtask. It:
+  1. Runs the checks of D3, each of which needs the tool to exit 0 as well as print the expected text, and fails on
+     any of them.
   2. Checks that the signed app's file list and `Info.plist` match the unsigned app's.
   3. Runs `Contents/MacOS/photosquirrel{,-cli} --version`. dyld loads every linked framework before `main`, so
      this proves the hardened runtime and library validation do not stop the programs. A GUI start was dropped,
      because GitHub's macOS VMs may have no usable GPU.
   4. Rebuilds `PhotoSquirrel-<v>-macos-universal.tar.gz` (through `package.rs` `archive()`, with the binaries from
      the signed app) and, once `auto-updates` has landed, the `.app.tar.gz`.
-  5. Copies the DMG and writes new `.sha256` files.
-- It uploads `packages-macos-signed`.
+  5. Mounts the DMG and checks that it holds an `Applications` link and a `PhotoSquirrel.app` byte-identical to the
+     verified app.
+  6. Copies the DMG and writes new `.sha256` files.
+- It uploads `signed-macos-packages`.
 
 **`release`** (the publishing job):
-- For a tag, it needs `verify-macos` and downloads `packages-macos-signed` instead of `packages-macos`. It fails if
-  any macOS package is missing.
-- For a dry run with `sign_macos`, it does the same.
+- It needs `verify-macos`. It accepts it skipped only on a dry run without `sign_macos`. When it succeeded, the job
+  downloads `signed-macos-packages`, removes the unsigned macOS files from the `packages-*` it downloaded, and
+  moves the signed ones in.
+- For a tag, or a dry run with `sign_macos`, it fails if the signed packages are missing (the job's `if:` and a step
+  guard both check).
 - For a dry run without it, it uses `packages-macos` and the summary says "macOS packages are NOT signed (dry run
   without sign_macos)".
 - The `auto-updates` manifest `sign` job needs `verify-macos` on the same condition, so the manifest hashes the signed
@@ -92,7 +99,7 @@ A bash script with `set -euo pipefail` and a `trap cleanup EXIT`. Inputs come fr
    `security set-key-partition-list -S apple-tool:,apple:,codesign: -s`, and add the keychain to the user search
    list. Check that `security find-identity -v -p codesigning` lists `MACOS_SIGNING_IDENTITY`.
 2. **Sign the app, inside out.** Unzip the app with `ditto -x -k`, then run `xattr -cr` on it. For every Mach-O
-   file under `Contents/` other than the main executable, deepest first, run `codesign --force --options runtime
+   file under `Contents/`, the main executable included, deepest first, run `codesign --force --options runtime
    --timestamp --sign "$ID" --keychain "$KC"`. Then sign the bundle the same way. Do not use `--deep`.
 3. **Notarize the app.** Zip it with `ditto -c -k --keepParent`, then run `xcrun notarytool submit app.zip --key
    AuthKey.p8 --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --wait --timeout 45m --output-format
@@ -103,14 +110,15 @@ A bash script with `set -euo pipefail` and a `trap cleanup EXIT`. Inputs come fr
    it with `codesign --timestamp --sign` (no runtime option), notarize it as in step 3, and staple it.
 
    This replaces cargo-packager's DMG, and with it the licence agreement that DMG showed on open (owner decision,
-   2026-11-09: no click-through; the notices stay in the app). The packager's DMG look (background and icon positions) is not kept, and
-   task 2.3 compares the two. If the owner wants the old look, `create-dmg` can be fetched as a pinned script
+   2026-11-09: no click-through; the notices stay in the app). The packager's DMG look (background and icon
+   positions) is not kept; task 2.3 records that. If the owner wants the old look, `create-dmg` can be fetched as a pinned script
    instead.
 5. **Clean-up (`trap`).** Delete the keychain with `security delete-keychain`, restore the original keychain search
    list, and `rm -rf` the work folder. This runs on success and on failure alike.
 
-Secrets are never echoed. `set -x` is not used, and notarytool's JSON is printed after the key path is removed from
-it.
+Secrets are never echoed and `set -x` is not used. Of notarytool's output only the status and the submission id are
+printed, and Apple's log when a submission is not accepted. The keychain search list is saved and restored as an
+array, so paths with spaces survive, in a form that works with macOS's bash 3.2.
 
 ### D3. What `verify-macos` checks (`cargo xtask macos-signed`)
 
@@ -124,6 +132,7 @@ The parsers are pure functions, unit-tested on recorded outputs. Those recording
 | Gatekeeper, app | `spctl --assess --type execute -vv <app>` | `accepted`, `source=Notarized Developer ID` |
 | Gatekeeper, DMG | `spctl --assess --type open --context context:primary-signature -vv <dmg>` | `accepted`, `source=Notarized Developer ID` |
 | Stapled | `xcrun stapler validate <app>` and `<dmg>` | `The validate action worked!` |
+| The DMG's app | `hdiutil attach -readonly <dmg>` | an `Applications` link and a `PhotoSquirrel.app` byte-identical to the checked app |
 
 The expected Team ID comes from the repository variable `APPLE_TEAM_ID`, which is not a secret. That pins the signer,
 so a wrong certificate in the secrets fails the release.

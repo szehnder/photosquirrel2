@@ -38,13 +38,17 @@ done
 umask 077
 work=$(mktemp -d)
 keychain="$work/signing.keychain-db"
-old_keychains=$(security list-keychains -d user | tr -d '"' | xargs)
+# The user's keychain search list, one quoted path per line, kept as an array (paths may contain spaces).
+old_keychains=()
+while IFS= read -r line; do
+  line=${line#*\"}
+  old_keychains+=("${line%\"}")
+done < <(security list-keychains -d user)
 
 cleanup() {
   # Every outcome: delete the keychain, restore the search list, remove the certificate and key files.
   security delete-keychain "$keychain" >/dev/null 2>&1 || true
-  # shellcheck disable=SC2086 # one argument per keychain
-  security list-keychains -d user -s $old_keychains >/dev/null 2>&1 || true
+  security list-keychains -d user -s ${old_keychains[@]+"${old_keychains[@]}"} >/dev/null 2>&1 || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -58,8 +62,7 @@ security set-keychain-settings -lut 3600 "$keychain"
 security unlock-keychain -p "$keychain_password" "$keychain"
 security import "$work/cert.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
-# shellcheck disable=SC2086
-security list-keychains -d user -s "$keychain" $old_keychains
+security list-keychains -d user -s "$keychain" ${old_keychains[@]+"${old_keychains[@]}"}
 if ! security find-identity -v -p codesigning "$keychain" | grep -qF "\"$MACOS_SIGNING_IDENTITY\""; then
   echo "::error::the certificate in MACOS_CERTIFICATE_P12_BASE64 is not a valid identity named MACOS_SIGNING_IDENTITY" >&2
   security find-identity -v -p codesigning "$keychain" | sed 's/^/  /' >&2
@@ -101,7 +104,7 @@ xattr -cr "$app"
 version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
 find "$app/Contents" -type f -print0 |
   while IFS= read -r -d '' f; do
-    if file -b "$f" | grep -q 'Mach-O'; then
+    if [[ $(file -b "$f") == *Mach-O* ]]; then
       printf '%s\t%s\n' "$(printf '%s' "$f" | tr -cd '/' | wc -c)" "$f"
     fi
   done | sort -rn | cut -f2- >"$work/machos.txt"

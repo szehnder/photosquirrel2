@@ -103,6 +103,18 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
 - [ ] 5.2 Push. GitHub CI is green on all jobs (draft PR szehnder/photosquirrel2#1), and an approved dry run with
   `sign_macos` is green, including signing and verification (run 42603578237).
 - [ ] 5.3 `cargo xtask ci` passes.
-- [ ] 5.4 Gate review by a fresh agent that did not write the code. It covers in particular: secrets referenced only
+- [x] 5.4 Gate review by a fresh agent that did not write the code. It covers in particular: secrets referenced only
   in `sign-macos`, no cargo in that job, clean-up on every outcome, the Team ID pinned, and the release unable to
   publish unsigned macOS packages for a tag.
+  Done: PASS-WITH-FIXES (2026-11-09). The safety properties hold: the secrets are only in `sign-macos`, it runs no
+  cargo, clean-up runs on every outcome, the Team ID is pinned, and a tag cannot publish unsigned packages. The
+  fixes:
+  - M1: a dry run that asked to sign but failed to sign is now a failure (the release `if:` and the step guard).
+  - L2: every Apple tool must exit 0 as well as print the expected text.
+  - L3: the app inside the DMG must be byte-identical to the checked app, beside an `Applications` link.
+  - L4: the keychain search list is kept as an array (paths with spaces, bash 3.2).
+  - L5: Mach-O detection without a pipe, the fat64 magic, and the workflow tests now assert the release job's
+    condition.
+  - L6: design D1/D2 wording updated.
+
+  The fixes in `sign.sh` and the DMG check are proven on the next signed run (task 3.5).
