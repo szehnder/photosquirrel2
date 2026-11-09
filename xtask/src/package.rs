@@ -2496,6 +2496,35 @@ mod tests {
     }
 
     #[test]
+    fn scenario_release_packaging_dry_run_rehearses_the_round_trip() {
+        let text = release_workflow();
+        let trip = workflow_job(&text, "update-roundtrip");
+        // The same job and legs; a dry run passes `rehearsal`, and runs when its throwaway-key manifest exists.
+        assert!(trip.contains("github.event_name != 'push' && 'rehearsal' || ''"));
+        assert!(trip.contains("needs.update-manifest-dry.result == 'success'"));
+        let release = workflow_job(&text, "release");
+        assert!(
+            !release.contains("needs.update-roundtrip.result == 'skipped'"),
+            "a dry run does not pass without the rehearsal"
+        );
+        let script =
+            fs::read_to_string(root().join("packaging/update-roundtrip.sh")).expect("script");
+        let at = script
+            .find("if [ \"$mode\" = rehearsal ]; then\n  before=")
+            .expect("the rehearsal");
+        let rehearsal = &script[at..];
+        let rehearsal = &rehearsal[..rehearsal.find("\nfi\n").expect("its end")];
+        // The candidate itself is installed (copied from the candidate folder, not downloaded).
+        assert!(script.contains("cp \"$candidate\"/$1 \"$work/prev/\""));
+        assert!(rehearsal.contains("\"$before\" != \"photosquirrel ${version}\""));
+        // It must refuse the manifest for its signature, stage nothing, and be unchanged.
+        assert!(rehearsal.contains("if run_app --update-now; then"));
+        assert!(rehearsal.contains("update manifest signature is not valid"));
+        assert!(rehearsal.contains("updates/ready") && rehearsal.contains("updates/helper"));
+        assert!(rehearsal.contains("\"$after\" != \"$before\""));
+    }
+
+    #[test]
     fn scenario_release_packaging_previous_release_updates_to_the_candidate() {
         let text = release_workflow();
         let trip = workflow_job(&text, "update-roundtrip");
@@ -2509,7 +2538,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {os} leg"));
             assert!(trip[at..].contains(&format!("os: {runner}")), "{os}");
         }
-        assert!(trip.contains("needs: [package, verify-macos, update-manifest]"));
+        assert!(
+            trip.contains("needs: [package, verify-macos, update-manifest, update-manifest-dry]")
+        );
+        // A tag runs the real round trip; a dry run its rehearsal (the throwaway key is refused).
+        assert!(trip.contains("github.event_name != 'push' && 'rehearsal' || ''"));
         assert!(trip.contains("bash packaging/update-roundtrip.sh"));
         assert!(!trip.contains("secrets."), "the round trip holds no secret");
         let release = workflow_job(&text, "release");
@@ -2517,9 +2550,11 @@ mod tests {
             release.contains("update-roundtrip"),
             "the release waits for the round trip"
         );
-        assert!(release.contains(
-            "(needs.update-roundtrip.result == 'skipped' && github.event_name != 'push')"
-        ));
+        assert!(
+            release.contains("needs.update-roundtrip.result == 'success'")
+                && !release.contains("needs.update-roundtrip.result == 'skipped'"),
+            "no release, and no dry run, without the round trip or its rehearsal"
+        );
         let script =
             fs::read_to_string(root().join("packaging/update-roundtrip.sh")).expect("script");
         // The previous release with an updater, installed per OS, updated through the served manifest.

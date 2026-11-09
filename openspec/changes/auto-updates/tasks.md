@@ -268,7 +268,8 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 - [ ] 9.3 `release.yml`:
   - a `sign` job (the `release-signing` environment for tags, a throwaway key for dry runs, read-only, xtask only);
   - the `sign` job also needs `verify-macos` when that job runs (`macos-signing`);
-  - an `update-roundtrip` matrix job (tags only; it succeeds with a notice when no previous release has a manifest);
+  - an `update-roundtrip` matrix job (it succeeds with a notice when no previous release has a manifest; a dry run
+    rehearses it with the candidate itself);
   - the release job needs the round trip, checks 8 packages, rechecks the envelope with `minisign -V` and
     `sha256sum -c`, and attaches `update-manifest.json`.
 
@@ -281,8 +282,12 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   `packaging/use-signed-macos.sh` and `packaging/update-roundtrip.sh` (shellcheck clean).
   `scenario_release_packaging_release_workflow_covers_every_platform` (8 packages, the manifest published, its
   sign job read-only), `scenario_release_packaging_signing_job_isolated` and
-  `scenario_release_packaging_previous_release_updates_to_the_candidate` pass. Still open: a green dry run (the owner
-  starts it), and the app's `--update-now` that the round trip runs (task 5.5).
+  `scenario_release_packaging_previous_release_updates_to_the_candidate` pass. The app's `--update-now` is in (task 5.5).
+  Dry run 42707503988 (`sign_macos`) is green with a throwaway key, 8 packages and the manifest; it skipped the
+  round trip, which then ran for tags only. A dry run now rehearses it on all three OSes
+  (`update-roundtrip.sh <os> <dir> rehearsal`: the candidate is installed, starts, refuses the throwaway-key
+  manifest and is unchanged; `scenario_release_packaging_dry_run_rehearses_the_round_trip`). Still open: a green
+  dry run with the rehearsal.
 - [x] 9.4 Docs: the README "Updates" section, a release notes "Updates" section with the 0.4.0 "last manual install"
   note and a "What's new in 0.4.0" section, the new `docs/releasing.md` runbook, and ROADMAP row 37 (added with the
   spec commit). Verify: `scenario_release_packaging_readme_screenshots_exist` (unchanged),

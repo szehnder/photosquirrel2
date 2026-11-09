@@ -62,6 +62,13 @@ For a tagged release, the workflow SHALL, on Linux (AppImage), macOS (bundle) an
 - **WHEN** the release workflow definition and the round-trip script are read
 - **THEN** a job per OS installs the previous release, points it at the candidate's manifest, runs the update, checks the new version's `--version` and trial start, the publishing job needs it, and the job is skipped with a note only when no previous release has an updater
 
+### Requirement: Round trip rehearsed on dry runs
+A dry run, whose manifest no release trusts, SHALL rehearse the round trip on the same three systems: the candidate is installed, starts and reports its version, refuses the dry run's manifest for its signature, and is unchanged afterwards. A dry run SHALL NOT pass without it.
+
+#### Scenario: Dry run rehearses the round trip
+- **WHEN** the release workflow definition and the round-trip script are read
+- **THEN** a dry run runs the same job per OS in rehearsal mode, which installs the candidate, checks its version, requires `--update-now` to fail with the signature error and nothing staged, and requires the installed version to be unchanged; and the dry run does not pass without it
+
 ### Requirement: Release runbook
 The repository SHALL document, in `docs/releasing.md`, how to cut a release, how to withdraw a bad release so updaters stop offering it, how to rotate the update key through its two slots, and what to do if the key is lost or exposed.
 

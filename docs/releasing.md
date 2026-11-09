@@ -16,8 +16,9 @@ withdrawing a release, and what to do when a key is lost or exposed.
    `update-manifest.json`, and from then on installed copies find the new version within about a day.
 
 A manual run (`Actions → Release → Run workflow`) is a dry run: it builds and checks everything and uploads the files
-as workflow artifacts, without publishing. Tick **sign_macos** to sign and notarize as well. The ref must be one the
-`macos_signing` environment admits.
+as workflow artifacts, without publishing. It also rehearses the update round trip: on each OS the candidate is
+installed, must start, and must refuse the dry run's manifest (signed by a throwaway key) and stay unchanged. Tick
+**sign_macos** to sign and notarize as well. The ref must be one the `macos_signing` environment admits.
 
 ## macOS signing (ADR-0128)
 

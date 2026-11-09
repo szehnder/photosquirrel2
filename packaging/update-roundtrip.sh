@@ -4,38 +4,55 @@
 # through the signed manifest served from a local server, and check that the candidate is what is installed and
 # that its trial start is recorded. Runs on each OS's runner before anything is published.
 #
-#   packaging/update-roundtrip.sh <linux|macos|windows> <candidate dir>
+#   packaging/update-roundtrip.sh <linux|macos|windows> <candidate dir> [rehearsal]
 #
 # <candidate dir> holds the candidate's packages and its signed update-manifest.json. Needs GH_TOKEN (read-only)
 # and GITHUB_REPOSITORY, GITHUB_REF_NAME and RUNNER_TEMP from Actions.
+#
+# With `rehearsal` (a dry run, whose manifest is signed by a throwaway key no release trusts) nothing can be
+# updated, so the candidate itself is installed the way a user would and must (a) start and report its version,
+# (b) refuse the served manifest for its signature, and (c) be unchanged afterwards. That runs the same install
+# steps, server and `--update-now` as the real round trip, on every OS, before the first tag.
 set -euo pipefail
 os=$1
 candidate=$(cd "$2" && pwd)
-version=${GITHUB_REF_NAME#v}
+mode=${3:-roundtrip}
 work="$RUNNER_TEMP/update-roundtrip"
 rm -rf "$work"
-mkdir -p "$work"
+mkdir -p "$work/prev"
+python=$(command -v python3 || command -v python)
 
-# The newest earlier release (not a prerelease) that publishes an update manifest.
-previous=""
-for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-pre-releases --exclude-drafts \
-  --limit 30 --json tagName --jq '.[].tagName'); do
-  [ "$tag" = "$GITHUB_REF_NAME" ] && continue
-  if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
-    grep -qx update-manifest.json; then
-    previous=$tag
-    break
+if [ "$mode" = rehearsal ]; then
+  version=$("$python" -c 'import json,sys; print(json.loads(json.load(open(sys.argv[1]))["manifest"])["version"])' \
+    "$candidate/update-manifest.json")
+  previous="the candidate"
+  download() {
+    # shellcheck disable=SC2086  # the pattern is a glob on purpose
+    cp "$candidate"/$1 "$work/prev/"
+  }
+else
+  version=${GITHUB_REF_NAME#v}
+
+  # The newest earlier release (not a prerelease) that publishes an update manifest.
+  previous=""
+  for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-pre-releases --exclude-drafts \
+    --limit 30 --json tagName --jq '.[].tagName'); do
+    [ "$tag" = "$GITHUB_REF_NAME" ] && continue
+    if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+      grep -qx update-manifest.json; then
+      previous=$tag
+      break
+    fi
+  done
+  if [ -z "$previous" ]; then
+    echo "::notice::no earlier release has an updater: nothing to update from (this is the first release with one)"
+    exit 0
   fi
-done
-if [ -z "$previous" ]; then
-  echo "::notice::no earlier release has an updater: nothing to update from (this is the first release with one)"
-  exit 0
+  download() {
+    gh release download "$previous" --repo "$GITHUB_REPOSITORY" --pattern "$1" --dir "$work/prev"
+  }
 fi
-echo "updating ${previous} -> v${version} on ${os}"
-
-download() {
-  gh release download "$previous" --repo "$GITHUB_REPOSITORY" --pattern "$1" --dir "$work/prev"
-}
+echo "${mode}: ${previous} -> v${version} on ${os}"
 
 # Install the previous release the way a user would.
 case "$os" in
@@ -43,6 +60,8 @@ case "$os" in
     download '*-linux-x86_64.AppImage'
     app=$(ls "$work"/prev/*.AppImage)
     chmod +x "$app"
+    # A runner without FUSE runs the image unpacked; the image still knows its own path ($APPIMAGE).
+    "$app" --version >/dev/null 2>&1 || export APPIMAGE_EXTRACT_AND_RUN=1
     run_app() { "$app" "$@"; }
     installed_version() { "$app" --version; }
     ;;
@@ -72,7 +91,6 @@ esac
 echo "installed: $(installed_version)"
 
 # Serve the candidate's packages and signed manifest locally; the old updater checks every signature and hash.
-python=$(command -v python3 || command -v python)
 "$python" -m http.server 8765 --bind 127.0.0.1 --directory "$candidate" >"$work/server.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT
@@ -80,6 +98,36 @@ sleep 2
 export PHOTOSQUIRREL_UPDATE_SERVER=http://127.0.0.1:8765
 export PHOTOSQUIRREL_UPDATE_DIR="$work/updates"
 export PHOTOSQUIRREL_DATA_DIR="$work/data"
+
+if [ "$mode" = rehearsal ]; then
+  before=$(installed_version)
+  if [ "$before" != "photosquirrel ${version}" ]; then
+    echo "::error::the installed candidate reports '${before}', expected photosquirrel ${version}"
+    exit 1
+  fi
+  # The manifest is signed by a throwaway key: a release build must refuse it and change nothing.
+  if run_app --update-now; then
+    echo "::error::the candidate accepted a manifest that the release key did not sign"
+    exit 1
+  fi
+  if ! grep -q "update manifest signature is not valid" "$work/updates/state.json"; then
+    echo "::error::the check did not fail for the signature:"
+    cat "$work/updates/state.json" 2>/dev/null || echo "(no update state was written)"
+    exit 1
+  fi
+  if [ -e "$work/updates/ready" ] || [ -e "$work/updates/helper" ]; then
+    echo "::error::something was downloaded or staged from an untrusted manifest"
+    exit 1
+  fi
+  sleep 5
+  after=$(installed_version)
+  if [ "$after" != "$before" ]; then
+    echo "::error::the installation changed: '${before}' -> '${after}'"
+    exit 1
+  fi
+  echo "rehearsal on ${os}: v${version} installs, starts, and refuses a manifest the release key did not sign: OK"
+  exit 0
+fi
 
 # The old app checks, downloads, verifies and starts the installer helper, then exits.
 run_app --update-now

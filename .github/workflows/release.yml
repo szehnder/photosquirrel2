@@ -261,11 +261,12 @@ jobs:
 
   # Before a tagged release is published, the previous release that has an updater updates itself to this one on
   # every OS (spec release-packaging "Update round trip before publishing"). Succeeds with a notice when no earlier
-  # release has an updater.
+  # release has an updater. A dry run rehearses it: its manifest is signed by a throwaway key, so the candidate is
+  # installed on every OS, must start, and must refuse that manifest and stay unchanged.
   update-roundtrip:
     name: Update round trip (${{ matrix.name }})
-    needs: [package, verify-macos, update-manifest]
-    if: always() && needs.update-manifest.result == 'success'
+    needs: [package, verify-macos, update-manifest, update-manifest-dry]
+    if: always() && (needs.update-manifest.result == 'success' || needs.update-manifest-dry.result == 'success')
     strategy:
       fail-fast: false
       matrix:
@@ -304,7 +305,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash packaging/update-roundtrip.sh ${{ matrix.name }} candidate
+        run: bash packaging/update-roundtrip.sh ${{ matrix.name }} candidate ${{ github.event_name != 'push' && 'rehearsal' || '' }}
 
   # The AppImage runtime's source archives (ADR-0073, ADR-0077), fetched and checked by xtask in a read-only job so
   # the job that can publish compiles nothing.
@@ -329,13 +330,13 @@ jobs:
     needs: [package, runtime-sources, verify-macos, update-manifest, update-manifest-dry, update-roundtrip]
     # verify-macos is skipped only on a dry run that did not ask to sign; a tag, or a dry run with sign_macos, needs
     # it (the step below also fails without the signed packages). A tag needs the signed update manifest and the
-    # round trip; a dry run its throwaway-key manifest.
+    # round trip; a dry run its throwaway-key manifest and the round trip's rehearsal.
     if: >-
       always() && needs.package.result == 'success' && needs.runtime-sources.result == 'success' &&
       (needs.verify-macos.result == 'success' ||
       (needs.verify-macos.result == 'skipped' && github.event_name != 'push' && !inputs.sign_macos)) &&
       (needs.update-manifest.result == 'success' || needs.update-manifest-dry.result == 'success') &&
-      (needs.update-roundtrip.result == 'success' || (needs.update-roundtrip.result == 'skipped' && github.event_name != 'push'))
+      needs.update-roundtrip.result == 'success'
     runs-on: ubuntu-24.04
     # The only write permission: creating the release.
     permissions:
