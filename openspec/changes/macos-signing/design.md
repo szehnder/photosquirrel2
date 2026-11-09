@@ -181,6 +181,17 @@ These are folded into that change's artifacts:
 - **Release candidates.** Task 10.1's macOS check can run on a GitHub macOS runner: install rc.1 into a temp
   `Applications` folder and update it to rc.2. That covers what the owner cannot check without a Mac.
 
+## Measurements
+
+The first signed run is release run 42603578237 (commit b477ab4, 2026-11-09, `macos-15` runners):
+- `sign-macos` took 1 min 35 s. Inside-out signing of 2 Mach-O files and the bundle took under 1 s; app
+  notarization was Accepted in 36 s; the DMG was built in 8 s and its notarization was Accepted in 41 s.
+- `verify-macos` took 1 min 41 s, mostly the toolchain download and the xtask build, and passed every D3 check for
+  team MD988WZMG9.
+- The signed DMG and the rebuilt `.tar.gz` weighed about 55 MB each, about the same as the unsigned ones.
+- The DMG window is Finder's default layout, with no background or icon positions. It was not inspected visually,
+  because the owner has no Mac.
+
 ## Risks / Trade-offs
 
 - **Notarization latency.** It is usually minutes and sometimes over 30 min. The `--timeout 45m` limit and one manual
