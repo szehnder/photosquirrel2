@@ -148,6 +148,14 @@ impl UpdateModel {
         now_secs().max(app_time)
     }
 
+    /// Recompute the status from the update folder now (after the state changed outside the service's ticks, such
+    /// as a CLI command).
+    pub fn refresh(&mut self, cx: &mut Context<'_, Self>) {
+        let now = self.now(cx);
+        self.service.refresh(now);
+        self.reload(cx);
+    }
+
     fn reload(&mut self, cx: &mut Context<'_, Self>) {
         let status = self.service.status();
         if status != self.status {

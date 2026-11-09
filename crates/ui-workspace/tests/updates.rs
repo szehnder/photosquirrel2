@@ -247,7 +247,10 @@ fn a_failed_install_names_both_versions_and_opens_the_details(cx: &mut TestAppCo
         "0.4.1",
         "the new version did not report its version",
     );
-    updates.service.refresh(ps_update::now_secs());
+    cx.update(|cx| {
+        let hub = UpdateHub::model(cx).unwrap();
+        hub.update(cx, |m, cx| m.refresh(cx));
+    });
     let (shell, mut cx) = open(cx);
     wait_loaded(&shell, &mut cx);
     assert_eq!(
@@ -300,7 +303,10 @@ fn scenario_settings_updates_group_shows_the_update_state(cx: &mut TestAppContex
         max_catalog_schema: 27,
     });
     state.save(&ps_update::UpdateDir::at(&updates.dir)).unwrap();
-    updates.service.refresh(ps_update::now_secs());
+    cx.update(|cx| {
+        let hub = UpdateHub::model(cx).unwrap();
+        hub.update(cx, |m, cx| m.refresh(cx));
+    });
     let (shell, mut cx) = open(cx);
     wait_loaded(&shell, &mut cx);
     cx.dispatch_action(ui_workspace::actions::OpenSettings);
