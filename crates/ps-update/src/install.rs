@@ -810,7 +810,7 @@ fn check_same_signer(installed: &Path, staged: &Path) -> Result<(), UpdateError>
 
 /// Apple's `codesign` (tests put a fake in its place).
 fn codesign() -> Command {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     if let Some(fake) = tests::CODESIGN.with(|c| c.borrow().clone()) {
         return Command::new(fake);
     }
