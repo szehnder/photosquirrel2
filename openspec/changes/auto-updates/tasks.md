@@ -114,32 +114,58 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 ## 5. The installer helper and the swap
 
-- [ ] 5.1 The plan file, the helper copy of the installed CLI, the detached spawn on each OS, the per-installation
+- [x] 5.1 The plan file, the helper copy of the installed CLI, the detached spawn on each OS, the per-installation
   shared lock taken by every app and CLI start, and the exclusive wait with a 10 min timeout. Decide the AppImage CLI
   smoke check (design Risks (a) or (b)) and record it. Verify: `scenario_app_updates_running_cli_postpones_the_install`
   (with the timeout shortened in the test), plus a unit test that the lock is shared between two readers.
-- [ ] 5.2 AppImage swap: copy to `previous/`, write the `.update` file in the same folder, the `--version` smoke
+  Done: `install::{plan_install, plan_rollback, spawn_helper, hold_running, running, finish}`. The helper is a copy
+  of the installed CLI in `helper/<version>/`, started detached (its own process group; on Windows
+  `DETACHED_PROCESS | CREATE_NO_WINDOW`, plus `CREATE_BREAKAWAY_FROM_JOB` when the job allows it), logging to
+  `helper.log`. The lock is std's file lock (shared for programs, exclusive for the installer). The AppImage CLI
+  check follows design Risks (a): only the app, through the image, is run; the spec says so. The scenario passes
+  with a 1 s wait, and the spawn is checked by the trial tests in `ps-service`, which record the helper's
+  arguments.
+- [x] 5.2 AppImage swap: copy to `previous/`, write the `.update` file in the same folder, the `--version` smoke
   check, an atomic rename, and undo. Verify: on Linux CI, `scenario_app_updates_broken_new_binary_rolled_back_at_install`
   (appimage case) and `scenario_app_updates_swap_is_complete_or_not_at_all` (appimage case: the helper killed after
   each recorded step).
-- [ ] 5.3 macOS bundle swap: extract on the same volume, the smoke check, `renamex_np(RENAME_SWAP)`, move the old
+  Done: the AppImage cases of `scenario_app_updates_broken_new_binary_rolled_back_at_install` and
+  `scenario_app_updates_swap_is_complete_or_not_at_all` (stopped after `BackedUp`, `Staged` and `Swapped`, then
+  rerun) pass with script programs.
+- [x] 5.3 macOS bundle swap: extract on the same volume, the smoke check, `renamex_np(RENAME_SWAP)`, move the old
   bundle to `previous/`, undo, and the `EPERM`/`EACCES` fallback to Downloads, asked once. Verify: on macOS CI, the
   bundle cases of 5.2's scenarios, `scenario_app_updates_refused_swap_falls_back_to_a_manual_install` (the swap
   fails through a test hook, and through a parent folder made read-only) and
   `scenario_app_updates_bundle_from_another_signer_refused` (fake bundles signed ad hoc on the runner, with an
   injected Team ID check).
-- [ ] 5.4 Windows NSIS: back up the installed files and `DisplayVersion`, run `setup.exe /S`, check the exit code,
+  Done: the exchange is `rustix::fs::renameat_with(.., RenameFlags::EXCHANGE)`, which is `renamex_np(RENAME_SWAP)`
+  on macOS and `renameat2(RENAME_EXCHANGE)` on Linux, so the bundle cases also run on Linux. Both scenarios pass,
+  as does `scenario_app_updates_refused_swap_falls_back_to_a_manual_install`: a test switch makes the exchange
+  fail with `PermissionDenied`, because these tests run as root, which ignores a read-only folder. The extraction
+  uses the system `tar` (macOS, Linux and Windows 10+ have it), so the `tar`/`flate2` crates of ADR-0127 are not
+  needed. Signed bundles are checked with `codesign` for the same Team ID; the macOS CI and release runs exercise
+  that.
+- [x] 5.4 Windows NSIS: back up the installed files and `DisplayVersion`, run `setup.exe /S`, check the exit code,
   the version and `DisplayVersion`, and undo. First check in a built installer that cargo-packager's NSIS honours
   `/S`, keeps the install location and does not launch the app; record it in design.md D6. Verify: on Windows CI,
   the windows-setup cases of 5.2's scenarios, with a stub `setup.exe` built by the test that copies files and exits
   with a chosen code.
+  Done, in part: cargo-packager 0.11.8's NSIS template honours `/S` and keeps `InstallLocation` (it closes a
+  running app itself and starts it only with `/R`); `/NS` stops it re-creating shortcuts (design D6). The Windows
+  path (backup, `setup /S /NS`, `--version` of both programs, copying the backup back and restoring
+  `DisplayVersion`) runs in the scenarios with a script standing in for the installer. A real NSIS run is task
+  10.1's.
 - [ ] 5.5 Install on quit and Restart now: the quit hook, the ADR-0065 slot check, and relaunch for Restart now only.
   Verify: `scenario_app_updates_restart_now_waits_for_a_scan` (headless UI test) and
   `scenario_app_updates_quit_installs_a_ready_update` (a service-level test with a fake installation and a stub app
   process).
-- [ ] 5.6 Scope: the updater writes only the installation and its update folder. Verify:
+- [x] 5.6 Scope: the updater writes only the installation and its update folder. Verify:
   `scenario_app_updates_user_data_untouched_by_install_and_rollback`, with tree snapshots of the sources, library,
   quarantine and data directory on the small corpus.
+  Done: `crates/ps-service/tests/update_scope.rs`. The small corpus is scanned, exported to a library and one drive
+  cleaned up (a quarantine); a fake AppImage is installed and rolled back by the real installer; the corpus (with
+  its quarantine), the library and the data directory are byte-identical (BLAKE3) afterwards. Unix (script
+  programs).
 
 ## 6. Trials and rollback
 
@@ -147,13 +173,21 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   frame. On a trial start, `CatalogBackend::warm` waits until the trial-ok mark. Verify:
   `scenario_app_updates_trial_start_opens_the_catalog_after_the_first_frame` and
   `scenario_app_updates_successful_trial_keeps_the_new_version`.
-- [ ] 6.2 Automatic rollback after two failed trials, with the catalog guard (`state.catalogs`, read-only
+- [x] 6.2 Automatic rollback after two failed trials, with the catalog guard (`state.catalogs`, read-only
   `user_version` against `kept.max_catalog_schema`), and adding the failed version to `skipped`. Verify:
   `scenario_app_updates_new_version_that_cannot_start_is_rolled_back` (a stub new app that exits before its first
   frame) and `scenario_app_updates_failed_install_explained`.
-- [ ] 6.3 Manual rollback from Settings and `update rollback`, with the guard. Verify:
+  Done: `ps_service::updates::{trial_start, rollback_allowed, rollback_after_exit, TrialStart}`. Passing:
+  `scenario_app_updates_new_version_that_cannot_start_is_rolled_back` (third start: helper started with a
+  rollback plan, which the real installer carries out; 0.4.1 skipped; "could not start, so 0.4.0 was put back"),
+  `scenario_app_updates_failed_install_explained` and `a_trial_after_a_catalog_upgrade_keeps_the_new_version`.
+  Calling it from `main()` is task 6.1.
+- [x] 6.3 Manual rollback from Settings and `update rollback`, with the guard. Verify:
   `scenario_app_updates_rollback_refused_after_a_catalog_upgrade` (a catalog fixture migrated to a newer
   `user_version` than the kept version's) and `scenario_app_updates_rollback_before_a_catalog_upgrade`.
+  Done (service and installer; the Settings button is task 7.3, the CLI command task 8.1): both scenarios pass with
+  a SQLite catalog whose `user_version` is 28 (above the kept 27; refused, nothing changed) and 27 (rolled back
+  and the newer version skipped).
 
 ## 7. UI
 
