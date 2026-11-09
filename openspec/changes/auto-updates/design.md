@@ -354,6 +354,11 @@ coalesced `UpdateStatus` snapshot from `ps-service`.
 | Install or rollback failed | Banner | Details (opens the history) |
 | Three days of failed scheduled checks | A status-bar note only | Check now |
 
+As built (task 7.2): every notice, "Updated" included, is the one banner above the central view, because it already
+carries actions (the toast has none); "What's new" opens the version's release page, which holds the full notes,
+instead of a dialog; the banner shows the first lines of the notes. "Details" opens Settings > General, whose Updates
+group lists the latest history entries. The status-bar item opens the same group.
+
 The Settings > General > Updates group follows the settings spec. "Check for updates…" is in the command palette.
 Every message uses the D5 reasons and names versions.
 
