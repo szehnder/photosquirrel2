@@ -31,6 +31,46 @@ pub const TICK: Duration = Duration::from_secs(60);
 /// The current update mode, read from the app's settings in memory.
 pub type ModeSource = Arc<dyn Fn() -> UpdateMode + Send + Sync>;
 
+/// What file-changing operation runs now (ADR-0065), in words for "Available when <it> finishes": `"the scan"`,
+/// `"the export"`, `"the cleanup"`; `None` when none does.
+pub type BusyProbe = Arc<dyn Fn() -> Option<&'static str> + Send + Sync>;
+
+/// A mode the app's settings write and the service reads, from any thread.
+#[derive(Debug, Clone, Default)]
+pub struct ModeCell(Arc<std::sync::atomic::AtomicU8>);
+
+impl ModeCell {
+    pub fn new(mode: UpdateMode) -> Self {
+        let cell = Self::default();
+        cell.set(mode);
+        cell
+    }
+
+    pub fn set(&self, mode: UpdateMode) {
+        let v = match mode {
+            UpdateMode::Undecided => 0,
+            UpdateMode::Automatic => 1,
+            UpdateMode::Notify => 2,
+            UpdateMode::Off => 3,
+        };
+        self.0.store(v, Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> UpdateMode {
+        match self.0.load(Ordering::Relaxed) {
+            1 => UpdateMode::Automatic,
+            2 => UpdateMode::Notify,
+            3 => UpdateMode::Off,
+            _ => UpdateMode::Undecided,
+        }
+    }
+
+    pub fn source(&self) -> ModeSource {
+        let me = self.clone();
+        Arc::new(move || me.get())
+    }
+}
+
 /// What the UI shows about updates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateStatus {
@@ -52,6 +92,8 @@ pub struct UpdateStatus {
     pub notice: Option<Notice>,
     /// Scheduled checks have failed on three days in a row.
     pub failing: bool,
+    /// "Restart now" waits for this operation to finish (`"the scan"`...).
+    pub restart_blocked_by: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +159,9 @@ struct Shared {
     updater: Updater,
     installation: Installation,
     mode: ModeSource,
+    busy_probe: Mutex<Option<BusyProbe>>,
+    /// The installed CLI that becomes the installer helper.
+    cli: Mutex<Option<std::path::PathBuf>>,
     started_at: i64,
     status: Mutex<UpdateStatus>,
     busy: Mutex<Option<Busy>>,
@@ -154,6 +199,8 @@ impl UpdateService {
                 updater,
                 installation,
                 mode,
+                busy_probe: Mutex::new(None),
+                cli: Mutex::new(None),
                 started_at,
                 status: Mutex::new(status),
                 busy: Mutex::new(None),
@@ -205,6 +252,112 @@ impl UpdateService {
 
     pub fn installation(&self) -> &Installation {
         &self.shared.installation
+    }
+
+    /// Tell the service how to see a running scan, export or cleanup (ADR-0065).
+    pub fn set_busy_probe(&self, probe: BusyProbe) {
+        *self
+            .shared
+            .busy_probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(probe);
+        self.refresh(ps_update::now_secs());
+    }
+
+    /// The installed CLI the installer helper is copied from ([`installed_cli`] in the app).
+    pub fn set_cli(&self, cli: std::path::PathBuf) {
+        *self.shared.cli.lock().unwrap_or_else(|e| e.into_inner()) = Some(cli);
+    }
+
+    fn cli(&self) -> Result<std::path::PathBuf, UpdateError> {
+        self.shared
+            .cli
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or_else(|| UpdateError::Failed("no installed CLI to install with".into()))
+    }
+
+    fn blocked_by(&self) -> Option<&'static str> {
+        let probe = self
+            .shared
+            .busy_probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        probe.and_then(|p| p())
+    }
+
+    /// "Restart now": install the ready update once the app has quit, then start the new version. Refused while a
+    /// scan, export or cleanup runs. The caller quits the app when this returns `Ok`.
+    pub fn restart_now(&self) -> Result<(), UpdateError> {
+        if let Some(op) = self.blocked_by() {
+            return Err(UpdateError::Failed(format!("Available when {op} finishes")));
+        }
+        self.install_after_quit(true)
+    }
+
+    /// The app is quitting: install the ready update after it has exited, when one is ready and wanted (automatic
+    /// mode, or "Install on quit"), the installation installs itself, and that version's install was not already
+    /// handed to the user. Returns whether the installer was started.
+    pub fn on_quit(&self) -> bool {
+        let mode = (self.shared.mode)();
+        let state = UpdateState::load(&self.shared.updater.dir);
+        let Some(ready) = state.ready.as_ref() else {
+            return false;
+        };
+        let wanted = mode == UpdateMode::Automatic || state.install_on_quit;
+        if !wanted
+            || !self.shared.installation.can_install()
+            || state.fallback_offered.contains(&ready.version)
+            || state.is_skipped(&ready.version)
+        {
+            return false;
+        }
+        match self.install_after_quit(false) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("update not installed at quit: {e}");
+                false
+            }
+        }
+    }
+
+    fn install_after_quit(&self, relaunch: bool) -> Result<(), UpdateError> {
+        let cli = self.cli()?;
+        install_after_exit(
+            &self.shared.updater,
+            &self.shared.installation,
+            &cli,
+            relaunch,
+        )
+    }
+
+    /// Check, download and hand the install to the helper now, for `--update-now` (the release round trip): the
+    /// caller exits right after.
+    pub fn update_now(&self) -> Result<String, UpdateError> {
+        let manifest = match self.shared.updater.check()? {
+            Outcome::Available(m) => m,
+            Outcome::UpToDate => return Err(UpdateError::Failed("already up to date".into())),
+        };
+        let package = self
+            .shared
+            .installation
+            .kind
+            .package()
+            .filter(|_| self.shared.installation.can_install())
+            .ok_or_else(|| {
+                UpdateError::Failed(
+                    self.shared
+                        .installation
+                        .cannot_install
+                        .clone()
+                        .unwrap_or_else(|| "this installation does not update itself".into()),
+                )
+            })?;
+        self.shared.updater.download(&manifest, package)?;
+        self.install_after_quit(false)?;
+        Ok(manifest.version)
     }
 
     /// Do whatever is due at `now`: a scheduled check, then (automatic mode, an installation that installs
@@ -335,13 +488,14 @@ impl UpdateService {
 
     fn refresh(&self, now: i64) {
         let busy = *self.shared.busy.lock().unwrap_or_else(|e| e.into_inner());
-        let status = compute_status(
+        let mut status = compute_status(
             &self.shared.updater,
             &self.shared.installation,
             (self.shared.mode)(),
             busy,
             now,
         );
+        status.restart_blocked_by = self.blocked_by();
         *self.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
     }
 }
@@ -406,6 +560,7 @@ pub fn compute_status(
         kept: state.kept.as_ref().map(|k| k.version.clone()),
         notice,
         failing,
+        restart_blocked_by: None,
     }
 }
 

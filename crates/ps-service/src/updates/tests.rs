@@ -571,3 +571,123 @@ mod trial {
         );
     }
 }
+
+#[test]
+fn scenario_app_updates_restart_now_waits_for_a_scan() {
+    let f = Fixture::new(false);
+    let t0 = 1_800_000_000;
+    let (m, _) = mode(UpdateMode::Automatic);
+    let s = f.service(m, appimage(&f.dir), t0);
+    run(&s, t0, t0 + HOUR);
+    assert_eq!(s.status().ready.as_deref(), Some("0.4.1"));
+    // A scan runs: Restart now says why it waits, and does nothing.
+    let scanning = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let probe = scanning.clone();
+    s.set_busy_probe(Arc::new(move || {
+        probe
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then_some("the scan")
+    }));
+    s.tick(t0 + HOUR + 60);
+    assert_eq!(s.status().restart_blocked_by, Some("the scan"));
+    let e = s.restart_now().unwrap_err();
+    assert_eq!(e.to_string(), "Available when the scan finishes");
+    // The scan completes: it is available.
+    scanning.store(false, std::sync::atomic::Ordering::Relaxed);
+    s.tick(t0 + HOUR + 120);
+    assert_eq!(s.status().restart_blocked_by, None);
+}
+
+#[test]
+fn the_mode_cell_is_read_from_any_thread() {
+    let cell = ModeCell::new(UpdateMode::Notify);
+    let source = cell.source();
+    assert_eq!(source(), UpdateMode::Notify);
+    cell.set(UpdateMode::Off);
+    assert_eq!(
+        std::thread::spawn(move || source()).join().unwrap(),
+        UpdateMode::Off
+    );
+}
+
+/// Quitting with a ready update in automatic mode starts the installer helper; what it then does leaves the
+/// catalog and settings alone and installs the new version (spec "Quit installs a ready update").
+#[cfg(unix)]
+#[test]
+fn scenario_app_updates_quit_installs_a_ready_update() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let f = Fixture::new(false);
+    let root = f.dir.parent().unwrap().to_path_buf();
+    // The installed AppImage, the server's new one, and a CLI that records how the helper was started.
+    let location = root.join("Apps/PhotoSquirrel.AppImage");
+    let write_script = |p: &Path, body: &str| {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    write_script(&location, "echo 'photosquirrel 0.4.0'");
+    let payload = "#!/bin/sh\necho 'photosquirrel 0.4.1'\n";
+    let m = sample_manifest("0.4.1", &[("linux-x86_64", "appimage", payload.as_bytes())]);
+    f.server.route(
+        "/update-manifest.json",
+        Route::Body(envelope(&m).into_bytes()),
+    );
+    let name = m.packages["linux-x86_64"]["appimage"].name.clone();
+    f.server.route(
+        &format!("/{name}"),
+        Route::Body(payload.as_bytes().to_vec()),
+    );
+    let calls = root.join("helper-calls.txt");
+    let cli = root.join("bin/photosquirrel-cli");
+    write_script(&cli, &format!("echo \"$@\" > '{}'", calls.display()));
+    let data = root.join("data");
+    std::fs::create_dir_all(data.join("config")).unwrap();
+    std::fs::write(data.join("config/settings.toml"), "settings_version = 4\n").unwrap();
+    std::fs::write(data.join(ps_catalog::CATALOG_FILE), b"catalog bytes").unwrap();
+
+    let (mode_source, _) = mode(UpdateMode::Automatic);
+    let installation = Installation {
+        kind: Kind::AppImage,
+        location: location.clone(),
+        cannot_install: None,
+    };
+    let t0 = 1_800_000_000;
+    let s = f.service(mode_source, installation, t0);
+    s.set_cli(cli);
+    run(&s, t0, t0 + HOUR);
+    assert_eq!(s.status().ready.as_deref(), Some("0.4.1"));
+    assert!(s.on_quit(), "the installer starts at quit");
+    // The helper was started to carry out the plan; it runs once the app has exited.
+    let mut args = String::new();
+    for _ in 0..200 {
+        args = std::fs::read_to_string(&calls).unwrap_or_default();
+        if !args.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(args.starts_with("update finish --plan "), "{args}");
+    let plan = PathBuf::from(args.split_whitespace().nth(3).unwrap());
+    ps_update::install::finish(
+        &ps_update::UpdateDir::at(&f.dir),
+        &plan,
+        Duration::from_secs(1),
+        None,
+    )
+    .unwrap();
+    let out = std::process::Command::new(&location).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "photosquirrel 0.4.1"
+    );
+    assert_eq!(
+        std::fs::read(data.join(ps_catalog::CATALOG_FILE)).unwrap(),
+        b"catalog bytes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.join("config/settings.toml")).unwrap(),
+        "settings_version = 4\n"
+    );
+}
