@@ -27,7 +27,8 @@ client. `ps-llm` uses async `reqwest`, but the updater runs a few requests a day
 - **Reusing `ps-llm`'s `reqwest` client** - it would tie update code to the AI crate and its async runtime.
 
 ## Consequences
-- New third-party notices for `minisign-verify` and `tar` (MIT/Apache), checked by cargo-about (ADR-0058, 0060).
+- New third-party notices for `minisign-verify` and the platform TLS verifier's crates (MIT, Apache-2.0, ISC),
+  checked by cargo-about (ADR-0058, 0060).
 - The updater runs on its own thread, with no runtime to start at launch.
 
 ## Revisit when

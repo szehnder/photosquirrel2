@@ -110,6 +110,41 @@ impl Probe {
     }
 }
 
+/// Debug builds only (tests of the real programs): `PHOTOSQUIRREL_UPDATE_TEST_INSTALLATION=<kind id>=<path>`
+/// stands in for detection. Release builds are compiled without it.
+pub fn test_override() -> Option<Installation> {
+    #[cfg(debug_assertions)]
+    {
+        let v = std::env::var("PHOTOSQUIRREL_UPDATE_TEST_INSTALLATION").ok()?;
+        let (id, path) = v.split_once('=')?;
+        let kind = [
+            Kind::AppImage,
+            Kind::MacApp,
+            Kind::WindowsSetup,
+            Kind::Deb,
+            Kind::Archive,
+            Kind::Developer,
+        ]
+        .into_iter()
+        .find(|k| k.id() == id)?;
+        let cannot_install = match kind {
+            Kind::Deb => Some("Installed by the system package manager".to_owned()),
+            Kind::Archive => Some("Unpacked archive".to_owned()),
+            Kind::Developer => Some("Developer build".to_owned()),
+            _ => None,
+        };
+        Some(Installation {
+            kind,
+            location: PathBuf::from(path),
+            cannot_install,
+        })
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
 /// Detect the installation `probe` describes.
 pub fn detect(p: &Probe) -> Installation {
     let exe_dir = p.exe.parent().map(Path::to_path_buf).unwrap_or_default();

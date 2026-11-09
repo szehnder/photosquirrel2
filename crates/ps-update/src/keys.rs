@@ -23,12 +23,16 @@ pub fn key_line(text: &str) -> Option<&str> {
 
 /// The base64 lines of the keys this build trusts, release slots first.
 pub fn trusted_lines() -> Vec<&'static str> {
-    let mut lines: Vec<&'static str> = [RELEASE_KEY, NEXT_KEY]
+    let lines: Vec<&'static str> = [RELEASE_KEY, NEXT_KEY]
         .into_iter()
         .filter_map(key_line)
         .collect();
     #[cfg(feature = "test-key")]
-    lines.extend(key_line(TEST_KEY));
+    let lines = {
+        let mut lines = lines;
+        lines.extend(key_line(TEST_KEY));
+        lines
+    };
     lines
 }
 

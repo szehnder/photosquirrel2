@@ -99,6 +99,11 @@ manifest address (`<server>/update-manifest.json`) and of every payload (`<serve
 size and version rules all still apply, so the override can only ever deliver genuinely signed files. The release
 round trip (D10) and the release candidates (D11) need it. Its use is logged and shown in `update status`.
 
+**Test overrides.** `PHOTOSQUIRREL_UPDATE_DIR` moves the update folder in any build. Debug builds only (release
+builds are compiled without `debug_assertions`) also honour `PHOTOSQUIRREL_UPDATE_TEST_INSTALLATION=<kind>=<path>`
+and `PHOTOSQUIRREL_DOWNLOADS_DIR`. A developer build reaches the loopback test server, and never GitHub, so the CLI
+and app tests exercise the real code.
+
 **What a check sends:** an IP address and a TLS handshake to GitHub, the same as opening the release page in a
 browser. The README says so.
 
@@ -252,7 +257,8 @@ Then the app quits as usual. The helper logs to `history.jsonl` and to `updates/
 **The per-installation running lock.** Every app and CLI process of an installation takes a shared lock on
 `installs/<hash>.lock` at start. That is one open and one `lock_shared`, with no measurable cost. The helper waits
 for the parent PID to exit, then for an exclusive lock on that file. It retries every 250 ms for up to 10 min. On
-timeout it writes "postponed" and exits, and the update stays ready.
+timeout it writes "postponed" and exits, and the update stays ready. Nothing is created before the update folder exists: an install needs one, and the first check creates it, so
+the CLI's other commands write nothing while updates have never been used.
 
 **Steps, per kind.** Each step is idempotent, and the plan records its progress, so a killed helper resumes or
 undoes the work:

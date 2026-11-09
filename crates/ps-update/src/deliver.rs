@@ -20,8 +20,13 @@ pub struct ManualInstall {
     pub command: Option<String>,
 }
 
-/// The user's Downloads folder, or the home folder when the platform names none.
+/// The user's Downloads folder, or the home folder when the platform names none. Debug builds honour
+/// `PHOTOSQUIRREL_DOWNLOADS_DIR` (tests never touch the real one).
 pub fn downloads_dir() -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("PHOTOSQUIRREL_DOWNLOADS_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d));
+    }
     let dirs = directories::UserDirs::new()?;
     Some(
         dirs.download_dir()

@@ -210,11 +210,17 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 ## 8. CLI
 
-- [ ] 8.1 `update status|check|install|rollback` with `--json` and the hidden `update finish`, plus the new `doctor`
+- [x] 8.1 `update status|check|install|rollback` with `--json` and the hidden `update finish`, plus the new `doctor`
   fields. Verify: `scenario_cli_every_subcommand_has_help`, `scenario_cli_doctor_lists_decoders` (unchanged),
   `scenario_cli_doctor_reports_update_state_offline`, `scenario_cli_update_status_works_offline`,
   `scenario_cli_update_check_reports_an_available_version`, `scenario_cli_install_refused_while_the_app_runs`,
   `scenario_cli_install_refused_for_a_package_managed_installation` and `scenario_cli_scans_never_check_for_updates`.
+  Done: `crates/photosquirrel-cli/src/cmd/update.rs` (`status`, `check`, `install --yes`, `rollback --yes`, and
+  the hidden `finish`) and the doctor's `updates`. Every command but `update` holds the installation's running lock
+  once the update folder exists. Passing: all eight scenarios (`tests/update.rs`, with
+  `scenario_cli_every_subcommand_has_help` and `scenario_cli_doctor_lists_decoders` in `tests/cli.rs`), and
+  `update_mode_set_in_settings_is_what_the_cli_reports` (the CLI half of the settings scenario). Test overrides:
+  design D2.
 
 ## 9. Release pipeline and docs
 

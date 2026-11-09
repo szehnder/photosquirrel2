@@ -240,8 +240,12 @@ pub fn lock_file(dir: &UpdateDir, location: &Path) -> PathBuf {
 }
 
 /// Hold the running lock shared for as long as the returned file lives. `None` (and a log line) when it cannot
-/// be taken: running is never refused because of it.
+/// be taken: running is never refused because of it. Nothing is created before the update folder exists: an
+/// install needs one, and the first check creates it.
 pub fn hold_running(dir: &UpdateDir, location: &Path) -> Option<File> {
+    if !dir.root().is_dir() {
+        return None;
+    }
     let path = lock_file(dir, location);
     let f = fs::create_dir_all(dir.installs_dir())
         .and_then(|()| {

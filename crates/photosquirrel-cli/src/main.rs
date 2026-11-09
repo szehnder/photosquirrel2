@@ -76,8 +76,15 @@ enum Command {
         #[command(subcommand)]
         command: AiCommand,
     },
-    /// Report the version, data folder, catalog, optional decoders, keychain and AI provider (no network).
+    /// Report the version, data folder, catalog, optional decoders, keychain, AI provider and update state (no
+    /// network).
     Doctor,
+    /// Updates: status (no network), check (one request, whatever the update mode), install and rollback (after
+    /// this command exits). Only these commands ever contact the update server.
+    Update {
+        #[command(subcommand)]
+        command: UpdateCommand,
+    },
     /// Synthetic ground-truth corpus (ADR-0025).
     Fixtures {
         #[command(subcommand)]
@@ -93,6 +100,35 @@ enum Command {
         seed: u64,
         #[arg(long, value_enum, default_value_t = PresetArg::Small)]
         preset: PresetArg,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum UpdateCommand {
+    /// The update mode, this installation, the last check, ready and kept versions and recent history. No network.
+    Status,
+    /// Check once for a newer version (one HTTPS request to GitHub; nothing about you is sent).
+    Check,
+    /// Download, verify and install the newer version; the files are replaced after this command exits. Refused
+    /// while PhotoSquirrel runs from this installation, and for a package-managed one (which gets the command).
+    Install {
+        /// Do not ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Put the previous version back, unless the catalog was already upgraded past what it opens.
+    Rollback {
+        /// Do not ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Carry out an install or rollback plan after the app has exited (started by PhotoSquirrel itself).
+    #[command(hide = true)]
+    Finish {
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        update_dir: PathBuf,
     },
 }
 
@@ -471,6 +507,10 @@ impl From<PresetArg> for ps_fixtures::Preset {
 
 fn run(cli: Cli) -> Result<()> {
     let ctx = cmd::Ctx::new(cli.data_dir.clone(), cli.json)?;
+    // Every command but `update` keeps an install of this installation waiting until it ends (ADR-0126).
+    let _running = (!matches!(cli.command, Command::Update { .. }))
+        .then(ps_service::updates::hold_running)
+        .flatten();
     match cli.command {
         Command::Sources { command } => match command {
             SourcesCommand::Add { path } => cmd::sources::add(&ctx, &path),
@@ -629,6 +669,13 @@ fn run(cli: Cli) -> Result<()> {
             AiCommand::Redescribe => cmd::ai::redescribe(&ctx),
         },
         Command::Doctor => cmd::doctor::run(&ctx),
+        Command::Update { command } => match command {
+            UpdateCommand::Status => cmd::update::status(&ctx),
+            UpdateCommand::Check => cmd::update::check(&ctx),
+            UpdateCommand::Install { yes } => cmd::update::install(&ctx, yes),
+            UpdateCommand::Rollback { yes } => cmd::update::rollback(&ctx, yes),
+            UpdateCommand::Finish { plan, update_dir } => cmd::update::finish(&plan, &update_dir),
+        },
         Command::Fixtures { command } => match command {
             FixturesCommand::Generate { seed, preset, out } => {
                 cmd::fixtures::generate(&ctx, seed, preset.into(), out)

@@ -480,7 +480,15 @@ pub fn updater_for_this_build() -> Result<Updater, UpdateError> {
 
 /// How this copy of PhotoSquirrel was installed.
 pub fn this_installation() -> Installation {
-    ps_update::kind::detect(&Probe::this_process())
+    ps_update::kind::test_override()
+        .unwrap_or_else(|| ps_update::kind::detect(&Probe::this_process()))
+}
+
+/// Hold this installation's running lock while the returned file lives: an install waits for every app and CLI
+/// process of the installation (ADR-0126). `None` when it cannot be taken; running is never refused for it.
+pub fn hold_running() -> Option<std::fs::File> {
+    let dir = UpdateDir::for_user()?;
+    install::hold_running(&dir, &this_installation().location)
 }
 
 /// The installed CLI beside the running program (`photosquirrel-cli`, `.exe` on Windows): the helper's source.

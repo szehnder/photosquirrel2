@@ -46,12 +46,14 @@ impl Updater {
                 build::SERVER_ENV
             );
         }
+        // A developer build talks to the loopback test server only (tests of the real programs); never to GitHub.
+        let release_build = build::RELEASE_BUILD || matches!(endpoint, Endpoint::Loopback(_));
         Ok(Self {
             dir,
             transport: Arc::new(Http::new()),
             endpoint,
             installed: build::current_version(),
-            release_build: build::RELEASE_BUILD,
+            release_build,
             keys: keys::trusted(),
             platform: build::platform().to_owned(),
             free_space: Arc::new(free_space),

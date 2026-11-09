@@ -5,14 +5,21 @@
 
 use std::path::{Path, PathBuf};
 
+/// Moves the update folder (tests).
+pub const DIR_ENV: &str = "PHOTOSQUIRREL_UPDATE_DIR";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateDir {
     root: PathBuf,
 }
 
 impl UpdateDir {
-    /// The update folder of this user, or `None` when the platform has no home directory.
+    /// The update folder of this user (or `PHOTOSQUIRREL_UPDATE_DIR`, which tests use to stay out of the real
+    /// one), or `None` when the platform has no home directory.
     pub fn for_user() -> Option<Self> {
+        if let Some(dir) = std::env::var_os(DIR_ENV).filter(|d| !d.is_empty()) {
+            return Some(Self::at(dir));
+        }
         directories::ProjectDirs::from("io.github", "szehnder", "photosquirrel")
             .map(|d| Self::at(d.data_local_dir().join("updates")))
     }

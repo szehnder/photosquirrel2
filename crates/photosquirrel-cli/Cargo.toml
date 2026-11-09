@@ -25,6 +25,7 @@ ps-model.workspace = true
 ps-media.workspace = true
 ps-export.workspace = true
 ps-llm.workspace = true
+ps-update.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -40,6 +41,7 @@ rusqlite.workspace = true
 blake3.workspace = true
 insta.workspace = true
 ps-llm = { workspace = true, features = ["testing"] }
+ps-update = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true
