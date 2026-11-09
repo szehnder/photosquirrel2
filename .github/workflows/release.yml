@@ -1,9 +1,10 @@
 name: Release
 
-# Installers for macOS, Windows and Linux (ADR-0030). Pushing a tag `v<workspace version>` builds every platform and
-# publishes a GitHub Release. Running the workflow by hand (`gh workflow run release.yml`, from any ref, a tag
+# Installers for macOS, Windows and Linux (ADR-0030). Pushing a tag `v<workspace version>` builds every platform,
+# signs and notarizes the macOS app and DMG (ADR-0128) and publishes a GitHub Release. Running the workflow by hand (`gh workflow run release.yml`, from any ref, a tag
 # included) is a dry run: it builds the same packages, checks the full set, its checksums and the LGPL sources and
-# uploads them with the release notes as workflow artifacts, without creating a release.
+# uploads them with the release notes as workflow artifacts, without creating a release. A dry run signs the macOS
+# packages only when `sign_macos` is ticked and the `macos-signing` environment admits the ref (its deployment rules).
 #
 # The build compiles hundreds of third-party crates, so the token is read-only everywhere except the step that
 # publishes, no checkout keeps it in .git/config, and every action is pinned to a commit.
@@ -12,6 +13,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      sign_macos:
+        description: "Sign and notarize the macOS packages (needs the macos-signing environment's approval for this ref)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -78,6 +84,86 @@ jobs:
           name: packages-${{ matrix.name }}
           path: target/packages/*
           if-no-files-found: error
+      # The unsigned app for the signing job (ADR-0128). A ditto zip keeps the bundle's symlinks and attributes.
+      - name: Unsigned app (macOS)
+        if: matrix.name == 'macos'
+        run: |
+          apps=$(find target/packager -maxdepth 3 -type d -name PhotoSquirrel.app)
+          if [ "$(printf '%s\n' "$apps" | grep -c .)" -ne 1 ]; then
+            echo "::error::expected one PhotoSquirrel.app under target/packager, found: $apps"; exit 1
+          fi
+          ditto -c -k --keepParent "$apps" target/macos-app-unsigned.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.name == 'macos'
+        with:
+          name: macos-app-unsigned
+          path: target/macos-app-unsigned.zip
+          if-no-files-found: error
+
+  # Signs, notarizes and staples the macOS app and DMG (ADR-0128). The only job that can read the signing secrets:
+  # it runs in the protected macos-signing environment, compiles nothing (Apple's tools and one script from this
+  # repository) and deletes its keychain and key files on every outcome.
+  sign-macos:
+    name: Sign and notarize (macOS)
+    needs: package
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.sign_macos)
+    runs-on: macos-15
+    environment: macos-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-app-unsigned
+          path: unsigned
+      - name: Sign, notarize and staple
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: bash packaging/macos/sign.sh unsigned/macos-app-unsigned.zip signed
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-signed
+          path: signed/*
+          if-no-files-found: error
+
+  # Checks the signed app and DMG (Developer ID of the APPLE_TEAM_ID team, hardened runtime, timestamp, Gatekeeper,
+  # stapled tickets), runs the signed programs and rebuilds the macOS archive from the signed app. No secrets.
+  verify-macos:
+    name: Verify the signed macOS packages
+    needs: [package, sign-macos]
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-app-unsigned
+          path: unsigned
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: macos-signed
+          path: signed
+      - name: Verify and rebuild the archive
+        run: >-
+          cargo xtask macos-signed --signed signed --unsigned-app unsigned/macos-app-unsigned.zip
+          --team-id "${{ vars.APPLE_TEAM_ID }}" --out signed-packages
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-macos-packages
+          path: signed-packages/*
+          if-no-files-found: error
 
   # The AppImage runtime's source archives (ADR-0073, ADR-0077), fetched and checked by xtask in a read-only job so
   # the job that can publish compiles nothing.
@@ -99,7 +185,12 @@ jobs:
 
   release:
     name: Check and publish the release
-    needs: [package, runtime-sources]
+    needs: [package, runtime-sources, verify-macos]
+    # verify-macos is skipped on a dry run that does not sign; a tag always needs it (the step below fails without
+    # the signed packages).
+    if: >-
+      always() && needs.package.result == 'success' && needs.runtime-sources.result == 'success' &&
+      (needs.verify-macos.result == 'success' || (needs.verify-macos.result == 'skipped' && github.event_name != 'push'))
     runs-on: ubuntu-24.04
     # The only write permission: creating the release.
     permissions:
@@ -117,6 +208,25 @@ jobs:
         with:
           name: runtime-source
           path: packages/runtime-source
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.verify-macos.result == 'success'
+        with:
+          name: signed-macos-packages
+          path: signed-macos
+      # A release takes its macOS packages from verify-macos only (ADR-0128).
+      - name: Use the signed macOS packages
+        run: |
+          if [ -d signed-macos ]; then
+            rm packages/PhotoSquirrel-*-macos-*
+            mv signed-macos/* packages/
+            echo "macOS packages: signed, notarized and stapled." >> "$GITHUB_STEP_SUMMARY"
+          else
+            if [ "$GITHUB_EVENT_NAME" = push ]; then
+              echo "::error::a release needs the signed macOS packages (verify-macos)"; exit 1
+            fi
+            echo "::warning::macOS packages are NOT signed (dry run without sign_macos)"
+            echo "**macOS packages are NOT signed** (dry run without sign_macos)." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Check the packages and their checksums
         working-directory: packages
         run: |

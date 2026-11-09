@@ -1,0 +1,2 @@
+/Users/runner/work/_temp/signed/PhotoSquirrel.app: valid on disk
+/Users/runner/work/_temp/signed/PhotoSquirrel.app: satisfies its Designated Requirement

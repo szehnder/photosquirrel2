@@ -1,0 +1,15 @@
+Executable=/Users/runner/work/_temp/signed/PhotoSquirrel.app/Contents/MacOS/photosquirrel
+Identifier=io.github.szehnder.photosquirrel
+Format=app bundle with Mach-O universal (x86_64 arm64)
+CodeDirectory v=20500 size=184213 flags=0x10000(runtime) hashes=5745+7 location=embedded
+Signature size=9046
+Authority=Developer ID Application: Sean Zehnder (MD988WZMG9)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+Timestamp=Nov 9, 2026 at 18:02:11
+Notarization Ticket=stapled
+Info.plist entries=16
+TeamIdentifier=MD988WZMG9
+Runtime Version=15.0.0
+Sealed Resources version=2 rules=13 files=3
+Internal requirements count=1 size=220

@@ -462,6 +462,11 @@ pub const MOVE_ALLOWED: &[(&str, &[&str], &str)] = &[
         &["remove_dir_all", "remove_file", "fs::copy"],
         "staging release packages from build outputs under the target dir",
     ),
+    (
+        "xtask/src/macos_signing.rs",
+        &["remove_dir_all", "fs::copy"],
+        "checking signed macOS packages in its own scratch folder under the target dir (ADR-0128)",
+    ),
 ];
 
 /// One move call found in a file.

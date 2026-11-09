@@ -1,0 +1,2 @@
+Processing: /Users/runner/work/_temp/signed/PhotoSquirrel.app
+The validate action worked!

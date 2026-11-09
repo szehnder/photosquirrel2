@@ -1682,7 +1682,7 @@ fn walk(dir: &Path) -> Result<Vec<String>> {
 /// The plain archive: a folder with both binaries, the licence, the third-party notices and the README, then
 /// the smoke test on the binary that went in.
 #[allow(clippy::too_many_arguments)]
-fn archive(
+pub(crate) fn archive(
     root: &Path,
     os: Os,
     bins: &Path,
@@ -1871,7 +1871,7 @@ fn heif_smoke(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn workspace_version(root: &Path) -> Result<String> {
+pub(crate) fn workspace_version(root: &Path) -> Result<String> {
     let manifest: toml::Value = toml::from_str(&fs::read_to_string(root.join("Cargo.toml"))?)?;
     manifest["workspace"]["package"]["version"]
         .as_str()
@@ -2290,7 +2290,7 @@ mod tests {
             .collect();
         assert_eq!(creates.len(), 1, "{creates:?}");
         let release = text.split("\n  release:\n").nth(1).expect("release job");
-        assert!(release.contains("needs: [package, runtime-sources]"));
+        assert!(release.contains("needs: [package, runtime-sources, verify-macos]"));
         // Publishing needs a pushed tag: a manual run from a tag ref is still a dry run.
         assert!(
             release.contains(
@@ -2629,7 +2629,7 @@ mod tests {
             .split("\n  release:\n")
             .nth(1)
             .expect("release job");
-        assert!(release.contains("needs: [package, runtime-sources]"));
+        assert!(release.contains("needs: [package, runtime-sources, verify-macos]"));
         assert!(
             !release.contains("cargo "),
             "the publishing job compiles nothing"

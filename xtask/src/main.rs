@@ -3,6 +3,7 @@
 mod bench;
 mod doctor;
 mod layering;
+mod macos_signing;
 mod package;
 mod screenshot;
 mod spec_coverage;
@@ -49,6 +50,22 @@ enum Cmd {
         /// Run the pass this many times (stops at the first failure).
         #[arg(long, default_value_t = 1)]
         runs: u32,
+    },
+    /// Check the signed, notarized and stapled macOS app and DMG, and rebuild the macOS archive from the signed app
+    /// (ADR-0128; the release workflow's `verify-macos` job).
+    MacosSigned {
+        /// The folder `packaging/macos/sign.sh` wrote (PhotoSquirrel.app.zip and the DMG).
+        #[arg(long)]
+        signed: PathBuf,
+        /// The unsigned app (`ditto` zip) the package job built.
+        #[arg(long)]
+        unsigned_app: PathBuf,
+        /// The Team ID the signature must carry (the repository variable APPLE_TEAM_ID).
+        #[arg(long)]
+        team_id: String,
+        /// The folder to write the signed macOS packages and their checksums to.
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Fetch and check the AppImage runtime's pinned source archives into a folder (the release attaches them).
     RuntimeSources {
@@ -130,6 +147,12 @@ fn main() -> Result<()> {
         ),
         Cmd::Timing { runs } => timing::run(&root, runs),
         Cmd::RuntimeSources { out } => package::runtime_sources(&root, &out),
+        Cmd::MacosSigned {
+            signed,
+            unsigned_app,
+            team_id,
+            out,
+        } => macos_signing::run(&root, &signed, &unsigned_app, &team_id, &out),
         Cmd::Layering => layering::check(&root),
         Cmd::Tokens => tokens::check(&root),
         Cmd::SpecCoverage { enforce } => spec_coverage::run(&root, enforce),
