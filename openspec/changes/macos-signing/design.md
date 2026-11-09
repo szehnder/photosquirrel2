@@ -102,7 +102,8 @@ A bash script with `set -euo pipefail` and a `trap cleanup EXIT`. Inputs come fr
    -volname PhotoSquirrel -srcfolder <dir> -fs HFS+ -format UDZO -ov PhotoSquirrel-<v>-macos-universal.dmg`. Sign
    it with `codesign --timestamp --sign` (no runtime option), notarize it as in step 3, and staple it.
 
-   This replaces cargo-packager's DMG. The packager's DMG look (background and icon positions) is not kept, and
+   This replaces cargo-packager's DMG, and with it the licence agreement that DMG showed on open (owner decision,
+   2026-11-09: no click-through; the notices stay in the app). The packager's DMG look (background and icon positions) is not kept, and
    task 2.3 compares the two. If the owner wants the old look, `create-dmg` can be fetched as a pinned script
    instead.
 5. **Clean-up (`trap`).** Delete the keychain with `security delete-keychain`, restore the original keychain search

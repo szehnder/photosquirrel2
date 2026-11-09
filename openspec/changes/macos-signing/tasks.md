@@ -5,8 +5,9 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
 
 ## 1. Owner setup (no Mac needed)
 
-- [ ] 1.1 Owner: review ADR-0128 and set it to `accepted`. Verify: the file reads `Status: accepted` and the index row
+- [x] 1.1 Owner: review ADR-0128 and set it to `accepted`. Verify: the file reads `Status: accepted` and the index row
   drops "(proposed)".
+  Done: the owner accepted it on 2026-11-09. The file and the index row are updated.
 - [ ] 1.2 Owner: create the key, the CSR and the Developer ID Application certificate (G2 Sub-CA), and build the
   `.p12` with 3DES (design D4 steps 1-3). Verify: `openssl pkcs12 -in devid.p12 -info -noout` shows `pbeWithSHA1And3-KeyTripleDES-CBC`,
   and the subject is `Developer ID Application: … (<TEAMID>)`.
@@ -28,8 +29,11 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
   passes, and `shellcheck` and `bash -n` are clean. The first real run is task 3.4.
 - [ ] 2.3 The DMG from `hdiutil`, with the Applications link. Compare it with the packager's DMG (window, icon,
   link) and record the result in design.md. The packager's DMG also shows the licence agreement (`licenseFile`) on
-  open; the `hdiutil` DMG does not. Decide whether to keep that. The notices stay inside the app either way. Verify:
-  the dry-run DMG mounts with `PhotoSquirrel.app` and an `Applications` link.
+  open; the `hdiutil` DMG does not. Verify: the dry-run DMG mounts with `PhotoSquirrel.app` and an `Applications`
+  link.
+  Decided (owner, 2026-11-09): no click-through agreement on the shipped DMG. Apache-2.0 asks nothing of the user,
+  and the notices stay in the app. `licenseFile` stays in the packager config, because the Windows installer's
+  licence page also uses it; only the signed DMG ships, so the unsigned one's agreement never reaches users.
 
 ## 3. Verification job
 

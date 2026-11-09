@@ -1,6 +1,6 @@
 # 0128. macOS packages are Developer ID signed, notarized and stapled in a job that compiles nothing (amends 0030)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-08
 - Deciders: maintainers
 
