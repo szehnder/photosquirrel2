@@ -18,8 +18,9 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
 
 ## 2. Signing job
 
-- [ ] 2.1 `package (macos)` also uploads `macos-app-unsigned` (a `ditto` zip of the `.app` from the packager staging
-  folder). Verify: a dry-run artifact holds `PhotoSquirrel.app` whose `Contents/MacOS` has both programs.
+- [ ] 2.1 `package (macos)` also uploads `macos-app-unsigned`: a `ditto` zip of the `.app`, taken from the built DMG
+  (cargo-packager deletes its intermediate `.app` once the DMG is built; run 42540009660 found none in
+  `target/packager`). Verify: a dry-run artifact holds `PhotoSquirrel.app` whose `Contents/MacOS` has both programs.
 - [x] 2.2 `packaging/macos/sign.sh` (D2) and the `sign-macos` job (D1): the environment, `contents: read`, no cargo,
   the `trap` clean-up, and no `set -x`. Verify: `scenario_release_packaging_signing_job_isolated_from_the_build` (an
   xtask test that reads the workflow and the script), and `shellcheck packaging/macos/sign.sh` passes.

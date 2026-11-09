@@ -84,15 +84,22 @@ jobs:
           name: packages-${{ matrix.name }}
           path: target/packages/*
           if-no-files-found: error
-      # The unsigned app for the signing job (ADR-0128). A ditto zip keeps the bundle's symlinks and attributes.
+      # The unsigned app for the signing job (ADR-0128), taken from the DMG: cargo-packager deletes its intermediate
+      # .app once the DMG is built, and this is exactly the bundle users get. A ditto zip keeps symlinks and attributes.
       - name: Unsigned app (macOS)
         if: matrix.name == 'macos'
         run: |
-          apps=$(find target/packager -maxdepth 3 -type d -name PhotoSquirrel.app)
-          if [ "$(printf '%s\n' "$apps" | grep -c .)" -ne 1 ]; then
-            echo "::error::expected one PhotoSquirrel.app under target/packager, found: $apps"; exit 1
+          dmgs=$(ls target/packages/PhotoSquirrel-*-macos-universal.dmg)
+          if [ "$(printf '%s\n' "$dmgs" | grep -c .)" -ne 1 ]; then
+            echo "::error::expected one macOS DMG in target/packages, found: $dmgs"; exit 1
           fi
-          ditto -c -k --keepParent "$apps" target/macos-app-unsigned.zip
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmgs"
+          trap 'hdiutil detach "$mnt" || true' EXIT
+          if [ ! -d "$mnt/PhotoSquirrel.app" ]; then
+            echo "::error::the DMG has no PhotoSquirrel.app"; ls -la "$mnt"; exit 1
+          fi
+          ditto -c -k --keepParent "$mnt/PhotoSquirrel.app" target/macos-app-unsigned.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.name == 'macos'
         with:
