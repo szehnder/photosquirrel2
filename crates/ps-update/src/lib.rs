@@ -12,6 +12,7 @@ pub mod dir;
 pub mod download;
 mod error;
 pub mod history;
+pub mod install;
 pub mod keys;
 pub mod kind;
 pub mod manifest;

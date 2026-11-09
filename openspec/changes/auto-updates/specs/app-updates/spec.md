@@ -139,7 +139,7 @@ The installer SHALL replace files only when no program of that installation (app
 - **THEN** no installed file has changed, the update is still ready, and the update history records "postponed: PhotoSquirrel is still running"
 
 ### Requirement: Install keeps the previous version and checks the new one
-Before replacing anything, the installer SHALL keep a complete copy of the installed version. After installing, it SHALL run the new application and CLI with `--version`. If either does not print the manifest's version, it SHALL put the kept copy back. The installation SHALL never be left with a mix of the two versions.
+Before replacing anything, the installer SHALL keep a complete copy of the installed version. After installing, it SHALL run the new application, and the CLI where the package exposes it (bundle and Windows installation), with `--version`. If one does not print the manifest's version, it SHALL put the kept copy back. The installation SHALL never be left with a mix of the two versions.
 
 #### Scenario: Broken new binary rolled back at install
 - **WHEN** a fake installation is updated to a payload whose CLI prints the wrong version

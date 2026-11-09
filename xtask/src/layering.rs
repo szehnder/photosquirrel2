@@ -474,6 +474,17 @@ pub const MOVE_ALLOWED: &[(&str, &[&str], &str)] = &[
         "partial and staged update payloads in the updater's own folder (ADR-0126)",
     ),
     (
+        "crates/ps-update/src/install.rs",
+        &[
+            "remove_file",
+            "remove_dir_all",
+            "fs::rename",
+            "fs::copy",
+            "renameat",
+        ],
+        "replacing PhotoSquirrel's own installation and keeping its previous version, after the app exited (ADR-0126)",
+    ),
+    (
         "xtask/src/macos_signing.rs",
         &["remove_dir_all", "fs::copy"],
         "checking signed macOS packages in its own scratch folder under the target dir (ADR-0128)",

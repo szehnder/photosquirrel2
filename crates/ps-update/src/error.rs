@@ -27,6 +27,16 @@ pub enum UpdateError {
     NoSpace { needed: u64, available: u64 },
     #[error("{0} is not a valid test server address (only http://127.0.0.1:<port> is accepted)")]
     BadServerOverride(String),
+    #[error("postponed: PhotoSquirrel is still running")]
+    StillRunning,
+    #[error("{0}")]
+    Failed(String),
+    /// macOS refused to replace the app; the verified update was saved to this file instead.
+    #[error("macOS did not allow PhotoSquirrel to replace itself; the update is saved in {}", .0.display())]
+    Fallback(std::path::PathBuf),
+    /// Test hook: the helper stopped as if killed.
+    #[error("stopped")]
+    Stopped,
     #[error("{0}")]
     Io(#[from] io::Error),
 }

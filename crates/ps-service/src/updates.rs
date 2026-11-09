@@ -13,9 +13,11 @@ use std::time::Duration;
 
 use ps_model::settings::UpdateMode;
 use ps_update::check::{Outcome, Updater};
+use ps_update::install;
+use ps_update::kind::Probe;
 use ps_update::kind::{Installation, Kind};
-use ps_update::state::{CheckRecord, Failure, UpdateState};
-use ps_update::{UpdateError, history};
+use ps_update::state::{CheckRecord, Failure, FailureReason, UpdateState};
+use ps_update::{UpdateDir, UpdateError, history};
 
 /// No request before this many seconds after start ("Quiet start").
 pub const FIRST_CHECK_AFTER_S: i64 = 60;
@@ -84,10 +86,21 @@ pub enum Notice {
 impl Notice {
     pub fn text(&self) -> String {
         match self {
-            Notice::Failed(f) => format!(
-                "Couldn't install PhotoSquirrel {}. You're still on {}.",
-                f.version, f.current
-            ),
+            Notice::Failed(f) => match f.reason {
+                FailureReason::Install => format!(
+                    "Couldn't install PhotoSquirrel {}. You're still on {}.",
+                    f.version, f.current
+                ),
+                FailureReason::Start => format!(
+                    "PhotoSquirrel {} could not start, so {} was put back.",
+                    f.version, f.current
+                ),
+                FailureReason::StartKept => format!(
+                    "PhotoSquirrel {} had trouble starting. Your catalog was already upgraded, so going back \
+                     is not possible. Please report it: https://github.com/szehnder/photosquirrel2/issues",
+                    f.version
+                ),
+            },
             Notice::Updated(v) => format!("Updated to PhotoSquirrel {v}"),
             Notice::Ready(a) => format!(
                 "PhotoSquirrel {} is ready. It installs when you quit.",
@@ -434,19 +447,229 @@ fn notice(
     }
 }
 
-/// Record a failed install or rollback for the notice (the helper and the trial check call this).
+/// Record a failed install for the notice.
 pub fn record_failure(updater: &Updater, version: &str, message: &str) {
-    let mut state = UpdateState::load(&updater.dir);
-    state.last_failure = Some(Failure {
-        at: ps_update::now_secs(),
-        version: version.to_owned(),
-        current: updater.installed.to_string(),
-        message: message.to_owned(),
-    });
-    if let Err(e) = state.save(&updater.dir) {
+    record(
+        &updater.dir,
+        Failure {
+            at: ps_update::now_secs(),
+            version: version.to_owned(),
+            current: updater.installed.to_string(),
+            message: message.to_owned(),
+            reason: FailureReason::Install,
+        },
+    );
+}
+
+fn record(dir: &UpdateDir, failure: Failure) {
+    let mut state = UpdateState::load(dir);
+    let (version, message) = (failure.version.clone(), failure.message.clone());
+    state.last_failure = Some(failure);
+    if let Err(e) = state.save(dir) {
         log::warn!("update state not saved: {e}");
     }
-    history::record(&updater.dir, "failure", Some(version), message);
+    history::record(dir, "failure", Some(&version), &message);
+}
+
+/// This build's updater, with this user's update folder.
+pub fn updater_for_this_build() -> Result<Updater, UpdateError> {
+    let dir = UpdateDir::for_user()
+        .ok_or_else(|| UpdateError::Failed("this system has no home folder for updates".into()))?;
+    Updater::for_this_build(dir)
+}
+
+/// How this copy of PhotoSquirrel was installed.
+pub fn this_installation() -> Installation {
+    ps_update::kind::detect(&Probe::this_process())
+}
+
+/// The installed CLI beside the running program (`photosquirrel-cli`, `.exe` on Windows): the helper's source.
+pub fn installed_cli() -> Result<std::path::PathBuf, UpdateError> {
+    let exe = std::env::current_exe()?;
+    let name = if cfg!(windows) {
+        "photosquirrel-cli.exe"
+    } else {
+        "photosquirrel-cli"
+    };
+    let cli = exe
+        .parent()
+        .map(|d| d.join(name))
+        .ok_or_else(|| UpdateError::Failed("no folder for the running program".into()))?;
+    if cli.is_file() {
+        Ok(cli)
+    } else {
+        Err(UpdateError::Failed(format!("{} is missing", cli.display())))
+    }
+}
+
+/// Install the ready update once this process has exited: write the plan and start the helper (on quit, or
+/// "Restart now" with `relaunch`).
+pub fn install_after_exit(
+    updater: &Updater,
+    installation: &Installation,
+    cli: &Path,
+    relaunch: bool,
+) -> Result<(), UpdateError> {
+    let plan = install::plan_install(
+        &updater.dir,
+        installation,
+        &updater.installed.to_string(),
+        ps_catalog::latest_schema_version(),
+        relaunch,
+        Some(std::process::id()),
+    )?;
+    install::spawn_helper(cli, &updater.dir, &updater.installed.to_string(), &plan)
+}
+
+/// Whether the kept previous version can be put back: refused once a catalog this installation used has a
+/// format newer than the kept version opens (spec "Guarded manual rollback").
+pub fn rollback_allowed(dir: &UpdateDir, current: &str) -> Result<(), String> {
+    let state = UpdateState::load(dir);
+    let kept = state
+        .kept
+        .ok_or_else(|| "no previous version is kept".to_owned())?;
+    for data in &state.catalogs {
+        let file = data.join(ps_catalog::CATALOG_FILE);
+        match ps_catalog::db::stored_version(&file) {
+            Ok(Some(v)) if v > kept.max_catalog_schema => {
+                return Err(format!(
+                    "the catalog was upgraded by {current}; {} cannot open it ({})",
+                    kept.version,
+                    data.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("rollback check of {}: {e}", file.display()),
+        }
+    }
+    Ok(())
+}
+
+/// Put the kept version back once this process has exited, if the catalog guard allows it.
+pub fn rollback_after_exit(
+    updater: &Updater,
+    installation: &Installation,
+    cli: &Path,
+    relaunch: bool,
+) -> Result<(), UpdateError> {
+    let current = updater.installed.to_string();
+    rollback_allowed(&updater.dir, &current).map_err(UpdateError::Failed)?;
+    if let Some(reason) = &installation.cannot_install {
+        return Err(UpdateError::Failed(reason.clone()));
+    }
+    let plan = install::plan_rollback(
+        &updater.dir,
+        installation,
+        &current,
+        relaunch,
+        Some(std::process::id()),
+    )?;
+    install::spawn_helper(cli, &updater.dir, &current, &plan)
+}
+
+/// What the start of this process means for a newly installed version (spec "Failed start restores the previous
+/// version").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrialStart {
+    /// Not a trial start.
+    Normal,
+    /// A trial start: open the catalog for writing only after the first frame, then call [`trial_succeeded`].
+    Trial,
+    /// Two trial starts failed: the kept version is being put back; exit now.
+    RollingBack,
+    /// Two trial starts failed but the catalog was already upgraded: carry on, with a notice.
+    Kept,
+}
+
+/// Count this start of a newly installed version, very early (before the window and the catalog). After two
+/// trial starts that did not reach their first frame, start putting the kept version back.
+pub fn trial_start(
+    updater: &Updater,
+    installation: &Installation,
+    cli: Option<&Path>,
+) -> TrialStart {
+    let dir = &updater.dir;
+    let installed = updater.installed.to_string();
+    let mut state = UpdateState::load(dir);
+    let Some(trial) = state
+        .trial
+        .as_mut()
+        .filter(|t| t.version == installed && !t.ok)
+    else {
+        return TrialStart::Normal;
+    };
+    trial.starts += 1;
+    let starts = trial.starts;
+    if let Err(e) = state.save(dir) {
+        log::warn!("update state not saved: {e}");
+    }
+    if starts < 3 {
+        history::record(
+            dir,
+            "trial",
+            Some(&installed),
+            &format!("trial start {starts}"),
+        );
+        return TrialStart::Trial;
+    }
+    let kept = state
+        .kept
+        .as_ref()
+        .map(|k| k.version.clone())
+        .unwrap_or_default();
+    let guard = rollback_allowed(dir, &installed);
+    let rolled = guard.clone().map_err(UpdateError::Failed).and_then(|()| {
+        let cli = cli
+            .ok_or_else(|| UpdateError::Failed("no CLI to put the previous version back".into()))?;
+        rollback_after_exit(updater, installation, cli, true)
+    });
+    match rolled {
+        Ok(()) => {
+            // The previous version shows this when it starts.
+            record(
+                dir,
+                Failure {
+                    at: ps_update::now_secs(),
+                    version: installed.clone(),
+                    current: kept,
+                    message: "the new version did not start twice in a row".into(),
+                    reason: FailureReason::Start,
+                },
+            );
+            TrialStart::RollingBack
+        }
+        Err(e) => {
+            let mut state = UpdateState::load(dir);
+            state.trial = None;
+            if let Err(e) = state.save(dir) {
+                log::warn!("update state not saved: {e}");
+            }
+            record(
+                dir,
+                Failure {
+                    at: ps_update::now_secs(),
+                    version: installed.clone(),
+                    current: installed,
+                    message: e.to_string(),
+                    reason: FailureReason::StartKept,
+                },
+            );
+            TrialStart::Kept
+        }
+    }
+}
+
+/// The trial start drew its first frame: the new version is kept.
+pub fn trial_succeeded(dir: &UpdateDir) {
+    let mut state = UpdateState::load(dir);
+    if let Some(t) = state.trial.as_mut().filter(|t| !t.ok) {
+        t.ok = true;
+        let v = t.version.clone();
+        if let Err(e) = state.save(dir) {
+            log::warn!("update state not saved: {e}");
+        }
+        history::record(dir, "trial", Some(&v), "started successfully");
+    }
 }
 
 #[cfg(test)]

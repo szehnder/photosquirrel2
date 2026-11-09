@@ -57,6 +57,20 @@ pub struct Failure {
     /// The version the user is still on.
     pub current: String,
     pub message: String,
+    /// What failed: the install, or the new version's first starts.
+    #[serde(default)]
+    pub reason: FailureReason,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureReason {
+    #[default]
+    Install,
+    /// The new version did not start; the previous one was put back.
+    Start,
+    /// The new version had trouble starting but the catalog was already upgraded, so it was kept.
+    StartKept,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

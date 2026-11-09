@@ -319,3 +319,255 @@ fn the_data_directory_is_remembered_for_the_rollback_guard() {
     let state = UpdateState::load(&ps_update::UpdateDir::at(&f.dir));
     assert_eq!(state.catalogs, vec![data]);
 }
+
+// Trial starts and rollback (spec "Failed start restores the previous version", "Guarded manual rollback").
+// The installation is a fake AppImage and the CLI a script recording how the helper was started (Unix).
+#[cfg(unix)]
+mod trial {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    use ps_update::install::{self, Action, Plan};
+    use ps_update::state::{Kept, Trial};
+
+    use super::*;
+
+    fn script(path: &Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    struct Installed {
+        f: Fixture,
+        installation: Installation,
+        cli: PathBuf,
+        calls: PathBuf,
+        data: PathBuf,
+    }
+
+    /// 0.4.1 installed over 0.4.0, which is kept; the catalog in `data` has format `catalog_version`.
+    fn installed(catalog_version: Option<u32>) -> Installed {
+        let f = Fixture::new(false);
+        let root = f.dir.parent().unwrap().to_path_buf();
+        let location = root.join("Apps/PhotoSquirrel.AppImage");
+        script(&location, "echo 'photosquirrel 0.4.1'");
+        let kept = f.dir.join("previous/0.4.0/PhotoSquirrel.AppImage");
+        script(&kept, "echo 'photosquirrel 0.4.0'");
+        let calls = root.join("helper-calls.txt");
+        let cli = root.join("bin/photosquirrel-cli");
+        script(&cli, &format!("echo \"$@\" > '{}'", calls.display()));
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        if let Some(v) = catalog_version {
+            let conn = rusqlite::Connection::open(data.join(ps_catalog::CATALOG_FILE)).unwrap();
+            conn.pragma_update(None, "user_version", v).unwrap();
+        }
+        let dir = UpdateDir::at(&f.dir);
+        let state = UpdateState {
+            trial: Some(Trial {
+                version: "0.4.1".into(),
+                starts: 0,
+                ok: false,
+            }),
+            kept: Some(Kept {
+                version: "0.4.0".into(),
+                path: kept,
+                max_catalog_schema: 27,
+            }),
+            catalogs: vec![data.clone()],
+            ..Default::default()
+        };
+        state.save(&dir).unwrap();
+        let installation = Installation {
+            kind: Kind::AppImage,
+            location,
+            cannot_install: None,
+        };
+        Installed {
+            f,
+            installation,
+            cli,
+            calls,
+            data,
+        }
+    }
+
+    fn new_version(i: &Installed) -> Updater {
+        updater(&i.f.server, &i.f.dir, "0.4.1")
+    }
+
+    fn wait_for(path: &Path) -> String {
+        for _ in 0..200 {
+            if let Ok(t) = std::fs::read_to_string(path)
+                && !t.is_empty()
+            {
+                return t;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("{} was not written", path.display());
+    }
+
+    #[test]
+    fn scenario_app_updates_new_version_that_cannot_start_is_rolled_back() {
+        let i = installed(Some(27));
+        let u = new_version(&i);
+        // Two starts that never draw a frame...
+        assert_eq!(
+            trial_start(&u, &i.installation, Some(&i.cli)),
+            TrialStart::Trial
+        );
+        assert_eq!(
+            trial_start(&u, &i.installation, Some(&i.cli)),
+            TrialStart::Trial
+        );
+        // ...and the third puts the previous version back through the helper.
+        assert_eq!(
+            trial_start(&u, &i.installation, Some(&i.cli)),
+            TrialStart::RollingBack
+        );
+        let args = wait_for(&i.calls);
+        assert!(args.starts_with("update finish --plan "), "{args}");
+        let plan_path = PathBuf::from(args.split_whitespace().nth(3).unwrap());
+        let plan = Plan::load(&plan_path).unwrap();
+        assert_eq!(
+            (plan.action, plan.version.as_str(), plan.relaunch),
+            (Action::Rollback, "0.4.0", true)
+        );
+        // What the helper then does: the previous version is back and 0.4.1 is not offered again.
+        let mut plan = plan;
+        plan.relaunch = false;
+        plan.save(&plan_path).unwrap();
+        install::finish(&u.dir, &plan_path, Duration::from_secs(1), None).unwrap();
+        let out = std::process::Command::new(&i.installation.location)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "photosquirrel 0.4.0"
+        );
+        let state = UpdateState::load(&u.dir);
+        assert!(state.is_skipped("0.4.1"));
+        // The previous version's next start says what happened.
+        let old = updater(&i.f.server, &i.f.dir, "0.4.0");
+        let status = compute_status(&old, &i.installation, UpdateMode::Automatic, None, 0);
+        assert_eq!(
+            status.notice.unwrap().text(),
+            "PhotoSquirrel 0.4.1 could not start, so 0.4.0 was put back."
+        );
+    }
+
+    #[test]
+    fn a_trial_after_a_catalog_upgrade_keeps_the_new_version() {
+        let i = installed(Some(30));
+        let u = new_version(&i);
+        for _ in 0..2 {
+            trial_start(&u, &i.installation, Some(&i.cli));
+        }
+        assert_eq!(
+            trial_start(&u, &i.installation, Some(&i.cli)),
+            TrialStart::Kept
+        );
+        assert!(!i.calls.exists(), "no helper started");
+        let status = compute_status(&u, &i.installation, UpdateMode::Automatic, None, 0);
+        assert!(
+            status
+                .notice
+                .unwrap()
+                .text()
+                .contains("going back is not possible")
+        );
+        assert_eq!(
+            trial_start(&u, &i.installation, Some(&i.cli)),
+            TrialStart::Normal,
+            "asked once"
+        );
+    }
+
+    #[test]
+    fn scenario_app_updates_successful_trial_keeps_the_new_version() {
+        let i = installed(Some(27));
+        let u = new_version(&i);
+        assert_eq!(
+            trial_start(&u, &i.installation, Some(&i.cli)),
+            TrialStart::Trial
+        );
+        trial_succeeded(&u.dir);
+        assert_eq!(
+            trial_start(&u, &i.installation, Some(&i.cli)),
+            TrialStart::Normal
+        );
+        let (m, _) = mode(UpdateMode::Automatic);
+        let s = UpdateService::new(u.clone(), i.installation.clone(), m, 0, None);
+        let n = s.status().notice.unwrap();
+        assert_eq!(n, Notice::Updated("0.4.1".into()));
+        s.dismiss();
+        assert_eq!(s.status().notice, None, "once");
+        assert!(
+            UpdateState::load(&u.dir).kept.is_some(),
+            "the kept copy stays"
+        );
+    }
+
+    #[test]
+    fn scenario_app_updates_rollback_refused_after_a_catalog_upgrade() {
+        let i = installed(Some(28));
+        let u = new_version(&i);
+        let e = rollback_after_exit(&u, &i.installation, &i.cli, false).unwrap_err();
+        let text = e.to_string();
+        assert!(
+            text.starts_with("the catalog was upgraded by 0.4.1; 0.4.0 cannot open it"),
+            "{text}"
+        );
+        assert!(text.contains(&i.data.display().to_string()), "{text}");
+        assert!(!i.calls.exists(), "nothing is changed");
+        let out = std::process::Command::new(&i.installation.location)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "photosquirrel 0.4.1"
+        );
+    }
+
+    #[test]
+    fn scenario_app_updates_rollback_before_a_catalog_upgrade() {
+        let i = installed(Some(27));
+        let u = new_version(&i);
+        rollback_after_exit(&u, &i.installation, &i.cli, false).unwrap();
+        let args = wait_for(&i.calls);
+        let plan_path = PathBuf::from(args.split_whitespace().nth(3).unwrap());
+        install::finish(&u.dir, &plan_path, Duration::from_secs(1), None).unwrap();
+        let out = std::process::Command::new(&i.installation.location)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "photosquirrel 0.4.0"
+        );
+        assert!(
+            UpdateState::load(&u.dir).is_skipped("0.4.1"),
+            "not offered again automatically"
+        );
+    }
+
+    #[test]
+    fn scenario_app_updates_failed_install_explained() {
+        let i = installed(Some(27));
+        let u = updater(&i.f.server, &i.f.dir, "0.4.0");
+        record_failure(&u, "0.4.1", "the new version reported the wrong version");
+        let status = compute_status(&u, &i.installation, UpdateMode::Automatic, None, 0);
+        assert_eq!(
+            status.notice.unwrap().text(),
+            "Couldn't install PhotoSquirrel 0.4.1. You're still on 0.4.0."
+        );
+        // Details: the update history holds the failure.
+        let history = ps_update::history::read(&u.dir);
+        assert!(
+            history
+                .iter()
+                .any(|h| h.event == "failure" && h.version.as_deref() == Some("0.4.1"))
+        );
+    }
+}
