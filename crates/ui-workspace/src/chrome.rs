@@ -514,6 +514,7 @@ pub(crate) fn body(
         Loadable::Ready(_) => shell.central_view(window, cx).into_any_element(),
     };
     let banner = banner(shell, cx);
+    let update_banner = crate::updates_ui::banner(shell, cx);
     let inspector = shell
         .inspector_visible()
         .then(|| shell.inspector_view(window, cx));
@@ -542,6 +543,7 @@ pub(crate) fn body(
                 .h_full()
                 .bg(colors.background)
                 .children(banner)
+                .children(update_banner)
                 .child(div().flex_1().min_h_0().child(center)),
         )
         .when_some(inspector, |d, inspector| {
@@ -675,6 +677,7 @@ pub(crate) fn status_bar(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyEleme
                 .aria_label(SharedString::from(t.clone()))
                 .child(t)
         }))
+        .children(crate::updates_ui::status_item(cx))
         .child(
             item()
                 .id("status-local")

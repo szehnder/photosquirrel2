@@ -12,7 +12,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use ps_model::settings::{ExportProfile, MotionSetting, Settings, ThemeSetting};
+use ps_model::settings::{ExportProfile, MotionSetting, Settings, ThemeSetting, UpdateMode};
 use ui_theme::Tokens;
 
 use crate::assets::IconName;
@@ -117,6 +117,7 @@ fn parse_u64(text: &str) -> Result<u64, String> {
 const THEMES: &[&str] = &["Graphite dark", "Graphite light", "Match system"];
 const MOTIONS: &[&str] = &["Match system", "Reduce", "Full"];
 const PROFILES: &[&str] = &["Apple Photos", "Google Photos", "Lightroom"];
+const UPDATE_MODES: &[&str] = &["Automatic", "Tell me", "Off"];
 
 fn index_of<T: PartialEq + Copy>(all: &[T], v: T) -> usize {
     all.iter().position(|x| *x == v).unwrap_or(0)
@@ -144,6 +145,24 @@ pub fn definitions() -> Vec<SettingDef> {
             control: Control::Toggle {
                 get: |s| s.general.pause_on_battery,
                 set: |s, v| s.general.pause_on_battery = v,
+            },
+        },
+        SettingDef {
+            key: "updates.mode",
+            section: General,
+            name: "Updates",
+            description: "Automatic checks once a day and installs when you quit. Tell me asks first. Off never \
+                          checks on its own.",
+            control: Control::Choice {
+                options: UPDATE_MODES,
+                // Not chosen yet: no option is selected.
+                get: |s| {
+                    UpdateMode::CHOICES
+                        .iter()
+                        .position(|m| *m == s.updates.mode)
+                        .unwrap_or(usize::MAX)
+                },
+                set: |s, i| s.updates.set_mode(UpdateMode::CHOICES[i]),
             },
         },
         SettingDef {
@@ -446,6 +465,9 @@ impl SettingsWindow {
             }
         }
         subscriptions.push(cx.observe_global::<AppSettings>(|_, cx| cx.notify()));
+        if let Some(updates) = crate::updates_ui::UpdateHub::model(cx) {
+            subscriptions.push(cx.observe(&updates, |_, _, cx| cx.notify()));
+        }
         Self {
             defs,
             // Dev-only: scripted screenshots open a section directly (agents' windows get one frame).
@@ -735,6 +757,9 @@ impl Render for SettingsWindow {
             }
             for def in &visible {
                 body = body.child(self.render_item(def, cx));
+            }
+            if self.section == Section::General {
+                body = body.children(crate::updates_ui::settings_group(cx));
             }
         }
 

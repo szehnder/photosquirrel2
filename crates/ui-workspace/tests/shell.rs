@@ -53,12 +53,24 @@ fn scenario_app_shell_window_shows_main_areas(cx: &mut TestAppContext) {
 fn scenario_app_shell_first_launch_shows_onboarding(cx: &mut TestAppContext) {
     let dirs = Dirs::new();
     init_app(cx, Arc::new(FakeBackend::default()), Some(&dirs));
+    let updates = updates_recorded(cx);
     let (shell, mut cx) = open(cx);
     wait_loaded(&shell, &mut cx);
     assert!(
         exists("onboarding", &mut cx),
         "central view shows onboarding"
     );
+    // The update question, "Keep me up to date" preselected (the primary action), nothing sent before the answer.
+    assert!(
+        exists("updates-question", &mut cx),
+        "asks the update question"
+    );
+    assert_eq!(
+        label("updates-question-yes", &mut cx).as_deref(),
+        Some("Keep me up to date")
+    );
+    assert!(exists("updates-question-no", &mut cx));
+    assert!(updates.recorded.lock().unwrap().is_empty());
     assert!(
         !exists("inspector", &mut cx),
         "no inspector beside the welcome view of an empty library"

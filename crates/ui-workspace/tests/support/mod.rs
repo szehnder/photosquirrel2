@@ -204,3 +204,152 @@ pub fn bounds(id: &str, cx: &mut VisualTestContext) -> gpui_kit::Bounds<gpui_kit
         window.find(id).bounds()
     })
 }
+
+// ---- updates ------------------------------------------------------------------------------------------------
+
+/// The update service of a test: its update folder, and the server (or recorder) it talks to.
+pub struct Updates {
+    pub _tmp: tempfile::TempDir,
+    pub dir: PathBuf,
+    pub service: ps_service::updates::UpdateService,
+    pub server: Option<ps_update::testing::TestServer>,
+    /// URLs requested through the recording transport.
+    pub recorded: Arc<Mutex<Vec<String>>>,
+}
+
+impl Updates {
+    pub fn state(&self) -> ps_update::UpdateState {
+        ps_update::UpdateState::load(&ps_update::UpdateDir::at(&self.dir))
+    }
+
+    pub fn manifest_requests(&self) -> usize {
+        self.server.as_ref().map_or(0, |s| {
+            s.requests()
+                .iter()
+                .filter(|r| r.path == "/update-manifest.json")
+                .count()
+        })
+    }
+}
+
+/// Records every request and answers none (no socket is opened).
+struct Recorder(Arc<Mutex<Vec<String>>>);
+
+impl ps_update::transport::Transport for Recorder {
+    fn open(
+        &self,
+        _: &ps_update::transport::Endpoint,
+        url: &str,
+        _: Option<u64>,
+    ) -> Result<ps_update::transport::Opened, ps_update::UpdateError> {
+        self.0.lock().unwrap().push(url.to_owned());
+        Err(ps_update::UpdateError::Failed("offline (recorded)".into()))
+    }
+}
+
+/// A per-user AppImage installation in `root` (it installs updates itself).
+pub fn appimage(root: &std::path::Path) -> ps_service::updates::Installation {
+    ps_service::updates::Installation {
+        kind: ps_service::updates::Kind::AppImage,
+        location: root.join("PhotoSquirrel.AppImage"),
+        cannot_install: None,
+    }
+}
+
+fn install_hub(
+    cx: &mut TestAppContext,
+    updater: ps_update::check::Updater,
+    installation: ps_service::updates::Installation,
+) -> ps_service::updates::UpdateService {
+    let cell = ps_service::updates::ModeCell::new(ps_model::settings::UpdateMode::Undecided);
+    let service = ps_service::updates::UpdateService::new(
+        updater,
+        installation,
+        cell.source(),
+        ps_update::now_secs(),
+        None,
+    );
+    let s = service.clone();
+    cx.update(|cx| ui_workspace::updates_ui::install(s, cell, cx));
+    service
+}
+
+/// Updates against GitHub's address through a recording transport (call after `init_app`, before `open`).
+pub fn updates_recorded(cx: &mut TestAppContext) -> Updates {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("updates");
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let updater = ps_update::check::Updater {
+        dir: ps_update::UpdateDir::at(&dir),
+        transport: Arc::new(Recorder(recorded.clone())),
+        endpoint: ps_update::transport::Endpoint::GitHub,
+        installed: ps_update::build::current_version(),
+        release_build: true,
+        keys: ps_update::keys::trusted(),
+        platform: "linux-x86_64".into(),
+        free_space: Arc::new(|_| Some(u64::MAX)),
+    };
+    let service = install_hub(cx, updater, appimage(tmp.path()));
+    Updates {
+        _tmp: tmp,
+        dir,
+        service,
+        server: None,
+        recorded,
+    }
+}
+
+/// Updates from a loopback server offering `version` (as 0.4.0 installed) with an AppImage, for the
+/// installation `kind` makes from the temp folder (call after `init_app`, before `open`).
+pub fn updates_offering(
+    cx: &mut TestAppContext,
+    version: &str,
+    urgent: bool,
+    installation: impl FnOnce(&std::path::Path) -> ps_service::updates::Installation,
+) -> Updates {
+    use ps_update::testing::{Route, TestServer, envelope, sample_manifest, updater};
+    let server = TestServer::start();
+    let payload = format!("the {version} package").into_bytes();
+    let mut m = sample_manifest(
+        version,
+        &[
+            ("linux-x86_64", "appimage", payload.as_slice()),
+            ("linux-x86_64", "deb", payload.as_slice()),
+        ],
+    );
+    m.urgent = urgent;
+    m.notes = format!("- Faster scans\n- Clearer duplicate review in {version}");
+    server.route(
+        "/update-manifest.json",
+        Route::Body(envelope(&m).into_bytes()),
+    );
+    for kind in ["appimage", "deb"] {
+        let name = m.packages["linux-x86_64"][kind].name.clone();
+        server.route(&format!("/{name}"), Route::Body(payload.clone()));
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("updates");
+    let inst = installation(tmp.path());
+    let service = install_hub(cx, updater(&server, &dir, "0.4.0"), inst);
+    Updates {
+        _tmp: tmp,
+        dir,
+        service,
+        server: Some(server),
+        recorded: Arc::default(),
+    }
+}
+
+/// Write `settings.toml` in `dirs` (before `init_app`).
+pub fn write_settings(dirs: &Dirs, text: &str) {
+    std::fs::create_dir_all(dirs.config()).unwrap();
+    std::fs::write(dirs.store().path(), text).unwrap();
+}
+
+/// Run `n` update ticks of app time (one minute each).
+pub fn idle_minutes(cx: &mut VisualTestContext, n: u32) {
+    for _ in 0..n {
+        cx.executor().advance_clock(ps_service::updates::TICK);
+        cx.run_until_parked();
+    }
+}

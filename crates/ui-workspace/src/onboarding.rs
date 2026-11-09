@@ -185,6 +185,7 @@ pub(crate) fn render(cx: &mut Context<'_, Shell>) -> impl IntoElement + use<> {
                                         .child("for every command"),
                                 ),
                         )
+                        .children(crate::updates_ui::question_card(cx))
                         .child(
                             h_flex()
                                 .w_full()
