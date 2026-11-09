@@ -7,11 +7,13 @@
 
 pub mod build;
 pub mod check;
+pub mod deliver;
 pub mod dir;
 pub mod download;
 mod error;
 pub mod history;
 pub mod keys;
+pub mod kind;
 pub mod manifest;
 pub mod state;
 pub mod transport;

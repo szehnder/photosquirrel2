@@ -107,7 +107,7 @@ For an installation it does not change, the application SHALL show the new versi
 
 #### Scenario: Debian package gets a verified file and a command
 - **WHEN** an update is available to a Debian-package installation and the user chooses "Download"
-- **THEN** the verified `.deb` is saved to the user's downloads folder, revealed, and the command `sudo apt install ./<file>` is shown with a copy button, and no process is started with elevated rights
+- **THEN** the verified `.deb` is saved as a new file in the user's Downloads folder, revealed, and the command `sudo apt install` with that file's path is shown with a copy button, and no process is started with elevated rights
 
 #### Scenario: Archive installation notified only
 - **WHEN** an update is available to a plain-archive installation with mode automatic
@@ -176,7 +176,7 @@ The user SHALL be able to go back to the kept previous version from Settings or 
 - **THEN** the kept version is restored, starts, and the newer version is not offered again automatically
 
 ### Requirement: Updates touch only the installation
-The updater SHALL create, replace or remove files only in the installation it updates and in its own update folder. It SHALL NOT touch any source, library, quarantine, catalog, thumbnail store or settings file.
+The updater SHALL create, replace or remove files only in the installation it updates and in its own update folder; elsewhere it SHALL only create new files in the user's Downloads folder, never replacing one. It SHALL NOT touch any source, library, quarantine, catalog, thumbnail store or settings file.
 
 #### Scenario: User data untouched by install and rollback
 - **WHEN** a fake installation is updated and rolled back with a scanned corpus, an exported library and a quarantine present

@@ -36,8 +36,9 @@ The owner chose "install on quit" as the default.
   - Manual rollback (Settings, `update rollback`) uses the same guard.
 - **Signer pinning.** When the installed bundle is Developer ID signed (ADR-0128), a new bundle must pass
   `codesign --verify --strict` with the same Team ID.
-- **Scope.** The updater writes only the installation and its update folder. No source, library, quarantine,
-  catalog, thumbnail store or settings file is touched (ADR-0004). Its file operations (rename, remove) are
+- **Scope.** The updater writes only the installation and its update folder. Outside them it only creates new
+  files in the user's Downloads folder (a verified `.deb`, or a macOS update it could not install), never replacing
+  one. No source, library, quarantine, catalog, thumbnail store or settings file is touched (ADR-0004). Its file operations (rename, remove) are
   allowed by the layering check's `MOVE_ALLOWED` table, per module of `ps-update` with this reason, and
   nowhere else.
 

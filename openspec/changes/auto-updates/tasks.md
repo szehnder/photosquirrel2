@@ -88,11 +88,17 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 ## 4. Installation kinds
 
-- [ ] 4.1 Kind detection for appimage, macos-app (translocation and read-only volume), windows-setup (HKCU
+- [x] 4.1 Kind detection for appimage, macos-app (translocation and read-only volume), windows-setup (HKCU
   uninstall key), deb (the dpkg list), archive and developer, with the D5 reasons. First confirm in a built package
   where cargo-packager puts the CLI inside the `.app` and the AppImage, and the NSIS uninstall key's name; record
   both in design.md D5. Verify: `scenario_app_updates_installation_kinds_reported` on each CI OS (fake layouts; the
   Windows test writes and removes a key under a test-only `HKCU\Software\PhotoSquirrelTest` root).
+  Done: `kind.rs` (`detect` over a `Probe`). The scenario covers every kind on any OS with fake layouts; the CLI in
+  the bundle reports the bundle. cargo-packager 0.11.8 puts the CLI beside the app in `Contents/MacOS` and in the
+  AppDir's `usr/bin`. The NSIS uninstall key is `HKCU\...\Uninstall\PhotoSquirrel`, with `InstallLocation`
+  quoted. Instead of a test-only registry root, the key is read through `reg query` (no `unsafe`), and its output
+  parser is tested (`the_registry_value_is_read_without_its_quotes`). Writable folder: `access(W_OK)` on Unix, the
+  read-only attribute on Windows; read-only volume: `statvfs` `ST_RDONLY`.
 - [ ] 4.2 Notify-only kinds: release page links, and for a `.deb` a verified download into Downloads, a reveal and
   the command. Verify: `scenario_app_updates_debian_package_gets_a_verified_file_and_a_command` and
   `scenario_app_updates_archive_installation_notified_only`.
