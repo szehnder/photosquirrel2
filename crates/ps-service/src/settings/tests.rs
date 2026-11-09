@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ps_model::settings::{ProviderId, ThemeSetting};
+use ps_model::settings::{ProviderId, ThemeSetting, UpdateMode};
 
 use super::*;
 use crate::secrets::{MemoryBackend, Secrets, default_account};
@@ -32,7 +32,7 @@ fn scenario_settings_settings_persist_across_restart() {
     assert_eq!(cli.path(), app.path());
     // Human-readable and versioned.
     let text = std::fs::read_to_string(app.path()).unwrap();
-    assert!(text.contains("settings_version = 3"), "{text}");
+    assert!(text.contains("settings_version = 4"), "{text}");
     assert!(text.contains("theme = \"light\""), "{text}");
 }
 
@@ -45,6 +45,11 @@ fn scenario_settings_defaults_are_local() {
     assert_eq!(s.ai.provider, ProviderId::LmStudio);
     assert_eq!(s.ai.base_url, "http://localhost:1234/v1");
     assert!(s.ai.consent.is_none(), "hosted consent is off");
+    assert_eq!(
+        s.updates.mode,
+        UpdateMode::Undecided,
+        "updates are undecided"
+    );
     let c = &s.scanning.classifier;
     assert_eq!(c.min_side_px, 200);
     assert_eq!(c.min_pixels, 120_000);
@@ -290,4 +295,76 @@ fn the_poster_tool_is_resolved_for_each_run() {
     };
     apply_scan_settings(&s, &mut opts);
     assert_eq!(opts.poster_tool, Some(tool));
+}
+
+#[test]
+fn scenario_settings_update_mode_persists_and_is_shared() {
+    let data = temp();
+    let app = SettingsStore::resolve(None, Some(data.path())).unwrap();
+    app.update(|s| s.updates.mode = UpdateMode::Notify).unwrap();
+    // A restart, and the CLI resolving the same file, both read notify.
+    let restarted = SettingsStore::resolve(None, Some(data.path()))
+        .unwrap()
+        .load();
+    assert_eq!(restarted.settings.updates.mode, UpdateMode::Notify);
+    let text = std::fs::read_to_string(app.path()).unwrap();
+    assert!(
+        text.contains("[updates]") && text.contains("mode = \"notify\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn scenario_settings_older_settings_file_upgraded_to_undecided() {
+    let dir = temp();
+    let store = SettingsStore::in_dir(dir.path());
+    std::fs::write(
+        store.path(),
+        "settings_version = 3\n[appearance]\ntheme = \"light\"\n[scanning]\npreview_cache_gb = 7.5\n",
+    )
+    .unwrap();
+    let loaded = store.load();
+    assert!(loaded.recovered.is_none());
+    let s = loaded.settings;
+    assert_eq!(s.updates.mode, UpdateMode::Undecided);
+    assert_eq!(s.appearance.theme, ThemeSetting::Light);
+    assert_eq!(s.scanning.preview_cache_gb, 7.5);
+    store.save(&s).unwrap();
+    let text = std::fs::read_to_string(store.path()).unwrap();
+    assert!(text.contains("settings_version = 4"), "{text}");
+}
+
+#[test]
+fn scenario_settings_unknown_update_mode_rejected() {
+    let dir = temp();
+    let store = SettingsStore::in_dir(dir.path());
+    std::fs::write(
+        store.path(),
+        "settings_version = 4\n[appearance]\ntheme = \"light\"\n[updates]\nmode = \"always\"\n",
+    )
+    .unwrap();
+    let loaded = store.load();
+    assert!(
+        loaded.recovered.is_none(),
+        "one bad value is not a corrupt file"
+    );
+    let s = loaded.settings;
+    assert_eq!(s.updates.mode, UpdateMode::Undecided);
+    assert_eq!(
+        s.appearance.theme,
+        ThemeSetting::Light,
+        "the rest of the file is kept"
+    );
+    let errors = validate(&s);
+    assert!(errors.iter().any(|e| e.key == "updates.mode"), "{errors:?}");
+    // Like any invalid value, it is not saved; choosing a mode replaces it.
+    assert!(store.save(&s).is_err());
+    let mut s = s;
+    s.updates.set_mode(UpdateMode::Off);
+    store.save(&s).unwrap();
+    let text = std::fs::read_to_string(store.path()).unwrap();
+    assert!(
+        !text.contains("always") && text.contains("mode = \"off\""),
+        "{text}"
+    );
 }

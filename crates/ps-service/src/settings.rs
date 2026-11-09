@@ -284,6 +284,14 @@ fn migrate(mut settings: Settings) -> Settings {
         );
         settings.scanning.include_hidden = true;
     }
+    if settings.settings_version < 4 {
+        // ADR-0124: a file from before updates existed leaves the mode undecided; nothing is sent until the user
+        // answers the update question.
+        log::info!(
+            "settings version {} -> 4: updates are undecided until the user answers",
+            settings.settings_version
+        );
+    }
     if settings.settings_version > SETTINGS_VERSION {
         log::warn!(
             "settings were written by a newer PhotoSquirrel (version {}); unknown keys are ignored",

@@ -71,10 +71,14 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 ## 3. Settings and the service
 
-- [ ] 3.1 `ps-model` settings v4: `[updates] mode`, lenient deserialization, validation, and the v3 upgrade to
+- [x] 3.1 `ps-model` settings v4: `[updates] mode`, lenient deserialization, validation, and the v3 upgrade to
   `undecided`. Verify: `scenario_settings_defaults_are_local`, `scenario_settings_update_mode_persists_and_is_shared`,
   `scenario_settings_older_settings_file_upgraded_to_undecided` and `scenario_settings_unknown_update_mode_rejected`.
   The existing settings tests stay green.
+  Done: `ps_model::settings::{Updates, UpdateMode}`, `SETTINGS_VERSION` 4 and a v3->v4 note in `migrate`. The
+  mode is read leniently and remembered as `invalid_mode` for validation; `Updates::set_mode` replaces it. The
+  three settings scenarios and `scenario_settings_defaults_are_local` (now checking undecided) pass, and so do all
+  14 settings tests and 62 ps-model tests. The CLI half of "persists and is shared" is checked again in task 8.1.
 - [ ] 3.2 `ps-service::UpdateService`: the schedule (60 s, 24 h across restarts, jitter, an hourly wake on a
   background executor), mode handling, the coalesced `UpdateStatus` snapshot and the manual check. Verify:
   `scenario_app_updates_undecided_mode_sends_nothing`, `scenario_app_updates_first_check_after_60_seconds`,
