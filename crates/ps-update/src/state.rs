@@ -43,6 +43,20 @@ pub struct UpdateState {
     pub catalogs: Vec<PathBuf>,
     /// The version that last showed the one-time "Updated to" notice.
     pub announced: Option<String>,
+    /// The last install or rollback that failed, shown until dismissed.
+    pub last_failure: Option<Failure>,
+    /// In notify mode, the user chose to install the available version at the next quit.
+    pub install_on_quit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Failure {
+    pub at: i64,
+    /// The version that could not be installed.
+    pub version: String,
+    /// The version the user is still on.
+    pub current: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

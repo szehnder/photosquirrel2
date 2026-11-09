@@ -79,12 +79,18 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   mode is read leniently and remembered as `invalid_mode` for validation; `Updates::set_mode` replaces it. The
   three settings scenarios and `scenario_settings_defaults_are_local` (now checking undecided) pass, and so do all
   14 settings tests and 62 ps-model tests. The CLI half of "persists and is shared" is checked again in task 8.1.
-- [ ] 3.2 `ps-service::UpdateService`: the schedule (60 s, 24 h across restarts, jitter, an hourly wake on a
+- [x] 3.2 `ps-service::UpdateService`: the schedule (60 s, 24 h across restarts, jitter, an hourly wake on a
   background executor), mode handling, the coalesced `UpdateStatus` snapshot and the manual check. Verify:
   `scenario_app_updates_undecided_mode_sends_nothing`, `scenario_app_updates_first_check_after_60_seconds`,
   `scenario_app_updates_at_most_one_check_a_day_across_restarts`, `scenario_app_updates_manual_check_with_mode_off`,
   `scenario_app_updates_notify_mode_waits_for_the_user` and `scenario_app_updates_offline_user_is_not_nagged`, all
   with an injected clock and a recording transport.
+  Done: `ps_service::updates::UpdateService` (thread `ps-updates`, `tick(now)` every minute; `check_due`,
+  `compute_status`, notices `Failed`/`Updated`/`Ready`/`Available`/`Manual`, `install_on_quit`, `dismiss`, `skip`).
+  `Updater::check_at` takes the time from the caller. The six scenarios pass with the time as a parameter and the
+  loopback server, five times in a row, plus `automatic_mode_downloads_in_the_background`,
+  `a_failure_and_the_updated_notice_are_shown_once` and `the_data_directory_is_remembered_for_the_rollback_guard`.
+  The download runs on the service's thread at normal priority: it is network-bound (design D4 updated).
 
 ## 4. Installation kinds
 
@@ -99,9 +105,12 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   quoted. Instead of a test-only registry root, the key is read through `reg query` (no `unsafe`), and its output
   parser is tested (`the_registry_value_is_read_without_its_quotes`). Writable folder: `access(W_OK)` on Unix, the
   read-only attribute on Windows; read-only volume: `statvfs` `ST_RDONLY`.
-- [ ] 4.2 Notify-only kinds: release page links, and for a `.deb` a verified download into Downloads, a reveal and
+- [x] 4.2 Notify-only kinds: release page links, and for a `.deb` a verified download into Downloads, a reveal and
   the command. Verify: `scenario_app_updates_debian_package_gets_a_verified_file_and_a_command` and
   `scenario_app_updates_archive_installation_notified_only`.
+  Done: `ps_update::deliver` (`prepare_manual_install`, `copy_new`, `apt_command`, `reveal`) and the service's
+  `Notice::Manual`. Both scenarios pass (the archive one in `ps-service`). The spec and ADR-0126 now allow
+  creating new files in Downloads, never replacing one. The UI's buttons are task 7.2.
 
 ## 5. The installer helper and the swap
 

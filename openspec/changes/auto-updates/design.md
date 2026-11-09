@@ -193,8 +193,8 @@ It holds:
 - `helper/`
 - `installs/<blake3 of install path>.lock`
 
-The download runs on a dedicated background thread at low priority (Linux and macOS `nice`/QoS background, Windows
-`THREAD_MODE_BACKGROUND_BEGIN`):
+The download runs on the update service's own background thread (`ps-updates`). It is network-bound, so its
+priority is not lowered:
 - One connection, resumed with `Range: bytes=<len>-` when a `.part` file exists and the server answers 206.
 - It is streamed through SHA-256, so the file is never read twice.
 - It needs free space of at least 3 times the size: the download, an extracted copy, and the previous version.

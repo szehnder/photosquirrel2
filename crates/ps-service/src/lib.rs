@@ -15,6 +15,7 @@
 //! - [`ops`]: scans, exports and cleanup operations exclude each other (ADR-0065).
 //! - [`decoders`]: the machine's HEIC decoder, detected once off the caller's thread (ADR-0089).
 //! - [`previews`]: placeholders that say why, "Why no preview?" and Fill in previews (ADR-0109).
+//! - [`updates`]: update checks, downloads and notices for the app (spec `app-updates`, ADR-0124..0126).
 
 pub mod ai;
 /// How paths are shown (the home folder as `~`): the app's lists and the Excluded view's search use the same rule.
@@ -35,3 +36,4 @@ pub mod scan;
 pub mod scans;
 pub mod secrets;
 pub mod settings;
+pub mod updates;

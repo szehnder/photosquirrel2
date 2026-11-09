@@ -60,12 +60,16 @@ impl Updater {
 
     /// Fetch, verify and judge the manifest; record the result in the state and the history.
     pub fn check(&self) -> Result<Outcome, UpdateError> {
+        self.check_at(crate::now_secs())
+    }
+
+    /// [`Updater::check`], recorded as made at `now` (seconds since the epoch).
+    pub fn check_at(&self, now: i64) -> Result<Outcome, UpdateError> {
         if !self.release_build {
             return Err(UpdateError::DeveloperBuild);
         }
         let mut state = UpdateState::load(&self.dir);
         let result = self.fetch_and_judge(&mut state);
-        let now = crate::now_secs();
         let message = match &result {
             Ok(Outcome::UpToDate) => "up to date".to_owned(),
             Ok(Outcome::Available(m)) => format!("PhotoSquirrel {} is available", m.version),
@@ -167,19 +171,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::testing::{Route, TestServer, envelope, sample_manifest};
 
-    /// An updater against a test server, as a release build of `installed`.
-    pub(crate) fn updater(server: &TestServer, dir: &Path, installed: &str) -> Updater {
-        Updater {
-            dir: UpdateDir::at(dir),
-            transport: Arc::new(Http::new()),
-            endpoint: Endpoint::loopback(&server.url()).expect("loopback"),
-            installed: Version::parse(installed).expect("version"),
-            release_build: true,
-            keys: keys::trusted(),
-            platform: "linux-x86_64".into(),
-            free_space: Arc::new(|_| Some(u64::MAX)),
-        }
-    }
+    pub(crate) use crate::testing::updater;
 
     #[test]
     fn a_check_records_what_it_found() {

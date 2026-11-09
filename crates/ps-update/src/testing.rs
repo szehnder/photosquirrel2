@@ -10,7 +10,10 @@ use minisign_verify::PublicKey;
 use sha2::{Digest, Sha256};
 
 use crate::build::DOWNLOAD_PREFIX;
+use crate::check::Updater;
+use crate::dir::UpdateDir;
 use crate::manifest::{Envelope, FORMAT, Manifest, Package};
+use crate::transport::{Endpoint, Http};
 
 /// The committed test secret key (TEST ONLY; never trusted by a release build).
 const TEST_SECRET: &str = include_str!("../tests/data/test-key.sec");
@@ -76,6 +79,21 @@ impl TestSigner {
             signature,
         })
         .expect("envelope json")
+    }
+}
+
+/// An updater for `server`, as a release build of `installed` on `linux-x86_64`, with its update folder at
+/// `dir`, trusting the test key, with unlimited free space.
+pub fn updater(server: &TestServer, dir: &std::path::Path, installed: &str) -> Updater {
+    Updater {
+        dir: UpdateDir::at(dir),
+        transport: Arc::new(Http::new()),
+        endpoint: Endpoint::loopback(&server.url()).expect("loopback"),
+        installed: semver::Version::parse(installed).expect("version"),
+        release_build: true,
+        keys: crate::keys::trusted(),
+        platform: "linux-x86_64".into(),
+        free_space: Arc::new(|_| Some(u64::MAX)),
     }
 }
 
