@@ -179,10 +179,20 @@ fn write_checksum(dir: &Path, name: &str) -> Result<()> {
 }
 
 /// Run a tool and return standard output and standard error together (Apple's tools print on either).
+/// The output is also printed as a collapsed group in the GitHub Actions log, so the recordings in
+/// `xtask/tests/data/macos-signing/` can be refreshed from a real run.
 fn output(cmd: &mut Command) -> Result<(bool, String)> {
     let out = cmd.output().with_context(|| format!("running {cmd:?}"))?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    eprintln!("::group::{program} {}", args.join(" "));
+    eprintln!("{}", text.trim_end());
+    eprintln!("::endgroup::");
     Ok((out.status.success(), text))
 }
 
