@@ -78,7 +78,9 @@ case "$os" in
     ;;
   windows)
     download '*-windows-x86_64-setup.exe'
-    "$(ls "$work"/prev/*-setup.exe)" /S /NS
+    # Git Bash rewrites arguments that start with a slash into Windows paths; the installer would then not see
+    # its silent switch and would wait for a click that never comes.
+    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$(ls "$work"/prev/*-setup.exe)" /S /NS
     exe="$LOCALAPPDATA/PhotoSquirrel/photosquirrel.exe"
     run_app() { "$exe" "$@"; }
     installed_version() { "$exe" --version; }
