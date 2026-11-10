@@ -49,6 +49,16 @@ A milestone gate must pass before the next milestone starts. Gates are checked b
 is opened, before any scan: rescans re-analyse only rows whose thumbnail was converted to sRGB (ADR-0119), every other
 row is upgraded from its stored thumbnail or keeps stale hashes.
 
+## Drafted, not scheduled (owner decides when)
+Written on 2026-11-10 as complete drafts (proposal, design, tasks, delta specs, a proposed ADR each); nothing is
+built. Each prefers free tiers and names what must be re-checked when it is picked up.
+- `windows-signing` (ADR-0129): Authenticode-signed Windows programs and installer, so SmartScreen stops warning;
+  waits for the owner to choose and fund a signing route.
+- `update-telemetry` (ADR-0130): opt-in, anonymous update-health reports (and, separately, crash reports); stage 0
+  uses GitHub's download counts and needs no client change.
+- `staged-rollout` (ADR-0131): a gradual ramp and a beta channel for dark deploys, carried by the signed manifest,
+  with no server.
+
 ## Later (not v1; propose when needed)
 `similar-shots` (burst suggestions UI), `justified-layout`, `video-perceptual-dedup`, `face-clusters`,
 `quick-rescan-dir-mtime`, `map-view`.
