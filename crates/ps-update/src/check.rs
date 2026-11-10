@@ -70,8 +70,14 @@ impl Updater {
         if !self.release_build {
             return Err(UpdateError::DeveloperBuild);
         }
+        // Fetch first, then read the state: what the user did during the request is kept.
+        let fetched = self.transport.fetch(
+            &self.endpoint,
+            &self.endpoint.manifest_url(),
+            manifest::MAX_MANIFEST_BYTES,
+        );
         let mut state = UpdateState::load(&self.dir);
-        let result = self.fetch_and_judge(&mut state);
+        let result = fetched.and_then(|body| self.judge(&body, &mut state));
         let message = match &result {
             Ok(Outcome::UpToDate) => "up to date".to_owned(),
             Ok(Outcome::Available(m)) => format!("PhotoSquirrel {} is available", m.version),
@@ -102,13 +108,8 @@ impl Updater {
         result
     }
 
-    fn fetch_and_judge(&self, state: &mut UpdateState) -> Result<Outcome, UpdateError> {
-        let body = self.transport.fetch(
-            &self.endpoint,
-            &self.endpoint.manifest_url(),
-            manifest::MAX_MANIFEST_BYTES,
-        )?;
-        let m = manifest::verify(&body, &self.keys)?;
+    fn judge(&self, body: &[u8], state: &mut UpdateState) -> Result<Outcome, UpdateError> {
+        let m = manifest::verify(body, &self.keys)?;
         let candidate = m.semver();
         let highest = state
             .highest_accepted

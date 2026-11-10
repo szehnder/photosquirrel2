@@ -27,6 +27,12 @@ fn script(path: &Path, body: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+fn sha_of(path: &Path) -> String {
+    let mut h = Sha256::new();
+    crate::download::hash_file(path, &mut h).unwrap();
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn program(path: &Path, name: &str, version: &str) {
     script(path, &format!("echo '{name} {version}'"));
 }
@@ -120,6 +126,8 @@ impl Fake {
             relaunch: false,
             wait_pid: None,
             downloads: Some(fake.root.join("Downloads")),
+            sha256: Some(sha_of(&payload)),
+            size: Some(fs::metadata(&payload).unwrap().len()),
             step: Step::Planned,
         };
         plan.save(&fake.plan()).unwrap();
@@ -127,9 +135,9 @@ impl Fake {
             ready: Some(Ready {
                 version: NEW.into(),
                 kind: "x".into(),
+                sha256: sha_of(&payload),
+                size: fs::metadata(&payload).unwrap().len(),
                 file: payload,
-                sha256: String::new(),
-                size: 0,
             }),
             ..Default::default()
         };
@@ -379,6 +387,85 @@ fn sign_bundles(f: &Fake, installed: &str, offered: &str) {
         .status()
         .unwrap();
     assert!(ok.success());
+    // The manifest would describe the re-packed payload.
+    let mut plan = Plan::load(&f.plan()).unwrap();
+    plan.sha256 = Some(sha_of(&payload));
+    plan.size = Some(fs::metadata(&payload).unwrap().len());
+    plan.save(&f.plan()).unwrap();
+}
+
+#[test]
+fn a_payload_changed_after_its_download_is_not_installed() {
+    for kind in KINDS {
+        let f = Fake::new(kind, NEW);
+        let before = f.snapshot();
+        let plan = Plan::load(&f.plan()).unwrap();
+        // Same size, other bytes: only the hash tells.
+        let mut bytes = fs::read(&plan.payload).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        fs::write(&plan.payload, bytes).unwrap();
+        let e = f.finish(None).expect_err("refused");
+        assert!(matches!(e, UpdateError::Mismatch), "{kind:?}: {e}");
+        assert_eq!(
+            f.snapshot(),
+            before,
+            "{kind:?}: the installation is unchanged"
+        );
+        assert!(UpdateState::load(&f.dir).is_skipped(NEW), "{kind:?}");
+    }
+}
+
+#[test]
+fn a_plan_that_points_outside_the_update_folder_is_refused() {
+    let f = Fake::new(Kind::AppImage, NEW);
+    let before = f.snapshot();
+    // A version that is a path, and a payload elsewhere.
+    for change in [0, 1] {
+        let mut plan = Plan::load(&f.plan()).unwrap();
+        if change == 0 {
+            plan.current = "../..".into();
+        } else {
+            let elsewhere = f.root.join("elsewhere.AppImage");
+            fs::copy(&plan.payload, &elsewhere).unwrap();
+            plan.payload = elsewhere;
+        }
+        let path = f.dir.root().join("crafted.json");
+        plan.save(&path).unwrap();
+        let e = finish(&f.dir, &path, Duration::from_secs(1), None).expect_err("refused");
+        assert!(e.to_string().contains("plan:"), "{e}");
+        assert_eq!(f.snapshot(), before);
+    }
+    assert!(f.root.join("Apps").is_dir(), "nothing outside was removed");
+}
+
+#[test]
+fn a_version_is_never_installed_over_itself_and_the_planner_holds_the_lock() {
+    let f = Fake::new(Kind::AppImage, NEW);
+    let installation = crate::kind::Installation {
+        kind: Kind::AppImage,
+        location: f.location.clone(),
+        cannot_install: None,
+    };
+    // 0.4.1 is ready: an installed 0.4.1 (or newer) does not plan it.
+    for current in [NEW, "0.5.0"] {
+        let e = plan_install(&f.dir, &installation, current, 27, false, None).expect_err("refused");
+        assert!(e.to_string().contains("is not newer"), "{e}");
+    }
+    // 0.4.0 does, and from then on this process counts as running until it exits.
+    plan_install(&f.dir, &installation, OLD, 27, false, None).unwrap();
+    assert!(
+        running(&f.dir, &f.location),
+        "the helper waits for this process"
+    );
+    release_exit_locks();
+    assert!(!running(&f.dir, &f.location));
+    // After the install the offer is gone.
+    let mut state = UpdateState::load(&f.dir);
+    state.available = Some(crate::testing::sample_manifest(NEW, &[]));
+    state.save(&f.dir).unwrap();
+    assert_eq!(f.finish(None).unwrap(), Step::Done);
+    assert!(UpdateState::load(&f.dir).available.is_none());
 }
 
 #[test]
@@ -431,6 +518,8 @@ fn a_rollback_puts_the_kept_version_back() {
             relaunch: false,
             wait_pid: None,
             downloads: None,
+            sha256: None,
+            size: None,
             step: Step::Planned,
         };
         let path = f.dir.root().join("rollback.json");

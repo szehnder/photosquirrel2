@@ -136,9 +136,9 @@ fn scenario_app_updates_user_data_untouched_by_install_and_rollback() {
         ready: Some(Ready {
             version: "0.4.1".into(),
             kind: "appimage".into(),
+            sha256: ps_update::testing::sha256_hex(&std::fs::read(&payload).unwrap()),
+            size: std::fs::metadata(&payload).unwrap().len(),
             file: payload,
-            sha256: String::new(),
-            size: 0,
         }),
         ..Default::default()
     };
@@ -150,12 +150,15 @@ fn scenario_app_updates_user_data_untouched_by_install_and_rollback() {
         cannot_install: None,
     };
     let plan = install::plan_install(&updates, &installation, "0.4.0", 27, false, None).unwrap();
+    // This test is the app and then the helper: the app's lock ends with its process.
+    install::release_exit_locks();
     assert_eq!(
         install::finish(&updates, &plan, Duration::from_secs(1), None).unwrap(),
         Step::Done
     );
     let rollback = install::plan_rollback(&updates, &installation, "0.4.1", false, None).unwrap();
     assert_eq!(Plan::load(&rollback).unwrap().action, Action::Rollback);
+    install::release_exit_locks();
     assert_eq!(
         install::finish(&updates, &rollback, Duration::from_secs(1), None).unwrap(),
         Step::Done

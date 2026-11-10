@@ -75,6 +75,11 @@ pub struct Plan {
     /// Where a refused macOS swap saves the update (the user's Downloads folder).
     #[serde(default)]
     pub downloads: Option<PathBuf>,
+    /// The payload's SHA-256 and size from the signed manifest (install): checked again before it is installed.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
     pub step: Step,
 }
 
@@ -120,6 +125,15 @@ pub fn plan_install(
     let ready = state
         .ready
         .ok_or_else(|| UpdateError::Failed("no update is ready to install".into()))?;
+    // Versions only move forward: never this version over itself, or an older one.
+    let newer = semver::Version::parse(current)
+        .is_ok_and(|installed| crate::version::newer(&ready.version, &installed));
+    if !newer {
+        return Err(UpdateError::Failed(format!(
+            "PhotoSquirrel {} is not newer than the installed {current}",
+            ready.version
+        )));
+    }
     let plan = Plan {
         action: Action::Install,
         version: ready.version.clone(),
@@ -131,10 +145,13 @@ pub fn plan_install(
         relaunch,
         wait_pid,
         downloads: deliver::downloads_dir(),
+        sha256: Some(ready.sha256),
+        size: Some(ready.size),
         step: Step::Planned,
     };
     let path = Plan::file(dir, &ready.version);
     plan.save(&path)?;
+    hold_until_exit(dir, &installation.location);
     Ok(path)
 }
 
@@ -161,10 +178,13 @@ pub fn plan_rollback(
         relaunch,
         wait_pid,
         downloads: None,
+        sha256: None,
+        size: None,
         step: Step::Planned,
     };
     let path = dir.root().join("rollback").join("plan.json");
     plan.save(&path)?;
+    hold_until_exit(dir, &installation.location);
     Ok(path)
 }
 
@@ -282,6 +302,67 @@ pub fn hold_running(dir: &UpdateDir, location: &Path) -> Option<File> {
     }
 }
 
+/// Running locks taken when an install was planned, kept until this process exits.
+static EXIT_LOCKS: std::sync::Mutex<Vec<File>> = std::sync::Mutex::new(Vec::new());
+
+/// The process that hands an install to the helper holds the installation's running lock from then until it
+/// exits, so the helper cannot start replacing files while this process is still shutting down. A process started
+/// before the update folder existed holds no lock yet ([`hold_running`]); by now the folder exists.
+fn hold_until_exit(dir: &UpdateDir, location: &Path) {
+    if let Some(lock) = hold_running(dir, location) {
+        EXIT_LOCKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(lock);
+    }
+}
+
+/// Let go of the locks of [`hold_until_exit`]: for tests, which play the app and the helper in one process.
+pub fn release_exit_locks() {
+    EXIT_LOCKS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// The plan must describe work inside this update folder: versions are versions (they name folders that are
+/// created and removed), and an install's payload is the staged file with the hash the signed manifest gave.
+fn validate(dir: &UpdateDir, plan_path: &Path, plan: &Plan) -> Result<(), UpdateError> {
+    let bad = |what: &str| UpdateError::BadManifest(format!("plan: {what}"));
+    for v in [&plan.version, &plan.current] {
+        semver::Version::parse(v).map_err(|_| bad("a version is not a version"))?;
+    }
+    let inside = |p: &Path| {
+        let (Ok(p), Ok(root)) = (p.canonicalize(), dir.root().canonicalize()) else {
+            return false;
+        };
+        p.starts_with(root)
+    };
+    if !inside(plan_path) || !inside(&plan.payload) {
+        return Err(bad("it points outside the update folder"));
+    }
+    if plan.action == Action::Install && (plan.sha256.is_none() || plan.size.is_none()) {
+        return Err(bad("an install without the payload's hash"));
+    }
+    Ok(())
+}
+
+/// The payload is still the file the signed manifest described (it may have waited for days).
+fn verify_payload(plan: &Plan) -> Result<(), UpdateError> {
+    let (Some(want), Some(size)) = (&plan.sha256, plan.size) else {
+        return Ok(());
+    };
+    let mut hasher = Sha256::new();
+    crate::download::hash_file(&plan.payload, &mut hasher)?;
+    let sum: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if fs::metadata(&plan.payload)?.len() == size && sum.eq_ignore_ascii_case(want) {
+        Ok(())
+    } else {
+        Err(UpdateError::Mismatch)
+    }
+}
+
 /// Whether a program of the installation is running (someone holds the lock).
 pub fn running(dir: &UpdateDir, location: &Path) -> bool {
     let path = lock_file(dir, location);
@@ -353,6 +434,7 @@ pub fn finish(
     stop_after: StopAfter,
 ) -> Result<Step, UpdateError> {
     let mut plan = Plan::load(plan_path)?;
+    validate(dir, plan_path, &plan)?;
     let _lock = match take_exclusive(dir, &plan.location, wait) {
         Ok(l) => l,
         Err(e) => {
@@ -460,10 +542,15 @@ fn install(
         reached(plan, plan_path, Step::BackedUp, stop)?;
     }
     if plan.step < Step::Staged {
+        verify_payload(plan)?;
         stage(kind, plan)?;
         reached(plan, plan_path, Step::Staged, stop)?;
     }
     if plan.step < Step::Swapped {
+        if kind == Kind::WindowsSetup {
+            // The installer itself is what runs: check it once more, right before.
+            verify_payload(plan)?;
+        }
         swap(kind, dir, plan)?;
         reached(plan, plan_path, Step::Swapped, stop)?;
     }
@@ -493,6 +580,14 @@ fn install(
     });
     state.ready = None;
     state.install_on_quit = false;
+    // The offer is used up: the new version must not download and install itself again.
+    if state
+        .available
+        .as_ref()
+        .is_some_and(|a| a.version == plan.version)
+    {
+        state.available = None;
+    }
     state.save(dir)?;
     history::record(
         dir,

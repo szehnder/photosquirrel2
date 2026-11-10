@@ -439,6 +439,8 @@ mod trial {
         let mut plan = plan;
         plan.relaunch = false;
         plan.save(&plan_path).unwrap();
+        // This test is the app and then the helper: the app's lock ends with its process.
+        ps_update::install::release_exit_locks();
         install::finish(&u.dir, &plan_path, Duration::from_secs(1), None).unwrap();
         let out = std::process::Command::new(&i.installation.location)
             .output()
@@ -574,6 +576,8 @@ mod trial {
         rollback_after_exit(&u, &i.installation, &i.cli, false).unwrap();
         let args = wait_for(&i.calls);
         let plan_path = PathBuf::from(args.split_whitespace().nth(3).unwrap());
+        // This test is the app and then the helper: the app's lock ends with its process.
+        ps_update::install::release_exit_locks();
         install::finish(&u.dir, &plan_path, Duration::from_secs(1), None).unwrap();
         let out = std::process::Command::new(&i.installation.location)
             .output()
@@ -632,6 +636,40 @@ fn scenario_app_updates_restart_now_waits_for_a_scan() {
     scanning.store(false, std::sync::atomic::Ordering::Relaxed);
     s.tick(t0 + HOUR + 120);
     assert_eq!(s.status().restart_blocked_by, None);
+}
+
+/// The version an update just installed starts with that update's offer and payload still on record: it must not
+/// download or install itself again (gate review H1).
+#[test]
+fn a_freshly_installed_version_does_not_install_itself_again() {
+    let f = Fixture::new(false);
+    let t0 = 1_800_000_000;
+    let (m, _) = mode(UpdateMode::Automatic);
+    // 0.4.0 finds and downloads 0.4.1...
+    let old = f.service(m.clone(), appimage(&f.dir), t0);
+    run(&old, t0, t0 + HOUR);
+    let state = UpdateState::load(&UpdateDir::at(&f.dir));
+    assert!(state.available.is_some() && state.ready.is_some());
+    let downloads = f.payload_requests();
+    // ...and now 0.4.1 runs with that state.
+    let new = UpdateService::new(
+        updater(&f.server, &f.dir, "0.4.1"),
+        appimage(&f.dir),
+        m,
+        t0 + 2 * HOUR,
+        None,
+    );
+    let state = UpdateState::load(&UpdateDir::at(&f.dir));
+    assert!(state.available.is_none() && state.ready.is_none());
+    new.set_cli(f.dir.join("no-such-cli"));
+    run(&new, t0 + 2 * HOUR, t0 + 3 * HOUR);
+    assert_eq!(
+        f.payload_requests(),
+        downloads,
+        "nothing is downloaded again"
+    );
+    assert!(!new.on_quit(), "nothing is installed at quit");
+    assert_eq!(new.status().ready, None);
 }
 
 #[test]
@@ -707,6 +745,8 @@ fn scenario_app_updates_quit_installs_a_ready_update() {
     }
     assert!(args.starts_with("update finish --plan "), "{args}");
     let plan = PathBuf::from(args.split_whitespace().nth(3).unwrap());
+    // This test is the app and then the helper: the app's lock ends with its process.
+    ps_update::install::release_exit_locks();
     ps_update::install::finish(
         &ps_update::UpdateDir::at(&f.dir),
         &plan,

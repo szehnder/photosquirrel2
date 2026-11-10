@@ -144,6 +144,30 @@ impl UpdateState {
         true
     }
 
+    /// Forget an offer or a staged payload that is not newer than `installed` (left by the update that installed
+    /// it, or by an install done by hand). Returns whether anything changed.
+    pub fn forget_not_newer(&mut self, installed: &semver::Version) -> bool {
+        let mut changed = false;
+        if self
+            .available
+            .as_ref()
+            .is_some_and(|a| !crate::version::newer(&a.version, installed))
+        {
+            self.available = None;
+            changed = true;
+        }
+        if self
+            .ready
+            .as_ref()
+            .is_some_and(|r| !crate::version::newer(&r.version, installed))
+        {
+            self.ready = None;
+            self.install_on_quit = false;
+            changed = true;
+        }
+        changed
+    }
+
     pub fn is_skipped(&self, version: &str) -> bool {
         self.skipped.iter().any(|v| v == version)
     }

@@ -421,9 +421,14 @@ jobs:
           open("manifest/m.json", "w").write(e["manifest"])
           open("manifest/m.json.minisig", "w").write(e["signature"])
           PY
-          if [ "$GITHUB_EVENT_NAME" = push ]; then key=packaging/update-key.pub; else key=manifest/dry-run-update-key.pub; fi
-          key_line=$(grep -v '^untrusted comment:' "$key" | grep -v '^none$' | head -n 1)
-          minisign -Vm manifest/m.json -P "$key_line"
+          # A tag: either built-in key slot (the next slot signs during a key rotation). A dry run: its own key.
+          if [ "$GITHUB_EVENT_NAME" = push ]; then keys="packaging/update-key.pub packaging/update-key-next.pub"; else keys=manifest/dry-run-update-key.pub; fi
+          verified=""
+          for key in $keys; do
+            key_line=$(grep -v '^untrusted comment:' "$key" | grep -v '^none$' | head -n 1 || true)
+            if [ -n "$key_line" ] && minisign -Vm manifest/m.json -P "$key_line"; then verified=$key; break; fi
+          done
+          if [ -z "$verified" ]; then echo "::error::the update manifest is not signed by a trusted update key"; exit 1; fi
           python3 - <<'PY'
           import hashlib, json, os
           m = json.loads(json.load(open("manifest/update-manifest.json"))["manifest"])

@@ -33,7 +33,7 @@ impl Updater {
         })?;
         let ready_dir = self.dir.ready_dir(&manifest.version);
         let target = ready_dir.join(&package.name);
-        let mut state = UpdateState::load(&self.dir);
+        let state = UpdateState::load(&self.dir);
         if let Some(r) = state.ready.as_ref().filter(|r| {
             r.version == manifest.version && r.sha256 == package.sha256 && r.file.is_file()
         }) {
@@ -64,34 +64,39 @@ impl Updater {
         if have > 0 {
             hash_file(&part, &mut hasher)?;
         }
-        let url = self.endpoint.package_url(package);
-        let opened = self
-            .transport
-            .open(&self.endpoint, &url, (have > 0).then_some(have))?;
-        let mut file = if opened.partial {
-            OpenOptions::new().append(true).open(&part)?
+        // A part that is already complete needs no request (a range past the end would be refused for ever).
+        let written = if have == package.size {
+            0
         } else {
-            // The whole file came back: start over.
-            hasher = Sha256::new();
-            have = 0;
-            File::create(&part)?
+            let url = self.endpoint.package_url(package);
+            let opened = self
+                .transport
+                .open(&self.endpoint, &url, (have > 0).then_some(have))?;
+            let mut file = if opened.partial {
+                OpenOptions::new().append(true).open(&part)?
+            } else {
+                // The whole file came back: start over.
+                hasher = Sha256::new();
+                have = 0;
+                File::create(&part)?
+            };
+            let mut sink = HashingWriter {
+                file: &mut file,
+                hasher: &mut hasher,
+            };
+            let written = match copy_limited(opened.body, &mut sink, package.size - have) {
+                Ok(n) => n,
+                Err(UpdateError::TooLarge(_)) => {
+                    drop(file);
+                    fs::remove_file(&part).ok();
+                    return self.mismatch(&manifest.version);
+                }
+                // A dropped connection keeps the part for the next attempt.
+                Err(e) => return Err(e),
+            };
+            file.sync_all()?;
+            written
         };
-        let mut sink = HashingWriter {
-            file: &mut file,
-            hasher: &mut hasher,
-        };
-        let written = match copy_limited(opened.body, &mut sink, package.size - have) {
-            Ok(n) => n,
-            Err(UpdateError::TooLarge(_)) => {
-                drop(file);
-                fs::remove_file(&part).ok();
-                return self.mismatch(&manifest.version);
-            }
-            // A dropped connection keeps the part for the next attempt.
-            Err(e) => return Err(e),
-        };
-        file.sync_all()?;
-        drop(file);
         if have + written != package.size {
             return Err(UpdateError::Network(format!(
                 "the download stopped after {} of {} bytes",
@@ -127,6 +132,8 @@ impl Updater {
             sha256: sum,
             size: package.size,
         };
+        // The state as it is now: the user may have skipped or dismissed something during the transfer.
+        let mut state = UpdateState::load(&self.dir);
         state.ready = Some(ready.clone());
         state.save(&self.dir)?;
         history::record(
@@ -162,7 +169,7 @@ impl Write for HashingWriter<'_> {
     }
 }
 
-fn hash_file(path: &std::path::Path, hasher: &mut Sha256) -> io::Result<()> {
+pub(crate) fn hash_file(path: &std::path::Path, hasher: &mut Sha256) -> io::Result<()> {
     let mut f = File::open(path)?;
     let mut buf = [0u8; 64 * 1024];
     loop {

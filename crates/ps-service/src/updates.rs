@@ -192,13 +192,15 @@ impl UpdateService {
         started_at: i64,
         data_dir: Option<&Path>,
     ) -> Self {
-        if let Some(dir) = data_dir {
-            let mut state = UpdateState::load(&updater.dir);
-            if state.remember_catalog(dir)
-                && let Err(e) = state.save(&updater.dir)
-            {
-                log::warn!("update state not saved: {e}");
-            }
+        // An offer or a staged payload for this version or an older one is used up (this is the version an update
+        // just installed): it must never download or install again.
+        let mut state = UpdateState::load(&updater.dir);
+        let forgot = state.forget_not_newer(&updater.installed);
+        let remembered = data_dir.is_some_and(|dir| state.remember_catalog(dir));
+        if (forgot || remembered)
+            && let Err(e) = state.save(&updater.dir)
+        {
+            log::warn!("update state not saved: {e}");
         }
         let status = compute_status(&updater, &installation, mode(), None, started_at);
         Self {
@@ -331,8 +333,9 @@ impl UpdateService {
         let Some(ready) = state.ready.as_ref() else {
             return false;
         };
-        let wanted = mode == UpdateMode::Automatic || state.install_on_quit;
+        let wanted = mode == UpdateMode::Automatic || (state.install_on_quit && mode.checks());
         if !wanted
+            || !ps_update::version::newer(&ready.version, &self.shared.updater.installed)
             || !self.shared.installation.can_install()
             || state.fallback_offered.contains(&ready.version)
             || state.is_skipped(&ready.version)
@@ -427,6 +430,11 @@ impl UpdateService {
     /// itself) the download of what it found.
     pub fn tick(&self, now: i64) {
         let mode = (self.shared.mode)();
+        // Quiet start: nothing, a download of an earlier offer included, in the first minute.
+        if now < self.shared.started_at + FIRST_CHECK_AFTER_S {
+            self.refresh(now);
+            return;
+        }
         let due = check_due(
             mode,
             self.shared.started_at,
@@ -510,7 +518,14 @@ impl UpdateService {
     }
 
     fn download_if_wanted(&self, mode: UpdateMode) {
-        let state = UpdateState::load(&self.shared.updater.dir);
+        let mut state = UpdateState::load(&self.shared.updater.dir);
+        if mode == UpdateMode::Off && state.install_on_quit {
+            // Off means off: an earlier "Install on quit" does not outlive it.
+            state.install_on_quit = false;
+            if let Err(e) = state.save(&self.shared.updater.dir) {
+                log::warn!("update state not saved: {e}");
+            }
+        }
         let wanted = mode == UpdateMode::Automatic || state.install_on_quit;
         if wanted && self.shared.installation.can_install() && state.available.is_some() {
             let _ = self.download_available();
@@ -524,6 +539,11 @@ impl UpdateService {
         else {
             return Ok(());
         };
+        if !ps_update::version::newer(&manifest.version, &self.shared.updater.installed)
+            || state.skipped.contains(&manifest.version)
+        {
+            return Ok(());
+        }
         if state
             .ready
             .as_ref()

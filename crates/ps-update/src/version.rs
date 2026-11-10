@@ -17,6 +17,12 @@ pub fn offered(
         && !skipped.contains(candidate)
 }
 
+/// Whether `version` (a manifest's or a staged payload's) is newer than the `installed` one. Unreadable versions
+/// are not.
+pub fn newer(version: &str, installed: &Version) -> bool {
+    Version::parse(version).is_ok_and(|v| &v > installed)
+}
+
 /// The newest of what was accepted before and `candidate`.
 pub fn raise(highest_accepted: Option<&Version>, candidate: &Version) -> Version {
     match highest_accepted {

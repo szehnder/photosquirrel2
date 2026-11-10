@@ -229,7 +229,7 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   Progress: the three scenarios pass (48 h undecided, then 48 h off: no request through the recording transport and
   no socket; automatic: nothing in the first 60 s, then only the manifest address), and the HTTP-client check
   covers `photosquirrel`, `ui-gallery` and `ui-theme`. Still open: the bench on the reference desktop (task 10.2).
-- [ ] 7.5 Screenshots of the consent card, the ready banner and the Settings group in dark and light themes (`cargo
+- [ ] 7.5 (Deferred by the owner, 2026-11-10: on another build, later.) Screenshots of the consent card, the ready banner and the Settings group in dark and light themes (`cargo
   xtask screenshot`). Verify: a screenshot review shows no overflow, and every text names versions.
 
 ## 8. CLI
@@ -327,6 +327,23 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   1.0000, 0 violations, the baseline group counts); `rescan-nochange-100k` within budget.
 - [ ] 11.3 Push; GitHub CI green on every job and all three OSes, including the fake-layout install tests.
 - [ ] 11.4 `cargo xtask ci` passes.
-- [ ] 11.5 Gate review by a fresh agent that did not write the code. It covers in particular: no request before
+- [x] 11.5 Gate review by a fresh agent that did not write the code. It covers in particular: no request before
   consent; signature, version and hash rules; no half-installed state after any kill; that the updater writes nothing
   outside the installation and its update folder; and the screenshot review.
+  Done (2026-11-10): PASS-WITH-FIXES. Sound: the signature is checked over the exact bytes before any field is
+  used; downgrade, replay, pre-release and skipped versions are refused; redirects and hosts are restricted; no
+  request without consent; a dry run cannot reach the release key. Fixed in this change:
+  - H1: a freshly installed version no longer downloads and installs itself again (the offer is cleared by the
+    install and at start; `plan_install`, the download and the quit hook require a newer version).
+  - H2: the process that hands an install to the helper holds the running lock until it exits, also when it
+    started before the update folder existed.
+  - M1: the plan carries the payload's SHA-256 and size, and the helper checks them again before it installs.
+  - M2: the helper refuses a plan whose versions are not versions or whose files are outside the update folder.
+  - M3: a check and a download save the state as it is after the transfer (a Skip made meanwhile is kept).
+  - Low: a complete `.part` is verified without a request; Off ends an earlier "Install on quit"; nothing is
+    downloaded in the first 60 s; the release job accepts a manifest signed by either key slot (rotation).
+  Left for a follow-up (none lets unsigned code in): M4, the job that holds the update key builds xtask, so its
+  dependencies' build scripts run beside the key (sign with the stock `minisign` in a job that compiles nothing,
+  as `sign-macos` does); absolute paths for `tar`, `codesign` and `reg`; a time limit on the `--version` check; a
+  marker file before `ready/` is cleaned under `PHOTOSQUIRREL_UPDATE_DIR`; checking that a tag is on `main`. The
+  screenshot review is deferred by the owner with task 7.5.
