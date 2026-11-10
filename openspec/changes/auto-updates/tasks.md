@@ -265,7 +265,7 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   packages wrote, signed and checked a manifest, and stock `minisign` 0.11 verified it (trusted comment
   `photosquirrel-update 0.3.1`). The notes are cut at a whole bullet past 4,000 characters instead of failing the
   release (0.3.1's notes are 5,906 characters); the spec says so.
-- [ ] 9.3 `release.yml`:
+- [x] 9.3 `release.yml`:
   - a `sign` job (the `release-signing` environment for tags, a throwaway key for dry runs, read-only, xtask only);
   - the `sign` job also needs `verify-macos` when that job runs (`macos-signing`);
   - an `update-roundtrip` matrix job (it succeeds with a notice when no previous release has a manifest; a dry run
@@ -286,8 +286,10 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   Dry run 42707503988 (`sign_macos`) is green with a throwaway key, 8 packages and the manifest; it skipped the
   round trip, which then ran for tags only. A dry run now rehearses it on all three OSes
   (`update-roundtrip.sh <os> <dir> rehearsal`: the candidate is installed, starts, refuses the throwaway-key
-  manifest and is unchanged; `scenario_release_packaging_dry_run_rehearses_the_round_trip`). Still open: a green
-  dry run with the rehearsal.
+  manifest and is unchanged; `scenario_release_packaging_dry_run_rehearses_the_round_trip`). Dry run 42829789968 (on `296d279`, 19 min) is green
+  with the rehearsal on all three OSes: each installed 0.3.1, started it, got "update manifest signature is not
+  valid" from `--update-now` and stayed unchanged. On the way: the Linux leg installs the desktop libraries a bare
+  runner lacks, and the Windows leg keeps Git Bash from rewriting the installer's `/S` (it waited for a click).
 - [x] 9.4 Docs: the README "Updates" section, a release notes "Updates" section with the 0.4.0 "last manual install"
   note and a "What's new in 0.4.0" section, the new `docs/releasing.md` runbook, and ROADMAP row 37 (added with the
   spec commit). Verify: `scenario_release_packaging_readme_screenshots_exist` (unchanged),
