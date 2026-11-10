@@ -15,6 +15,22 @@ withdrawing a release, and what to do when a key is lost or exposed.
    (`update-roundtrip`). When that and the release job are green, the GitHub Release is published with
    `update-manifest.json`, and from then on installed copies find the new version within about a day.
 
+### Release candidates
+
+Before a release that changes how updates install, cut candidates: `0.4.0-rc.1`, then `0.4.0-rc.2`. A candidate is
+published as a normal release, not a GitHub pre-release, because installed copies read only the latest release:
+
+- Installed `rc.1` copies (with updates on) find `rc.2` within a day, and its notes come from the "What's new in
+  0.4.0" section (a candidate's own "What's new in 0.4.0-rc.2" section wins if there is one).
+- The `rc.2` run's round trip installs the published `rc.1` and updates it to `rc.2` for real on all three OSes.
+- While a candidate is the latest release, the README's download links point to it. A copy of `0.3.1` or older has
+  no updater and is not offered anything.
+- A stable installation is never offered a candidate; a candidate installation is offered the final release.
+- Debian sorts `0.4.0-rc.1` above `0.4.0`; to move a `.deb` candidate to the final release, install it with
+  `sudo apt install --allow-downgrades ./PhotoSquirrel-0.4.0-linux-x86_64.deb`.
+
+When the candidates are good, bump to `0.4.0` and tag it from `main`.
+
 A manual run (`Actions → Release → Run workflow`) is a dry run: it builds and checks everything and uploads the files
 as workflow artifacts, without publishing. It also rehearses the update round trip: on each OS the candidate is
 installed, must start, and must refuse the dry run's manifest (signed by a throwaway key) and stay unchanged. Tick

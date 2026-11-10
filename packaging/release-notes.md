@@ -42,7 +42,7 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
-### What's new since 0.3.1
+### What's new in 0.4.0
 
 - **PhotoSquirrel keeps itself up to date, if you want it to.** It asks once whether to check for updates;
   nothing is sent before you answer. A check downloads one small signed file from GitHub and sends nothing about

@@ -315,6 +315,10 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   now, a trial, manual rollback, and the App Management behaviour on macOS. Verify: findings recorded in design.md,
   with "Measurements and findings" per OS. If macOS prompts or refuses, the fallback path is confirmed and the README
   says so.
+  Progress (2026-11-10): the workspace is `0.4.0-rc.1`. Candidates are published as normal releases (not GitHub
+  pre-releases), so an installed `rc.1` finds `rc.2` through the real path, and the `rc.2` run's round trip updates
+  the published `rc.1` for real on all three OSes; a candidate's manifest notes come from "What's new in 0.4.0"
+  (docs/releasing.md "Release candidates").
 - [ ] 10.2 Owner: on the reference desktop, `cargo xtask bench --check`. Verify: every budget passes, and
   `cold-start`, `idle-rss` and `first-gallery-frame` are within 5% of their baselines.
 

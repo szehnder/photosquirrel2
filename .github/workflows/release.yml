@@ -529,8 +529,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          # A release candidate (`-rc.N`) is a normal release, so installed candidates update to the next one and its
+          # round trip updates the previous candidate for real. Any other suffix (`-beta.1`) is a pre-release, which
+          # installed copies never see (they read the latest release).
           prerelease=""
-          if [[ "$version" == *-* ]]; then prerelease="--prerelease"; fi
+          if [[ "$version" == *-* && "$version" != *-rc.* ]]; then prerelease="--prerelease"; fi
           gh release create "$GITHUB_REF_NAME" packages/PhotoSquirrel-* packages/*.crate packages/runtime-source/* \
             packages/update-manifest.json \
             $prerelease \

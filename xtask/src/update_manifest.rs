@@ -61,11 +61,19 @@ pub fn packages(version: &str) -> Vec<(&'static str, &'static str, String)> {
 
 /// The "What's new in <version>" section of the release notes, without its heading.
 pub fn notes(release_notes: &str, version: &str) -> Result<String> {
-    let heading = format!("### What's new in {version}");
-    let start = release_notes
-        .lines()
-        .position(|l| l.trim() == heading)
-        .with_context(|| format!("the release notes have no \"{heading}\" section"))?;
+    // A release candidate (`0.4.0-rc.1`) uses its own section if there is one, else the release's (`0.4.0`), so
+    // every candidate and the release share one section.
+    let base = version.split_once('-').map(|(b, _)| b);
+    let found = std::iter::once(version)
+        .chain(base)
+        .map(|v| format!("### What's new in {v}"))
+        .find_map(|h| {
+            let at = release_notes.lines().position(|l| l.trim() == h)?;
+            Some((h, at))
+        });
+    let (heading, start) = found.with_context(|| {
+        format!("the release notes have no \"### What's new in {version}\" section")
+    })?;
     let body: Vec<&str> = release_notes
         .lines()
         .skip(start + 1)
@@ -369,6 +377,14 @@ mod tests {
         assert!(cut.chars().count() <= MAX_NOTES_CHARS, "{}", cut.len());
         assert_eq!(cut.matches("- x").count(), 2, "two whole bullets");
         assert!(cut.ends_with("…and more: see the release page."));
+        // A release candidate takes the release's section when it has none of its own.
+        assert_eq!(
+            notes(text, "0.4.0-rc.2").unwrap(),
+            "- **Updates.** They install themselves."
+        );
+        let own = format!("{text}\n### What's new in 0.4.0-rc.2\n\n- Only in rc.2.\n");
+        assert_eq!(notes(&own, "0.4.0-rc.2").unwrap(), "- Only in rc.2.");
+        assert!(notes(text, "0.5.0-rc.1").is_err());
         let huge = format!("### What's new in 0.4.0\n\n- {}\n", "y".repeat(9_000));
         assert!(notes(&huge, "0.4.0").unwrap().chars().count() <= MAX_NOTES_CHARS);
         // The repository's template has the section of the workspace version.
