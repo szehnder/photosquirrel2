@@ -179,58 +179,15 @@ jobs:
           path: signed-packages/*
           if-no-files-found: error
 
-  # The signed update manifest of a tagged release (ADR-0125). The release update key is readable only here, in the
-  # protected release-signing environment, and only by the step that signs, after xtask is built.
-  update-manifest:
-    name: Sign the update manifest
+  # The update manifest's text for the packages of this run (ADR-0125): written by xtask in a job that holds no secret.
+  # The jobs below sign exactly this text.
+  update-manifest-text:
+    name: Write the update manifest
     needs: [package, verify-macos]
     if: >-
-      always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
-      needs.package.result == 'success' && needs.verify-macos.result == 'success'
-    runs-on: ubuntu-24.04
-    environment: release-signing
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          path: packages
-          pattern: packages-*
-          merge-multiple: true
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: needs.verify-macos.result == 'success'
-        with:
-          name: signed-macos-packages
-          path: signed-macos
-      - name: Use the signed macOS packages
-        run: bash packaging/use-signed-macos.sh packages signed-macos
-      - name: Build xtask
-        run: cargo build -p xtask --locked
-      - name: Write, sign and check the manifest
-        env:
-          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-          UPDATE_SIGNING_PASSWORD: ${{ secrets.UPDATE_SIGNING_PASSWORD }}
-        run: >-
-          target/debug/xtask update-manifest --packages packages --tag "$GITHUB_REF_NAME"
-          --key-env UPDATE_SIGNING_KEY --password-env UPDATE_SIGNING_PASSWORD
-          --check packaging/update-key.pub --check packaging/update-key-next.pub
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: update-manifest
-          path: packages/update-manifest.json
-          if-no-files-found: error
-
-  # A dry run's manifest, signed with a throwaway key it generates: the release key is never read.
-  update-manifest-dry:
-    name: Update manifest (dry run, throwaway key)
-    needs: [package, verify-macos]
-    if: >-
-      always() && github.event_name != 'push' && needs.package.result == 'success' &&
-      (needs.verify-macos.result == 'success' || (needs.verify-macos.result == 'skipped' && !inputs.sign_macos))
+      always() && needs.package.result == 'success' &&
+      (needs.verify-macos.result == 'success' ||
+      (needs.verify-macos.result == 'skipped' && github.event_name != 'push' && !inputs.sign_macos))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -255,17 +212,84 @@ jobs:
           path: signed-macos
       - name: Use the signed macOS packages
         run: bash packaging/use-signed-macos.sh packages signed-macos
-      - name: Write, sign with a throwaway key and check the manifest
+      - name: Write the manifest text
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          cargo xtask update-manifest --packages packages --tag "v$version" \
-            --throwaway-key packages/dry-run-update-key.pub --check packages/dry-run-update-key.pub
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tag=$GITHUB_REF_NAME
+          else
+            tag="v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          fi
+          cargo xtask update-manifest --packages packages --tag "$tag" --unsigned-out update-manifest-text.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: update-manifest-text
+          path: update-manifest-text.json
+          if-no-files-found: error
+
+  # The signed update manifest of a tagged release (ADR-0125). The release update key is readable only here, in the
+  # protected release-signing environment. Like sign-macos, this job compiles nothing: it runs the distribution's
+  # minisign and one script from this repository on the text written above.
+  update-manifest:
+    name: Sign the update manifest
+    needs: update-manifest-text
+    if: >-
+      always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
+      needs.update-manifest-text.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: update-manifest-text
+          path: text
+      - name: Install minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+      - name: Sign and check the manifest
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_SIGNING_PASSWORD: ${{ secrets.UPDATE_SIGNING_PASSWORD }}
+        run: >-
+          bash packaging/sign-update-manifest.sh text/update-manifest-text.json update-manifest.json
+          --trusted packaging/update-key.pub packaging/update-key-next.pub
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: update-manifest
+          path: update-manifest.json
+          if-no-files-found: error
+
+  # A dry run's manifest, signed by the same script with a throwaway key it generates: the release key is never read.
+  update-manifest-dry:
+    name: Update manifest (dry run, throwaway key)
+    needs: update-manifest-text
+    if: always() && github.event_name != 'push' && needs.update-manifest-text.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: update-manifest-text
+          path: text
+      - name: Install minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+      - name: Sign with a throwaway key and check the manifest
+        run: >-
+          bash packaging/sign-update-manifest.sh text/update-manifest-text.json update-manifest.json
+          --throwaway dry-run-update-key.pub
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: update-manifest
           path: |
-            packages/update-manifest.json
-            packages/dry-run-update-key.pub
+            update-manifest.json
+            dry-run-update-key.pub
           if-no-files-found: error
 
   # Before a tagged release is published, the previous release that has an updater updates itself to this one on

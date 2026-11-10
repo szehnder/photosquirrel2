@@ -76,14 +76,11 @@ enum Cmd {
         /// The release tag, `v<workspace version>`.
         #[arg(long)]
         tag: String,
-        /// Sign with the minisign secret key in this environment variable (its file text).
-        #[arg(long, value_name = "VAR", requires = "password_env")]
-        key_env: Option<String>,
-        /// The environment variable holding that key's password.
-        #[arg(long, value_name = "VAR")]
-        password_env: Option<String>,
-        /// Sign with a throwaway key (dry runs) and write its public key to this file.
-        #[arg(long, value_name = "FILE", conflicts_with = "key_env")]
+        /// Write the manifest's exact text to this file, to be signed by `packaging/sign-update-manifest.sh`.
+        #[arg(long, value_name = "FILE")]
+        unsigned_out: Option<PathBuf>,
+        /// Local trials: write an envelope signed with a throwaway key, and its public key to this file.
+        #[arg(long, value_name = "FILE")]
         throwaway_key: Option<PathBuf>,
         /// Check the manifest against these public key files (repeatable).
         #[arg(long = "check", value_name = "PUBKEY")]
@@ -172,20 +169,17 @@ fn main() -> Result<()> {
         Cmd::UpdateManifest {
             packages,
             tag,
-            key_env,
-            password_env,
+            unsigned_out,
             throwaway_key,
             check,
-        } => {
-            let signer = match (key_env, password_env, throwaway_key) {
-                (Some(key), Some(password), _) => {
-                    Some(update_manifest::Signer::Env { key, password })
-                }
-                (_, _, Some(out)) => Some(update_manifest::Signer::Throwaway(out)),
-                _ => None,
-            };
-            update_manifest::run(&root, &packages, &tag, signer, &check)
-        }
+        } => update_manifest::run(
+            &root,
+            &packages,
+            &tag,
+            unsigned_out.as_deref(),
+            throwaway_key.as_deref(),
+            &check,
+        ),
         Cmd::MacosSigned {
             signed,
             unsigned_app,

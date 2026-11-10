@@ -38,11 +38,11 @@ Every release SHALL carry `update-manifest.json`, holding the manifest text and 
 - **THEN** its notes are the "What's new in <version>" section; a longer one is cut before the first bullet that does not fit in 4,000 characters and points to the release page; and generation fails when that section is missing
 
 ### Requirement: Update signing key kept apart
-The update signing key SHALL be used only by a signing job that runs in a protected environment, compiles nothing outside the repository's tooling, and has no write permission. A dry run SHALL sign with a throwaway key it generates and SHALL NOT read the release key. Release binaries SHALL embed only the repository's public update keys and never the test key.
+The update signing key SHALL be used only by a signing job that runs in a protected environment, compiles nothing, and has no write permission; the text it signs SHALL be written by a job that holds no secret. A dry run SHALL sign with a throwaway key it generates and SHALL NOT read the release key. Release binaries SHALL embed only the repository's public update keys and never the test key.
 
 #### Scenario: Signing job isolated
 - **WHEN** the release workflow definition is read
-- **THEN** only the sign job references the signing key secret, it runs in the protected environment only for a pushed tag, it has read-only permissions, and a dry run generates its own key
+- **THEN** only the sign job references the signing key secret, it runs in the protected environment only for a pushed tag, it has read-only permissions and runs no cargo, toolchain or cache step, the manifest text comes from a job without secrets, and a dry run signs with the same script and a key it generates
 
 #### Scenario: Release binaries embed only the release key
 - **WHEN** the packaging check reads a built application and CLI

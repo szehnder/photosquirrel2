@@ -135,3 +135,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0129](0129-windows-packages-authenticode-signed.md) | Windows packages are Authenticode signed in jobs that compile nothing, behind one provider script; the updater checks the installer's signer (amends 0030) (proposed) |
 | [0130](0130-opt-in-anonymous-telemetry.md) | Opt-in anonymous telemetry: health reports and crash reports are separate choices, off by default, with a fixed public schema (amends 0029) (proposed) |
 | [0131](0131-staged-rollout-in-the-signed-manifest.md) | A release is rolled out in steps by fields of the signed manifest, with channels for dark deploys and no server (proposed) |
+| [0132](0132-the-job-that-holds-the-update-key-compiles-nothing.md) | The job that holds the update key compiles nothing: a secret-free job writes the manifest text, the stock `minisign` and one script sign it (amends 0125) |

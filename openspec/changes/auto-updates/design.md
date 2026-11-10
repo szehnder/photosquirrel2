@@ -424,6 +424,12 @@ VAR]`:
     `UPDATE_SIGNING_PASSWORD`.
   - For a dry run it generates a throwaway key and uploads its public half.
   - It compiles only xtask (`--locked`) and uploads `update-manifest.json`.
+  - As built after the gate review (ADR-0132): the job that holds the key compiles nothing. A job without
+    secrets, `update-manifest-text`, runs `cargo xtask update-manifest --unsigned-out` and uploads the manifest's
+    exact text. `update-manifest` (tags, `release-signing`) and `update-manifest-dry` then run
+    `packaging/sign-update-manifest.sh` on it with the distribution's `minisign`: the release key and both public
+    key slots, or a key generated for the run. The script checks the signature and its trusted comment before it
+    writes the envelope. xtask never sees the release key.
 - **`update-roundtrip` job** (matrix linux, macos, windows; tag only): needs `sign`.
   1. Downloads the previous non-prerelease GitHub release that has an `update-manifest.json`.
   2. Installs it: the AppImage into a temp folder; on macOS, `hdiutil attach` the DMG and copy the `.app` to a temp

@@ -120,8 +120,10 @@ Any OS with [minisign](https://jedisct1.github.io/minisign/) (Windows: the relea
 4. Back up `update-key.sec` and its password offline (a password manager and a second copy). Without it,
    installed copies cannot be moved to a new release.
 
-Only the `update-manifest` job reads these secrets, for a pushed tag, after the owner's approval. A dry run signs
-with a throwaway key it generates (`dry-run-update-key.pub` in its artifacts).
+Only the `update-manifest` job reads these secrets, for a pushed tag, after the owner's approval. Like `sign-macos`
+it compiles nothing (ADR-0132): it runs the distribution's `minisign` and `packaging/sign-update-manifest.sh` on the
+manifest text that a job without secrets wrote. A dry run runs the same script with a throwaway key it generates
+(`dry-run-update-key.pub` in its artifacts).
 
 ### Checking a manifest by hand
 

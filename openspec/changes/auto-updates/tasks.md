@@ -260,8 +260,9 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 - [x] 9.2 `cargo xtask update-manifest` (generate, sign, `--check`), with the notes taken from "What's new in
   <version>". Verify: `scenario_release_packaging_manifest_matches_the_packages` and
   `scenario_release_packaging_notes_taken_from_the_release_notes`.
-  Done: `xtask/src/update_manifest.rs` (`cargo xtask update-manifest --packages --tag [--key-env --password-env |
-  --throwaway-key] [--check <pub>...]`). Both scenarios and `release_times_are_rfc3339` pass. A run on eight fake
+  Done: `xtask/src/update_manifest.rs` (`cargo xtask update-manifest --packages --tag [--unsigned-out <file> |
+  --throwaway-key <pub>] [--check <pub>...]`; signing with the release key moved to
+  `packaging/sign-update-manifest.sh`, ADR-0132). Both scenarios and `release_times_are_rfc3339` pass. A run on eight fake
   packages wrote, signed and checked a manifest, and stock `minisign` 0.11 verified it (trusted comment
   `photosquirrel-update 0.3.1`). The notes are cut at a whole bullet past 4,000 characters instead of failing the
   release (0.3.1's notes are 5,906 characters); the spec says so.
@@ -342,8 +343,9 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   - M3: a check and a download save the state as it is after the transfer (a Skip made meanwhile is kept).
   - Low: a complete `.part` is verified without a request; Off ends an earlier "Install on quit"; nothing is
     downloaded in the first 60 s; the release job accepts a manifest signed by either key slot (rotation).
-  Left for a follow-up (none lets unsigned code in): M4, the job that holds the update key builds xtask, so its
-  dependencies' build scripts run beside the key (sign with the stock `minisign` in a job that compiles nothing,
-  as `sign-macos` does); absolute paths for `tar`, `codesign` and `reg`; a time limit on the `--version` check; a
+  - M4 (ADR-0132): the job that holds the update key compiles nothing. A job without secrets writes the manifest
+    text; the signing job runs the stock `minisign` and `packaging/sign-update-manifest.sh` on it. Tried locally
+    with an encrypted key: the app's verifier accepts the result, and a wrong password or key writes nothing.
+  Left for a follow-up (none lets unsigned code in): absolute paths for `tar`, `codesign` and `reg`; a time limit on the `--version` check; a
   marker file before `ready/` is cleaned under `PHOTOSQUIRREL_UPDATE_DIR`; checking that a tag is on `main`. The
   screenshot review is deferred by the owner with task 7.5.

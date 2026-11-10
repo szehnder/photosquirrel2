@@ -2475,23 +2475,48 @@ mod tests {
             sign.contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
         );
         assert!(sign.contains("contents: read") && !sign.contains("contents: write"));
-        // It compiles only xtask, before the step that is given the key.
-        assert!(sign.contains("cargo build -p xtask --locked"));
-        let signing_step = sign
-            .split("- name: Write, sign and check the manifest")
-            .nth(1)
-            .expect("step");
-        assert!(
-            !signing_step.contains("cargo"),
-            "the signing step compiles nothing"
-        );
-        // A dry run generates its own key and never reads the release key.
+        // Like sign-macos it compiles nothing: no toolchain, no cargo, no cache; the stock minisign and one script.
+        for forbidden in ["cargo", "rust-toolchain", "rust-cache"] {
+            assert!(
+                !sign.contains(forbidden),
+                "{forbidden} in the job that holds the key"
+            );
+        }
+        assert!(sign.contains("apt-get install -y -qq minisign"));
+        assert!(sign.contains(
+            "bash packaging/sign-update-manifest.sh text/update-manifest-text.json update-manifest.json"
+        ));
+        assert!(sign.contains("--trusted packaging/update-key.pub packaging/update-key-next.pub"));
+        // The text it signs is written by xtask in a job without secrets or an environment.
+        let write = workflow_job(&text, "update-manifest-text");
+        assert!(write.contains("--unsigned-out update-manifest-text.json"));
+        assert!(!write.contains("secrets.") && !write.contains("environment:"));
+        // A dry run uses the same script with a key it generates, and never reads the release key.
         let dry = workflow_job(&text, "update-manifest-dry");
         assert!(
-            dry.contains("--throwaway-key") && !dry.contains("secrets."),
+            dry.contains("bash packaging/sign-update-manifest.sh")
+                && dry.contains("--throwaway dry-run-update-key.pub")
+                && !dry.contains("secrets."),
             "{dry}"
         );
-        assert!(!dry.contains("environment:"));
+        assert!(!dry.contains("environment:") && !dry.contains("cargo"));
+        // The script: the key only from the environment, deleted with its folder; the result must verify and
+        // name the version before the envelope is written.
+        let script = fs::read_to_string(root().join("packaging/sign-update-manifest.sh"))
+            .expect("the signing script");
+        for needle in [
+            "umask 077",
+            "trap 'rm -rf \"$work\"' EXIT",
+            "UPDATE_SIGNING_KEY:?",
+            "minisign -V -m \"$text\"",
+            "Trusted comment: ${comment}",
+        ] {
+            assert!(script.contains(needle), "{needle}");
+        }
+        assert!(
+            !script.contains("set -x"),
+            "the script never echoes its commands"
+        );
         assert!(dry.contains("github.event_name != 'push'"));
     }
 

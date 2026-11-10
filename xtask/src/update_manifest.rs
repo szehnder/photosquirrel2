@@ -1,10 +1,11 @@
-//! `cargo xtask update-manifest`: write and sign a release's `update-manifest.json`, or check one (ADR-0125, spec
-//! `release-packaging` "Signed update manifest").
+//! `cargo xtask update-manifest`: write a release's update manifest, or check a signed one (ADR-0125, ADR-0132,
+//! spec `release-packaging` "Signed update manifest").
 //!
 //! The manifest lists the eight packages of a release (name, size, SHA-256, download URL under the tag), the
 //! version, the release time, the notes ("What's new in <version>" from `packaging/release-notes.md`) and the
-//! release page. It is signed with the update key from the environment of the `sign` job, or, for a dry run, with
-//! a throwaway key whose public half is written out for the check.
+//! release page. xtask writes its exact text; `packaging/sign-update-manifest.sh` signs it with the stock
+//! `minisign` in a job that compiles nothing, so xtask never sees the release key. For local trials xtask can
+//! sign with a throwaway key whose public half is written out for the check.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -157,7 +158,7 @@ pub fn manifest(dir: &Path, version: &str, notes: String, released: String) -> R
 
 /// The envelope of `manifest`, signed with `sk`.
 pub fn sign(manifest: &Manifest, sk: &minisign::SecretKey) -> Result<String> {
-    let text = serde_json::to_string_pretty(manifest)?;
+    let text = text(manifest)?;
     let comment = Manifest::trusted_comment(&manifest.version);
     let signature = minisign::sign(
         None,
@@ -209,15 +210,6 @@ pub fn check(
     Ok(m)
 }
 
-/// The secret key named by two environment variables (its minisign file text and its password).
-pub fn secret_key_from_env(key_env: &str, password_env: &str) -> Result<minisign::SecretKey> {
-    let text = std::env::var(key_env).with_context(|| format!("{key_env} is not set"))?;
-    let password = std::env::var(password_env).ok().filter(|p| !p.is_empty());
-    minisign::SecretKeyBox::from_string(&text)
-        .and_then(|b| b.into_secret_key(password))
-        .map_err(|e| anyhow::anyhow!("the update signing key in {key_env}: {e}"))
-}
-
 /// Now, as RFC 3339 UTC (`2026-11-09T12:00:00Z`).
 pub fn now_rfc3339() -> String {
     let secs = std::time::SystemTime::now()
@@ -244,20 +236,21 @@ pub fn now_rfc3339() -> String {
     )
 }
 
-/// How the manifest is signed.
-pub enum Signer {
-    /// The release key, from these environment variables (the `sign` job).
-    Env { key: String, password: String },
-    /// A throwaway key (dry runs); its public line is written to this file.
-    Throwaway(PathBuf),
+/// The manifest's exact text: what `packaging/sign-update-manifest.sh` signs and the app verifies.
+pub fn text(manifest: &Manifest) -> Result<String> {
+    Ok(serde_json::to_string_pretty(manifest)?)
 }
 
-/// The `update-manifest` command: write and sign, or with `check_keys` check.
+/// The `update-manifest` command. With `unsigned_out`, write the manifest's text for the packages (the release
+/// workflow signs it with the stock `minisign` tool in a job that compiles nothing: xtask never sees the release
+/// key). With `throwaway_key`, write an envelope signed by a key made for this run (local trials). With
+/// `check_keys`, check the envelope beside the packages.
 pub fn run(
     root: &Path,
     packages_dir: &Path,
     tag: &str,
-    signer: Option<Signer>,
+    unsigned_out: Option<&Path>,
+    throwaway_key: Option<&Path>,
     check_keys: &[PathBuf],
 ) -> Result<()> {
     let version = tag
@@ -265,31 +258,31 @@ pub fn run(
         .with_context(|| format!("{tag} is not a v<version> tag"))?;
     package::check_tag(tag, &package::workspace_version(root)?)?;
     let path = packages_dir.join(FILE);
-    if let Some(signer) = signer {
+    if unsigned_out.is_some() || throwaway_key.is_some() {
         let notes = notes(
             &fs::read_to_string(root.join("packaging/release-notes.md"))?,
             version,
         )?;
         let m = manifest(packages_dir, version, notes, now_rfc3339())?;
-        let sk = match signer {
-            Signer::Env { key, password } => secret_key_from_env(&key, &password)?,
-            Signer::Throwaway(public_out) => {
-                let kp = minisign::KeyPair::generate_unencrypted_keypair()
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-                fs::write(&public_out, format!("{}\n", kp.pk.to_base64()))?;
-                eprintln!(
-                    "dry run: signed with a throwaway key ({})",
-                    public_out.display()
-                );
-                kp.sk
-            }
-        };
-        fs::write(&path, sign(&m, &sk)?)?;
-        eprintln!(
-            "wrote {} for {version} ({} packages)",
-            path.display(),
-            packages(version).len()
-        );
+        if let Some(out) = unsigned_out {
+            fs::write(out, text(&m)?)?;
+            eprintln!(
+                "wrote the manifest text {} for {version} ({} packages), to be signed",
+                out.display(),
+                packages(version).len()
+            );
+        }
+        if let Some(public_out) = throwaway_key {
+            let kp = minisign::KeyPair::generate_unencrypted_keypair()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            fs::write(public_out, format!("{}\n", kp.pk.to_base64()))?;
+            fs::write(&path, sign(&m, &kp.sk)?)?;
+            eprintln!(
+                "wrote {} signed with a throwaway key ({})",
+                path.display(),
+                public_out.display()
+            );
+        }
     }
     if !check_keys.is_empty() {
         let mut lines = Vec::new();
