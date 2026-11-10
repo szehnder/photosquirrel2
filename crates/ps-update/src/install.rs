@@ -196,15 +196,32 @@ pub fn spawn_helper(
         .stdout(log.try_clone()?)
         .stderr(log);
     detach(&mut cmd, true);
-    if let Err(e) = cmd.spawn() {
+    if let Err(e) = spawn_just_written(&mut cmd) {
         // A job object that forbids breaking away refuses the flag: start it without.
         if !cfg!(windows) {
             return Err(e.into());
         }
         detach(&mut cmd, false);
-        cmd.spawn()?;
+        spawn_just_written(&mut cmd)?;
     }
     Ok(())
+}
+
+/// Start a program whose file this process has just written. Another thread that starts a process at the same
+/// moment briefly holds a copy of the file's write handle, and the kernel then refuses to run the file ("text file
+/// busy"): wait for that handle to close and try again, for up to a second.
+fn spawn_just_written(cmd: &mut Command) -> io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match cmd.spawn() {
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -299,10 +316,18 @@ fn take_exclusive(dir: &UpdateDir, location: &Path, wait: Duration) -> Result<Fi
 
 /// Run `program --version` and require `<name> <version>`.
 pub fn smoke(program: &Path, name: &str, version: &str) -> Result<(), UpdateError> {
-    let out = Command::new(program)
-        .arg("--version")
-        .output()
-        .map_err(|e| UpdateError::Failed(format!("{} did not start: {e}", program.display())))?;
+    // The program may have been written a moment ago: see `spawn_just_written`.
+    let mut tries = 0;
+    let out = loop {
+        match Command::new(program).arg("--version").output() {
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            other => break other,
+        }
+    }
+    .map_err(|e| UpdateError::Failed(format!("{} did not start: {e}", program.display())))?;
     let text = String::from_utf8_lossy(&out.stdout);
     let mut words = text.split_whitespace();
     if out.status.success() && words.next() == Some(name) && words.next() == Some(version) {
