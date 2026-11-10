@@ -53,8 +53,9 @@ jobs:
           persist-credentials: false
       # The branch of rust-toolchain.toml's version, pinned to its commit.
       - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      # Compiled dependencies are kept between runs (our own crates are always rebuilt). On Linux that covers both
+      # xtask's host build and the container's target directory, target/docker, which holds its own cargo target.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        if: matrix.name != 'linux'
         with:
           key: dist
       # nasm builds rav1d's x86_64 assembly (AVIF, ADR-0090): the x86_64 half of the universal macOS build and
@@ -156,6 +157,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      # xtask's compiled dependencies, kept between runs. No secret is readable in this job.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: xtask
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-app-unsigned
@@ -234,6 +239,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      # xtask's compiled dependencies, kept between runs. No secret is readable in this job.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: xtask
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: packages
@@ -321,6 +330,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      # xtask's compiled dependencies, kept between runs. No secret is readable in this job.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: xtask
       - name: Fetch and check the pinned sources
         run: cargo xtask runtime-sources --out runtime-source
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
