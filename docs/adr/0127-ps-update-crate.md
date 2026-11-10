@@ -1,6 +1,6 @@
 # 0127. A `ps-update` I/O crate with a blocking HTTPS client, minisign verification and no UI dependency
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-08
 - Deciders: maintainers
 

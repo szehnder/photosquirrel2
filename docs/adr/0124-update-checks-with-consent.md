@@ -1,6 +1,6 @@
 # 0124. Update checks with consent: asked once, a signed manifest from GitHub Releases, nothing about the user (amends 0029)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-08
 - Deciders: maintainers
 

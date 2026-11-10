@@ -1,6 +1,6 @@
 # 0126. Updates install after exit, per package kind, through a helper that keeps the previous version and rolls back
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-08
 - Deciders: maintainers
 

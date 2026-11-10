@@ -7,7 +7,7 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
 
 ## 1. Decisions and keys
 
-- [ ] 1.1 Owner: review ADR-0124..0127 (written as `proposed` together with this change), then set them to
+- [x] 1.1 Owner: review ADR-0124..0127 (written as `proposed` together with this change), then set them to
   `accepted` and drop "(proposed)" from their index rows. Verify: the four files read `Status: accepted`, and
   `docs/adr/README.md` lists 0124-0127.
 - [x] 1.2 Owner: generate the release update key (`minisign -G`). Commit `packaging/update-key.pub` and set

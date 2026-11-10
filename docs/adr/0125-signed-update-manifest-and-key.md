@@ -1,6 +1,6 @@
 # 0125. Updates are trusted only through a minisign-signed manifest with two built-in key slots
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-08
 - Deciders: maintainers
 
