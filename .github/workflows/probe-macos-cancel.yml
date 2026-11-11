@@ -1,0 +1,30 @@
+# TEMPORARY: confirms the timing pass on macOS for the final commit. Dropped before merge.
+name: Probe macOS cancel latency
+on:
+  push:
+    branches: [claude/trusting-bardeen-iam0gv]
+permissions:
+  contents: read
+env:
+  PHOTOSQUIRREL_TEST_SCALE: reduced
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ff7f6a3374ce205788da40198ec918bd5d67aea7 # 1.99.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test --no-run -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-update -p ps-service --test budgets --test control
+      - &timing
+        name: CI timing pass (1)
+        if: always()
+        run: cargo test --no-fail-fast -p ps-model -p ps-media -p ps-sysdecode -p ps-hash -p ps-dedup -p ps-fixtures -p ps-catalog -p ps-scan -p ps-export -p ps-llm -p ps-update -p ps-service --test budgets --test control -- --ignored --exact --test-threads=1 --nocapture control_latency_with_concurrent_readers_stays_within_budget scenario_scan_control_cancel_within_250_ms scenario_scan_control_pause_within_250_ms cancel_reaches_a_long_tiff_decode_within_250_ms cancel_reaches_a_hung_avif_decode_within_250_ms
+      - <<: *timing
+        name: CI timing pass (2)
+      - <<: *timing
+        name: CI timing pass (3)
+      - name: no-readers control latency (budget printed)
+        if: always()
+        run: cargo test -p ps-scan --test budgets -- --exact --nocapture scenario_scan_control_control_latency_within_budget
