@@ -165,8 +165,12 @@ fn scenario_scan_control_control_latency_within_budget() {
 
 /// The same cancel and pause latencies while two threads keep reading the catalog, as the gallery does: the log
 /// checkpoint at the end of a run (ADR-0122) must not make a reader hold up the final status. Not a recorded budget;
-/// it must stay within the same 250 ms. A wall-clock assertion: it runs alone in the timing pass (ADR-0075); in the
-/// parallel test run it missed by 20-30 ms on shared macOS runners.
+/// it must stay within the same 250 ms. A wall-clock assertion: it runs alone in the timing pass (ADR-0075).
+///
+/// Its misses on macOS runners (p95 273-299 ms, every slow trial a cancel) were not the checkpoint: the catalog
+/// finished its writes in under a millisecond. A cancel waited out a chain of timed polls (the lane dispatcher's 20 ms
+/// send, the pipeline's 50 ms sampling sleep) that macOS ends 30-100 ms late on a loaded 3-core runner, with or
+/// without readers. A pause or cancel now wakes those waits ([`ps_scan::Control::interrupted`]).
 #[test]
 #[ignore = "timing"]
 fn control_latency_with_concurrent_readers_stays_within_budget() {
