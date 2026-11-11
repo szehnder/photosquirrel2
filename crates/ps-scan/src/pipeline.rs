@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender, bounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Select, SendTimeoutError, Sender, bounded};
 use parking_lot::Mutex;
 
 use ps_catalog::{AnalysisResult, Catalog, Command, FileFailure, FileKey, ProbeResult, ThumbStore};
@@ -33,7 +33,7 @@ use ps_model::{
     RunStatus, ScanPhase, ScanRunId, SourceId, SourceStatus, Stage, ThumbnailRecord,
 };
 
-use crate::control::{Busy, Cancelled, Control};
+use crate::control::{Busy, Cancelled, Control, ControlState};
 use crate::diff::{DiffOutput, Todo, diff};
 use crate::fs::SourceFile;
 use crate::lane::{LaneController, MAX_READERS, Window, p90};
@@ -51,8 +51,11 @@ const UPSERT_CHUNK: usize = 2_000;
 /// Persist batch: items or delay, whichever first.
 const PERSIST_BATCH: usize = 64;
 const PERSIST_DELAY: Duration = Duration::from_millis(50);
-/// Poll interval of blocking queue operations (bounds pause/cancel reaction time).
+/// Poll interval of blocking queue operations. A pause or cancel ends them at once ([`Control::interrupted`]); the
+/// interval paces the lane controller's evaluation and is the fallback bound.
 const POLL: Duration = Duration::from_millis(20);
+/// Throughput sampling interval of the pipeline while its lanes run.
+const SAMPLE_EVERY: Duration = Duration::from_millis(50);
 
 /// A source taking part in a run.
 #[derive(Debug)]
@@ -797,30 +800,34 @@ fn run_pipeline(ctx: &Arc<RunCtx>, diffs: Vec<Option<DiffOutput>>) {
                 }
             });
 
-        // One lane per source.
+        // One lane per source. Each holds a sender of `lanes_done` until it returns (or unwinds): the channel is
+        // disconnected the moment the last lane ends.
+        let (lanes_done_tx, lanes_done) = bounded::<()>(0);
         let lanes: Vec<_> = todos
             .into_iter()
             .enumerate()
             .filter(|(_, t)| !t.is_empty())
             .map(|(idx, todo)| {
-                let (ctx, tx) = (ctx.clone(), cpu_tx.clone());
+                let (ctx, tx, done) = (ctx.clone(), cpu_tx.clone(), lanes_done_tx.clone());
                 std::thread::Builder::new()
                     .name(format!("ps-scan-lane-{idx}"))
-                    .spawn_scoped(sc, move || run_lane(&ctx, idx, todo, tx))
+                    .spawn_scoped(sc, move || {
+                        run_lane(&ctx, idx, todo, tx);
+                        drop(done);
+                    })
             })
             .collect();
         drop(cpu_tx);
+        drop(lanes_done_tx);
 
-        // Sample throughput while the lanes run.
+        // Sample throughput while the lanes run, woken by the end of the last lane rather than polling for it: a
+        // cancel must not wait out a sampling sleep (on macOS one of 50 ms was seen to end 80-100 ms late).
         loop {
-            let running = lanes
-                .iter()
-                .any(|l| l.as_ref().is_ok_and(|h| !h.is_finished()));
             ctx.progress.sample();
-            if !running {
-                break;
+            match lanes_done.recv_timeout(SAMPLE_EVERY) {
+                Err(RecvTimeoutError::Disconnected) => break,
+                Ok(()) | Err(RecvTimeoutError::Timeout) => {}
             }
-            std::thread::sleep(Duration::from_millis(50));
         }
         for l in lanes.into_iter().flatten() {
             let _ = l.join();
@@ -899,7 +906,7 @@ fn run_lane(ctx: &Arc<RunCtx>, idx: usize, todo: Vec<Todo>, cpu_tx: Sender<CpuJo
                     break 'files;
                 }
                 evaluate(&mut readers);
-                match tx.send_timeout(item, POLL) {
+                match send_or_interrupt(&tx, item, &ctx.ctl, POLL) {
                     Ok(()) => break,
                     Err(SendTimeoutError::Timeout(back)) => item = back,
                     Err(SendTimeoutError::Disconnected(_)) => break 'files,
@@ -913,6 +920,57 @@ fn run_lane(ctx: &Arc<RunCtx>, idx: usize, todo: Vec<Todo>, cpu_tx: Sender<CpuJo
         }
     });
     ctx.progress.set_readers(idx, 0);
+}
+
+/// `tx.send_timeout(item, timeout)` that also ends, as a timeout, the moment the run is paused or cancelled: the
+/// caller's loop then reaches its checkpoint. A dispatcher or reader blocked on a full queue must not wait out its
+/// timeout: on macOS a 20 ms timeout was seen to end 30-90 ms late, most of a cancel's latency.
+fn send_or_interrupt<T>(
+    tx: &Sender<T>,
+    item: T,
+    ctl: &Control,
+    timeout: Duration,
+) -> Result<(), SendTimeoutError<T>> {
+    let interrupted = ctl.interrupted();
+    if ctl.state() != ControlState::Running {
+        return Err(SendTimeoutError::Timeout(item));
+    }
+    let mut sel = Select::new();
+    let send = sel.send(tx);
+    sel.recv(&interrupted);
+    match sel.select_timeout(timeout) {
+        Ok(op) if op.index() == send => op
+            .send(tx, item)
+            .map_err(|e| SendTimeoutError::Disconnected(e.into_inner())),
+        Ok(op) => {
+            let _ = op.recv(&interrupted);
+            Err(SendTimeoutError::Timeout(item))
+        }
+        Err(_) => Err(SendTimeoutError::Timeout(item)),
+    }
+}
+
+/// `rx.recv_timeout(timeout)` that also ends, as a timeout, the moment the run is paused or cancelled.
+fn recv_or_interrupt<T>(
+    rx: &Receiver<T>,
+    ctl: &Control,
+    timeout: Duration,
+) -> Result<T, RecvTimeoutError> {
+    let interrupted = ctl.interrupted();
+    if ctl.is_cancelled() {
+        return Err(RecvTimeoutError::Timeout);
+    }
+    let mut sel = Select::new();
+    let recv = sel.recv(rx);
+    sel.recv(&interrupted);
+    match sel.select_timeout(timeout) {
+        Ok(op) if op.index() == recv => op.recv(rx).map_err(|_| RecvTimeoutError::Disconnected),
+        Ok(op) => {
+            let _ = op.recv(&interrupted);
+            Err(RecvTimeoutError::Timeout)
+        }
+        Err(_) => Err(RecvTimeoutError::Timeout),
+    }
 }
 
 fn reader_loop(
@@ -932,10 +990,11 @@ fn reader_loop(
             if shared.dispatch_done.load(Ordering::Acquire) && rx.is_empty() {
                 break;
             }
-            std::thread::sleep(POLL);
+            // Woken early by a pause or cancel.
+            let _ = ctx.ctl.interrupted().recv_timeout(POLL);
             continue;
         }
-        match rx.recv_timeout(POLL) {
+        match recv_or_interrupt(rx, &ctx.ctl, POLL) {
             Ok(t) => process_file(ctx, idx, reader, shared, t, cpu_tx),
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
@@ -1846,7 +1905,7 @@ fn send_job(busy: &Busy<'_>, cpu_tx: &Sender<CpuJob>, mut job: CpuJob) {
         if busy.checkpoint().is_err() {
             return;
         }
-        match cpu_tx.send_timeout(job, POLL) {
+        match send_or_interrupt(cpu_tx, job, busy.control(), POLL) {
             Ok(()) => return,
             Err(SendTimeoutError::Timeout(j)) => job = j,
             Err(SendTimeoutError::Disconnected(_)) => return,
@@ -2226,7 +2285,7 @@ fn worker_loop(ctx: &RunCtx, rx: &Receiver<CpuJob>, tx: &Sender<Persist>) {
             // Queued jobs are dropped: their files stay `probed`.
             return;
         }
-        let job = match rx.recv_timeout(POLL) {
+        let job = match recv_or_interrupt(rx, &ctx.ctl, POLL) {
             Ok(j) => j,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,

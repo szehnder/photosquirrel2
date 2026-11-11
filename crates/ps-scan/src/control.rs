@@ -4,10 +4,16 @@
 //! between 1 MB read chunks: it returns at once while running, parks the thread on a condition variable while
 //! paused, and reports [`Cancelled`] once cancel was requested. Busy threads hold a [`Busy`] guard so the
 //! engine can tell when every reader and worker is idle (the pause/cancel latency measurement).
+//!
+//! A thread blocked on a channel selects on [`Control::interrupted`] as well, so a pause or cancel wakes it at
+//! once instead of at the end of its poll: on macOS a short timed wait often ends tens of milliseconds late (timer
+//! coalescing on a loaded machine), and a cancel went through a chain of such waits (lane dispatcher, readers,
+//! workers, the pipeline's sampler).
 
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::{Receiver, Sender};
 use parking_lot::{Condvar, Mutex};
 
 /// The run was cancelled; stop what you are doing.
@@ -35,17 +41,53 @@ const PAUSE: u8 = 1;
 const CANCEL: u8 = 2;
 
 /// The shared cancel token and pause gate of a run.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Control {
     state: AtomicU8,
     lock: Mutex<()>,
     cv: Condvar,
     busy: AtomicU32,
+    /// The current interrupt signal: [`Control::pause`] and [`Control::cancel`] drop its sender, which wakes every
+    /// thread selecting on its receiver, and put a new one in its place (none once cancelled).
+    interrupt: Mutex<(Option<Sender<()>>, Receiver<()>)>,
+}
+
+impl Default for Control {
+    fn default() -> Control {
+        let (tx, rx) = crossbeam_channel::bounded(0);
+        Control {
+            state: AtomicU8::new(RUN),
+            lock: Mutex::new(()),
+            cv: Condvar::new(),
+            busy: AtomicU32::new(0),
+            interrupt: Mutex::new((Some(tx), rx)),
+        }
+    }
 }
 
 impl Control {
     pub fn new() -> Control {
         Control::default()
+    }
+
+    /// A receiver that never yields a message and is disconnected at the next pause or cancel (at once when the
+    /// run is cancelled already). Take it before checking the state, then add it to a `crossbeam_channel::Select`:
+    /// a blocking channel wait then ends the moment the run is paused or cancelled, and the caller checks the state
+    /// again (a checkpoint). Take a new one for each wait.
+    pub fn interrupted(&self) -> Receiver<()> {
+        self.interrupt.lock().1.clone()
+    }
+
+    /// Wake every thread waiting on the current [`Control::interrupted`] receiver; the next waits get a new one,
+    /// or, once cancelled, one that is already disconnected.
+    fn interrupt(&self, renew: bool) {
+        let mut g = self.interrupt.lock();
+        if renew {
+            let (tx, rx) = crossbeam_channel::bounded(0);
+            *g = (Some(tx), rx);
+        } else {
+            g.0 = None;
+        }
     }
 
     pub fn state(&self) -> ControlState {
@@ -62,9 +104,14 @@ impl Control {
 
     /// Ask every thread to park at its next checkpoint. No effect once cancelled.
     pub fn pause(&self) {
-        let _ = self
+        if self
             .state
-            .compare_exchange(RUN, PAUSE, Ordering::AcqRel, Ordering::Acquire);
+            .compare_exchange(RUN, PAUSE, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            // After the state: a woken thread's checkpoint parks it.
+            self.interrupt(true);
+        }
     }
 
     /// Wake parked threads. No effect once cancelled.
@@ -82,6 +129,8 @@ impl Control {
     /// Stop the run: every checkpoint returns [`Cancelled`] from now on (parked threads wake up).
     pub fn cancel(&self) {
         self.state.store(CANCEL, Ordering::Release);
+        // After the state: a woken thread's checkpoint sees the cancel.
+        self.interrupt(false);
         let _g = self.lock.lock();
         self.cv.notify_all();
     }
@@ -137,7 +186,12 @@ pub struct Busy<'a> {
     ctl: &'a Control,
 }
 
-impl Busy<'_> {
+impl<'a> Busy<'a> {
+    /// The run's control.
+    pub fn control(&self) -> &'a Control {
+        self.ctl
+    }
+
     /// Like [`Control::checkpoint`], but the thread does not count as busy while parked.
     pub fn checkpoint(&self) -> Result<(), Cancelled> {
         match self.ctl.state.load(Ordering::Acquire) {
@@ -191,6 +245,50 @@ mod tests {
         // Cancel is final.
         c.resume();
         assert!(c.is_cancelled());
+    }
+
+    /// Wait on the interrupt signal in another thread; how the wait ended and how long it took.
+    fn wait_interrupt(c: &Arc<Control>) -> std::thread::JoinHandle<(bool, Duration)> {
+        let rx = c.interrupted();
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let r = rx.recv_timeout(Duration::from_secs(30));
+            (
+                r == Err(crossbeam_channel::RecvTimeoutError::Disconnected),
+                t0.elapsed(),
+            )
+        })
+    }
+
+    /// A thread blocked on a channel wakes at a pause or a cancel, not at the end of its timeout.
+    #[test]
+    fn pause_and_cancel_disconnect_the_interrupt_signal() {
+        let c = Arc::new(Control::new());
+        assert_eq!(
+            c.interrupted().try_recv(),
+            Err(crossbeam_channel::TryRecvError::Empty)
+        );
+        let t = wait_interrupt(&c);
+        std::thread::sleep(Duration::from_millis(20));
+        c.pause();
+        let (woken, waited) = t.join().expect("join");
+        assert!(woken && waited < Duration::from_secs(10), "{waited:?}");
+        // A wait that starts while paused (or after a resume) is not woken by the earlier pause.
+        assert_eq!(
+            c.interrupted().try_recv(),
+            Err(crossbeam_channel::TryRecvError::Empty)
+        );
+        c.resume();
+        let t = wait_interrupt(&c);
+        std::thread::sleep(Duration::from_millis(20));
+        c.cancel();
+        let (woken, waited) = t.join().expect("join");
+        assert!(woken && waited < Duration::from_secs(10), "{waited:?}");
+        // Once cancelled, every new wait ends at once.
+        assert_eq!(
+            c.interrupted().try_recv(),
+            Err(crossbeam_channel::TryRecvError::Disconnected)
+        );
     }
 
     #[test]
