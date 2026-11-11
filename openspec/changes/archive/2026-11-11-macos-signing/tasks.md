@@ -108,7 +108,9 @@ are no app code, settings or catalog changes. Owner steps need only a browser an
   `sign_macos` is green, including signing and verification (run 42603578237).
   Done: CI green on `1fea2f2` (Linux full CI, macOS, Windows, oldest libheif); release run 42707503988 with
   `sign_macos` green: notarized app and DMG, `verify-macos` passed, 8 packages and the throwaway-key manifest.
-- [ ] 5.3 `cargo xtask ci` passes.
+- [x] 5.3 `cargo xtask ci` passes.
+  Done: the Linux CI job runs `cargo xtask ci`; it is green on `6efca72` and `2485947` (merged as PR #1), whose
+  release run 42919923431 published `v0.4.0-rc.1` with the signed and notarized macOS packages.
 - [x] 5.4 Gate review by a fresh agent that did not write the code. It covers in particular: secrets referenced only
   in `sign-macos`, no cargo in that job, clean-up on every outcome, the Team ID pinned, and the release unable to
   publish unsigned macOS packages for a tag.
