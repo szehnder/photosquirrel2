@@ -1,6 +1,8 @@
 //! Corrupt and truncated JPEGs (ADR-0055): the fast mozjpeg path must not turn them into "successful" grey-padded
 //! decodes; they fail exactly as jpeg-decoder fails, as before ADR-0054. Intact files keep the fast path.
 
+use std::cell::Cell;
+
 use ps_fixtures::media as fx;
 use ps_media::decode::{self, DecodeError, decode_jpeg};
 use ps_media::{decode_for_analysis, probe_bytes};
@@ -190,4 +192,73 @@ fn large_progressive_jpegs_are_serialized_or_refused() {
         decode::progressive_coefficient_bytes(side, side, 1) <= decode::PROGRESSIVE_SERIAL_BYTES
     );
     assert_eq!(decode::jpeg_memory_plan(side, side, 1, true), Parallel);
+}
+
+/// A pause or cancel reaches a JPEG decode: the DCT-scaled decode checks every 16 output rows. Unstopped, it decodes
+/// exactly as before; stopped, it ends with `Cancelled` and no fallback decoder runs after it.
+#[test]
+fn a_stop_check_ends_a_jpeg_decode_between_rows() {
+    for progressive in [false, true] {
+        let j = encode(progressive, (2, 2), 9);
+        let (plain, denom) = decode_jpeg(&j, 512).expect("decode");
+        assert_eq!(denom, 4, "progressive {progressive}");
+        let calls = Cell::new(0usize);
+        let count = || {
+            calls.set(calls.get() + 1);
+            false
+        };
+        let (same, d) = decode::decode_jpeg_with(&j, 512, &count).expect("decode");
+        assert_eq!(
+            (same.width, same.height, d),
+            (plain.width, plain.height, denom)
+        );
+        assert!(
+            same.data == plain.data,
+            "progressive {progressive}: same pixels"
+        );
+        // One check before the decode, then one per 16 of its rows.
+        let rows = H.div_ceil(denom) as usize;
+        assert_eq!(
+            calls.get(),
+            1 + rows.div_ceil(16),
+            "progressive {progressive}"
+        );
+        for at in [1, 2, 10] {
+            let n = Cell::new(0usize);
+            let stop = || {
+                n.set(n.get() + 1);
+                n.get() >= at
+            };
+            let r = decode::decode_jpeg_with(&j, 512, &stop);
+            assert!(
+                matches!(r, Err(DecodeError::Cancelled)),
+                "stop at {at}: {:?}",
+                r.err()
+            );
+            assert_eq!(n.get(), at, "nothing decoded after the stop");
+        }
+    }
+}
+
+/// The analysis of a JPEG checks again between its decode and the embedded-preview decode.
+#[test]
+fn a_stop_check_ends_a_jpeg_analysis_after_its_decode() {
+    let j = encode(false, (2, 2), 11);
+    let p = probe_bytes(&j, j.len() as u64, None);
+    let calls = Cell::new(0usize);
+    let count = || {
+        calls.set(calls.get() + 1);
+        false
+    };
+    ps_media::analyze_still_with(&j, &p, &ps_media::Decoders::none(), &count).expect("analysis");
+    let last = calls.get();
+    assert!(last >= 3, "{last}");
+    let n = Cell::new(0usize);
+    let stop = || {
+        n.set(n.get() + 1);
+        n.get() >= last
+    };
+    let r = ps_media::analyze_still_with(&j, &p, &ps_media::Decoders::none(), &stop);
+    assert!(matches!(r, Err(DecodeError::Cancelled)), "{:?}", r.err());
+    assert_eq!(n.get(), last);
 }

@@ -321,8 +321,9 @@ pub fn analyze_still(
     analyze_still_with(bytes, probe, decoders, &|| false)
 }
 
-/// [`analyze_still`] with a stop check, called before each strip or tile of a TIFF decode (the scanner's
-/// pause and cancel checkpoint): `Err(DecodeError::Cancelled)` once it returns true.
+/// [`analyze_still`] with a stop check (the scanner's pause and cancel checkpoint), called before each strip or
+/// tile of a TIFF decode, every few rows of a JPEG decode and before the embedded-preview decode:
+/// `Err(DecodeError::Cancelled)` once it returns true.
 pub fn analyze_still_with(
     bytes: &[u8],
     probe: &ProbeRecord,
@@ -349,6 +350,10 @@ pub fn analyze_still_held(
         stop,
         hold,
     )?;
+    // The embedded preview is a second decode: a pause or cancel during the first must not wait for it.
+    if stop() {
+        return Err(DecodeError::Cancelled);
+    }
     let colour = ColourSource::of(bytes, probe);
     if usable_preview(probe)
         && probe.format != Some(Format::Heic)

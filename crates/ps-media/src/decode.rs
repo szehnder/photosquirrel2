@@ -136,7 +136,22 @@ pub fn choose_denominator(w: u32, h: u32, min_long: u32) -> u32 {
 
 /// Decode a JPEG to the smallest DCT scale whose long edge is >= `min_long` (unoriented).
 pub fn decode_jpeg(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), DecodeError> {
-    contain(|| decode_jpeg_inner(bytes, min_long))
+    decode_jpeg_with(bytes, min_long, &|| false)
+}
+
+/// Rows a DCT-scaled JPEG decode reads between two calls of its stop check.
+const JPEG_ROWS_PER_STOP_CHECK: usize = 16;
+
+/// [`decode_jpeg`] with a stop check, so a scan's pause or cancel reaches a JPEG decode: it is called before each
+/// decoder pass and, in the DCT-scaled decode the analysis uses, every [`JPEG_ROWS_PER_STOP_CHECK`] output rows.
+/// Once it returns true the decode ends with [`DecodeError::Cancelled`]. A progressive file's entropy decoding
+/// happens before the first row and is not interrupted; full-size and fallback decodes run in one call.
+pub fn decode_jpeg_with(
+    bytes: &[u8],
+    min_long: u32,
+    stop: &dyn Fn() -> bool,
+) -> Result<(RgbImage, u32), DecodeError> {
+    contain(|| decode_jpeg_inner(bytes, min_long, stop))
         .unwrap_or_else(|| Err(DecodeError::Failed("JPEG decoder failure".into())))
 }
 
@@ -187,7 +202,11 @@ pub fn jpeg_memory_plan(
 /// Held for the whole of a [`JpegMemoryPlan::Serialized`] decode.
 static LARGE_PROGRESSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), DecodeError> {
+fn decode_jpeg_inner(
+    bytes: &[u8],
+    min_long: u32,
+    stop: &dyn Fn() -> bool,
+) -> Result<(RgbImage, u32), DecodeError> {
     let mut dec = jpeg_decoder::Decoder::new(Cursor::new(bytes));
     dec.set_max_decoding_buffer_size(MAX_DECODE_BYTES);
     dec.read_info()
@@ -220,6 +239,9 @@ fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), Dec
         }
     };
     let denom = choose_denominator(w, h, min_long);
+    if stop() {
+        return Err(DecodeError::Cancelled);
+    }
     if denom == 1
         && matches!(
             info.pixel_format,
@@ -237,12 +259,19 @@ fn decode_jpeg_inner(bytes: &[u8], min_long: u32) -> Result<(RgbImage, u32), Dec
             jpeg_decoder::PixelFormat::RGB24 | jpeg_decoder::PixelFormat::L8
         )
         && (w as usize) * (h as usize) * 3 <= MAX_DECODE_BYTES
-        && let Ok(img) = decode_mozjpeg_scaled(bytes, denom)
-        && (img.width, img.height) == (w.div_ceil(denom), h.div_ceil(denom))
     {
         // DCT-scaled decode: libjpeg-turbo's entropy decoder and reduced IDCTs (ADR-0054). Corrupt or
         // truncated data makes it fail (ADR-0055), and jpeg-decoder below decides, as before mozjpeg.
-        return Ok((img, denom));
+        match decode_mozjpeg_scaled_with(bytes, denom, stop) {
+            Ok(img) if (img.width, img.height) == (w.div_ceil(denom), h.div_ceil(denom)) => {
+                return Ok((img, denom));
+            }
+            Err(DecodeError::Cancelled) => return Err(DecodeError::Cancelled),
+            _ => {}
+        }
+    }
+    if stop() {
+        return Err(DecodeError::Cancelled);
     }
     let (sw, sh) = if denom > 1 {
         dec.scale(w.div_ceil(denom) as u16, h.div_ceil(denom) as u16)
@@ -337,8 +366,19 @@ extern "C-unwind" fn strict_emit_message(
 /// check intact files take this path.
 #[doc(hidden)]
 pub fn decode_mozjpeg_scaled(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeError> {
+    decode_mozjpeg_scaled_with(bytes, denom, &|| false)
+}
+
+/// [`decode_mozjpeg_scaled`] that calls `stop` every [`JPEG_ROWS_PER_STOP_CHECK`] output rows and ends with
+/// [`DecodeError::Cancelled`] once it returns true (dropping the decompressor mid-image is allowed by libjpeg).
+#[doc(hidden)]
+pub fn decode_mozjpeg_scaled_with(
+    bytes: &[u8],
+    denom: u32,
+    stop: &dyn Fn() -> bool,
+) -> Result<RgbImage, DecodeError> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        mozjpeg_strict(bytes, denom)
+        mozjpeg_strict(bytes, denom, stop)
     })) {
         Ok(r) => r,
         Err(stop) => Err(DecodeError::Failed(
@@ -352,7 +392,11 @@ pub fn decode_mozjpeg_scaled(bytes: &[u8], denom: u32) -> Result<RgbImage, Decod
     }
 }
 
-fn mozjpeg_strict(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeError> {
+fn mozjpeg_strict(
+    bytes: &[u8],
+    denom: u32,
+    stop: &dyn Fn() -> bool,
+) -> Result<RgbImage, DecodeError> {
     let failed = |e: std::io::Error| DecodeError::Failed(e.to_string());
     let mut d = mozjpeg::Decompress::builder()
         .with_err(strict_error_mgr())
@@ -361,9 +405,20 @@ fn mozjpeg_strict(bytes: &[u8], denom: u32) -> Result<RgbImage, DecodeError> {
     d.scale((8 / denom.clamp(1, 8)) as u8);
     let mut started = d.rgb().map_err(failed)?;
     let (width, height) = (started.width() as u32, started.height() as u32);
-    let data = started.read_scanlines::<u8>().map_err(failed)?;
-    if data.len() != width as usize * height as usize * 3 {
-        return Err(DecodeError::Failed("short JPEG decode".into()));
+    let row = width as usize * 3;
+    let len = row * height as usize;
+    let mut data = Vec::new();
+    data.try_reserve_exact(len)
+        .map_err(|_| DecodeError::TooLarge(format!("{width}x{height} JPEG decode")))?;
+    data.resize(len, 0u8);
+    for rows in data.chunks_mut(row * JPEG_ROWS_PER_STOP_CHECK) {
+        if stop() {
+            return Err(DecodeError::Cancelled);
+        }
+        let read = started.read_scanlines_into::<u8>(rows).map_err(failed)?;
+        if read.len() != rows.len() {
+            return Err(DecodeError::Failed("short JPEG decode".into()));
+        }
     }
     // Reads up to EOI: a missing EOI or trailing scan data warns, and so fails.
     started.finish().map_err(failed)?;
@@ -573,8 +628,9 @@ pub fn decode_scaled(
     decode_scaled_with(bytes, probe, min_long, decoders, &|| false)
 }
 
-/// [`decode_scaled`] with a stop check: a TIFF decode calls `stop` before each strip or tile and ends with
-/// [`DecodeError::Cancelled`] once it returns true (other formats decode in one bounded call and ignore it).
+/// [`decode_scaled`] with a stop check: a TIFF decode calls `stop` before each strip or tile and a JPEG decode
+/// every few rows ([`decode_jpeg_with`]), and either ends with [`DecodeError::Cancelled`] once it returns true
+/// (other formats decode in one bounded call and ignore it).
 pub fn decode_scaled_with(
     bytes: &[u8],
     probe: &ProbeRecord,
@@ -600,7 +656,7 @@ pub fn decode_scaled_held(
         .ok_or_else(|| DecodeError::Unsupported("unknown format".into()))?;
     let (image, denom, source, orient) = match format {
         Format::Jpeg => {
-            let (i, d) = decode_jpeg(bytes, min_long)?;
+            let (i, d) = decode_jpeg_with(bytes, min_long, stop)?;
             (i, d, DecodeSource::Main, true)
         }
         Format::Tiff => (
