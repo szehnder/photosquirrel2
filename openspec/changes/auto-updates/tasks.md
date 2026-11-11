@@ -319,6 +319,11 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   pre-releases), so an installed `rc.1` finds `rc.2` through the real path, and the `rc.2` run's round trip updates
   the published `rc.1` for real on all three OSes; a candidate's manifest notes come from "What's new in 0.4.0"
   (docs/releasing.md "Release candidates").
+  `v0.4.0-rc.1` was published on 2026-11-11 by release run 42919923431 (tag on `6efca72`): 8 packages with
+  checksums, the macOS app and DMG signed and notarized, and `update-manifest.json` signed by the release key
+  (`minisign -V` with `packaging/update-key.pub`: "photosquirrel-update 0.4.0-rc.1"). It is the latest release.
+  Its round trip found no earlier release with an updater (0.3.1 has none), as expected. Still open: install it,
+  cut `rc.2`, and see `rc.1` update itself (in CI through `rc.2`'s round trip, and on the owner's machines).
 - [ ] 10.2 Owner: on the reference desktop, `cargo xtask bench --check`. Verify: every budget passes, and
   `cold-start`, `idle-rss` and `first-gallery-frame` are within 5% of their baselines.
 
