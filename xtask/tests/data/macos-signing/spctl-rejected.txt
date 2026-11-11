@@ -1,0 +1,3 @@
+/Users/runner/work/_temp/signed/PhotoSquirrel.app: rejected
+source=Unnotarized Developer ID
+origin=Developer ID Application: Sean Zehnder (MD988WZMG9)

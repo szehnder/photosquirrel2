@@ -31,6 +31,8 @@ actions!(
         ToggleTheme,
         /// "Why no preview?" for the selected Library item with a placeholder (Shift+I, ADR-0109).
         ShowPreviewHelp,
+        /// One update check now, whatever the update mode (spec `app-updates`, "Off mode and manual checks").
+        CheckForUpdates,
         Quit,
     ]
 );

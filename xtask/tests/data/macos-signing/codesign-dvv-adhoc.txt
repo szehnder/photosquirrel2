@@ -1,0 +1,9 @@
+Executable=/Users/runner/work/_temp/unsigned/PhotoSquirrel.app/Contents/MacOS/photosquirrel
+Identifier=photosquirrel-5f1c9a3e8b2d7c40
+Format=app bundle with Mach-O universal (x86_64 arm64)
+CodeDirectory v=20400 size=184001 flags=0x20002(adhoc,linker-signed) hashes=5745+0 location=embedded
+Signature=adhoc
+Info.plist=not bound
+TeamIdentifier=not set
+Sealed Resources=none
+Internal requirements=none

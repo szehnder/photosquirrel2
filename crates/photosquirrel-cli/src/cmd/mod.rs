@@ -11,6 +11,7 @@ pub mod groups;
 pub mod previews;
 pub mod scan;
 pub mod sources;
+pub mod update;
 
 use std::path::PathBuf;
 

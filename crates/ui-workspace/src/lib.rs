@@ -36,6 +36,7 @@ pub mod settings_ai;
 pub mod settings_window;
 pub mod shell;
 pub mod startup;
+pub mod updates_ui;
 pub mod views;
 pub mod widgets;
 
@@ -166,6 +167,12 @@ fn register_commands(cx: &mut App) {
             .keywords(&["appearance", "mode"]),
         CommandMeta::new("Preferences", "Open Settings", OpenSettings)
             .keywords(&["preferences", "options"]),
+        CommandMeta::new("Application", "Check for Updates…", CheckForUpdates).keywords(&[
+            "update",
+            "upgrade",
+            "new version",
+            "release",
+        ]),
         CommandMeta::new("Application", "Show All Commands", OpenCommandPalette)
             .keywords(&["palette"]),
         CommandMeta::new("Application", "Quit PhotoSquirrel", Quit).keywords(&["exit", "close"]),

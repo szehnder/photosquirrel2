@@ -3,11 +3,13 @@
 mod bench;
 mod doctor;
 mod layering;
+mod macos_signing;
 mod package;
 mod screenshot;
 mod spec_coverage;
 mod timing;
 mod tokens;
+mod update_manifest;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -49,6 +51,40 @@ enum Cmd {
         /// Run the pass this many times (stops at the first failure).
         #[arg(long, default_value_t = 1)]
         runs: u32,
+    },
+    /// Check the signed, notarized and stapled macOS app and DMG, and rebuild the macOS archive from the signed app
+    /// (ADR-0128; the release workflow's `verify-macos` job).
+    MacosSigned {
+        /// The folder `packaging/macos/sign.sh` wrote (PhotoSquirrel.app.zip and the DMG).
+        #[arg(long)]
+        signed: PathBuf,
+        /// The unsigned app (`ditto` zip) the package job built.
+        #[arg(long)]
+        unsigned_app: PathBuf,
+        /// The Team ID the signature must carry (the repository variable APPLE_TEAM_ID).
+        #[arg(long)]
+        team_id: String,
+        /// The folder to write the signed macOS packages and their checksums to.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Write and sign a release's update-manifest.json, and/or check it against public keys (ADR-0125).
+    UpdateManifest {
+        /// The folder holding the eight packages; the manifest is written there.
+        #[arg(long)]
+        packages: PathBuf,
+        /// The release tag, `v<workspace version>`.
+        #[arg(long)]
+        tag: String,
+        /// Write the manifest's exact text to this file, to be signed by `packaging/sign-update-manifest.sh`.
+        #[arg(long, value_name = "FILE")]
+        unsigned_out: Option<PathBuf>,
+        /// Local trials: write an envelope signed with a throwaway key, and its public key to this file.
+        #[arg(long, value_name = "FILE")]
+        throwaway_key: Option<PathBuf>,
+        /// Check the manifest against these public key files (repeatable).
+        #[arg(long = "check", value_name = "PUBKEY")]
+        check: Vec<PathBuf>,
     },
     /// Fetch and check the AppImage runtime's pinned source archives into a folder (the release attaches them).
     RuntimeSources {
@@ -130,6 +166,26 @@ fn main() -> Result<()> {
         ),
         Cmd::Timing { runs } => timing::run(&root, runs),
         Cmd::RuntimeSources { out } => package::runtime_sources(&root, &out),
+        Cmd::UpdateManifest {
+            packages,
+            tag,
+            unsigned_out,
+            throwaway_key,
+            check,
+        } => update_manifest::run(
+            &root,
+            &packages,
+            &tag,
+            unsigned_out.as_deref(),
+            throwaway_key.as_deref(),
+            &check,
+        ),
+        Cmd::MacosSigned {
+            signed,
+            unsigned_app,
+            team_id,
+            out,
+        } => macos_signing::run(&root, &signed, &unsigned_app, &team_id, &out),
         Cmd::Layering => layering::check(&root),
         Cmd::Tokens => tokens::check(&root),
         Cmd::SpecCoverage { enforce } => spec_coverage::run(&root, enforce),

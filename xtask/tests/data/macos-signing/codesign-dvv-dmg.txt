@@ -1,0 +1,14 @@
+Executable=/Users/runner/work/photosquirrel2/photosquirrel2/signed/PhotoSquirrel-0.3.1-macos-universal.dmg
+Identifier=PhotoSquirrel-0.3.1-macos-universal
+Format=disk image
+CodeDirectory v=20200 size=323 flags=0x0(none) hashes=1+6 location=embedded
+Signature size=9045
+Authority=Developer ID Application: Sean Zehnder (MD988WZMG9)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+Timestamp=Nov 9, 2026 at 10:23:39 PM
+Notarization Ticket=stapled
+Info.plist=not bound
+TeamIdentifier=MD988WZMG9
+Sealed Resources=none
+Internal requirements count=1 size=196

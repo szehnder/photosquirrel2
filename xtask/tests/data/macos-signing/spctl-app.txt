@@ -1,0 +1,3 @@
+/Users/runner/work/photosquirrel2/photosquirrel2/target/tmp/macos-signed-1338/signed/PhotoSquirrel.app: accepted
+source=Notarized Developer ID
+origin=Developer ID Application: Sean Zehnder (MD988WZMG9)

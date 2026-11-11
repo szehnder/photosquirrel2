@@ -12,6 +12,7 @@ mod bench;
 mod gpu;
 mod measure;
 mod synthetic;
+mod updates;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,6 +85,10 @@ struct Args {
     /// recent finds use the catalog's thumbnails when there is one.
     #[arg(long, value_name = "MODE", hide = true)]
     demo_scan: Option<String>,
+    /// Check for a newer version, download and verify it, hand it to the installer and exit (the release round
+    /// trip, `packaging/update-roundtrip.sh`). The install happens once this process has exited.
+    #[arg(long, hide = true)]
+    update_now: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -107,6 +112,16 @@ impl From<ThemeArg> for ThemeSetting {
 struct DeferredCommands(Vec<String>);
 
 impl Global for DeferredCommands {}
+
+/// A trial start of a newly installed version, finished at the first frame: the trial is recorded, then the
+/// catalog opens (and migrates) and warms up (ADR-0126).
+struct TrialPending {
+    dir: ps_service::updates::UpdateDir,
+    library: Option<Arc<ps_service::library::Library>>,
+    warm: Option<ps_model::library::GalleryQuery>,
+}
+
+impl Global for TrialPending {}
 
 /// Window geometry in logical pixels.
 const DEFAULT_WINDOW: [f32; 2] = [1440.0, 900.0];
@@ -149,6 +164,13 @@ fn main() {
         return;
     }
     let data_dir = data_dir(&args);
+    // Every program of this installation holds its running lock, so an install waits for all of them (ADR-0126).
+    let _running = ps_service::updates::hold_running();
+    let updates = updates::start(data_dir.as_deref());
+    if args.update_now {
+        updates::update_now(updates.as_ref());
+    }
+    let trial = updates.as_ref().is_some_and(|u| u.trial);
     let settings = SettingsStore::resolve(args.config_dir.as_deref(), args.data_dir.as_deref());
     let saved_window = data_dir
         .as_deref()
@@ -160,9 +182,15 @@ fn main() {
     let has_catalog = data_dir
         .as_deref()
         .is_some_and(|d| d.join(ps_service::scan::CATALOG_FILE).exists());
+    let mut library = None;
     let backend: Arc<dyn LibraryBackend> = match &data_dir {
         Some(dir) => {
             let backend = Arc::new(CatalogBackend::new(dir));
+            library = Some(backend.library().clone());
+            if trial {
+                // A trial start: nothing opens the catalog for writing before the first frame.
+                backend.defer_open();
+            }
             if let Some(n) = args.demo_ai_insights {
                 match backend.catalog().map_err(|e| e.to_string()).and_then(|c| {
                     // A demo library (`photosquirrel-cli demo`) keeps its corpus beside the catalog: each
@@ -179,7 +207,7 @@ fn main() {
                     Err(e) => log::error!("demo AI insights: {e}"),
                 }
             }
-            if has_catalog {
+            if has_catalog && !trial {
                 // Open the catalog and run the first queries while the window is created.
                 backend.warm(startup_filters(&args).query());
             }
@@ -223,6 +251,20 @@ fn main() {
                 cx,
             );
             ui_workspace::motion::watch_os_preference(cx);
+            if let Some(u) = &updates {
+                if let Some(lib) = &library {
+                    u.service
+                        .set_busy_probe(ps_service::updates::busy_probe(lib.clone()));
+                }
+                ui_workspace::updates_ui::install(u.service.clone(), u.mode.clone(), cx);
+                if u.trial {
+                    cx.set_global(TrialPending {
+                        dir: u.service.dir().clone(),
+                        library: library.clone(),
+                        warm: has_catalog.then(|| startup_filters(&args).query()),
+                    });
+                }
+            }
             if let Some(scans) = demo_scans.clone() {
                 let thumbs = Arc::new(ui_workspace::scan_backend::DemoThumbs::over(
                     backend.clone().gallery(),
@@ -231,7 +273,7 @@ fn main() {
             }
             ui_workspace::views::library::StartupFilters::set(cx, startup_filters(&args));
             // An existing library: the first frame may wait (bounded) for the gallery to be ready.
-            if has_catalog {
+            if has_catalog && !trial {
                 ui_workspace::startup::StartupGrace::begin(
                     cx,
                     ui_workspace::startup::LIBRARY_GRACE,
@@ -351,6 +393,19 @@ fn open_main_window(
         window.on_next_frame(move |window, cx| {
             log::info!("first frame rendered");
             ui_workspace::startup::StartupGrace::end(cx);
+            if let Some(t) = cx.try_global::<TrialPending>() {
+                let (dir, library, warm) = (t.dir.clone(), t.library.clone(), t.warm.clone());
+                cx.remove_global::<TrialPending>();
+                std::thread::spawn(move || {
+                    ps_service::updates::trial_succeeded(&dir);
+                    if let Some(library) = library {
+                        library.allow_open();
+                        if let Some(query) = warm {
+                            library.warm(query);
+                        }
+                    }
+                });
+            }
             if measure_startup {
                 measure::report("cold-start", measure::since_start_ms(), "ms");
                 cx.quit();

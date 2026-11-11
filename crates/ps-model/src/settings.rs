@@ -15,8 +15,9 @@ use crate::ClassifierSettings;
 /// Current `settings_version`. Bump with a migration in `ps-service::settings` when a field changes meaning.
 /// Version 2 (ADR-0047): hosted consent is `ai.consent`, bound to a provider and a host; version 1's
 /// `ai.hosted_consent = true` is ignored (consent must be given again). Version 3 (ADR-0052):
-/// `scanning.include_hidden` defaults to on; version 2's value was never honoured and becomes `true`.
-pub const SETTINGS_VERSION: u32 = 3;
+/// `scanning.include_hidden` defaults to on; version 2's value was never honoured and becomes `true`. Version 4
+/// (ADR-0124): `[updates]`, whose mode stays undecided until the user answers the update question.
+pub const SETTINGS_VERSION: u32 = 4;
 
 /// Everything the user can set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +29,7 @@ pub struct Settings {
     pub scanning: Scanning,
     pub ai: Ai,
     pub export: Export,
+    pub updates: Updates,
 }
 
 impl Default for Settings {
@@ -39,6 +41,7 @@ impl Default for Settings {
             scanning: Scanning::default(),
             ai: Ai::default(),
             export: Export::default(),
+            updates: Updates::default(),
         }
     }
 }
@@ -434,6 +437,102 @@ impl Default for Export {
     }
 }
 
+/// Whether PhotoSquirrel checks for and installs updates (ADR-0124, spec `app-updates`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateMode {
+    /// The user has not answered the update question: nothing is ever sent.
+    #[default]
+    Undecided,
+    /// Check daily, download in the background, install on quit.
+    Automatic,
+    /// Check daily and say so; download and install only when asked.
+    Notify,
+    /// Never check on its own ("Check for updates" still works).
+    Off,
+}
+
+impl UpdateMode {
+    pub const CHOICES: [UpdateMode; 3] =
+        [UpdateMode::Automatic, UpdateMode::Notify, UpdateMode::Off];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            UpdateMode::Undecided => "undecided",
+            UpdateMode::Automatic => "automatic",
+            UpdateMode::Notify => "notify",
+            UpdateMode::Off => "off",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UpdateMode::Undecided => "Not chosen yet",
+            UpdateMode::Automatic => "Automatic",
+            UpdateMode::Notify => "Tell me",
+            UpdateMode::Off => "Off",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        [
+            UpdateMode::Undecided,
+            UpdateMode::Automatic,
+            UpdateMode::Notify,
+            UpdateMode::Off,
+        ]
+        .into_iter()
+        .find(|m| m.id() == id)
+    }
+
+    /// Whether scheduled checks run (a manual "Check for updates" always may).
+    pub fn checks(self) -> bool {
+        matches!(self, UpdateMode::Automatic | UpdateMode::Notify)
+    }
+}
+
+/// `[updates]`. The mode is read leniently: an unknown value fails validation for that key alone and behaves as
+/// undecided, so one bad value does not send the whole file to corrupt-file recovery.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Updates {
+    pub mode: UpdateMode,
+    /// How often the one-time update banner was closed without an answer (after 3, the mode becomes off).
+    pub prompt_dismissals: u32,
+    /// The unknown mode the file named, if any (never written back).
+    #[serde(skip)]
+    pub invalid_mode: Option<String>,
+}
+
+impl Updates {
+    /// Choose a mode; an unknown mode read from the file is forgotten.
+    pub fn set_mode(&mut self, mode: UpdateMode) {
+        self.mode = mode;
+        self.invalid_mode = None;
+    }
+}
+
+impl<'de> Deserialize<'de> for Updates {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Raw {
+            mode: Option<String>,
+            prompt_dismissals: u32,
+        }
+        let raw = Raw::deserialize(d)?;
+        let (mode, invalid_mode) = match raw.mode.as_deref().map(|m| (m, UpdateMode::from_id(m))) {
+            None => (UpdateMode::Undecided, None),
+            Some((_, Some(mode))) => (mode, None),
+            Some((other, None)) => (UpdateMode::Undecided, Some(other.to_owned())),
+        };
+        Ok(Self {
+            mode,
+            prompt_dismissals: raw.prompt_dismissals,
+            invalid_mode,
+        })
+    }
+}
+
 /// One invalid value: the setting's key (dotted path, e.g. `scanning.preview_cache_gb`) and a message for the
 /// user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -516,6 +615,12 @@ impl Settings {
             err(
                 "ai.request_timeout_s",
                 "The request timeout must be between 10 and 3600 seconds.".into(),
+            );
+        }
+        if let Some(mode) = &self.updates.invalid_mode {
+            err(
+                "updates.mode",
+                format!("Unknown update mode {mode:?}: use automatic, notify or off."),
             );
         }
         if self.ai.requests_per_minute == Some(0) {

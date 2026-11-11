@@ -1,0 +1,2 @@
+Processing: /Users/runner/work/photosquirrel2/photosquirrel2/signed/PhotoSquirrel-0.3.1-macos-universal.dmg
+The validate action worked!

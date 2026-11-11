@@ -77,6 +77,8 @@ struct DoctorOut {
     power: Power,
     /// `scanning.scan_new_sources`: the app starts a source's scan as soon as it is added (`sources add` never does).
     scan_new_sources: bool,
+    /// The update mode, this installation and the last check (spec `cli` "Doctor report"; no network).
+    updates: Option<super::update::StatusOut>,
     network_used: bool,
 }
 
@@ -155,6 +157,9 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             }
         },
         scan_new_sources: settings.scanning.scan_new_sources,
+        updates: super::update::status_out(ctx)
+            .map_err(|e| log::warn!("update state: {e:#}"))
+            .ok(),
         network_used: false,
     };
     emit(ctx.json, "doctor", &out, |o| {
@@ -222,6 +227,17 @@ pub fn run(ctx: &Ctx) -> Result<()> {
                 ""
             }
         );
+        if let Some(u) = &o.updates {
+            println!(
+                "updates:     {} ({}{}); last check: {}",
+                u.mode,
+                u.kind,
+                u.cannot_install
+                    .as_deref()
+                    .map_or(String::new(), |r| format!(", does not update itself: {r}")),
+                u.last_check.as_deref().unwrap_or("never")
+            );
+        }
         let p = &o.power;
         println!(
             "power:       {}, {}; pause scans on battery {}",

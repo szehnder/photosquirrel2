@@ -1160,6 +1160,7 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
             eprintln!("{exe} imports: {}", imports.join(", "));
         }
     }
+    check_update_keys(root, &bins, os, opts.tag.is_some())?;
     let runtime = if os == Os::Linux {
         Some(RuntimePin::load(root)?)
     } else {
@@ -1219,6 +1220,13 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
         written.push(name);
     }
 
+    if os == Os::Macos {
+        let dmg = out.join(artifact_name(&version, os, &arch, Kind::Dmg));
+        let name = app_archive_name(&version);
+        app_archive_from_dmg(&dmg, &out.join(&name), &staging)?;
+        written.push(name);
+    }
+
     for name in &written {
         let bytes = fs::read(out.join(name))?;
         fs::write(
@@ -1238,6 +1246,8 @@ fn build(extra: &[&str]) -> Result<()> {
     crate::run(
         "build the dist profile",
         Command::new("cargo")
+            // Marks a release build: only these check for updates (ADR-0127).
+            .env("PHOTOSQUIRREL_RELEASE_BUILD", "1")
             .args([
                 "build",
                 "--profile",
@@ -1682,7 +1692,7 @@ fn walk(dir: &Path) -> Result<Vec<String>> {
 /// The plain archive: a folder with both binaries, the licence, the third-party notices and the README, then
 /// the smoke test on the binary that went in.
 #[allow(clippy::too_many_arguments)]
-fn archive(
+pub(crate) fn archive(
     root: &Path,
     os: Os,
     bins: &Path,
@@ -1871,7 +1881,117 @@ fn heif_smoke(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn workspace_version(root: &Path) -> Result<String> {
+/// The macOS update payload: the `.app` bundle the DMG holds, as a `.tar.gz` (ADR-0126).
+pub fn app_archive_name(version: &str) -> String {
+    format!("{PRODUCT}-{version}-macos-universal.app.tar.gz")
+}
+
+/// `tar -czf <dest> -C <parent of app> <app name>`: the bundle with its symlinks and modes.
+pub fn tar_app(app: &Path, dest: &Path) -> Result<()> {
+    let parent = app.parent().context("the app has no folder")?;
+    let name = app.file_name().context("the app has no name")?;
+    crate::run(
+        "archive the app bundle",
+        Command::new("tar")
+            .arg("-czf")
+            .arg(dest)
+            .arg("-C")
+            .arg(parent)
+            .arg(name),
+    )
+}
+
+/// Mount the DMG (answering its licence agreement) and archive the `PhotoSquirrel.app` it holds.
+fn app_archive_from_dmg(dmg: &Path, dest: &Path, staging: &Path) -> Result<()> {
+    let mount = staging.join("dmg-app");
+    fs::create_dir_all(&mount)?;
+    let mut attach = Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
+        .arg(&mount)
+        .arg(dmg)
+        .env("PAGER", "cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .context("running hdiutil attach")?;
+    if let Some(mut stdin) = attach.stdin.take() {
+        use std::io::Write as _;
+        stdin.write_all(b"Y\n").ok();
+    }
+    if !attach.wait()?.success() {
+        bail!("hdiutil could not mount {}", dmg.display());
+    }
+    let result = tar_app(&mount.join("PhotoSquirrel.app"), dest);
+    crate::run(
+        "unmount the dmg",
+        Command::new("hdiutil").arg("detach").arg(&mount),
+    )?;
+    result
+}
+
+/// The base64 lines of the repository's update keys (`packaging/update-key*.pub`; empty slots skipped).
+pub fn release_key_lines(root: &Path) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    for file in ["packaging/update-key.pub", "packaging/update-key-next.pub"] {
+        let text =
+            fs::read_to_string(root.join(file)).with_context(|| format!("reading {file}"))?;
+        lines.extend(ps_update::keys::key_line(&text).map(str::to_owned));
+    }
+    Ok(lines)
+}
+
+/// The test key's base64 line (its secret half is in the repository).
+pub fn test_key_line(root: &Path) -> Result<String> {
+    let text = fs::read_to_string(root.join("crates/ps-update/tests/data/test-key.pub"))?;
+    ps_update::keys::key_line(&text)
+        .map(str::to_owned)
+        .context("the test key file has no key")
+}
+
+/// A shipped program contains every repository update key and not the test key (ADR-0125).
+pub fn check_embedded_keys(
+    program: &str,
+    bytes: &[u8],
+    release_keys: &[String],
+    test_key: &str,
+) -> Result<()> {
+    let has = |needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
+    if has(test_key) {
+        bail!(
+            "{program} contains the update TEST key; a release build must trust only the release keys"
+        );
+    }
+    for key in release_keys {
+        if !has(key) {
+            bail!("{program} does not contain the release update key {key}");
+        }
+    }
+    Ok(())
+}
+
+fn check_update_keys(root: &Path, bins: &Path, os: Os, tagged: bool) -> Result<()> {
+    let release = release_key_lines(root)?;
+    if release.is_empty() {
+        if tagged {
+            bail!(
+                "packaging/update-key.pub holds no key: generate the release update key first (docs/releasing.md)"
+            );
+        }
+        eprintln!("warning: no release update key yet; these packages cannot install updates");
+    }
+    let test = test_key_line(root)?;
+    for bin in SHIPPED {
+        let exe = os.exe(bin);
+        check_embedded_keys(&exe, &fs::read(bins.join(&exe))?, &release, &test)?;
+    }
+    eprintln!(
+        "update keys: {} release key(s) embedded, no test key",
+        release.len()
+    );
+    Ok(())
+}
+
+pub(crate) fn workspace_version(root: &Path) -> Result<String> {
     let manifest: toml::Value = toml::from_str(&fs::read_to_string(root.join("Cargo.toml"))?)?;
     manifest["workspace"]["package"]["version"]
         .as_str()
@@ -2243,6 +2363,296 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scenario_release_packaging_release_binaries_embed_only_the_release_key() {
+        let release = vec!["RWQreleaseKEY0000".to_owned(), "RWQnextKEY1111".to_owned()];
+        let test = "RWQtestKEY2222";
+        let good = b"...code...RWQreleaseKEY0000...RWQnextKEY1111...".to_vec();
+        check_embedded_keys("photosquirrel", &good, &release, test).expect("release keys only");
+        let with_test = [good.clone(), test.as_bytes().to_vec()].concat();
+        let e = check_embedded_keys("photosquirrel-cli", &with_test, &release, test)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("photosquirrel-cli") && e.contains("TEST key"),
+            "{e}"
+        );
+        let missing = b"...RWQreleaseKEY0000...".to_vec();
+        let e = check_embedded_keys("photosquirrel", &missing, &release, test)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("RWQnextKEY1111"), "{e}");
+        // The repository's own key files parse; the test key file has a key.
+        assert!(!test_key_line(&root()).unwrap().is_empty());
+        release_key_lines(&root()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scenario_release_packaging_app_archive_matches_the_dmg_s_bundle() {
+        // The bundle is archived as it is (the macOS package job takes it from the built DMG, verify-macos from
+        // the signed app): the archive unpacks to exactly that bundle.
+        assert_eq!(
+            app_archive_name("0.4.0"),
+            "PhotoSquirrel-0.4.0-macos-universal.app.tar.gz"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("src/PhotoSquirrel.app");
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::write(app.join("Contents/MacOS/photosquirrel"), b"app").unwrap();
+        fs::write(app.join("Contents/Info.plist"), b"plist").unwrap();
+        std::os::unix::fs::symlink("MacOS/photosquirrel", app.join("Contents/link")).unwrap();
+        let archive = tmp.path().join(app_archive_name("0.4.0"));
+        tar_app(&app, &archive).unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir_all(&out).unwrap();
+        assert!(
+            Command::new("tar")
+                .arg("-xzf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&out)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let got = out.join("PhotoSquirrel.app");
+        assert_eq!(
+            fs::read(got.join("Contents/MacOS/photosquirrel")).unwrap(),
+            b"app"
+        );
+        assert_eq!(fs::read(got.join("Contents/Info.plist")).unwrap(), b"plist");
+        assert_eq!(
+            fs::read_link(got.join("Contents/link")).unwrap(),
+            PathBuf::from("MacOS/photosquirrel")
+        );
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 1, "only the bundle");
+    }
+
+    /// One job of the release workflow: from its header to the next job's.
+    fn workflow_job(text: &str, name: &str) -> String {
+        let start = text
+            .find(&format!("\n  {name}:\n"))
+            .unwrap_or_else(|| panic!("no {name} job"))
+            + 1;
+        let rest = &text[start..];
+        let end = rest
+            .split_inclusive('\n')
+            .scan(0usize, |pos, line| {
+                let at = *pos;
+                *pos += line.len();
+                Some((at, line))
+            })
+            .skip(1)
+            .find(|(_, l)| {
+                l.starts_with("  ")
+                    && !l.starts_with("   ")
+                    && l.trim_end().ends_with(':')
+                    && !l.trim_start().starts_with('#')
+            })
+            .map_or(rest.len(), |(at, _)| at);
+        rest[..end].to_owned()
+    }
+
+    #[test]
+    fn scenario_release_packaging_signing_job_isolated() {
+        let text = release_workflow();
+        let sign = workflow_job(&text, "update-manifest");
+        // Only the sign job reads the release update key, in the protected environment, only for a pushed tag.
+        for secret in [
+            "secrets.UPDATE_SIGNING_KEY",
+            "secrets.UPDATE_SIGNING_PASSWORD",
+        ] {
+            assert_eq!(
+                text.matches(secret).count(),
+                1,
+                "{secret} outside the sign job"
+            );
+            assert!(sign.contains(secret), "{secret}");
+        }
+        assert!(sign.contains("environment: release-signing"), "{sign}");
+        assert!(
+            sign.contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
+        );
+        assert!(sign.contains("contents: read") && !sign.contains("contents: write"));
+        // Like sign-macos it compiles nothing: no toolchain, no cargo, no cache; the stock minisign and one script.
+        for forbidden in ["cargo", "rust-toolchain", "rust-cache"] {
+            assert!(
+                !sign.contains(forbidden),
+                "{forbidden} in the job that holds the key"
+            );
+        }
+        assert!(sign.contains("apt-get install -y -qq minisign"));
+        assert!(sign.contains(
+            "bash packaging/sign-update-manifest.sh text/update-manifest-text.json update-manifest.json"
+        ));
+        assert!(sign.contains("--trusted packaging/update-key.pub packaging/update-key-next.pub"));
+        // The text it signs is written by xtask in a job without secrets or an environment.
+        let write = workflow_job(&text, "update-manifest-text");
+        assert!(write.contains("--unsigned-out update-manifest-text.json"));
+        assert!(!write.contains("secrets.") && !write.contains("environment:"));
+        // A dry run uses the same script with a key it generates, and never reads the release key.
+        let dry = workflow_job(&text, "update-manifest-dry");
+        assert!(
+            dry.contains("bash packaging/sign-update-manifest.sh")
+                && dry.contains("--throwaway dry-run-update-key.pub")
+                && !dry.contains("secrets."),
+            "{dry}"
+        );
+        assert!(!dry.contains("environment:") && !dry.contains("cargo"));
+        // The script: the key only from the environment, deleted with its folder; the result must verify and
+        // name the version before the envelope is written.
+        let script = fs::read_to_string(root().join("packaging/sign-update-manifest.sh"))
+            .expect("the signing script");
+        for needle in [
+            "umask 077",
+            "trap 'rm -rf \"$work\"' EXIT",
+            "UPDATE_SIGNING_KEY:?",
+            "minisign -V -m \"$text\"",
+            "Trusted comment: ${comment}",
+        ] {
+            assert!(script.contains(needle), "{needle}");
+        }
+        assert!(
+            !script.contains("set -x"),
+            "the script never echoes its commands"
+        );
+        assert!(dry.contains("github.event_name != 'push'"));
+    }
+
+    #[test]
+    fn scenario_release_packaging_dry_run_rehearses_the_round_trip() {
+        let text = release_workflow();
+        let trip = workflow_job(&text, "update-roundtrip");
+        // The same job and legs; a dry run passes `rehearsal`, and runs when its throwaway-key manifest exists.
+        assert!(trip.contains("github.event_name != 'push' && 'rehearsal' || ''"));
+        assert!(trip.contains("needs.update-manifest-dry.result == 'success'"));
+        let release = workflow_job(&text, "release");
+        assert!(
+            !release.contains("needs.update-roundtrip.result == 'skipped'"),
+            "a dry run does not pass without the rehearsal"
+        );
+        let script =
+            fs::read_to_string(root().join("packaging/update-roundtrip.sh")).expect("script");
+        let at = script
+            .find("if [ \"$mode\" = rehearsal ]; then\n  before=")
+            .expect("the rehearsal");
+        let rehearsal = &script[at..];
+        let rehearsal = &rehearsal[..rehearsal.find("\nfi\n").expect("its end")];
+        // The candidate itself is installed (copied from the candidate folder, not downloaded).
+        assert!(script.contains("cp \"$candidate\"/$1 \"$work/prev/\""));
+        assert!(rehearsal.contains("\"$before\" != \"photosquirrel ${version}\""));
+        // It must refuse the manifest for its signature, stage nothing, and be unchanged.
+        assert!(rehearsal.contains("if run_app --update-now; then"));
+        assert!(rehearsal.contains("update manifest signature is not valid"));
+        assert!(rehearsal.contains("updates/ready") && rehearsal.contains("updates/helper"));
+        assert!(rehearsal.contains("\"$after\" != \"$before\""));
+    }
+
+    #[test]
+    fn scenario_release_packaging_previous_release_updates_to_the_candidate() {
+        let text = release_workflow();
+        let trip = workflow_job(&text, "update-roundtrip");
+        for (os, runner) in [
+            ("linux", "ubuntu-"),
+            ("macos", "macos-"),
+            ("windows", "windows-"),
+        ] {
+            let at = trip
+                .find(&format!("- name: {os}"))
+                .unwrap_or_else(|| panic!("no {os} leg"));
+            assert!(trip[at..].contains(&format!("os: {runner}")), "{os}");
+        }
+        assert!(
+            trip.contains("needs: [package, verify-macos, update-manifest, update-manifest-dry]")
+        );
+        // A tag runs the real round trip; a dry run its rehearsal (the throwaway key is refused).
+        assert!(trip.contains("github.event_name != 'push' && 'rehearsal' || ''"));
+        assert!(trip.contains("bash packaging/update-roundtrip.sh"));
+        assert!(!trip.contains("secrets."), "the round trip holds no secret");
+        let release = workflow_job(&text, "release");
+        assert!(
+            release.contains("update-roundtrip"),
+            "the release waits for the round trip"
+        );
+        assert!(
+            release.contains("needs.update-roundtrip.result == 'success'")
+                && !release.contains("needs.update-roundtrip.result == 'skipped'"),
+            "no release, and no dry run, without the round trip or its rehearsal"
+        );
+        let script =
+            fs::read_to_string(root().join("packaging/update-roundtrip.sh")).expect("script");
+        // The previous release with an updater, installed per OS, updated through the served manifest.
+        assert!(script.contains("grep -qx update-manifest.json"));
+        for install in ["chmod +x \"$app\"", "hdiutil attach", "/S /NS"] {
+            assert!(script.contains(install), "{install}");
+        }
+        assert!(script.contains("export PHOTOSQUIRREL_UPDATE_SERVER=http://127.0.0.1:8765"));
+        assert!(script.contains("run_app --update-now"));
+        assert!(script.contains("installed_version | grep -qx \"photosquirrel ${version}\""));
+        assert!(
+            script.contains("trial") && script.contains("updates/state.json"),
+            "the trial start is recorded"
+        );
+        assert!(script.contains("no earlier release has an updater"));
+    }
+
+    #[test]
+    fn scenario_release_packaging_readme_explains_updates() {
+        let readme = fs::read_to_string(root().join("README.md")).expect("README");
+        let section = readme
+            .split("### Updates\n")
+            .nth(1)
+            .and_then(|s| s.split("\n### ").next())
+            .expect("an Updates section");
+        // Line wraps do not matter.
+        let section = section.split_whitespace().collect::<Vec<_>>().join(" ");
+        // What a check sends, how to turn checks off, which packages update themselves, the .deb command.
+        for needle in [
+            "no identifier, no version, no cookie",
+            "update-manifest.json",
+            "**Off**",
+            "Settings → General → Updates",
+            "Applications",
+            "per-user installation",
+            "AppImage",
+            "sudo apt install",
+            "archives are not changed",
+        ] {
+            assert!(
+                section.contains(needle),
+                "the Updates section lacks {needle:?}"
+            );
+        }
+        let flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("It checks for updates only if you said yes"));
+    }
+
+    #[test]
+    fn scenario_release_packaging_runbook_covers_withdrawal_and_key_events() {
+        let runbook = fs::read_to_string(root().join("docs/releasing.md")).expect("runbook");
+        for heading in [
+            "## Cutting a release",
+            "## Withdrawing a release",
+            "## Rotating the update key",
+            "## A lost or exposed update key",
+        ] {
+            assert!(runbook.contains(heading), "no {heading}");
+        }
+        for needle in [
+            "packaging/update-key.pub",
+            "packaging/update-key-next.pub",
+            "release-signing",
+            "UPDATE_SIGNING_KEY",
+            "Set as a pre-release",
+        ] {
+            assert!(
+                runbook.contains(needle),
+                "the runbook does not name {needle}"
+            );
+        }
+    }
+
     fn release_workflow() -> String {
         fs::read_to_string(root().join(".github/workflows/release.yml")).expect("release.yml")
     }
@@ -2272,11 +2682,13 @@ mod tests {
             assert_eq!(lines[at + 2], format!("args: {args}"));
         }
         assert!(text.contains("cargo xtask package $args"));
-        // The release job checks for every package of every platform, and a checksum for each.
+        // The release job checks for every package of every platform, and a checksum for each: the kinds of
+        // every OS and the macOS update payload (the .app.tar.gz).
         let total: usize = [Os::Linux, Os::Macos, Os::Windows]
             .map(|os| kinds(os).len())
             .iter()
-            .sum();
+            .sum::<usize>()
+            + 1;
         assert!(
             text.contains(&format!(
                 "\"$count\" -ne {total} ] || [ \"$sums\" -ne {total} ]"
@@ -2290,7 +2702,25 @@ mod tests {
             .collect();
         assert_eq!(creates.len(), 1, "{creates:?}");
         let release = text.split("\n  release:\n").nth(1).expect("release job");
-        assert!(release.contains("needs: [package, runtime-sources]"));
+        assert!(release.contains(
+            "needs: [package, runtime-sources, verify-macos, update-manifest, update-manifest-dry, update-roundtrip]"
+        ));
+        // The manifest, signed in a job without write permission, is published with the packages.
+        let command = release
+            .split("gh release create")
+            .nth(1)
+            .and_then(|c| c.split("--title").next())
+            .expect("the create command");
+        assert!(
+            command.contains("packages/update-manifest.json"),
+            "{command}"
+        );
+        let sign = text
+            .split("\n  update-manifest:\n")
+            .nth(1)
+            .and_then(|r| r.split("\n  update-manifest-dry:\n").next())
+            .expect("update-manifest job");
+        assert!(sign.contains("contents: read") && !sign.contains("contents: write"));
         // Publishing needs a pushed tag: a manual run from a tag ref is still a dry run.
         assert!(
             release.contains(
@@ -2629,7 +3059,9 @@ mod tests {
             .split("\n  release:\n")
             .nth(1)
             .expect("release job");
-        assert!(release.contains("needs: [package, runtime-sources]"));
+        assert!(
+            release.contains("needs: [package, runtime-sources, verify-macos, update-manifest")
+        );
         assert!(
             !release.contains("cargo "),
             "the publishing job compiles nothing"

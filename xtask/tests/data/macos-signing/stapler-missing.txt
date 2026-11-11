@@ -1,0 +1,2 @@
+Processing: /Users/runner/work/_temp/signed/PhotoSquirrel-0.3.1-macos-universal.dmg
+PhotoSquirrel-0.3.1-macos-universal.dmg does not have a ticket stapled to it.

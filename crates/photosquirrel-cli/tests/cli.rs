@@ -322,6 +322,7 @@ fn help_paths() -> Vec<Vec<&'static str>> {
         "cleanup",
         "ai",
         "doctor",
+        "update",
         "fixtures",
         "eval-corpus",
         "demo",
@@ -349,6 +350,7 @@ fn help_paths() -> Vec<Vec<&'static str>> {
             ][..],
         ),
         ("export", &["dry-run", "run", "check"][..]),
+        ("update", &["status", "check", "install", "rollback"][..]),
         ("report", &["excluded"][..]),
         ("cleanup", &["plan", "run", "list", "show", "undo"][..]),
         (

@@ -84,6 +84,10 @@ icon_assets!(
         Film,
         Download,
         RefreshCw,
+        // auto-updates
+        CircleArrowUp,
+        ExternalLink,
+        RotateCcw,
     ]
 );
 

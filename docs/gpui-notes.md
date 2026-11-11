@@ -511,3 +511,17 @@ loads the details within the grace). Headless tests call `window.render_frame` t
 - A blocking delay inside a backend method called from `background_spawn` blocks the test thread (background tasks
   run there): use it only to prove the state was set before the work ran, not to wait in parallel.
 
+
+## App time, the quit hook and the first frame (auto-updates)
+- `cx.background_executor().now()` is the test executor's clock under `#[gpui_kit::test]` (real `Instant` otherwise),
+  and `advance_clock` fires each due timer once. A loop of `timer(TICK).await` plus that clock lets a headless test
+  idle for 48 hours of app time in a few seconds; `updates_ui::UpdateModel::now` takes the later of it and the wall
+  clock, so a real laptop that slept still counts the time.
+- `cx.on_app_quit(|cx| async {})` runs when the app quits, from `cx.quit()` and the last window closing alike. It
+  cannot cancel the quit, and its future gets at most `SHUTDOWN_TIMEOUT` (200 ms). Start detached work in the
+  callback itself (the update helper waits for this process's pid), never anything slow. It also fires after
+  "Restart now" already started the helper, so the service ignores the second hand-off.
+- `.test_support()` turns a `Stateful<Div>` into `Observed<..>`, which does not chain as a `Div` any more: call it
+  last, or build the children first and return `AnyElement`.
+- The first-frame hook (`window.on_next_frame`) is where a trial start of a new version is recorded; the catalog
+  (`Library::defer_open`) opens on a plain thread after it, so a version that cannot draw never migrates the catalog.

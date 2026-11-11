@@ -29,12 +29,13 @@ const IO: &[&str] = &[
     "ps-scan",
     "ps-llm",
     "ps-export",
+    "ps-update",
     "ps-service",
     "photosquirrel-cli",
 ];
 const UI: &[&str] = &["ui-theme", "ui-gallery", "ui-workspace", "photosquirrel"];
 /// Engine crates UI crates must not depend on directly (dev-dependencies for tests are fine).
-const BEHIND_FACADE: &[&str] = &["ps-catalog", "ps-scan", "ps-llm", "ps-export"];
+const BEHIND_FACADE: &[&str] = &["ps-catalog", "ps-scan", "ps-llm", "ps-export", "ps-update"];
 
 /// Direct dependencies of a UI crate that bypass the facade, as violation messages.
 pub fn facade_violations(krate: &str, direct: &[&str]) -> Vec<String> {
@@ -461,6 +462,32 @@ pub const MOVE_ALLOWED: &[(&str, &[&str], &str)] = &[
         "xtask/src/package.rs",
         &["remove_dir_all", "remove_file", "fs::copy"],
         "staging release packages from build outputs under the target dir",
+    ),
+    (
+        "crates/ps-update/src/state.rs",
+        &["fs::rename"],
+        "atomic writes of the updater's own state and history in its update folder (ADR-0126)",
+    ),
+    (
+        "crates/ps-update/src/download.rs",
+        &["remove_file", "remove_dir_all", "fs::rename"],
+        "partial and staged update payloads in the updater's own folder (ADR-0126)",
+    ),
+    (
+        "crates/ps-update/src/install.rs",
+        &[
+            "remove_file",
+            "remove_dir_all",
+            "fs::rename",
+            "fs::copy",
+            "renameat",
+        ],
+        "replacing PhotoSquirrel's own installation and keeping its previous version, after the app exited (ADR-0126)",
+    ),
+    (
+        "xtask/src/macos_signing.rs",
+        &["remove_dir_all", "fs::copy"],
+        "checking signed macOS packages in its own scratch folder under the target dir (ADR-0128)",
     ),
 ];
 

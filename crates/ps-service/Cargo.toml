@@ -15,6 +15,7 @@ ps-llm.workspace = true
 ps-export.workspace = true
 ps-media.workspace = true
 ps-sysdecode.workspace = true
+ps-update.workspace = true
 # Demo AI insights describe the generated corpus scene of each image (insights::seed_demo_from).
 ps-fixtures.workspace = true
 serde_json.workspace = true
@@ -36,6 +37,7 @@ tempfile.workspace = true
 # `FakeHeif`, the deterministic HEIC test decoder (ADR-0089).
 ps-media = { workspace = true, features = ["test-support"] }
 ps-llm = { workspace = true, features = ["testing"] }
+ps-update = { workspace = true, features = ["testing"] }
 serde_json.workspace = true
 
 [lints]

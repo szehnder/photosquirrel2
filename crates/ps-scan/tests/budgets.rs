@@ -165,8 +165,10 @@ fn scenario_scan_control_control_latency_within_budget() {
 
 /// The same cancel and pause latencies while two threads keep reading the catalog, as the gallery does: the log
 /// checkpoint at the end of a run (ADR-0122) must not make a reader hold up the final status. Not a recorded budget;
-/// it must stay within the same 250 ms.
+/// it must stay within the same 250 ms. A wall-clock assertion: it runs alone in the timing pass (ADR-0075); in the
+/// parallel test run it missed by 20-30 ms on shared macOS runners.
 #[test]
+#[ignore = "timing"]
 fn control_latency_with_concurrent_readers_stays_within_budget() {
     let _cores = exclusive();
     let trials = env_count("PS_SCAN_LATENCY_TRIALS", 20, 20);

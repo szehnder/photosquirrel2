@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0-rc.1"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -22,6 +22,7 @@ ps-scan = { path = "crates/ps-scan" }
 ps-llm = { path = "crates/ps-llm" }
 ps-export = { path = "crates/ps-export" }
 ps-service = { path = "crates/ps-service" }
+ps-update = { path = "crates/ps-update" }
 ui-theme = { path = "crates/ui-theme" }
 ui-gallery = { path = "crates/ui-gallery" }
 ui-workspace = { path = "crates/ui-workspace" }

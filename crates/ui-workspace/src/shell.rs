@@ -161,6 +161,10 @@ impl Shell {
                     }
                 }));
         }
+        if let Some(updates) = crate::updates_ui::UpdateHub::model(cx) {
+            this._subscriptions
+                .push(cx.observe(&updates, |_, _, cx| cx.notify()));
+        }
         if let Some(recovery) = AppSettings::recovery(cx).cloned() {
             this.show_toast(
                 ToastKind::Warning,
@@ -1070,6 +1074,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom(Some(-1.0), cx)))
             .on_action(cx.listener(|this, _: &ZoomReset, _, cx| this.zoom(None, cx)))
             .on_action(cx.listener(|this, _: &ToggleTheme, _, cx| this.toggle_theme(cx)))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, _, cx| this.check_for_updates(cx)))
             .on_action(cx.listener(|this, _: &Quit, w, cx| {
                 this.save_now(w, cx);
                 cx.quit();

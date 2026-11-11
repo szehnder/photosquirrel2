@@ -30,6 +30,8 @@ ps-fixtures.workspace = true
 image.workspace = true
 # `FakeHeif`, the deterministic HEIC test decoder (ADR-0089).
 ps-media = { workspace = true, features = ["test-support"] }
+# The update service over a loopback test server or a recording transport (updates.rs, network.rs).
+ps-update = { workspace = true, features = ["testing"] }
 
 # The frame-cost check reads the rendering thread's CPU clock (scan_dashboard.rs).
 [target.'cfg(unix)'.dev-dependencies]
