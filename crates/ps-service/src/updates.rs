@@ -109,6 +109,14 @@ pub struct Available {
     pub notes_url: String,
 }
 
+impl Available {
+    /// The notes as one plain-text line of at most `max_chars`, for a notice: the bullets' bold headlines, without
+    /// Markdown ([`ps_update::manifest::notes_summary`]). What's new opens the full notes.
+    pub fn summary(&self, max_chars: usize) -> String {
+        ps_update::manifest::notes_summary(&self.notes, max_chars)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Busy {
     Checking,

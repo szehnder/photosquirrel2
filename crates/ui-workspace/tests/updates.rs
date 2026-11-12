@@ -141,6 +141,11 @@ fn restart_now_button_waits_for_a_scan(cx: &mut TestAppContext) {
         label("update-banner-title", &mut cx).as_deref(),
         Some("PhotoSquirrel 0.4.1 is ready. It installs when you quit.")
     );
+    // The notes' Markdown bullets read as plain sentences, not raw "- " lines run together.
+    assert_eq!(
+        label("update-banner-title-body", &mut cx).as_deref(),
+        Some("Faster scans. Clearer duplicate review in 0.4.1.")
+    );
     assert_eq!(
         label("status-update", &mut cx).as_deref(),
         Some("Update ready: 0.4.1")
