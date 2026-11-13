@@ -96,7 +96,24 @@ echo "installed: $(installed_version)"
 "$python" -m http.server 8765 --bind 127.0.0.1 --directory "$candidate" >"$work/server.log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT
-sleep 2
+# Wait until the server answers rather than for a fixed time: a cold Python start on a Windows runner (Defender
+# scans the new process) can take longer than a few seconds, and the app would then find nothing listening.
+ready=""
+for _ in $(seq 1 120); do
+  if ! kill -0 "$server" 2>/dev/null; then
+    break
+  fi
+  if curl -fs -o /dev/null --max-time 5 http://127.0.0.1:8765/update-manifest.json 2>/dev/null; then
+    ready=1
+    break
+  fi
+  sleep 0.5
+done
+if [ -z "$ready" ]; then
+  echo "::error::the local update server did not start serving the candidate"
+  cat "$work/server.log" 2>/dev/null || true
+  exit 1
+fi
 export PHOTOSQUIRREL_UPDATE_SERVER=http://127.0.0.1:8765
 export PHOTOSQUIRREL_UPDATE_DIR="$work/updates"
 export PHOTOSQUIRREL_DATA_DIR="$work/data"
