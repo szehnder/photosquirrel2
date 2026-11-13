@@ -51,6 +51,8 @@ to their resized or re-exported JPEG copies.
   itself. The Debian package gets the verified `.deb` and the `apt` command; the archives get a link. See
   "Updates" below. This is the last version you need to download by hand.
 - **The macOS app is signed and notarized.** It opens without the "damaged" warning or any Terminal command.
+- **Pause and cancel answer faster.** A scan stops within a few hundredths of a second instead of up to a quarter
+  of a second, also in the middle of a JPEG, and nothing it already read is lost.
 
 ### What's new in 0.3.1
 

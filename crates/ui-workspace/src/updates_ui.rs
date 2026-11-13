@@ -366,19 +366,12 @@ impl Shell {
     }
 }
 
+/// The longest notes summary a notice shows.
+const NOTICE_SUMMARY_CHARS: usize = 240;
+
 fn notice_body(a: &Available) -> String {
-    // The first lines of the notes; What's new opens the rest.
-    let mut body: String = a
-        .notes
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .take(3)
-        .collect::<Vec<_>>()
-        .join(" ");
-    if body.chars().count() > 240 {
-        body = body.chars().take(239).collect::<String>() + "…";
-    }
-    body
+    // The headlines of the notes as plain text (no Markdown markers or wrapping gaps); What's new opens the rest.
+    a.summary(NOTICE_SUMMARY_CHARS)
 }
 
 fn frame(
@@ -432,6 +425,9 @@ fn texts(title_id: &'static str, title: String, body: Option<String>, cx: &App) 
         )
         .children(body.filter(|b| !b.is_empty()).map(|b| {
             div()
+                .id(SharedString::from(format!("{title_id}-body")))
+                .test_support()
+                .aria_label(SharedString::from(b.clone()))
                 .text_size(Tokens::text_sm())
                 .text_color(colors.text_muted)
                 .child(b)

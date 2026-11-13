@@ -140,6 +140,99 @@ pub fn verify(envelope: &[u8], keys: &[PublicKey]) -> Result<Manifest, UpdateErr
     Ok(manifest)
 }
 
+/// A short plain-text summary of release notes for a one-line notice. The notes are Markdown bullets that open
+/// with a bold headline (`- **Updates install themselves.** Details...`, hard-wrapped): the summary is the
+/// headlines in order, as far as they fit in `max_chars`. A bullet or paragraph without one stands for itself.
+/// Markdown markers are dropped and wrapped lines joined, so nothing raw reaches the notice. Text cut short ends at
+/// a word, with an ellipsis.
+pub fn notes_summary(notes: &str, max_chars: usize) -> String {
+    let mut items: Vec<String> = Vec::new();
+    let mut current: Option<String> = None;
+    for line in notes.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            items.extend(current.take());
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+            items.extend(current.take());
+            current = Some(rest.trim().to_owned());
+        } else if let Some(c) = current.as_mut() {
+            c.push(' ');
+            c.push_str(t);
+        } else {
+            current = Some(t.to_owned());
+        }
+    }
+    items.extend(current);
+    let mut summary = String::new();
+    for item in &items {
+        let headline = item
+            .strip_prefix("**")
+            .and_then(|r| r.split_once("**"))
+            .map_or(item.as_str(), |(bold, _)| bold);
+        let mut text = plain_text(headline);
+        if text.is_empty() {
+            continue;
+        }
+        if !text.ends_with(['.', '!', '?', '…']) {
+            text.push('.');
+        }
+        let sep = usize::from(!summary.is_empty());
+        if summary.chars().count() + sep + text.chars().count() > max_chars {
+            if summary.is_empty() {
+                summary = cut_at_word(&text, max_chars);
+            }
+            break;
+        }
+        if sep == 1 {
+            summary.push(' ');
+        }
+        summary.push_str(&text);
+    }
+    summary
+}
+
+/// Markdown inline markers removed: `**`, `__`, backticks, and `[text](url)` links reduced to their text.
+fn plain_text(s: &str) -> String {
+    let s = s.replace("**", "").replace("__", "").replace('`', "");
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.as_str();
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        match after.find("](").and_then(|close| {
+            after[close + 2..]
+                .find(')')
+                .map(|end| (close, close + 2 + end))
+        }) {
+            Some((close, end)) => {
+                out.push_str(&rest[..open]);
+                out.push_str(&after[..close]);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[..=open]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `s` cut to at most `max_chars` characters at a word boundary, ending in an ellipsis.
+fn cut_at_word(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_owned();
+    }
+    let head: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+    let head = match head.rfind(' ') {
+        Some(i) if i > 0 => &head[..i],
+        _ => head.as_str(),
+    };
+    format!("{}…", head.trim_end_matches([',', ';', ':', ' ']))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +326,48 @@ mod tests {
             .expect("package")
             .name = "../x".into();
         assert!(verify(testing::envelope(&m).as_bytes(), &keys()).is_err());
+    }
+
+    /// The notice summary of the real 0.4.0 notes: the bullets' bold headlines, without Markdown or wrapping gaps.
+    #[test]
+    fn notes_summary_takes_the_bold_headlines() {
+        let notes = "- **PhotoSquirrel keeps itself up to date, if you want it to.** It asks once whether to check for updates;
+  nothing is sent before you answer. See \"Updates\" below.
+- **The macOS app is signed and notarized.** It opens without the \"damaged\" warning or any Terminal command.
+";
+        assert_eq!(
+            notes_summary(notes, 240),
+            "PhotoSquirrel keeps itself up to date, if you want it to. The macOS app is signed and notarized."
+        );
+        // Only the headlines that fit, whole.
+        assert_eq!(
+            notes_summary(notes, 80),
+            "PhotoSquirrel keeps itself up to date, if you want it to."
+        );
+    }
+
+    #[test]
+    fn notes_summary_of_plain_notes() {
+        // A bullet without a bold headline stands for itself; markers, links and wrapping are dropped.
+        assert_eq!(
+            notes_summary(
+                "- Faster `scan` of\n  [big folders](https://example.com/x)\n- Fewer bugs",
+                240
+            ),
+            "Faster scan of big folders. Fewer bugs."
+        );
+        // A paragraph, the test manifests' notes, and nothing.
+        assert_eq!(
+            notes_summary("What's new in 0.4.1.", 240),
+            "What's new in 0.4.1."
+        );
+        assert_eq!(notes_summary("", 240), "");
+        assert_eq!(notes_summary("### Heading only\n\n", 240), "");
+        // A first item longer than the limit is cut at a word, with an ellipsis.
+        let long = format!("- **{}**", "word ".repeat(100));
+        let s = notes_summary(&long, 40);
+        assert!(s.ends_with("word…") && s.chars().count() <= 40, "{s}");
+        // An unclosed link bracket is kept as text.
+        assert_eq!(notes_summary("- a [b c", 240), "a [b c.");
     }
 }
