@@ -355,9 +355,15 @@ coalesced `UpdateStatus` snapshot from `ps-service`.
 | Three days of failed scheduled checks | A status-bar note only | Check now |
 
 As built (task 7.2): every notice, "Updated" included, is the one banner above the central view, because it already
-carries actions (the toast has none); "What's new" opens the version's release page, which holds the full notes,
-instead of a dialog; the banner shows the first lines of the notes. "Details" opens Settings > General, whose Updates
-group lists the latest history entries. The status-bar item opens the same group.
+carries actions (the toast has none). "Details" opens Settings > General, whose Updates group lists the latest history
+entries. The status-bar item opens the same group.
+
+Notes (task 7.6, after testing rc.3): the banner is one plain line, the version and what happens next, and shows none
+of the notes; an excerpt of hard-wrapped Markdown read as noise ("- **PhotoSquirrel keeps…**", cut off with "…").
+"What's new" on a Ready, Available or Manual notice opens a dialog, as planned above: the manifest's notes, parsed by
+`ps_update::manifest::notes_blocks` into plain blocks whose bold headlines are drawn bold, with "Release page" in the
+footer. It makes no request, since the signed manifest is already at hand. On the "Updated" notice the notes are no
+longer at hand, so its "What's new" still opens the release page.
 
 The Settings > General > Updates group follows the settings spec. "Check for updates…" is in the command palette.
 Every message uses the D5 reasons and names versions.

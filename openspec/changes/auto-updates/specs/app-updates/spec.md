@@ -187,7 +187,7 @@ With mode notify, the application SHALL check and show an available update with 
 
 #### Scenario: Notify mode waits for the user
 - **WHEN** a newer version is published and mode is notify
-- **THEN** a notice shows the version and its notes, no payload is downloaded until the user chooses to install, and then the install proceeds as in automatic mode
+- **THEN** a notice shows the version, its "What's new" shows the notes, no payload is downloaded until the user chooses to install, and then the install proceeds as in automatic mode
 
 ### Requirement: Off mode and manual checks
 With mode off, the application SHALL never check on its own. "Check for updates" SHALL make one check whatever the mode, and report the result: up to date, available, or the failure.
@@ -206,6 +206,13 @@ Every update notice SHALL name the versions involved. A failure SHALL say in pla
 #### Scenario: Failed install explained
 - **WHEN** an install is rolled back
 - **THEN** the next start shows "Couldn't install PhotoSquirrel <new>. You're still on <current>." with a Details action that opens the update history
+
+### Requirement: Release notes behind What's new
+A notice of an offered version SHALL be one plain line that names the version and what happens next, without the release notes. Its "What's new" SHALL show that version's notes in the app, formatted with bold headlines and no Markdown markers, from the manifest already checked and without a request, with a link to the release page.
+
+#### Scenario: Notes shown in the app, not in the notice
+- **WHEN** an update is ready and the user chooses "What's new" on its notice
+- **THEN** the notice reads "PhotoSquirrel <version> is ready. It installs when you quit." with no notes under it, and a dialog titled "What's new in PhotoSquirrel <version>" shows each bullet of the notes as plain text with its headline bold, opens the release page from its footer, makes no request, and closes back to the notice
 
 ### Requirement: Urgent updates
 A manifest marked urgent SHALL be shown as a banner that stays until it is acted on or dismissed, even in notify mode. Urgency SHALL NOT change what is downloaded or when it is installed.

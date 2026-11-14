@@ -24,6 +24,7 @@ pub mod review_kit;
 pub mod scan;
 pub mod scan_dashboard;
 pub mod sources;
+pub mod whats_new;
 
 use std::collections::HashMap;
 use std::rc::Rc;

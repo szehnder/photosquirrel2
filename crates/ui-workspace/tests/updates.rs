@@ -141,11 +141,8 @@ fn restart_now_button_waits_for_a_scan(cx: &mut TestAppContext) {
         label("update-banner-title", &mut cx).as_deref(),
         Some("PhotoSquirrel 0.4.1 is ready. It installs when you quit.")
     );
-    // The notes' Markdown bullets read as plain sentences, not raw "- " lines run together.
-    assert_eq!(
-        label("update-banner-title-body", &mut cx).as_deref(),
-        Some("Faster scans. Clearer duplicate review in 0.4.1.")
-    );
+    // One plain line: the notes are behind What's new, not in the banner.
+    assert!(!exists("update-banner-title-body", &mut cx));
     assert_eq!(
         label("status-update", &mut cx).as_deref(),
         Some("Update ready: 0.4.1")
@@ -162,6 +159,57 @@ fn restart_now_button_waits_for_a_scan(cx: &mut TestAppContext) {
         Some("Restart now")
     );
     assert_eq!(updates.manifest_requests(), 1);
+}
+
+#[gpui_kit::test]
+fn scenario_app_updates_notes_shown_in_the_app_not_in_the_notice(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    automatic(&dirs);
+    init_app(cx, Arc::new(FakeBackend::small_corpus()), Some(&dirs));
+    let updates = updates_offering(cx, "0.4.1", false, appimage);
+    let (shell, mut cx) = open(cx);
+    wait_loaded(&shell, &mut cx);
+    idle_minutes(&mut cx, 2);
+    // The notice is one plain line naming the version and what happens next; no notes, no Markdown.
+    assert_eq!(
+        label("update-banner-title", &mut cx).as_deref(),
+        Some("PhotoSquirrel 0.4.1 is ready. It installs when you quit.")
+    );
+    assert!(!exists("update-banner-title-body", &mut cx));
+    let requests = updates.manifest_requests();
+    // What's new opens the notes in the app, formatted: plain sentences, the bold headlines bold.
+    click("update-whats-new", &mut cx);
+    assert!(exists("whats-new", &mut cx));
+    assert_eq!(
+        label("whats-new-title", &mut cx).as_deref(),
+        Some("What's new in PhotoSquirrel 0.4.1")
+    );
+    assert_eq!(
+        label("whats-new-block-0", &mut cx).as_deref(),
+        Some("Faster scans. Rescans read only what changed, and big folders open sooner.")
+    );
+    assert_eq!(
+        label("whats-new-block-1", &mut cx).as_deref(),
+        Some("Clearer duplicate review in 0.4.1. The keeper is marked.")
+    );
+    let headlines = cx.update(|_, cx| {
+        let dialog = shell.read(cx).whats_new().unwrap().read(cx);
+        dialog
+            .blocks()
+            .iter()
+            .map(|b| b.text[b.bold[0].clone()].to_owned())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        headlines,
+        ["Faster scans.", "Clearer duplicate review in 0.4.1."]
+    );
+    assert!(exists("whats-new-release-page", &mut cx));
+    // Opening it made no request; Close returns to the banner.
+    assert_eq!(updates.manifest_requests(), requests);
+    click("whats-new-close", &mut cx);
+    assert!(!exists("whats-new", &mut cx));
+    assert!(exists("update-banner", &mut cx));
 }
 
 #[gpui_kit::test]

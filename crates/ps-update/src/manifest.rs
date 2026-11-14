@@ -140,64 +140,138 @@ pub fn verify(envelope: &[u8], keys: &[PublicKey]) -> Result<Manifest, UpdateErr
     Ok(manifest)
 }
 
-/// A short plain-text summary of release notes for a one-line notice. The notes are Markdown bullets that open
-/// with a bold headline (`- **Updates install themselves.** Details...`, hard-wrapped): the summary is the
-/// headlines in order, as far as they fit in `max_chars`. A bullet or paragraph without one stands for itself.
-/// Markdown markers are dropped and wrapped lines joined, so nothing raw reaches the notice. Text cut short ends at
-/// a word, with an ellipsis.
-pub fn notes_summary(notes: &str, max_chars: usize) -> String {
-    let mut items: Vec<String> = Vec::new();
-    let mut current: Option<String> = None;
-    for line in notes.lines() {
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
-            items.extend(current.take());
-            continue;
-        }
-        if let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
-            items.extend(current.take());
-            current = Some(rest.trim().to_owned());
-        } else if let Some(c) = current.as_mut() {
-            c.push(' ');
-            c.push_str(t);
-        } else {
-            current = Some(t.to_owned());
-        }
-    }
-    items.extend(current);
-    let mut summary = String::new();
-    for item in &items {
-        let headline = item
-            .strip_prefix("**")
-            .and_then(|r| r.split_once("**"))
-            .map_or(item.as_str(), |(bold, _)| bold);
-        let mut text = plain_text(headline);
-        if text.is_empty() {
-            continue;
-        }
-        if !text.ends_with(['.', '!', '?', '…']) {
-            text.push('.');
-        }
-        let sep = usize::from(!summary.is_empty());
-        if summary.chars().count() + sep + text.chars().count() > max_chars {
-            if summary.is_empty() {
-                summary = cut_at_word(&text, max_chars);
-            }
-            break;
-        }
-        if sep == 1 {
-            summary.push(' ');
-        }
-        summary.push_str(&text);
-    }
-    summary
+/// What kind of block of the release notes a [`NotesBlock`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotesBlockKind {
+    /// A `#` heading line.
+    Heading,
+    /// A `- ` or `* ` bullet with its wrapped continuation lines.
+    Bullet,
+    /// Any other run of lines up to a blank line.
+    Paragraph,
 }
 
-/// Markdown inline markers removed: `**`, `__`, backticks, and `[text](url)` links reduced to their text.
-fn plain_text(s: &str) -> String {
-    let s = s.replace("**", "").replace("__", "").replace('`', "");
+/// One block of release notes as plain text, for showing in the app: Markdown markers are gone, hard-wrapped
+/// lines are joined, and `bold` holds the byte ranges of `text` that were `**bold**` (the bullets' headlines).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotesBlock {
+    pub kind: NotesBlockKind,
+    pub text: String,
+    pub bold: Vec<std::ops::Range<usize>>,
+}
+
+/// The release notes (the manifest's Markdown, from the "What's new in <version>" section) as blocks of plain
+/// text with their bold runs, so What's new can show them formatted instead of as raw Markdown. Links keep their
+/// text, code spans lose their backticks, and blocks with no text are left out.
+pub fn notes_blocks(notes: &str) -> Vec<NotesBlock> {
+    let mut raw: Vec<(NotesBlockKind, String)> = Vec::new();
+    let mut current: Option<(NotesBlockKind, String)> = None;
+    for line in notes.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            raw.extend(current.take());
+        } else if t.starts_with('#') {
+            raw.extend(current.take());
+            raw.push((
+                NotesBlockKind::Heading,
+                t.trim_start_matches('#').to_owned(),
+            ));
+        } else if let Some(rest) = t
+            .strip_prefix("- ")
+            .or_else(|| t.strip_prefix("* "))
+            .or_else(|| ["-", "*"].contains(&t).then_some(""))
+        {
+            raw.extend(current.take());
+            current = Some((NotesBlockKind::Bullet, rest.to_owned()));
+        } else if let Some((_, text)) = current.as_mut() {
+            text.push(' ');
+            text.push_str(t);
+        } else {
+            current = Some((NotesBlockKind::Paragraph, t.to_owned()));
+        }
+    }
+    raw.extend(current);
+    raw.into_iter()
+        .filter_map(|(kind, markdown)| {
+            let (text, bold) = inline(&markdown);
+            (!text.is_empty()).then_some(NotesBlock { kind, text, bold })
+        })
+        .collect()
+}
+
+/// One block's inline Markdown as plain text and the byte ranges that were bold (`**` or `__`).
+fn inline(markdown: &str) -> (String, Vec<std::ops::Range<usize>>) {
+    let plain = links_as_text(&markdown.replace('`', ""));
+    let words = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut text = String::with_capacity(words.len());
+    let mut bold = Vec::new();
+    let mut open: Option<usize> = None;
+    let mut rest = words.as_str();
+    while let Some(at) = [rest.find("**"), rest.find("__")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
+        text.push_str(&rest[..at]);
+        rest = &rest[at + 2..];
+        match open.take() {
+            Some(from) => {
+                // A space just inside the markers is not part of the bold run.
+                let trimmed = text.trim_end().len();
+                if trimmed > from {
+                    bold.push(from..trimmed);
+                }
+            }
+            None => open = Some(text.len()),
+        }
+    }
+    text.push_str(rest);
+    if let Some(from) = open
+        && text.len() > from
+    {
+        bold.push(from..text.len());
+    }
+    // Markers next to spaces can leave a doubled or edge space; the bold ranges point into the text as built.
+    if text.contains("  ") || text.starts_with(' ') || text.ends_with(' ') {
+        return squeeze(&text, &bold);
+    }
+    (text, bold)
+}
+
+/// `text` with runs of spaces made single and the ends trimmed, and `bold` moved to match.
+fn squeeze(text: &str, bold: &[std::ops::Range<usize>]) -> (String, Vec<std::ops::Range<usize>>) {
+    let mut map = vec![0usize; text.len() + 1];
+    let mut out = String::with_capacity(text.len());
+    let mut prev_space = true;
+    for (i, ch) in text.char_indices() {
+        map[i] = out.len();
+        if ch == ' ' {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    map[text.len()] = out.len();
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    let len = out.len();
+    let bold = bold
+        .iter()
+        .map(|r| map[r.start].min(len)..map[r.end].min(len))
+        .filter(|r| !r.is_empty())
+        .collect();
+    (out, bold)
+}
+
+/// `[text](url)` links reduced to their text; an unclosed bracket stays as it is.
+fn links_as_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut rest = s.as_str();
+    let mut rest = s;
     while let Some(open) = rest.find('[') {
         let after = &rest[open + 1..];
         match after.find("](").and_then(|close| {
@@ -217,20 +291,7 @@ fn plain_text(s: &str) -> String {
         }
     }
     out.push_str(rest);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// `s` cut to at most `max_chars` characters at a word boundary, ending in an ellipsis.
-fn cut_at_word(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_owned();
-    }
-    let head: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-    let head = match head.rfind(' ') {
-        Some(i) if i > 0 => &head[..i],
-        _ => head.as_str(),
-    };
-    format!("{}…", head.trim_end_matches([',', ';', ':', ' ']))
+    out
 }
 
 #[cfg(test)]
@@ -328,46 +389,72 @@ mod tests {
         assert!(verify(testing::envelope(&m).as_bytes(), &keys()).is_err());
     }
 
-    /// The notice summary of the real 0.4.0 notes: the bullets' bold headlines, without Markdown or wrapping gaps.
+    /// The real 0.4.0 notes: three bullets whose bold headlines stay bold, with no Markdown left and the
+    /// hard-wrapped lines joined.
     #[test]
-    fn notes_summary_takes_the_bold_headlines() {
+    fn notes_blocks_of_the_real_notes() {
         let notes = "- **PhotoSquirrel keeps itself up to date, if you want it to.** It asks once whether to check for updates;
-  nothing is sent before you answer. See \"Updates\" below.
+  nothing is sent before you answer. The Debian package gets the verified `.deb` and the `apt` command.
 - **The macOS app is signed and notarized.** It opens without the \"damaged\" warning or any Terminal command.
+- **Pause and cancel answer faster.** A scan stops within a few hundredths of a second.
 ";
+        let blocks = notes_blocks(notes);
+        assert_eq!(blocks.len(), 3);
+        assert!(blocks.iter().all(|b| b.kind == NotesBlockKind::Bullet));
+        let first = &blocks[0];
         assert_eq!(
-            notes_summary(notes, 240),
-            "PhotoSquirrel keeps itself up to date, if you want it to. The macOS app is signed and notarized."
+            first.text,
+            "PhotoSquirrel keeps itself up to date, if you want it to. It asks once whether to check for \
+             updates; nothing is sent before you answer. The Debian package gets the verified .deb and the apt \
+             command."
         );
-        // Only the headlines that fit, whole.
+        assert_eq!(first.bold.len(), 1);
         assert_eq!(
-            notes_summary(notes, 80),
+            &first.text[first.bold[0].clone()],
             "PhotoSquirrel keeps itself up to date, if you want it to."
         );
+        assert_eq!(
+            &blocks[2].text[blocks[2].bold[0].clone()],
+            "Pause and cancel answer faster."
+        );
+        for b in &blocks {
+            assert!(
+                !b.text.contains("**") && !b.text.contains("  "),
+                "{:?}",
+                b.text
+            );
+        }
     }
 
     #[test]
-    fn notes_summary_of_plain_notes() {
-        // A bullet without a bold headline stands for itself; markers, links and wrapping are dropped.
-        assert_eq!(
-            notes_summary(
-                "- Faster `scan` of\n  [big folders](https://example.com/x)\n- Fewer bugs",
-                240
-            ),
-            "Faster scan of big folders. Fewer bugs."
+    fn notes_blocks_of_other_markdown() {
+        let blocks = notes_blocks(
+            "## Highlights\n\nWhat's new in\n0.4.1.\n\n* Faster [big folders](https://example.com/x) and __more__\n- a [b c\n- ** spaced ** bold\n- **open bold",
         );
-        // A paragraph, the test manifests' notes, and nothing.
+        let kinds: Vec<_> = blocks.iter().map(|b| b.kind).collect();
         assert_eq!(
-            notes_summary("What's new in 0.4.1.", 240),
-            "What's new in 0.4.1."
+            kinds,
+            [
+                NotesBlockKind::Heading,
+                NotesBlockKind::Paragraph,
+                NotesBlockKind::Bullet,
+                NotesBlockKind::Bullet,
+                NotesBlockKind::Bullet,
+                NotesBlockKind::Bullet,
+            ]
         );
-        assert_eq!(notes_summary("", 240), "");
-        assert_eq!(notes_summary("### Heading only\n\n", 240), "");
-        // A first item longer than the limit is cut at a word, with an ellipsis.
-        let long = format!("- **{}**", "word ".repeat(100));
-        let s = notes_summary(&long, 40);
-        assert!(s.ends_with("word…") && s.chars().count() <= 40, "{s}");
-        // An unclosed link bracket is kept as text.
-        assert_eq!(notes_summary("- a [b c", 240), "a [b c.");
+        assert_eq!(blocks[0].text, "Highlights");
+        assert_eq!(blocks[1].text, "What's new in 0.4.1.");
+        assert_eq!(blocks[2].text, "Faster big folders and more");
+        assert_eq!(&blocks[2].text[blocks[2].bold[0].clone()], "more");
+        assert_eq!(blocks[3].text, "a [b c");
+        assert!(blocks[3].bold.is_empty());
+        assert_eq!(blocks[4].text, "spaced bold");
+        assert_eq!(&blocks[4].text[blocks[4].bold[0].clone()], "spaced");
+        // An unclosed bold runs to the end of its block.
+        assert_eq!(blocks[5].text, "open bold");
+        assert_eq!(&blocks[5].text[blocks[5].bold[0].clone()], "open bold");
+        assert!(notes_blocks("").is_empty());
+        assert!(notes_blocks("###\n\n- \n").is_empty());
     }
 }
