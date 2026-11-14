@@ -20,6 +20,7 @@ pub use ps_update::history::Entry as HistoryEntry;
 use ps_update::install;
 use ps_update::kind::Probe;
 pub use ps_update::kind::{Installation, Kind};
+pub use ps_update::manifest::{NotesBlock, NotesBlockKind};
 use ps_update::state::UpdateState;
 pub use ps_update::state::{CheckRecord, Failure, FailureReason};
 pub use ps_update::{UpdateDir, UpdateError, now_secs};
@@ -110,10 +111,10 @@ pub struct Available {
 }
 
 impl Available {
-    /// The notes as one plain-text line of at most `max_chars`, for a notice: the bullets' bold headlines, without
-    /// Markdown ([`ps_update::manifest::notes_summary`]). What's new opens the full notes.
-    pub fn summary(&self, max_chars: usize) -> String {
-        ps_update::manifest::notes_summary(&self.notes, max_chars)
+    /// The notes as plain-text blocks with their bold runs, for What's new
+    /// ([`ps_update::manifest::notes_blocks`]). Notices show no notes; What's new shows these.
+    pub fn notes_blocks(&self) -> Vec<NotesBlock> {
+        ps_update::manifest::notes_blocks(&self.notes)
     }
 }
 
