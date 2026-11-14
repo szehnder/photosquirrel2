@@ -366,14 +366,6 @@ impl Shell {
     }
 }
 
-/// The longest notes summary a notice shows.
-const NOTICE_SUMMARY_CHARS: usize = 240;
-
-fn notice_body(a: &Available) -> String {
-    // The headlines of the notes as plain text (no Markdown markers or wrapping gaps); What's new opens the rest.
-    a.summary(NOTICE_SUMMARY_CHARS)
-}
-
 fn frame(
     id: &'static str,
     icon: IconName,
@@ -391,6 +383,7 @@ fn frame(
         .px(Tokens::space(3.0))
         .py(Tokens::space(2.0))
         .gap(Tokens::space(3.0))
+        .items_center()
         .rounded(Tokens::RADIUS_LG)
         .bg(colors.accent_soft)
         .border_1()
@@ -401,6 +394,7 @@ fn frame(
         })
         .child(
             Icon::new(icon)
+                .flex_none()
                 .size(Tokens::icon_md())
                 .text_color(colors.accent_text),
         )
@@ -556,14 +550,19 @@ pub(crate) fn banner(shell: &Shell, cx: &mut Context<'_, Shell>) -> Option<AnyEl
     let status = m.status.clone();
     let shell_entity = cx.entity().downgrade();
     let mut actions: Vec<AnyElement> = Vec::new();
-    let notes = |version: &str, cx: &App| {
-        let link = release_page(version);
+    // The notice is one plain line; What's new shows the notes, formatted, in the app.
+    let notes = |a: &Available, cx: &App| {
+        let (shell, a) = (shell_entity.clone(), a.clone());
         kit::button(
             "update-whats-new",
             "What's new",
-            Some(IconName::ExternalLink),
+            Some(IconName::Sparkles),
             Tone::Ghost,
-            kit::on(move |_, _, cx| cx.open_url(&link)),
+            kit::on(move |_, w, cx| {
+                if let Some(shell) = shell.upgrade() {
+                    shell.update(cx, |s, cx| s.open_whats_new(&a, w, cx));
+                }
+            }),
             cx,
         )
     };
@@ -593,7 +592,16 @@ pub(crate) fn banner(shell: &Shell, cx: &mut Context<'_, Shell>) -> Option<AnyEl
             (IconName::TriangleAlert, notice.text(), body)
         }
         Notice::Updated(v) => {
-            actions.push(notes(v, cx));
+            // The installed version's notes are no longer at hand: its release page has them.
+            let link = release_page(v);
+            actions.push(kit::button(
+                "update-whats-new",
+                "What's new",
+                Some(IconName::ExternalLink),
+                Tone::Ghost,
+                kit::on(move |_, _, cx| cx.open_url(&link)),
+                cx,
+            ));
             (IconName::CircleCheck, notice.text(), None)
         }
         Notice::Ready(a) => {
@@ -619,13 +627,13 @@ pub(crate) fn banner(shell: &Shell, cx: &mut Context<'_, Shell>) -> Option<AnyEl
                 },
                 cx,
             ));
-            actions.push(notes(&a.version, cx));
+            actions.push(notes(a, cx));
             let title = if a.urgent {
                 format!("Important update. {}", notice.text())
             } else {
                 notice.text()
             };
-            (IconName::CircleArrowUp, title, Some(notice_body(a)))
+            (IconName::CircleArrowUp, title, None)
         }
         Notice::Available(a) => {
             let (install, version) = (model.clone(), a.version.clone());
@@ -641,7 +649,7 @@ pub(crate) fn banner(shell: &Shell, cx: &mut Context<'_, Shell>) -> Option<AnyEl
                 }),
                 cx,
             ));
-            actions.push(notes(&a.version, cx));
+            actions.push(notes(a, cx));
             let skipper = model.clone();
             actions.push(kit::button(
                 "update-skip",
@@ -656,7 +664,7 @@ pub(crate) fn banner(shell: &Shell, cx: &mut Context<'_, Shell>) -> Option<AnyEl
             } else {
                 notice.text()
             };
-            (IconName::CircleArrowUp, title, Some(notice_body(a)))
+            (IconName::CircleArrowUp, title, None)
         }
         Notice::Manual(a) => {
             if status.kind == Kind::Deb {
@@ -702,14 +710,13 @@ pub(crate) fn banner(shell: &Shell, cx: &mut Context<'_, Shell>) -> Option<AnyEl
                     cx,
                 ));
             }
+            actions.push(notes(a, cx));
             let body = match (&m.result, &status.cannot_install) {
-                (Some(r), _) if m.command.is_some() => r.clone(),
-                (_, Some(why)) => {
-                    format!("{why}: this copy is updated by hand. {}", notice_body(a))
-                }
-                _ => notice_body(a),
+                (Some(r), _) if m.command.is_some() => Some(r.clone()),
+                (_, Some(why)) => Some(format!("{why}: this copy is updated by hand.")),
+                _ => None,
             };
-            (IconName::CircleArrowUp, notice.text(), Some(body))
+            (IconName::CircleArrowUp, notice.text(), body)
         }
     };
     let urgent =

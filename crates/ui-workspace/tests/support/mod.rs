@@ -318,7 +318,11 @@ pub fn updates_offering(
         ],
     );
     m.urgent = urgent;
-    m.notes = format!("- Faster scans\n- Clearer duplicate review in {version}");
+    // Notes shaped like the real ones: bullets that open with a bold headline, hard-wrapped.
+    m.notes = format!(
+        "- **Faster scans.** Rescans read only what changed,\n  and big folders open sooner.\n\
+         - **Clearer duplicate review in {version}.** The keeper is marked."
+    );
     server.route(
         "/update-manifest.json",
         Route::Body(envelope(&m).into_bytes()),

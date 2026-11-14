@@ -53,6 +53,8 @@ pub(crate) enum Overlay {
     Settings(Entity<SettingsWindow>),
     /// "Why no preview?" for one file (ADR-0109).
     PreviewHelp(Entity<crate::views::preview_help::PreviewHelpDialog>),
+    /// What's new: the release notes of an offered update (spec `app-updates`, design D8).
+    WhatsNew(Entity<crate::views::whats_new::WhatsNewDialog>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -821,6 +823,36 @@ impl Shell {
         self.overlay = Some(Overlay::PreviewHelp(dialog.clone()));
         cx.notify();
         dialog
+    }
+
+    /// The open What's new dialog.
+    pub fn whats_new(&self) -> Option<&Entity<crate::views::whats_new::WhatsNewDialog>> {
+        match &self.overlay {
+            Some(Overlay::WhatsNew(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Open What's new for an offered update: its notes from the signed manifest, formatted (no request).
+    pub fn open_whats_new(
+        &mut self,
+        available: &ps_service::updates::Available,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        use crate::views::whats_new::{WhatsNewDialog, WhatsNewEvent};
+        let dialog = cx.new(|cx| WhatsNewDialog::new(available, cx));
+        self._subscriptions.push(cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, e: &WhatsNewEvent, window, cx| match e {
+                WhatsNewEvent::Close => this.close_overlay(window, cx),
+            },
+        ));
+        let f = dialog.read(cx).focus_handle().clone();
+        window.focus(&f, cx);
+        self.overlay = Some(Overlay::WhatsNew(dialog));
+        cx.notify();
     }
 
     pub fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {

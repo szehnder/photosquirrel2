@@ -704,6 +704,7 @@ pub(crate) fn overlay(
         Overlay::Palette(p) => p.clone().into_any_element(),
         Overlay::Settings(s) => s.clone().into_any_element(),
         Overlay::PreviewHelp(d) => d.clone().into_any_element(),
+        Overlay::WhatsNew(d) => d.clone().into_any_element(),
     };
     let fade = Duration::from_millis(Motion::Normal.nominal_millis());
     let reduce = cx.reduce_motion();
