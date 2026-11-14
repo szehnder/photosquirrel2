@@ -231,6 +231,11 @@ install folders. Every install, rollback and kill test runs on fake layouts in a
   covers `photosquirrel`, `ui-gallery` and `ui-theme`. Still open: the bench on the reference desktop (task 10.2).
 - [ ] 7.5 (Deferred by the owner, 2026-11-10: on another build, later.) Screenshots of the consent card, the ready banner and the Settings group in dark and light themes (`cargo
   xtask screenshot`). Verify: a screenshot review shows no overflow, and every text names versions.
+- [ ] 7.6 The notice is one plain line and "What's new" shows the notes in the app (owner, after testing rc.3: the
+  banner showed raw `**` Markdown cut off with "…"). `ps_update::manifest::notes_blocks` replaces `notes_summary`;
+  `views/whats_new.rs` is a shell overlay like "Why no preview?". Verify:
+  `scenario_app_updates_notes_shown_in_the_app_not_in_the_notice`, the `notes_blocks` unit tests on the real 0.4.0
+  notes, and the updates UI tests.
 
 ## 8. CLI
 
