@@ -36,6 +36,11 @@ Both need the same thing: the AI insight filters on the Duplicates list, and pro
 - **CLI parity (ADR-0027).** `groups list` gains `--category`, `--people`, `--children`, `--pets`, `--pet-kind`,
   `--people-min`, `--people-max`, `--undescribed` and `--unreviewed`. With `--json`, the output reports `matching`
   and `matching_reviewed` alongside `groups` and `reviewed`.
+- **Fast reloads on large catalogs (owner's choice, 2026-11-21, new ADR-0133).** Measured on 1M files with
+  100,000 groups, the list took ~0.6 s to reload after every R, and ~0.9 s with an AI filter. Almost all of that
+  was rebuilding the groups from the catalog, and the AI freshness check counting every result. The app now keeps
+  the loaded groups in memory and re-filters them while they are unchanged, and the freshness check counts results
+  only when they changed. A new budget, `duplicates-list-reload`, holds a reload to 150 ms.
 - **Advisory only, unchanged.** A filter only hides groups from the list. It never changes a group, a keeper, an
   exclusion or what is exported (ADR-0021).
 
@@ -51,6 +56,7 @@ None.
   list follows new insights".
 - `ai-review`: adds the requirement "Open matching duplicates".
 - `cli`: adds the requirement "Groups filtered by insight".
+- `performance-budgets`: adds the requirement "Duplicates list reload budget".
 
 ## Impact
 
@@ -62,7 +68,9 @@ None.
 - **No catalog migration.** Insights and corrections are read where they are stored today (ADR-0042 for
   corrections). No new dependency.
 - **Depends on:** `review-progress-anchor` (the progress card this change extends).
-- **ADRs relied on:** ADR-0021 (AI output is advisory), ADR-0042 (corrections store), ADR-0019 (the list refreshes
+- **New ADR:** ADR-0133 (the review list keeps its loaded groups in memory; the insight stamp recounts only on
+  change; the `duplicates-list-reload` budget).
+- **ADRs relied on:** ADR-0026 (performance budgets), ADR-0021 (AI output is advisory), ADR-0042 (corrections store), ADR-0019 (the list refreshes
   on the insight stamp, not on per-result events), ADR-0027 (CLI as verification surface), ADR-0028 (tokens).
 
 ### Out of scope

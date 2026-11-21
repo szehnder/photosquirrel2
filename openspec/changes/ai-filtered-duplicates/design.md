@@ -82,13 +82,41 @@ An "AI" dropdown button next to Sort opens a menu: every category, "Contains peo
 "Contains pets", and "Not described yet". Each active AI filter shows as a removable chip in the existing wrapping
 chip group (`docs/gpui-notes.md`: chips in a `flex_1().min_w_0().flex_wrap()` group). Tokens only (ADR-0028).
 
+### D7. A review cache: reloads re-filter the loaded groups (ADR-0133)
+
+`ps-service::review::ReviewCache` holds the last `load_groups` result. That is each group's members with their
+digests, precomputed membership keys, keeper name, thumbnail and capture time, and the open suggestion counts per
+group. It is stored under a `GroupsKey`: one query over `dup_group`, `dup_member`, `dup_suggestion` and `scan_run`
+(counts and id sums), plus the review store's dismissal revision. `ReviewCache::list(svc, store, filter, sort,
+matcher)` reuses the cached groups when the key matches. Otherwise it reloads them. In both cases it then applies
+the review state, the AI match, the filter and the sort in memory. `ReviewCache::progress` replaces the
+`ProgressKey` cache that `review-progress-anchor` added: progress is the same pass without rows.
+
+`CatalogReview` owns one `ReviewCache`. The CLI keeps calling `review::list`, uncached, once per command.
+
+*Key coverage:* every column the list shows comes from a table the key covers. Keeper overrides change
+`dup_group.keeper_file_id` and `reasons`, merges and separations change members, dismissals change the store's
+dismissal revision, and scans change the run counters. A test makes each edit and checks that the reload shows it.
+
+### D8. The insight stamp recounts results only when they changed (ADR-0133)
+
+`insights::stamp` still returns `results`, but `InsightStore` remembers the last `(max(seq), max(at), count)`. It
+runs `count(*)` again only when either maximum moved. No code deletes `ai_result` rows, and every write takes the
+next `seq`, so this is exact. On 1M results the stamp drops from 235 ms to the cost of two indexed `max` lookups.
+
+### D9. `Library::insight_matches_many`
+
+The Duplicates list needs two file sets per load: its criteria, and "any insight". One call checks freshness once
+and answers both. The index keeps its last two answers, so alternating between the two never rebuilds a set.
+
 ## Risks / Trade-offs
 
-- [The first AI-filtered list builds the gallery's insight index (~2.4 s on 1M), if the gallery has not already]
-  → It runs on the background executor, and the list header shows "Loading…" meanwhile. Later filters reuse the
-  index. Measure `groups(filter)` with "contains people" on a 1M catalog with groups and seeded insights. If p95
-  after the index is built is above the Excluded view's 150 ms (`excluded-view-open`), propose a
-  `duplicates-ai-filter-open` budget and its ADR in this change, rather than shipping a slow filter.
+- [The first AI-filtered list builds the gallery's insight index (~2.4 s on 1M, plus 7.7 s the very first time
+  in the bench), if the gallery has not already] → It runs on the background executor, and the list header shows
+  "Loading…" meanwhile. Later filters reuse the index. Reloads are budgeted (`duplicates-list-reload`, D7); the
+  first load is not.
+- [The review cache holds the loaded groups in memory] → About 40 MB for 100,000 groups of 3. It is freed with the
+  catalog.
 - [The AI has described only keepers, so a group can match on a keeper the user then overrides] → The match uses
   every member with an insight. After an override, the old keeper still has its insight, so the group keeps
   matching. This is the any-member rule working as intended.

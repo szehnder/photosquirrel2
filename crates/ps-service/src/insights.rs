@@ -181,12 +181,16 @@ struct StoreState {
 #[derive(Debug)]
 pub struct InsightStore {
     file: JsonFile<StoreState>,
+    /// The last `(max(seq), max(at))` of `ai_result` and its row count: [`stamp`] recounts only when either
+    /// maximum moved (no code deletes a result and every write takes the next `seq`, ADR-0133).
+    counted: std::sync::Mutex<Option<((i64, i64), u64)>>,
 }
 
 impl InsightStore {
     pub fn open(data_dir: &Path) -> InsightStore {
         InsightStore {
             file: JsonFile::open(data_dir.join(INSIGHTS_FILE)),
+            counted: std::sync::Mutex::new(None),
         }
     }
 
@@ -198,6 +202,7 @@ impl InsightStore {
     pub fn in_memory() -> InsightStore {
         InsightStore {
             file: JsonFile::in_memory(),
+            counted: std::sync::Mutex::new(None),
         }
     }
 
@@ -355,23 +360,34 @@ pub struct InsightStamp {
 
 /// The current stamp (one cheap aggregate query).
 pub fn stamp(catalog: &Catalog, store: &InsightStore) -> Result<InsightStamp> {
-    let (results, latest_ms, seq, scans) = catalog.read().with(|c| {
+    // `max` over the `at` and `seq` indexes is two index lookups; `count(*)` is a pass over every result
+    // (~0.2 s on 1M), so it is reused while neither maximum moved (ADR-0133).
+    let (latest_ms, seq, scans) = catalog.read().with(|c| {
         Ok(c.query_row(
-            "SELECT count(*), coalesce(max(at), 0), coalesce(max(seq), 0),
+            "SELECT (SELECT coalesce(max(at), 0) FROM ai_result), (SELECT coalesce(max(seq), 0) FROM ai_result),
                     (SELECT coalesce(max(id), 0) FROM scan_run),
-                    (SELECT count(*) FROM scan_run WHERE ended_at IS NOT NULL)
-             FROM ai_result",
+                    (SELECT count(*) FROM scan_run WHERE ended_at IS NOT NULL)",
             [],
             |r| {
                 Ok((
-                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                    (r.get::<_, i64>(3)?, r.get::<_, i64>(4)?),
+                    (r.get::<_, i64>(2)?, r.get::<_, i64>(3)?),
                 ))
             },
         )?)
     })?;
+    let cached = *store.counted.lock().unwrap_or_else(|e| e.into_inner());
+    let results = match cached {
+        Some((at, n)) if at == (seq, latest_ms) => n,
+        _ => {
+            let n = catalog.read().with(|c| {
+                Ok(c.query_row("SELECT count(*) FROM ai_result", [], |r| r.get::<_, i64>(0))?)
+            })? as u64;
+            *store.counted.lock().unwrap_or_else(|e| e.into_inner()) = Some(((seq, latest_ms), n));
+            n
+        }
+    };
     Ok(InsightStamp {
         results,
         latest_ms,

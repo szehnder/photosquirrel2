@@ -5,17 +5,40 @@ the small corpus with recorded or seeded insights (`seed_demo`) in a temp dir, a
 
 ## 1. Service: insight filter on the review list
 
-- [ ] 1.1 Add `insight: Option<InsightCriteria>` and `undescribed: bool` to `ReviewFilter`, `matching` /
+- [x] 1.1 Add `insight: Option<InsightCriteria>` and `undescribed: bool` to `ReviewFilter`, `matching` /
   `matching_reviewed` to `ReviewList`, and `review::list_with` with the `GroupMatcher` trait, an index matcher
   over `ItemSet`s and a lookup matcher (design D1). Verify: `ps-service` tests show that a group matches on a
   non-keeper's insight, that undescribed groups are listed, that `matching` ignores the unreviewed chip, that a
   list without an AI filter consults no matcher, and that the index matcher and the lookup matcher list the same
   groups on a seeded corpus.
-- [ ] 1.2 Write `scenario_duplicate_review_filtering_never_changes_groups` in `ps-service`: snapshot every group's
+- [x] 1.2 Write `scenario_duplicate_review_filtering_never_changes_groups` in `ps-service`: snapshot every group's
   members and keeper, apply and clear each AI filter, and compare. Verify: it passes.
-- [ ] 1.3 Measure the app's filtered list with "contains people" on the 1M catalog with 100k groups and seeded
+- [x] 1.3 Measure the app's filtered list with "contains people" on the 1M catalog with 100k groups and seeded
   insights, after the index is built (design risk). Verify: record p95 in this task's progress note. If it is over
   150 ms, stop and propose a budget and ADR before continuing.
+  Progress: `ai_filtered_list_over_1m` measured a 1.14-1.30 s median: the unfiltered list (~620 ms), two insight
+  stamps (~235 ms each) and ~40 ms of filtering. Over 150 ms, so the owner chose (2026-11-21) to speed up reloads.
+  `insight_matches_many` (D9) brought it to 911 ms. The rest is group 1b, under ADR-0133 and the
+  `duplicates-list-reload` budget.
+
+## 1b. Fast reloads (ADR-0133)
+
+- [ ] 1b.1 Owner: review ADR-0133 (written `proposed` with this change). Verify: it reads `Status: accepted` and its
+  index row drops "(proposed)".
+- [x] 1b.2 `insights::stamp` recounts `ai_result` only when `max(seq)` or `max(at)` moved (design D8). Verify: a
+  `ps-service` test shows the stamp changes when a result is added or replaced in place, and the 1M bench prints
+  the stamp below 20 ms.
+  Progress: `insight_stamp_sees_new_and_replaced_results` passes; on 1M results the stamp went from 235 ms to 0.0 ms (median, `ai_filtered_list_over_1m`).
+- [x] 1b.3 `ReviewCache` with `GroupsKey`, used by `CatalogReview` for lists and progress, replacing the
+  `ProgressKey` cache (design D7). Verify: `ps-service` tests show a reload reuses the groups when nothing changed,
+  and that each edit (review, keeper override, merge, separate, dismiss a suggestion, rescan) appears in the next
+  reload. Existing Duplicates UI tests pass.
+  Progress: `review_cache_reloads_see_every_edit` compares the cached reload with an uncached list after a review mark (and checks the groups were reused), a keeper override, a merge, a separation, a dismissed suggestion and a rescan. On 1M files with 100k groups a reload takes 57 ms (was 634 ms; 911 ms with an AI filter), and cached progress 64 ms; the key query is 45 ms of that.
+- [x] 1b.4 Add the `duplicates-list-reload` budget: `perf-budgets.toml` (median <= 150 ms) and
+  `scenario_performance_budgets_duplicates_list_reload_within_budget` in `ps-service` `tests/budgets.rs` (1M files,
+  100,000 groups of 3, an insight per keeper; a reload after R, and a reload with "contains people"). Verify: the
+  release run is within budget, and its numbers are recorded here.
+  Progress: release run: first (uncached) load 674 ms; reload after a review mark 50.6 ms, with "contains people" 49.9 ms; `measure duplicates-list-reload=50.643 ms` (budget 150 ms).
 
 ## 2. Duplicates view: AI filter, progress and navigation
 

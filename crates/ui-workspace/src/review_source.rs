@@ -76,8 +76,8 @@ pub struct CatalogReview {
     backend: Arc<CatalogBackend>,
     review: std::sync::OnceLock<ReviewStore>,
     ai: Mutex<Option<(String, ps_service::ai::AiService)>>,
-    /// The last review progress and what it was computed from.
-    progress: Mutex<Option<(ps_service::review::ProgressKey, ReviewProgress)>>,
+    /// The loaded groups, re-filtered on every reload while they are unchanged (ADR-0133).
+    cache: ps_service::review::ReviewCache,
 }
 
 impl CatalogReview {
@@ -86,7 +86,7 @@ impl CatalogReview {
             backend,
             review: std::sync::OnceLock::new(),
             ai: Mutex::new(None),
-            progress: Mutex::new(None),
+            cache: ps_service::review::ReviewCache::new(),
         }
     }
 
@@ -103,26 +103,25 @@ impl CatalogReview {
 
 impl ReviewSource for CatalogReview {
     fn progress(&self) -> anyhow::Result<ReviewProgress> {
-        // The full pass is ~0.4 s on 100k groups; the key is one cheap query, so keep the last answer until
-        // the review state, the groups or a scan change it (review-progress-anchor 3.4).
-        let (scan, store) = (self.backend.scan()?, self.store()?);
-        let key = ps_service::review::progress_key(scan, store)?;
-        if let Some((k, p)) = *self.progress.lock().unwrap_or_else(|e| e.into_inner())
-            && k == key
-        {
-            return Ok(p);
-        }
-        let p = ps_service::review::progress(scan, store)?;
-        *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, p));
-        Ok(p)
+        // From the review cache: the catalog is read again only when the groups changed (ADR-0133).
+        Ok(self.cache.progress(self.backend.scan()?, self.store()?)?)
     }
     fn groups(&self, filter: ReviewFilter, sort: ReviewSort) -> anyhow::Result<ReviewList> {
-        Ok(ps_service::review::list(
-            self.backend.scan()?,
-            self.store()?,
-            filter,
-            sort,
-        )?)
+        let (scan, store) = (self.backend.scan()?, self.store()?);
+        if !filter.has_ai() {
+            return Ok(self.cache.list(scan, store, filter, sort, None)?);
+        }
+        // The gallery's insight index (built once, updated in place while the AI queue runs), so this list
+        // and the gallery agree on the same filter (ai-filtered-duplicates D1).
+        let mut sets = self.backend.insight_matches_many(&[
+            filter.insight.unwrap_or_default(),
+            ps_model::library::InsightCriteria::default(),
+        ])?;
+        let matcher = ps_service::review::IndexMatcher {
+            described: sets.pop().unwrap_or_default(),
+            matching: sets.pop().unwrap_or_default(),
+        };
+        Ok(self.cache.list(scan, store, filter, sort, Some(&matcher))?)
     }
     fn group(&self, id: FileId) -> anyhow::Result<ReviewDetail> {
         Ok(ps_service::review::show(

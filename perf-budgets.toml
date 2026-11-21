@@ -75,6 +75,18 @@ unit = "ms"
 change = "excluded-view-filters"
 source = { kind = "test", package = "ps-service", test = "budgets", name = "scenario_performance_budgets_excluded_view_open_within_budget" }
 
+# ai-filtered-duplicates (ADR-0133): the Duplicates list listed again after a change that leaves the groups unchanged
+# (a review mark; an AI filter), through the review cache, on 1M files with 100,000 groups of 3 and an AI insight per
+# keeper. The slower of the two medians of 5. The first, uncached load is printed, not budgeted. Measured 57 ms (both
+# reloads) on the review-progress bench catalog, against 634 ms (plain) and 911 ms (AI filter) before the cache.
+[[budget]]
+name = "duplicates-list-reload"
+metric = "median"
+max = 150.0
+unit = "ms"
+change = "ai-filtered-duplicates"
+source = { kind = "test", package = "ps-service", test = "budgets", name = "scenario_performance_budgets_duplicates_list_reload_within_budget" }
+
 # app-shell (ADR-0026): the release app with measurement flags (opens a window; skipped by `--ci`).
 # Cold start: launch to the first presented frame, median of 10 runs. Idle RSS: resident memory after 5 s idle
 # on the gallery's 1M synthetic catalog (built once, like first-gallery-frame; PHOTOSQUIRREL_SYNTHETIC_DIR moves

@@ -218,3 +218,170 @@ fn scenario_performance_budgets_excluded_view_open_within_budget() {
         150.0,
     );
 }
+
+/// `duplicates-list-reload` (ADR-0133, ai-filtered-duplicates): the Duplicates list listed again after a change
+/// that leaves the groups unchanged, through the review cache the app uses. The catalog: 1M files, 100,000 groups
+/// of 3 (one in every 10 files), and an AI insight for every keeper (half with people). Measured: a reload after a
+/// group is marked reviewed (no filter), and a reload with "contains people" (the gallery's insight index already
+/// built). Median of 5 each; the budget is the slower of the two medians. The first, uncached list is printed.
+#[test]
+fn scenario_performance_budgets_duplicates_list_reload_within_budget() {
+    use ps_catalog::groups::{GroupChanges, GroupRow, MemberEdge, MemberRow};
+    use ps_model::library::InsightCriteria;
+    use ps_service::review::{IndexMatcher, ReviewCache, ReviewFilter, ReviewSort, ReviewStore};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let lib = Library::open(tmp.path()).expect("open");
+    let cat = lib.catalog().expect("catalog").clone();
+    let src = add_source(&cat, "/mnt/bench");
+    let rows = rows();
+    write_rows(&cat, src, 0..rows, 2, full_row);
+    // Files with a content identity (probe-only rows have none), in id order.
+    let mut ids: Vec<FileId> = Vec::new();
+    cat.read()
+        .for_each_content(|file, _| ids.push(file))
+        .expect("contents");
+    ids.sort();
+    let groups = rows / 10;
+    assert!(
+        ids.len() as u64 >= groups * 3,
+        "{} files with content",
+        ids.len()
+    );
+    let group_rows: Vec<GroupRow> = (0..groups)
+        .map(|g| {
+            let files: Vec<FileId> = (0..3)
+                .map(|k| ids[(g * 3 + k) as usize])
+                .collect();
+            GroupRow {
+                id: files[0],
+                keeper: files[0],
+                display: files[0],
+                keeper_set: vec![files[0]],
+                reasons: serde_json::json!([]),
+                reclaimable_bytes: 1_000 + g,
+                digest: [0; 32],
+                members: files
+                    .iter()
+                    .enumerate()
+                    .map(|(rank, f)| MemberRow {
+                        file: *f,
+                        rank: rank as u32,
+                        edge: if rank == 0 {
+                            MemberEdge::Keeper
+                        } else {
+                            MemberEdge::Exact
+                        },
+                        via: (rank > 0).then_some(files[0]),
+                        phash_distance: None,
+                        dhash_distance: None,
+                        in_keeper_set: rank == 0,
+                    })
+                    .collect(),
+                reviewed_at_ms: None,
+            }
+        })
+        .collect();
+    let keepers: Vec<FileId> = group_rows.iter().map(|g| g.keeper).collect();
+    cat.writer()
+        .apply_groups(GroupChanges {
+            clear: true,
+            groups: group_rows,
+            ..GroupChanges::default()
+        })
+        .expect("groups");
+    let reader = cat.read();
+    for (i, k) in keepers.iter().enumerate() {
+        let content = reader
+            .file_by_id(*k)
+            .expect("read")
+            .and_then(|r| r.identity)
+            .expect("content");
+        let people = u32::from(i % 2 == 0);
+        cat.writer()
+            .ai_complete(ps_catalog::AiResultRow {
+                content,
+                provider: "bench".into(),
+                model: "bench".into(),
+                schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
+                prompt_version: 1,
+                insight: serde_json::json!({
+                    "subject": "bench", "category": if people == 1 { "people" } else { "landscape" },
+                    "is_photo": true, "people": {"total": people, "adults": people, "children": 0},
+                    "pets": [], "confidence": 0.9
+                })
+                .to_string(),
+                latency_ms: 1,
+                requests: 1,
+                at_ms: i as i64,
+            })
+            .expect("insight");
+    }
+    cat.writer().flush().expect("flush");
+
+    let svc = lib.scan().expect("scan");
+    let store = ReviewStore::in_memory();
+    let cache = ReviewCache::new();
+    let people = InsightCriteria {
+        people: true,
+        ..InsightCriteria::default()
+    };
+    let list = |filter: ReviewFilter| {
+        let mut sets = lib
+            .insight_matches_many(&[people, InsightCriteria::default()])
+            .expect("sets");
+        let index = IndexMatcher {
+            described: sets.pop().expect("described"),
+            matching: sets.pop().expect("matching"),
+        };
+        cache
+            .list(svc, &store, filter, ReviewSort::Reclaimable, Some(&index))
+            .expect("list")
+    };
+    let filtered = ReviewFilter {
+        insight: Some(people),
+        ..ReviewFilter::default()
+    };
+    let t = Instant::now();
+    let first = list(ReviewFilter::default());
+    println!("duplicates list, first (uncached) load: {:?}", t.elapsed());
+    assert_eq!(first.groups, groups);
+    assert_eq!(list(filtered).matching, groups.div_ceil(2));
+    let median = |mut v: Vec<Duration>| {
+        v.sort();
+        v[v.len() / 2].as_secs_f64() * 1e3
+    };
+    let after_review = median(
+        first
+            .rows
+            .iter()
+            .take(5)
+            .map(|r| {
+                ps_service::review::set_reviewed(svc, &store, r.id, true).expect("review");
+                let t = Instant::now();
+                let l = list(ReviewFilter::default());
+                let e = t.elapsed();
+                assert!(l.rows.iter().any(|x| x.id == r.id && x.reviewed));
+                e
+            })
+            .collect(),
+    );
+    let with_filter = median(
+        (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                list(filtered);
+                t.elapsed()
+            })
+            .collect(),
+    );
+    println!(
+        "duplicates list reload: after a review mark {after_review:.1} ms, with an AI filter {with_filter:.1} ms"
+    );
+    budget(
+        "duplicates-list-reload",
+        after_review.max(with_filter),
+        "ms",
+        150.0,
+    );
+}
