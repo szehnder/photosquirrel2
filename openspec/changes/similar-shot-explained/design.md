@@ -26,6 +26,11 @@
 
 ### D1. `ps-service` builds the explanation from the stored contradiction
 
+*As built:* the wording lives on `SuggestionInfo`, not `SuggestionCard`, so the CLI (which lists `SuggestionInfo`) and
+the app share it. `SuggestionInfo` gains the parsed `contradiction` (already stored in the reason JSON), and the time
+difference comes from its two capture times. `ps_service::groups::{ReasonKind, similar_shot_limits, delta_text}`; the
+card's `delta_label` now uses `delta_text`. `Contradiction` is re-exported from `ps_service::groups` for the UI.
+
 Add `SuggestionInfo::reason_kind()`, returning `capture_time | sub_second | camera_serial | camera_model |
 two_camera_originals | frame`, and `SuggestionCard::explanation()` / `explanation_detail()`:
 
@@ -58,6 +63,9 @@ It has a "Got it" button. The numbers are interpolated from D1's service accesso
 caution applies to the UI too.
 
 ### D3. Dismissal in `UiState`
+
+*As built:* the flag is `DuplicatesViewState.similar_shots_explained` (inside `UiState`, next to the Duplicates filter
+from `ai-filtered-duplicates`), saved through the same `DuplicatesState` hand-off.
 
 Add `similar_shots_explained: bool` to `UiState` (`#[serde(default)]`, so old files read as `false`). It is set and
 saved on "Got it". The tab header's info button (`IconName::Info`) and the info button on the group's "similar shots

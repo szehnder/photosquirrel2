@@ -93,6 +93,8 @@ pub struct UiState {
 pub struct DuplicatesViewState {
     pub filter: ps_service::review::ReviewFilter,
     pub sort: ps_service::review::ReviewSort,
+    /// "How similar shots are found" was dismissed (similar-shot-explained); an older file reads `false`.
+    pub similar_shots_explained: bool,
 }
 
 /// How the Excluded view shows its files.

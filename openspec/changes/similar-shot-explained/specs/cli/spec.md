@@ -10,5 +10,5 @@ The suggestions command's JSON output SHALL give each suggestion a reason kind (
 - **THEN** each burst pair has reason kind capture time and an explanation that names its time difference
 
 #### Scenario: Explain prints the reason
-- **WHEN** the explain command runs on the two files of a burst pair taken 5 s apart
-- **THEN** it prints "Look the same, but taken 5 s apart" with both distances and their limits
+- **WHEN** the explain command runs on the two files of a burst pair taken N seconds apart
+- **THEN** it prints "Look the same, but taken N s apart" with both distances and their limits

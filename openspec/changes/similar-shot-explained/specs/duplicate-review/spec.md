@@ -25,8 +25,8 @@ The first time the user opens the similar shots, the view SHALL show an explaine
 Every similar-shot suggestion SHALL show a one-line reason in plain words naming what shows the two files are different shots (capture time difference, different camera, different frame, or two camera originals), and its tooltip SHALL add both hash distances against their limits and why such pairs are kept separate.
 
 #### Scenario: Burst pair reason
-- **WHEN** the suggestions panel shows a corpus burst pair taken 5 s apart
-- **THEN** its reason reads "Look the same, but taken 5 s apart" and its tooltip names the pair's pHash and dHash distances with the limits 6 and 8
+- **WHEN** the suggestions panel shows a corpus burst pair taken N seconds apart
+- **THEN** its reason reads "Look the same, but taken N s apart" and its tooltip names the pair's pHash and dHash distances with the limits 6 and 8
 
 #### Scenario: Different frames reason
 - **WHEN** the suggestions panel shows two converted burst frames that record different frame numbers

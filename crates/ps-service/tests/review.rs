@@ -996,3 +996,91 @@ fn insight_stamp_sees_new_and_replaced_results() {
     assert_eq!(s2.results, s1.results, "replaced, not added");
     assert_ne!(s2, s1, "a replaced result changes the stamp");
 }
+
+// ---- similar-shot-explained: plain-words reasons --------------------------------------------------------------
+
+fn suggestion_with(c: ps_dedup::edges::Contradiction) -> ps_service::groups::SuggestionInfo {
+    ps_service::groups::SuggestionInfo {
+        file_a: ps_model::FileId(1),
+        file_b: ps_model::FileId(2),
+        path_a: None,
+        path_b: None,
+        phash_distance: 3,
+        dhash_distance: 4,
+        reason: c.to_string(),
+        contradiction: Some(c),
+    }
+}
+
+/// 1.1 and 1.2: every contradiction has a reason kind and a sentence; the limits are the grouping's own.
+#[test]
+fn every_contradiction_explains_itself() {
+    use ps_dedup::edges::{
+        Contradiction as C, MAX_ASPECT_DIFF, MAX_DHASH_DISTANCE, MAX_PHASH_DISTANCE,
+    };
+    use ps_model::CaptureTime;
+    use ps_service::groups::{ReasonKind as K, similar_shot_limits};
+    let l = similar_shot_limits();
+    assert_eq!((l.phash, l.dhash), (MAX_PHASH_DISTANCE, MAX_DHASH_DISTANCE));
+    assert!((l.aspect_percent - MAX_ASPECT_DIFF * 100.0).abs() < 1e-9);
+    let t = |s: u8| CaptureTime::from_parts(2024, 5, 1, 10, 0, s);
+    let dims = ps_model::Dimensions::new(4000, 3000);
+    let cases = [
+        (
+            C::CaptureSecond { a: t(0), b: t(5) },
+            K::CaptureTime,
+            "Look the same, but taken 5 s apart",
+        ),
+        (
+            C::SubSecond {
+                a_millis: 100,
+                b_millis: 350,
+            },
+            K::SubSecond,
+            "Look the same, but 250 ms apart in one burst",
+        ),
+        (
+            C::CameraSerial {
+                a: "123".into(),
+                b: "456".into(),
+            },
+            K::CameraSerial,
+            "Look the same, but taken with different cameras (123 / 456)",
+        ),
+        (
+            C::CameraModel {
+                a: "EOS R5".into(),
+                b: "X-T4".into(),
+            },
+            K::CameraModel,
+            "Look the same, but taken with different cameras (EOS R5 / X-T4)",
+        ),
+        (
+            C::TwoCameraOriginals {
+                model: "EOS R5".into(),
+                dims,
+            },
+            K::TwoCameraOriginals,
+            "Two camera originals of the same size (EOS R5)",
+        ),
+        (
+            C::FrameId {
+                a: "0412".into(),
+                b: "0413".into(),
+            },
+            K::Frame,
+            "Look the same, but frames 0412 and 0413",
+        ),
+    ];
+    for (c, kind, line) in cases {
+        let s = suggestion_with(c);
+        assert_eq!(s.reason_kind(), Some(kind));
+        assert_eq!(s.explanation(), line);
+        let detail = s.explanation_detail();
+        assert!(
+            detail.starts_with("pHash 3 of 6, dHash 4 of 8; "),
+            "{detail}"
+        );
+        assert!(detail.ends_with("so they are kept separate"), "{detail}");
+    }
+}

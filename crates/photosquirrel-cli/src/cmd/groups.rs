@@ -191,17 +191,43 @@ pub fn merge(ctx: &Ctx, a: i64, b: i64) -> Result<()> {
     emit(ctx.json, "groups merge", &d, print_detail)
 }
 
+/// A suggestion with its plain-words reason (similar-shot-explained): the same sentences the app shows.
+#[derive(Serialize)]
+struct SuggestionOut {
+    #[serde(flatten)]
+    info: ps_service::groups::SuggestionInfo,
+    reason_kind: Option<ps_service::groups::ReasonKind>,
+    explanation: String,
+    explanation_detail: String,
+}
+
+impl From<ps_service::groups::SuggestionInfo> for SuggestionOut {
+    fn from(info: ps_service::groups::SuggestionInfo) -> Self {
+        SuggestionOut {
+            reason_kind: info.reason_kind(),
+            explanation: info.explanation(),
+            explanation_detail: info.explanation_detail(),
+            info,
+        }
+    }
+}
+
 pub fn suggestions(ctx: &Ctx, file: Option<i64>, limit: u64) -> Result<()> {
     let svc = ctx.reader()?;
-    let s = svc.groups().suggestions(file.map(FileId), limit)?;
+    let s: Vec<SuggestionOut> = svc
+        .groups()
+        .suggestions(file.map(FileId), limit)?
+        .into_iter()
+        .map(SuggestionOut::from)
+        .collect();
     emit(ctx.json, "groups suggestions", &s, |s| {
         if s.is_empty() {
             println!("no similar-shot suggestions");
         }
         for x in s {
             println!(
-                "files {} and {} (pHash {}, dHash {}): {}",
-                x.file_a, x.file_b, x.phash_distance, x.dhash_distance, x.reason
+                "files {} and {}: {}\n  {}",
+                x.info.file_a, x.info.file_b, x.explanation, x.explanation_detail
             );
         }
     })
@@ -216,10 +242,25 @@ struct ExplainOut {
 
 pub fn explain(ctx: &Ctx, a: i64, b: i64) -> Result<()> {
     let svc = ctx.reader()?;
+    let mut lines = Vec::new();
+    // A stored similar-shot suggestion: its plain-words reason first.
+    if let Some(s) = svc
+        .groups()
+        .suggestions(Some(FileId(a)), u64::MAX / 2)?
+        .into_iter()
+        .find(|s| {
+            (s.file_a, s.file_b) == (FileId(a), FileId(b))
+                || (s.file_a, s.file_b) == (FileId(b), FileId(a))
+        })
+    {
+        lines.push(s.explanation());
+        lines.push(s.explanation_detail());
+    }
+    lines.extend(svc.groups().explain_pair(FileId(a), FileId(b))?);
     let out = ExplainOut {
         a: FileId(a),
         b: FileId(b),
-        lines: svc.groups().explain_pair(FileId(a), FileId(b))?,
+        lines,
     };
     emit(ctx.json, "groups explain", &out, |o| {
         println!("files {} and {}:", o.a, o.b);

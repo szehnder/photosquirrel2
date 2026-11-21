@@ -281,6 +281,12 @@ pub struct DuplicatesView {
     cleanup_poll: Option<Task<()>>,
     /// While an AI filter is set: the insight stamp last seen, and the task polling it (ADR-0019).
     insight_poll: Option<Task<()>>,
+    /// The similar-shot list's scroll, so the selected pair is always drawn.
+    suggestion_scroll: UniformListScrollHandle,
+    /// "How similar shots are found" was dismissed (remembered per catalog).
+    similar_explained: bool,
+    /// The explainer reopened from an info button.
+    show_explainer: bool,
 }
 
 /// Shown while a cleanup run is moving files: the edits are not offered (ADR-0099).
@@ -319,6 +325,9 @@ impl DuplicatesView {
             generation: 0,
             cleanup_poll: None,
             insight_poll: None,
+            suggestion_scroll: UniformListScrollHandle::new(),
+            similar_explained: state.similar_shots_explained,
+            show_explainer: false,
         };
         if std::env::var("PHOTOSQUIRREL_REVIEW_TAB").as_deref() == Ok("suggestions") {
             // Dev-only: scripted screenshots of the suggestions panel (KDE gives agents one frame).
@@ -737,7 +746,30 @@ impl DuplicatesView {
         cx.set_global(DuplicatesState(crate::persist::DuplicatesViewState {
             filter: self.filter,
             sort: self.sort,
+            similar_shots_explained: self.similar_explained,
         }));
+    }
+
+    /// The "How similar shots are found" panel is showing (similar-shot-explained).
+    pub fn explainer_shown(&self) -> bool {
+        self.tab == Tab::Suggestions && (!self.similar_explained || self.show_explainer)
+    }
+
+    /// "Got it": hide the explainer and remember that across restarts.
+    pub fn dismiss_explainer(&mut self, cx: &mut Context<'_, Self>) {
+        self.similar_explained = true;
+        self.show_explainer = false;
+        self.remember(cx);
+        cx.notify();
+    }
+
+    /// An info button: the similar shots with the explainer, without forgetting it was dismissed.
+    pub fn show_explainer(&mut self, cx: &mut Context<'_, Self>) {
+        self.show_explainer = true;
+        if self.tab != Tab::Suggestions {
+            self.set_tab(Tab::Suggestions, cx);
+        }
+        cx.notify();
     }
 
     /// While an AI filter is set, poll the insight stamp every half second and reload when it changes, so groups
@@ -1061,6 +1093,8 @@ impl DuplicatesView {
     pub fn select_suggestion(&mut self, ix: usize, cx: &mut Context<'_, Self>) {
         self.selected_suggestion = ix;
         self.explain = None;
+        self.suggestion_scroll
+            .scroll_to_item(ix, ScrollStrategy::Center);
         cx.notify();
     }
 
@@ -1208,6 +1242,47 @@ fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElemen
         .tooltip(move |window, cx| {
             gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
         })
+        .into_any_element()
+}
+
+/// The explainer's text, with the limits the grouping applies (similar-shot-explained).
+pub fn explainer_text() -> String {
+    let l = ps_service::groups::similar_shot_limits();
+    format!(
+        "Two photos are listed here when they look alike as closely as copies do (pHash within {}, dHash \
+         within {}, shape within {}%) but their details show two different shots: different capture times, \
+         cameras or frame numbers. PhotoSquirrel never merges them; every shot stays in your library and is \
+         exported. Shots of the same moment that look different, because someone moved or the camera turned, \
+         are not listed here.",
+        l.phash,
+        l.dhash,
+        (l.aspect_percent * 100.0).round() / 100.0
+    )
+}
+
+/// A small info icon that opens the similar-shots explainer.
+fn info_button(
+    id: &'static str,
+    tip: &'static str,
+    cx: &mut Context<'_, DuplicatesView>,
+) -> AnyElement {
+    let colors = *ui_theme::colors(cx);
+    h_flex()
+        .id(id)
+        .test_support()
+        .role(Role::Button)
+        .aria_label(SharedString::from(tip))
+        .flex_none()
+        .p(Tokens::space(0.5))
+        .rounded(Tokens::RADIUS_SM)
+        .cursor_pointer()
+        .text_color(colors.text_muted)
+        .hover(|d| d.bg(colors.hover).text_color(colors.text))
+        .on_click(cx.listener(|this, _, _, cx| this.show_explainer(cx)))
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+        })
+        .child(Icon::new(IconName::Info).size(Tokens::icon_sm()))
         .into_any_element()
 }
 
@@ -1425,6 +1500,13 @@ impl DuplicatesView {
                 cx,
             ))
             .child(div().flex_1())
+            .when(tab == Tab::Suggestions, |e| {
+                e.child(info_button(
+                    "duplicates-similar-info",
+                    "How similar shots are found",
+                    cx,
+                ))
+            })
             .child(kbd("B", cx));
         let header = v_flex()
             .flex_none()
@@ -1469,6 +1551,7 @@ impl DuplicatesView {
                 .border_r_1()
                 .border_color(colors.border)
                 .child(header)
+                .children(self.explainer_shown().then(|| self.render_explainer(cx)))
                 .child(self.render_suggestion_list(cx))
                 .into_any_element();
         }
@@ -1783,12 +1866,63 @@ impl DuplicatesView {
             .into_any_element()
     }
 
+    fn render_explainer(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        let colors = *ui_theme::colors(cx);
+        let text = explainer_text();
+        v_flex()
+            .id("duplicates-similar-explainer")
+            .test_support()
+            .flex_none()
+            .m(Tokens::space(3.0))
+            .p(Tokens::space(3.0))
+            .gap(Tokens::space(2.0))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(colors.accent_soft)
+            .child(
+                h_flex()
+                    .gap(Tokens::space(2.0))
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Info)
+                            .size(Tokens::icon_sm())
+                            .text_color(colors.accent_text),
+                    )
+                    .child(
+                        div()
+                            .text_size(Tokens::text_sm())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("How similar shots are found"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("duplicates-similar-explainer-text")
+                    .test_support()
+                    .aria_label(SharedString::from(text.clone()))
+                    .min_w_0()
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text)
+                    .child(text),
+            )
+            .child(h_flex().child(div().flex_1()).child(action_button(
+                "duplicates-similar-explainer-ok",
+                "Got it",
+                None,
+                None,
+                Tone::Quiet,
+                cx,
+                |this, _, cx| this.dismiss_explainer(cx),
+            )))
+            .into_any_element()
+    }
+
     fn render_suggestion_list(&mut self, cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
         let items = self.suggestions.clone();
         let n = items.as_ref().map_or(0, |s| s.len());
         let selected = self.selected_suggestion;
         let images = self.images.clone();
+        let scroll = self.suggestion_scroll.clone();
         uniform_list(
             "duplicates-suggestions",
             n,
@@ -1850,21 +1984,35 @@ impl DuplicatesView {
                                                 s.a.card.name, s.b.card.name
                                             )),
                                     )
-                                    .child(
+                                    .child({
+                                        let line = s.info.explanation();
+                                        let tip = s.info.explanation_detail();
                                         div()
-                                            .font_family(MONO_FONT_FAMILY)
+                                            .id(SharedString::from(format!(
+                                                "duplicates-suggestion-reason-{ix}"
+                                            )))
+                                            .test_support()
+                                            .aria_label(SharedString::from(line.clone()))
                                             .text_size(Tokens::text_2xs())
                                             .text_color(colors.text_muted)
-                                            .child(
-                                                s.delta_label().unwrap_or_else(|| "undated".into()),
-                                            ),
-                                    ),
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(
+                                                    tip.clone(),
+                                                )
+                                                .build(window, cx)
+                                            })
+                                            .child(line)
+                                    }),
                             )
                             .into_any_element()
                     })
                     .collect()
             }),
         )
+        .track_scroll(&scroll)
         .flex_1()
         .into_any_element()
     }
@@ -2502,6 +2650,11 @@ impl DuplicatesView {
                             "{related} similar shot{} nearby (bursts are never merged automatically)",
                             if related == 1 { "" } else { "s" }
                         ))
+                        .child(info_button(
+                            "duplicates-related-info",
+                            "How similar shots are found",
+                            cx,
+                        ))
                         .child(div().flex_1())
                         .child(action_button(
                             "duplicates-open-suggestions",
@@ -3031,12 +3184,21 @@ impl DuplicatesView {
                                                 None => "Capture time unknown".into(),
                                             }),
                                     )
-                                    .child(
+                                    .child({
+                                        let line = s.info.explanation();
+                                        let tip = s.info.explanation_detail();
                                         div()
+                                            .id("duplicates-suggestion-reason-line")
+                                            .test_support()
+                                            .aria_label(SharedString::from(line.clone()))
                                             .text_size(Tokens::text_sm())
                                             .text_color(colors.text_muted)
-                                            .child(s.info.reason.clone()),
-                                    ),
+                                            .tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                                    .build(window, cx)
+                                            })
+                                            .child(line)
+                                    }),
                             )
                             .child(
                                 div()

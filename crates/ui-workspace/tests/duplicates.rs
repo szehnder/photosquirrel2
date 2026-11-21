@@ -1594,3 +1594,202 @@ fn scenario_duplicate_review_filter_kept_across_restarts(cx: &mut TestAppContext
     assert_eq!(vcx.update(|_, cx| view.read(cx).filter), people);
     assert!(exists("duplicates-ai-chip-people", &mut vcx));
 }
+
+// ---- similar-shot-explained -----------------------------------------------------------------------------------
+
+/// Switch to the similar shots and wait for them.
+fn open_similar(
+    view: &Entity<DuplicatesView>,
+    cx: &mut VisualTestContext,
+) -> Vec<ps_service::review::SuggestionCard> {
+    cx.simulate_keystrokes("b");
+    let v = view.clone();
+    wait_until(cx, "the suggestions", move |cx| {
+        cx.update(|_, cx| {
+            v.read(cx).tab == Tab::Suggestions
+                && v.read(cx).suggestions().is_some_and(|s| !s.is_empty())
+        })
+    });
+    cx.update(|_, cx| view.read(cx).suggestions().unwrap().to_vec())
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_explainer_shown_the_first_time(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    assert!(
+        !exists("duplicates-similar-explainer", &mut cx),
+        "not on the groups tab"
+    );
+    open_similar(&view, &mut cx);
+    assert!(exists("duplicates-similar-explainer", &mut cx));
+    let text = label("duplicates-similar-explainer-text", &mut cx).unwrap();
+    for needle in [
+        "pHash within 6",
+        "dHash within 8",
+        "shape within 2%",
+        "never merges",
+        "are not listed here",
+    ] {
+        assert!(text.contains(needle), "{needle:?} in {text}");
+    }
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_explainer_thresholds_follow_the_grouping(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    open_similar(&view, &mut cx);
+    let l = ps_service::groups::similar_shot_limits();
+    let text = label("duplicates-similar-explainer-text", &mut cx).unwrap();
+    assert!(
+        text.contains(&format!("pHash within {}", l.phash)),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("dHash within {}", l.dhash)),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("shape within {}%", l.aspect_percent.round())),
+        "{text}"
+    );
+    assert_eq!(text, duplicates::explainer_text());
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_explainer_from_a_group(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    // Tall enough that the group's "similar shots nearby" line is on screen.
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(1440.0), gpui_kit::px(2400.0)));
+    // A group with similar shots nearby, then its "Show similar shots".
+    open_group(&view, &backend, &mut cx, |d| {
+        !d.group.suggestions.is_empty()
+    });
+    settle(&view, &mut cx);
+    assert!(
+        present("duplicates-related-info", &mut cx),
+        "an info button on the line"
+    );
+    click("duplicates-open-suggestions", &mut cx);
+    settle(&view, &mut cx);
+    assert!(cx.update(|_, cx| view.read(cx).explainer_shown()));
+    assert!(exists("duplicates-similar-explainer", &mut cx));
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_explainer_stays_dismissed(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    {
+        let t = template();
+        std::fs::create_dir_all(dirs.data()).unwrap();
+        for entry in std::fs::read_dir(&t.dir).unwrap() {
+            let p = entry.unwrap().path();
+            if p.is_file() && !p.to_string_lossy().ends_with(".lock") {
+                std::fs::copy(&p, dirs.data().join(p.file_name().unwrap())).unwrap();
+            }
+        }
+    }
+    let show = |shell: &Entity<Shell>, vcx: &mut VisualTestContext| {
+        shell.update_in(vcx, |s, w, cx| s.show_view(ViewId::Duplicates, w, cx));
+        wait_until(vcx, "the duplicates view", |cx| {
+            cx.update(|_, cx| duplicates::current(cx).is_some_and(|v| v.read(cx).list().is_some()))
+        });
+        vcx.update(|_, cx| duplicates::current(cx).unwrap())
+    };
+    {
+        let backend = Arc::new(CatalogBackend::open(&dirs.data()).unwrap());
+        init_app(cx, backend, Some(&dirs));
+        let (shell, mut vcx) = open(cx);
+        wait_loaded(&shell, &mut vcx);
+        let view = show(&shell, &mut vcx);
+        open_similar(&view, &mut vcx);
+        click("duplicates-similar-explainer-ok", &mut vcx);
+        assert!(!exists("duplicates-similar-explainer", &mut vcx));
+        shell.update_in(&mut vcx, |s, w, cx| s.save_now(w, cx));
+    }
+    // A restart: the explainer stays dismissed, and the tab's info button shows it again.
+    let (shell, mut vcx) = open(cx);
+    wait_loaded(&shell, &mut vcx);
+    let view = show(&shell, &mut vcx);
+    open_similar(&view, &mut vcx);
+    assert!(
+        !exists("duplicates-similar-explainer", &mut vcx),
+        "stays dismissed after a restart"
+    );
+    click("duplicates-similar-info", &mut vcx);
+    assert!(
+        exists("duplicates-similar-explainer", &mut vcx),
+        "the info button shows it"
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_burst_pair_reason(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let all = open_similar(&view, &mut cx);
+    let ix = all
+        .iter()
+        .position(|s| {
+            s.info.reason_kind() == Some(ps_service::groups::ReasonKind::CaptureTime)
+                && s.time_delta_ms
+                    .is_some_and(|d| (1_000..120_000).contains(&d))
+        })
+        .expect("a corpus burst pair taken seconds apart");
+    let secs = all[ix].time_delta_ms.unwrap() / 1000;
+    let want = format!("Look the same, but taken {secs} s apart");
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.select_suggestion(ix, cx)));
+    }
+    assert_eq!(
+        label(&format!("duplicates-suggestion-reason-{ix}"), &mut cx).as_deref(),
+        Some(want.as_str()),
+        "the row"
+    );
+    assert_eq!(
+        label("duplicates-suggestion-reason-line", &mut cx).as_deref(),
+        Some(want.as_str()),
+        "the pair's detail"
+    );
+    // Its tooltip: both distances against the limits 6 and 8.
+    let s = &all[ix].info;
+    assert_eq!(
+        s.explanation_detail(),
+        format!(
+            "pHash {} of 6, dHash {} of 8; a different capture time means a different shot, so they are kept separate",
+            s.phash_distance, s.dhash_distance
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_different_frames_reason(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let all = open_similar(&view, &mut cx);
+    let ix = all
+        .iter()
+        .position(|s| s.info.reason_kind() == Some(ps_service::groups::ReasonKind::Frame))
+        .expect("two converted burst frames that record different frame numbers");
+    let Some(ps_service::groups::Contradiction::FrameId { a, b }) =
+        all[ix].info.contradiction.clone()
+    else {
+        unreachable!()
+    };
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.select_suggestion(ix, cx)));
+    }
+    let line = label(&format!("duplicates-suggestion-reason-{ix}"), &mut cx).unwrap();
+    assert_eq!(
+        label("duplicates-suggestion-reason-line", &mut cx).as_deref(),
+        Some(line.as_str())
+    );
+    assert!(
+        line.contains(&a) && line.contains(&b),
+        "{line} names {a} and {b}"
+    );
+}

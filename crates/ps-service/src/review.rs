@@ -1123,19 +1123,7 @@ pub struct SuggestionCard {
 impl SuggestionCard {
     /// "5 s apart", "same second", "2 min apart".
     pub fn delta_label(&self) -> Option<String> {
-        let d = self.time_delta_ms?;
-        let s = d / 1000;
-        Some(if d == 0 {
-            "same instant".into()
-        } else if s == 0 {
-            format!("{d} ms apart")
-        } else if s < 120 {
-            format!("{s} s apart")
-        } else if s < 7_200 {
-            format!("{} min apart", s / 60)
-        } else {
-            format!("{} h apart", s / 3_600)
-        })
+        self.time_delta_ms.map(crate::groups::delta_text)
     }
 }
 

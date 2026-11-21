@@ -1287,3 +1287,75 @@ fn scenario_cli_cli_lists_undescribed_groups() {
         assert!(help.contains(flag), "{flag} in {help}");
     }
 }
+
+// ---- similar-shot-explained -----------------------------------------------------------------------------------
+
+/// A burst pair taken whole seconds apart: (a, b, seconds).
+fn burst_pair(data: &Path) -> (i64, i64, i64, Value) {
+    let v = json(&ok(
+        data,
+        &["--json", "groups", "suggestions", "--limit", "100000"],
+    ));
+    for s in v["data"].as_array().unwrap() {
+        if s["reason_kind"] == "capture_time"
+            && let Some(c) = s.get("contradiction")
+        {
+            let t = |k: &str| {
+                c[k]["local_seconds"].as_i64().unwrap() * 1000
+                    + c[k]["millis"].as_i64().unwrap_or(0)
+            };
+            let ms = (t("a") - t("b")).abs();
+            if (1_000..120_000).contains(&ms) {
+                return (
+                    s["file_a"].as_i64().unwrap(),
+                    s["file_b"].as_i64().unwrap(),
+                    ms / 1000,
+                    s.clone(),
+                );
+            }
+        }
+    }
+    panic!("no burst pair taken seconds apart in {v}");
+}
+
+#[test]
+fn scenario_cli_suggestion_json_carries_the_explanation() {
+    let data = scanned();
+    let (_, _, secs, s) = burst_pair(data.path());
+    assert_eq!(s["reason_kind"], "capture_time");
+    assert_eq!(
+        s["explanation"].as_str(),
+        Some(format!("Look the same, but taken {secs} s apart").as_str())
+    );
+    let detail = s["explanation_detail"].as_str().unwrap();
+    assert!(
+        detail.contains("of 6") && detail.contains("of 8"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn scenario_cli_explain_prints_the_reason() {
+    let data = scanned();
+    let (a, b, secs, s) = burst_pair(data.path());
+    let out = String::from_utf8_lossy(
+        &ok(
+            data.path(),
+            &["groups", "explain", &a.to_string(), &b.to_string()],
+        )
+        .stdout,
+    )
+    .into_owned();
+    assert!(
+        out.contains(&format!("Look the same, but taken {secs} s apart")),
+        "{out}"
+    );
+    let (p, d) = (
+        s["phash_distance"].as_u64().unwrap(),
+        s["dhash_distance"].as_u64().unwrap(),
+    );
+    assert!(
+        out.contains(&format!("pHash {p} of 6, dHash {d} of 8")),
+        "{out}"
+    );
+}
