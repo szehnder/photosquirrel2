@@ -11,7 +11,7 @@ use ps_service::ai::AiStatus;
 use ps_service::groups::SeparateOutcome;
 use ps_service::insights::{Correction, InsightFilter, InsightItem, InsightStamp, InsightStore};
 use ps_service::review::{
-    ReviewDetail, ReviewFilter, ReviewList, ReviewSort, ReviewStore, SuggestionCard,
+    ReviewDetail, ReviewFilter, ReviewList, ReviewProgress, ReviewSort, ReviewStore, SuggestionCard,
 };
 use ps_service::secrets::Secrets;
 
@@ -20,6 +20,13 @@ use crate::library_backend::CatalogBackend;
 /// Duplicate review and AI review data.
 pub trait ReviewSource: Send + Sync + 'static {
     fn groups(&self, filter: ReviewFilter, sort: ReviewSort) -> anyhow::Result<ReviewList>;
+    /// How many groups there are and how many are reviewed (the navigator's count).
+    fn progress(&self) -> anyhow::Result<ReviewProgress> {
+        Ok(ReviewProgress::from(&self.groups(
+            ReviewFilter::default(),
+            ReviewSort::Reclaimable,
+        )?))
+    }
     fn group(&self, id: FileId) -> anyhow::Result<ReviewDetail>;
     /// Make `file` the keeper ("chosen by you"); returns the group as it is now.
     fn set_keeper(&self, group: FileId, file: FileId) -> anyhow::Result<ReviewDetail>;
@@ -69,6 +76,8 @@ pub struct CatalogReview {
     backend: Arc<CatalogBackend>,
     review: std::sync::OnceLock<ReviewStore>,
     ai: Mutex<Option<(String, ps_service::ai::AiService)>>,
+    /// The last review progress and what it was computed from.
+    progress: Mutex<Option<(ps_service::review::ProgressKey, ReviewProgress)>>,
 }
 
 impl CatalogReview {
@@ -77,6 +86,7 @@ impl CatalogReview {
             backend,
             review: std::sync::OnceLock::new(),
             ai: Mutex::new(None),
+            progress: Mutex::new(None),
         }
     }
 
@@ -92,6 +102,20 @@ impl CatalogReview {
 }
 
 impl ReviewSource for CatalogReview {
+    fn progress(&self) -> anyhow::Result<ReviewProgress> {
+        // The full pass is ~0.4 s on 100k groups; the key is one cheap query, so keep the last answer until
+        // the review state, the groups or a scan change it (review-progress-anchor 3.4).
+        let (scan, store) = (self.backend.scan()?, self.store()?);
+        let key = ps_service::review::progress_key(scan, store)?;
+        if let Some((k, p)) = *self.progress.lock().unwrap_or_else(|e| e.into_inner())
+            && k == key
+        {
+            return Ok(p);
+        }
+        let p = ps_service::review::progress(scan, store)?;
+        *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, p));
+        Ok(p)
+    }
     fn groups(&self, filter: ReviewFilter, sort: ReviewSort) -> anyhow::Result<ReviewList> {
         Ok(ps_service::review::list(
             self.backend.scan()?,

@@ -114,6 +114,7 @@ impl Shell {
 
         let subscriptions = vec![
             cx.observe_global::<AppSettings>(|_, cx| cx.notify()),
+            cx.observe_global::<crate::views::duplicates::DuplicatesProgress>(|_, cx| cx.notify()),
             cx.observe_window_bounds(window, |this, window, cx| this.schedule_save(window, cx)),
             cx.observe_window_appearance(window, |_, window, cx| {
                 AppSettings::set_appearance(window.appearance(), cx);
@@ -275,6 +276,9 @@ impl Shell {
             .service
             .call(|b| b.summary().map_err(|e| format!("{e:#}")));
         let interrupted = self.service.call(|b| b.interrupted_run().ok().flatten());
+        // The navigator's "left to review" count, on the background executor, after the summary (it is one
+        // pass over the groups, kept out of the start-up summary).
+        let review = crate::review_source::ReviewGlobal::get(cx);
         let first = self.summary.is_loading() && self.frames == 0;
         let grace = crate::startup::StartupGrace::remaining(cx)
             .unwrap_or(START_GRACE)
@@ -303,6 +307,13 @@ impl Shell {
                 Self::publish_totals(&this.summary, cx);
                 cx.notify();
             });
+            if let Some(src) = review {
+                let progress = executor.spawn(async move { src.progress() }).await;
+                let _ = this.update(cx, |_, cx| match progress {
+                    Ok(p) => crate::views::duplicates::DuplicatesProgress::publish(p, cx),
+                    Err(e) => log::warn!("review progress: {e:#}"),
+                });
+            }
             let interrupted = interrupted.wait(executor).await.ok().flatten();
             let _ = this.update(cx, |this, cx| {
                 let offer = AppSettings::get(cx).general.offer_resume;

@@ -40,8 +40,9 @@ None.
 ## Impact
 
 - **UI:** the Duplicates view's "Why this copy" panel and list header; the navigator's count for Duplicates.
-- **Service:** the catalog summary the navigator reads gains the count of reviewed groups, from the same review
-  state the Duplicates list uses (ADR-0042), so the two numbers always agree.
+- **Service:** a review-progress query (groups and groups reviewed) that reads the same review state as the
+  Duplicates list (ADR-0042), so the two numbers always agree. It runs after the start-up summary, not as part of
+  it.
 - **No catalog migration, no settings change, no file I/O, no new dependency.**
 - **ADRs relied on:** ADR-0028 (design tokens only, no raw colours or sizes), ADR-0042 (where review state is
   stored, and why it is keyed by group membership), ADR-0019 (sampled snapshots: the count refreshes with the

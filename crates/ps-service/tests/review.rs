@@ -339,3 +339,151 @@ fn exact_copy_chains_are_labelled_by_their_origin() {
     }
     assert!(exact > 0, "the corpus has exact copies");
 }
+
+/// review-progress-anchor 3.1: the navigator's progress counts what the review list counts.
+#[test]
+fn progress_matches_the_review_list() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = corpus(tmp.path());
+    let svc = scanned(tmp.path(), &root);
+    let store = ReviewStore::in_memory();
+    let list = |store: &ReviewStore| {
+        review::list(
+            &svc,
+            store,
+            ReviewFilter::default(),
+            ReviewSort::Reclaimable,
+        )
+        .expect("list")
+    };
+    let before = review::progress(&svc, &store).expect("progress");
+    let all = list(&store);
+    assert!(all.groups >= 3, "the corpus has groups");
+    assert_eq!((before.groups, before.reviewed), (all.groups, 0));
+    let key = review::progress_key(&svc, &store).expect("key");
+    assert_eq!(key, review::progress_key(&svc, &store).expect("key"));
+    for r in all.rows.iter().take(3) {
+        review::set_reviewed(&svc, &store, r.id, true).expect("review");
+    }
+    assert_ne!(
+        key,
+        review::progress_key(&svc, &store).expect("key"),
+        "reviewing changes the key"
+    );
+    let after = review::progress(&svc, &store).expect("progress");
+    let all = list(&store);
+    assert_eq!((after.groups, after.reviewed), (all.groups, all.reviewed));
+    assert_eq!(after.reviewed, 3);
+    assert_eq!(after.left(), all.groups - 3);
+}
+
+/// review-progress-anchor 3.4: the navigator's progress pass on a 1M-file catalog with 100k groups of 3 (half of
+/// them reviewed), against the review list it replaces for the count. Builds its own synthetic catalog (the
+/// shared bench catalog has no groups, and its budgets must not change):
+/// `PHOTOSQUIRREL_SYNTHETIC_DIR=target/synthetic cargo test --release -p ps-service --test review -- --ignored
+/// --nocapture progress_over_1m`.
+#[test]
+#[ignore = "builds a 1.2 GB catalog with 100k groups on first run"]
+fn progress_over_1m() {
+    use ps_catalog::groups::{GroupChanges, GroupRow, MemberEdge, MemberRow};
+    use ps_model::FileId;
+    use ps_service::library::{Library, synthetic};
+    use std::time::Instant;
+
+    let base = std::env::var_os("PHOTOSQUIRREL_SYNTHETIC_DIR")
+        .map(PathBuf::from)
+        .expect("PHOTOSQUIRREL_SYNTHETIC_DIR");
+    let dir = synthetic::ensure_at(base.join("review-progress-1m"), 1_000_000).expect("synthetic");
+    let lib = Library::open(&dir).expect("open");
+    let cat = lib.catalog().expect("catalog");
+    let groups = 100_000u64;
+    if cat.read().group_totals().expect("totals").0 != groups {
+        let rows = (0..groups)
+            .map(|g| {
+                let ids: Vec<FileId> = (0..3).map(|k| FileId((g * 3 + k + 1) as i64)).collect();
+                GroupRow {
+                    id: ids[0],
+                    keeper: ids[0],
+                    display: ids[0],
+                    keeper_set: vec![ids[0]],
+                    reasons: serde_json::json!([]),
+                    reclaimable_bytes: 1_000,
+                    digest: [0; 32],
+                    members: ids
+                        .iter()
+                        .enumerate()
+                        .map(|(rank, f)| MemberRow {
+                            file: *f,
+                            rank: rank as u32,
+                            edge: if rank == 0 {
+                                MemberEdge::Keeper
+                            } else {
+                                MemberEdge::Exact
+                            },
+                            via: (rank > 0).then_some(ids[0]),
+                            phash_distance: None,
+                            dhash_distance: None,
+                            in_keeper_set: rank == 0,
+                        })
+                        .collect(),
+                    reviewed_at_ms: None,
+                }
+            })
+            .collect();
+        cat.writer()
+            .apply_groups(GroupChanges {
+                clear: true,
+                groups: rows,
+                ..GroupChanges::default()
+            })
+            .expect("groups");
+    }
+    let svc = lib.scan().expect("scan");
+    let store = ReviewStore::in_memory();
+    let list = review::list(
+        svc,
+        &store,
+        ReviewFilter::default(),
+        ReviewSort::Reclaimable,
+    )
+    .expect("list");
+    assert_eq!(list.groups, groups);
+    for r in list.rows.iter().step_by(2) {
+        review::set_reviewed(svc, &store, r.id, true).expect("review");
+    }
+    let mut progress_ms = Vec::new();
+    let mut list_ms = Vec::new();
+    for _ in 0..5 {
+        let t = Instant::now();
+        let p = review::progress(svc, &store).expect("progress");
+        progress_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        assert_eq!((p.groups, p.reviewed), (groups, groups / 2));
+        let t = Instant::now();
+        let _ = review::list(
+            svc,
+            &store,
+            ReviewFilter::default(),
+            ReviewSort::Reclaimable,
+        )
+        .expect("list");
+        list_ms.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    let mut key_ms = Vec::new();
+    for _ in 0..5 {
+        let t = Instant::now();
+        let k = review::progress_key(svc, &store).expect("key");
+        key_ms.push(t.elapsed().as_secs_f64() * 1e3);
+        assert_eq!(k, review::progress_key(svc, &store).expect("key"), "stable");
+    }
+    key_ms.sort_by(f64::total_cmp);
+    println!(
+        "progress key (the cached path): median {:.1} ms, max {:.1} ms",
+        key_ms[2], key_ms[4]
+    );
+    progress_ms.sort_by(f64::total_cmp);
+    list_ms.sort_by(f64::total_cmp);
+    println!(
+        "progress over {groups} groups: median {:.1} ms, max {:.1} ms; review list: median {:.1} ms",
+        progress_ms[2], progress_ms[4], list_ms[2]
+    );
+}

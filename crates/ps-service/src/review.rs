@@ -55,6 +55,8 @@ struct ReviewState {
 #[derive(Debug)]
 pub struct ReviewStore {
     file: JsonFile<ReviewState>,
+    /// Bumped by every saved change (this process only): part of [`ProgressKey`].
+    revision: std::sync::atomic::AtomicU64,
 }
 
 impl ReviewStore {
@@ -63,6 +65,7 @@ impl ReviewStore {
     pub fn open(data_dir: &Path) -> ReviewStore {
         ReviewStore {
             file: JsonFile::open(data_dir.join(REVIEW_FILE)),
+            revision: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -82,6 +85,7 @@ impl ReviewStore {
     pub fn in_memory() -> ReviewStore {
         ReviewStore {
             file: JsonFile::in_memory(),
+            revision: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -91,10 +95,18 @@ impl ReviewStore {
 
     /// Change and save; a change that cannot be saved is not kept and is an error.
     fn update<T>(&self, f: impl FnOnce(&mut ReviewState) -> T) -> Result<T> {
-        Ok(self.file.update(|st| {
+        let out = self.file.update(|st| {
             st.version = 1;
             f(st)
-        })?)
+        })?;
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(out)
+    }
+
+    /// Changes whenever this store saves a change.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn is_reviewed(&self, key: &str) -> bool {
@@ -341,6 +353,83 @@ fn attention(acc: &Acc, suggestions: u32) -> (Option<String>, u32) {
         why.push("merged by you".into());
     }
     ((!why.is_empty()).then(|| why.join(" · ")), score)
+}
+
+/// Review progress over every group: how many there are and how many of their current memberships are
+/// reviewed. The same rule as [`list`]'s `reviewed`, without the suggestion pass, for the navigator's count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewProgress {
+    pub groups: u64,
+    pub reviewed: u64,
+}
+
+impl ReviewProgress {
+    /// Groups not reviewed yet.
+    pub fn left(&self) -> u64 {
+        self.groups.saturating_sub(self.reviewed)
+    }
+}
+
+impl From<&ReviewList> for ReviewProgress {
+    fn from(l: &ReviewList) -> Self {
+        ReviewProgress {
+            groups: l.groups,
+            reviewed: l.reviewed,
+        }
+    }
+}
+
+/// What [`progress`] depends on, cheap to read (one pass over the member ids, no joins): the review store's
+/// revision, the groups' totals and member ids, and the scan runs (a rescan can change a member's content).
+/// The same key means the same progress, so a caller can keep the last answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ProgressKey {
+    pub review_revision: u64,
+    pub groups: i64,
+    pub members: i64,
+    pub member_id_sum: i64,
+    pub runs: (i64, i64),
+}
+
+pub fn progress_key(svc: &ScanService, store: &ReviewStore) -> Result<ProgressKey> {
+    let (groups, members, member_id_sum, runs) = svc.engine().catalog().read().with(|c| {
+        Ok(c.query_row(
+            "SELECT (SELECT count(*) FROM dup_group), count(*), coalesce(sum(file_id), 0),
+                    (SELECT coalesce(max(id), 0) FROM scan_run),
+                    (SELECT count(*) FROM scan_run WHERE ended_at IS NOT NULL)
+             FROM dup_member",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    (r.get::<_, i64>(3)?, r.get::<_, i64>(4)?),
+                ))
+            },
+        )?)
+    })?;
+    Ok(ProgressKey {
+        review_revision: store.revision(),
+        groups,
+        members,
+        member_id_sum,
+        runs,
+    })
+}
+
+/// [`ReviewProgress`] for every group.
+pub fn progress(svc: &ScanService, store: &ReviewStore) -> Result<ReviewProgress> {
+    let r = svc.engine().catalog().read();
+    let (groups, _) = load_groups(r)?;
+    let reviewed = groups
+        .iter()
+        .filter(|(_, acc)| store.is_reviewed(&membership_key(acc.digests.clone())))
+        .count() as u64;
+    Ok(ReviewProgress {
+        groups: groups.len() as u64,
+        reviewed,
+    })
 }
 
 /// The group list, filtered and sorted, with review progress.

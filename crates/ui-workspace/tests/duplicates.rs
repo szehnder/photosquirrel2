@@ -965,3 +965,254 @@ fn scenario_cleanup_app_refuses_edits_during_a_cleanup_run(cx: &mut TestAppConte
     assert!(!exists("duplicates-cleanup-running", &mut cx));
     assert!(present("duplicates-keep-2", &mut cx), "the edits are back");
 }
+
+/// The "Why this copy" panel's content area: its bounds less the padding its first reason row starts at.
+fn why_content(cx: &mut VisualTestContext) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    let panel = bounds("duplicates-why", cx);
+    let pad = bounds("duplicates-why-group-0-n", cx).left() - panel.left();
+    assert!(
+        pad > gpui_kit::px(0.0),
+        "the count column starts at the panel's border"
+    );
+    gpui_kit::Bounds {
+        origin: gpui_kit::point(panel.left() + pad, panel.top()),
+        size: gpui_kit::size(panel.size.width - pad - pad, panel.size.height),
+    }
+}
+
+/// Every composition line of the open group lies inside the panel's content area.
+fn assert_composition_inside(d: &ReviewDetail, what: &str, cx: &mut VisualTestContext) {
+    let area = why_content(cx);
+    let lines = duplicates::group_composition(d).len();
+    assert!(lines > 0);
+    for i in 0..lines {
+        for id in [
+            format!("duplicates-why-group-{i}"),
+            format!("duplicates-why-group-{i}-text"),
+        ] {
+            let b = bounds(&id, cx);
+            assert!(
+                b.left() >= area.left()
+                    && b.right() <= area.right() + gpui_kit::px(0.5)
+                    && b.size.width > gpui_kit::px(0.0),
+                "{what}: {id} is not inside the panel's content area ({b:?} in {area:?})"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_pair_keeper_composition_wraps_inside_the_panel(
+    cx: &mut TestAppContext,
+) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    // The app's minimum window width.
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(960.0), gpui_kit::px(1400.0)));
+    let d = open_group(&view, &backend, &mut cx, |d| d.is_pair());
+    let rows = duplicates::group_composition(&d);
+    assert_eq!(
+        rows[0].1, "keepers (RAW+JPEG pair): export takes both together",
+        "the pair line is the first composition line"
+    );
+    cx.update(|_, cx| {
+        ui_workspace::settings::AppSettings::update(cx, |s| {
+            s.appearance.ui_font_size = ps_model::settings::MAX_UI_FONT_SIZE
+        })
+        .unwrap();
+    });
+    settle(&view, &mut cx);
+    assert_composition_inside(&d, "largest font, narrowest window", &mut cx);
+    let count = bounds("duplicates-why-group-0-n", &mut cx);
+    let text = bounds("duplicates-why-group-0-text", &mut cx);
+    assert!(
+        text.size.height > count.size.height * 1.5,
+        "the pair line wraps onto more than one row ({text:?}, one row is {count:?})"
+    );
+    assert_eq!(
+        text.top(),
+        count.top(),
+        "the count stays level with the first row of its line"
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_composition_lines_fit_at_the_default_size(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_group(&view, &backend, &mut cx, |d| {
+        let n = |e: MemberEdge| d.members().iter().filter(|m| m.edge == e).count();
+        n(MemberEdge::Exact) >= 1 && n(MemberEdge::Derivative) >= 2
+    });
+    settle(&view, &mut cx);
+    assert_composition_inside(&d, "default size", &mut cx);
+}
+
+/// Press R `n` times, each on the group it opened (the next unreviewed one), and wait for each to land.
+fn review_n(view: &Entity<DuplicatesView>, n: usize, cx: &mut VisualTestContext) {
+    for _ in 0..n {
+        let before = cx.update(|_, cx| view.read(cx).list().unwrap().reviewed);
+        cx.simulate_keystrokes("r");
+        settle(view, cx);
+        let v = view.clone();
+        wait_until(cx, "the group reviewed", move |cx| {
+            cx.update(|_, cx| v.read(cx).list().is_some_and(|l| l.reviewed == before + 1))
+        });
+    }
+    settle(view, cx);
+}
+
+fn total_groups(view: &Entity<DuplicatesView>, cx: &mut VisualTestContext) -> u64 {
+    cx.update(|_, cx| view.read(cx).list().unwrap().groups)
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_card_shows_groups_left(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let groups = total_groups(&view, &mut cx);
+    assert!(exists("duplicates-progress-card", &mut cx));
+    assert_eq!(
+        label("duplicates-progress-left", &mut cx).as_deref(),
+        Some(format!("{groups} left").as_str())
+    );
+    review_n(&view, 3, &mut cx);
+    assert_eq!(
+        label("duplicates-progress-left", &mut cx).as_deref(),
+        Some(format!("{} left", groups - 3).as_str())
+    );
+    assert_eq!(
+        label("duplicates-progress", &mut cx).as_deref(),
+        Some(format!("3 of {groups} reviewed").as_str())
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_card_shows_all_reviewed(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let groups = total_groups(&view, &mut cx);
+    review_n(&view, groups as usize, &mut cx);
+    assert_eq!(
+        label("duplicates-progress-left", &mut cx).as_deref(),
+        Some(format!("All {groups} groups reviewed").as_str())
+    );
+    assert_eq!(
+        duplicates::progress_card_text(groups, groups).0,
+        format!("All {groups} groups reviewed")
+    );
+    let list = cx.update(|_, cx| view.read(cx).list().unwrap().clone());
+    assert_eq!(list.reviewed, list.groups, "the bar is full");
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_card_ignores_the_list_filter(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let groups = total_groups(&view, &mut cx);
+    review_n(&view, 2, &mut cx);
+    {
+        let view = view.clone();
+        cx.update(|_, cx| {
+            view.update(cx, |v, cx| {
+                v.set_filter(
+                    ReviewFilter {
+                        unreviewed: true,
+                        ..ReviewFilter::default()
+                    },
+                    cx,
+                )
+            })
+        });
+    }
+    settle(&view, &mut cx);
+    let v = view.clone();
+    wait_until(&mut cx, "the filtered list", move |cx| {
+        cx.update(|_, cx| {
+            v.read(cx)
+                .list()
+                .is_some_and(|l| l.rows.len() as u64 == l.groups - 2)
+        })
+    });
+    assert_eq!(
+        label("duplicates-progress", &mut cx).as_deref(),
+        Some(format!("2 of {groups} reviewed").as_str())
+    );
+    assert_eq!(
+        label("duplicates-progress-left", &mut cx).as_deref(),
+        Some(format!("{} left", groups - 2).as_str())
+    );
+}
+
+// ---- app-shell: the navigator's Duplicates count ------------------------------------------------------------
+
+fn nav_duplicates(cx: &mut VisualTestContext) -> Option<String> {
+    label("nav-duplicates-count", cx)
+}
+
+#[gpui_kit::test]
+fn scenario_app_shell_count_goes_down_as_groups_are_reviewed(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let groups = total_groups(&view, &mut cx);
+    assert_eq!(
+        nav_duplicates(&mut cx).as_deref(),
+        Some(format!("{groups} left to review of {groups} groups").as_str())
+    );
+    review_n(&view, 3, &mut cx);
+    let left = groups - 3;
+    assert_eq!(
+        nav_duplicates(&mut cx).as_deref(),
+        Some(format!("{left} left to review of {groups} groups").as_str()),
+        "the count is groups minus reviewed, without reopening a view"
+    );
+    let p = cx.update(|_, cx| duplicates::DuplicatesProgress::get(cx).unwrap());
+    assert_eq!((p.groups, p.reviewed, p.left()), (groups, 3, left));
+}
+
+#[gpui_kit::test]
+fn scenario_app_shell_check_mark_when_every_group_is_reviewed(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let groups = total_groups(&view, &mut cx);
+    review_n(&view, groups as usize, &mut cx);
+    assert_eq!(
+        nav_duplicates(&mut cx).as_deref(),
+        Some(format!("All {groups} groups reviewed").as_str()),
+        "a check mark (its label) instead of a count"
+    );
+    assert!(exists("nav-duplicates", &mut cx), "the item stays");
+}
+
+#[gpui_kit::test]
+fn scenario_app_shell_count_rises_again_when_a_reviewed_group_changes(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, shell, view, mut cx) = open_dups(cx, &data);
+    let groups = total_groups(&view, &mut cx);
+    review_n(&view, groups as usize, &mut cx);
+    // Another copy of a reviewed group's keeper, on a new source.
+    let d = detail(&view, &mut cx);
+    let original = d.group.member(d.group.keeper).unwrap().path.clone();
+    assert!(original.is_file(), "{original:?}");
+    let extra = tempfile::tempdir_in(data.parent().unwrap()).unwrap();
+    std::fs::copy(&original, extra.path().join(original.file_name().unwrap())).unwrap();
+    {
+        let scan = backend.scan().unwrap();
+        let s = scan.add_source(extra.path()).unwrap();
+        scan.start(&[s.source.id]).unwrap();
+        scan.wait().unwrap();
+    }
+    // What the shell does when a run ends.
+    {
+        let shell = shell.clone();
+        cx.update(|window, cx| shell.update(cx, |s, cx| s.refresh(window, cx)));
+    }
+    wait_until(&mut cx, "the changed group counted again", |cx| {
+        cx.update(|_, cx| duplicates::DuplicatesProgress::get(cx).is_some_and(|p| p.left() == 1))
+    });
+    let p = cx.update(|_, cx| duplicates::DuplicatesProgress::get(cx).unwrap());
+    assert_eq!(
+        nav_duplicates(&mut cx).as_deref(),
+        Some(format!("1 left to review of {} groups", p.groups).as_str())
+    );
+}

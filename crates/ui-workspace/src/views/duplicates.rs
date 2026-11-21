@@ -137,6 +137,27 @@ pub fn register(cx: &mut App) {
 
 struct Current(WeakEntity<DuplicatesView>);
 
+/// Review progress over every group, shared with the navigator: the view publishes it after every list load,
+/// and the shell when the catalog summary is refreshed (start-up, after a scan), so the count is right before
+/// the view is ever opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DuplicatesProgress(pub ps_service::review::ReviewProgress);
+
+impl Global for DuplicatesProgress {}
+
+impl DuplicatesProgress {
+    pub fn get(cx: &App) -> Option<ps_service::review::ReviewProgress> {
+        cx.try_global::<DuplicatesProgress>().map(|p| p.0)
+    }
+
+    /// Set it, only when it changed (observers re-render the navigator).
+    pub fn publish(p: ps_service::review::ReviewProgress, cx: &mut App) {
+        if Self::get(cx) != Some(p) {
+            cx.set_global(DuplicatesProgress(p));
+        }
+    }
+}
+
 impl Global for Current {}
 
 /// The open Duplicates view (tests, the palette).
@@ -287,6 +308,9 @@ impl DuplicatesView {
             this.tab = Tab::Suggestions;
         }
         let primed = crate::startup::StartupGrace::deadline(cx).is_some_and(|d| this.load_now(d));
+        if let Some(l) = &this.list {
+            DuplicatesProgress::publish(l.as_ref().into(), cx);
+        }
         if !primed {
             this.reload(cx);
             this.reload_suggestions(cx);
@@ -484,6 +508,7 @@ impl DuplicatesView {
                         let want = select.or(this.selected);
                         let keep = want.filter(|id| list.rows.iter().any(|r| r.id == *id));
                         let next = keep.or_else(|| list.rows.first().map(|r| r.id));
+                        DuplicatesProgress::publish((&list).into(), cx);
                         this.list = Some(Rc::new(list));
                         this.error = None;
                         if next != this.selected || this.detail.is_none() || keep.is_some() {
@@ -1074,6 +1099,105 @@ fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElemen
         .into_any_element()
 }
 
+/// The progress card's main figure and its line below: ("28 left", "12 of 40 reviewed"), or the done state
+/// ("All 40 groups reviewed", "Nothing left to review"). Every group counts, whatever the filter.
+pub fn progress_card_text(groups: u64, reviewed: u64) -> (String, String) {
+    let left = groups.saturating_sub(reviewed);
+    if groups > 0 && left == 0 {
+        (
+            format!(
+                "All {} group{} reviewed",
+                format_count(groups),
+                if groups == 1 { "" } else { "s" }
+            ),
+            "Nothing left to review".into(),
+        )
+    } else {
+        (
+            format!("{} left", format_count(left)),
+            format!(
+                "{} of {} reviewed",
+                format_count(reviewed),
+                format_count(groups)
+            ),
+        )
+    }
+}
+
+/// The review progress card: the visual anchor of the Duplicates list (groups left, big; reviewed and the bar
+/// below), tinted with the accent, and with the success tone once every group is reviewed.
+fn progress_card(list: Option<&ReviewList>, fraction: f32, cx: &App) -> AnyElement {
+    let colors = *ui_theme::colors(cx);
+    let Some(l) = list else {
+        return div()
+            .id("duplicates-progress-card")
+            .test_support()
+            .p(Tokens::space(3.0))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(colors.accent_soft)
+            .child(
+                div()
+                    .id("duplicates-progress")
+                    .test_support()
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text_muted)
+                    .child("Loading…"),
+            )
+            .into_any_element();
+    };
+    let done = l.groups > 0 && l.reviewed >= l.groups;
+    let (main, sub) = progress_card_text(l.groups, l.reviewed);
+    let (bg, fg) = if done {
+        (
+            ui_theme::Colors::chip_bg(colors.success),
+            colors.tone_text(colors.success),
+        )
+    } else {
+        (colors.accent_soft, colors.accent_text)
+    };
+    v_flex()
+        .id("duplicates-progress-card")
+        .test_support()
+        .gap(Tokens::space(1.5))
+        .p(Tokens::space(3.0))
+        .rounded(Tokens::RADIUS_MD)
+        .bg(bg)
+        .child(
+            h_flex()
+                .gap(Tokens::space(2.0))
+                .items_center()
+                .when(done, |e| {
+                    e.child(
+                        Icon::new(IconName::Check)
+                            .size(Tokens::icon_md())
+                            .text_color(fg),
+                    )
+                })
+                .child(
+                    div()
+                        .id("duplicates-progress-left")
+                        .test_support()
+                        .aria_label(SharedString::from(main.clone()))
+                        .min_w_0()
+                        .text_size(Tokens::text_xl())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(fg)
+                        .child(main),
+                ),
+        )
+        .child(
+            div()
+                .id("duplicates-progress")
+                .test_support()
+                .aria_label(SharedString::from(sub.clone()))
+                .text_size(Tokens::text_sm())
+                .text_color(colors.text_muted)
+                .child(sub),
+        )
+        .child(progress_bar(if done { 1.0 } else { fraction }, cx))
+        .into_any_element()
+}
+
 impl DuplicatesView {
     fn render_list_pane(&mut self, cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
@@ -1121,32 +1245,12 @@ impl DuplicatesView {
             .border_b_1()
             .border_color(colors.border)
             .child(
-                h_flex()
-                    .items_baseline()
-                    .gap(Tokens::space(2.0))
-                    .child(
-                        div()
-                            .text_size(Tokens::text_lg())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Duplicates"),
-                    )
-                    .child(
-                        div()
-                            .id("duplicates-progress")
-                            .test_support()
-                            .text_size(Tokens::text_sm())
-                            .text_color(colors.text_muted)
-                            .child(match &list {
-                                Some(l) => format!(
-                                    "{} of {} reviewed",
-                                    format_count(l.reviewed),
-                                    format_count(l.groups)
-                                ),
-                                None => "Loading…".into(),
-                            }),
-                    ),
+                div()
+                    .text_size(Tokens::text_lg())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Duplicates"),
             )
-            .child(progress_bar(fraction, cx))
+            .child(progress_card(list.as_deref(), fraction, cx))
             .child(
                 div()
                     .text_size(Tokens::text_xs())
@@ -1743,12 +1847,20 @@ impl DuplicatesView {
                     .border_t_1()
                     .border_color(colors.border)
                     .child(eyebrow("In this group", cx))
-                    .children(group_composition(d).into_iter().map(|(n, what)| {
+                    .children(group_composition(d).into_iter().enumerate().map(|(i, (n, what))| {
+                        // `items_start` keeps a wrapped description level with its count, and the text's
+                        // `flex_1().min_w_0()` lets it shrink and wrap instead of running past the panel.
                         h_flex()
+                            .id(SharedString::from(format!("duplicates-why-group-{i}")))
+                            .test_support()
+                            .w_full()
+                            .items_start()
                             .gap(Tokens::space(2.0))
                             .text_size(Tokens::text_sm())
                             .child(
                                 div()
+                                    .id(SharedString::from(format!("duplicates-why-group-{i}-n")))
+                                    .test_support()
                                     .w(Tokens::size(56.0))
                                     .flex_none()
                                     .text_right()
@@ -1756,7 +1868,15 @@ impl DuplicatesView {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(n),
                             )
-                            .child(div().text_color(colors.text_muted).child(what))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("duplicates-why-group-{i}-text")))
+                                    .test_support()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_color(colors.text_muted)
+                                    .child(what),
+                            )
                     }))
             )
             .child(div().flex_1())

@@ -37,26 +37,34 @@ what makes the composition easy to scan.
 
 The card is a `v_flex` with `colors.accent_soft` as background, a `Tokens::RADIUS_MD` corner and
 `Tokens::space(...)` padding. Its main figure ("28 left") is `text_xl` semibold in `colors.accent_text`. Below it,
-"12 of 40 reviewed" is `text_sm` muted, then the existing `progress_bar`. With 0 left, the card uses a
-success tint and `colors.success` with a check icon. The palette has no tinted success surface yet, so add
-`success_soft` to `ui-theme` for both themes, next to `accent_soft`; `cargo xtask tokens` checks it. The card has test ids
+"12 of 40 reviewed" is `text_sm` muted, then the existing `progress_bar`. With 0 left, the card uses the
+success tone's existing tint, `Colors::chip_bg(colors.success)`, with `tone_text(colors.success)` and a check icon. Its
+contrast is already checked by the theme's status-chip test, so no new palette token is needed. The card has test ids
 `duplicates-progress-card`, `duplicates-progress-left` and `duplicates-progress` (the existing id, kept for the
 "N of M reviewed" text so the current tests still find it).
 
-### D3. The summary gains `duplicates_reviewed`, computed where the review list is
+### D3. A shared review-progress value, published by the view and the shell
 
-Add `duplicates_reviewed: u64` to `CatalogSummary`. The shell's summary loader already runs on the background
-executor. It asks the review service for the reviewed count, reusing the function `ReviewList` uses to decide
-whether a group's current membership key is reviewed, so the navigator and the card cannot disagree.
-`nav_count(Duplicates)` returns `groups - reviewed`. The navigator shows a check icon when `groups > 0` and the
-result is 0. The tooltip reads "N left to review of M groups".
+`ps-service::review::progress(svc, store)` returns `ReviewProgress { groups, reviewed }`. It uses the same
+`load_groups` pass and the same membership-key rule as `ReviewList::reviewed`, without the suggestion pass.
+`ReviewSource::progress()` exposes it, using the review source's single `ReviewStore`, so the navigator and the
+Duplicates view cannot read two copies of the store.
 
-*Refresh:* marking a group reviewed or unreviewed already sends the Duplicates view's list-reload notification. The
-shell also re-requests the summary on that notification, so the navigator changes in the next frame. A regroup
-after a scan already refreshes the summary (ADR-0019 snapshots). No per-group event is added.
+The value lives in a GPUI global, `DuplicatesProgress`:
+- the Duplicates view publishes it after every list load (open, mark reviewed or unreviewed, keeper and merge
+  edits);
+- the shell publishes it after each summary refresh (start-up, after a scan or a regroup), on the background
+  executor, *after* the summary arrives. That keeps the extra pass over the groups out of the start-up summary
+  and its budget.
 
-*Alternative:* the navigator subscribes to the Duplicates view's `ReviewList`. Rejected because it would only work
-while the view has been opened, and the sidebar must be right from start-up.
+The shell observes the global and re-renders. The navigator shows `groups - reviewed`, a check icon when
+`groups > 0` and none is left, and the tooltip "N left to review of M groups". Until the first value arrives,
+it falls back to the summary's group total. No per-group event is added (ADR-0019).
+
+*Alternatives:*
+- Add `duplicates_reviewed` to `CatalogSummary`. Rejected because the summary is waited for before the first
+  frame, so an extra pass over the groups would count against start-up time.
+- The navigator subscribes to the Duplicates view. Rejected because the view may never have been opened.
 
 ## Risks / Trade-offs
 
