@@ -42,32 +42,38 @@ the small corpus with recorded or seeded insights (`seed_demo`) in a temp dir, a
 
 ## 2. Duplicates view: AI filter, progress and navigation
 
-- [ ] 2.1 Add the "AI" filter menu and removable chips in the header (design D6). Verify:
+- [x] 2.1 Add the "AI" filter menu and removable chips in the header (design D6). Verify:
   `scenario_duplicate_review_filter_groups_with_children`, `scenario_duplicate_review_a_user_correction_decides_the_match`,
   `scenario_duplicate_review_groups_not_described_yet` and `scenario_duplicate_review_ai_filter_combines_with_unreviewed`
   pass.
-- [ ] 2.2 Add the "Matching: N of M reviewed" line to the progress card. R advances to the next unreviewed matching
+  Progress: an "AI insight" menu next to Sort (contains people/children/pets, category, not described yet; "not described yet" and the criteria exclude each other) and removable chips; the four scenarios pass.
+- [x] 2.2 Add the "Matching: N of M reviewed" line to the progress card. R advances to the next unreviewed matching
   group, and J and K stay within the matching groups. Verify: `scenario_duplicate_review_matching_progress_shown` and
   `scenario_duplicate_review_review_advances_within_the_filter` pass.
-- [ ] 2.3 Poll the insight stamp while an AI filter is set and the view is visible, and reload while keeping the
+  Progress: `duplicates-progress-matching` on the card; R, J and K work on the filtered rows. Both scenarios pass.
+- [x] 2.3 Poll the insight stamp while an AI filter is set and the view is visible, and reload while keeping the
   selection (design D2). Verify: `scenario_duplicate_review_newly_described_group_joins_the_list` passes with a
   recording provider, and a test shows no polling without an AI filter.
-- [ ] 2.4 Persist the Duplicates view's filter and sort (design D3). Verify:
+  Progress: `watch_insights` polls `ai_stamp` every 500 ms (the AI Review cadence) only while an AI filter is set; the join scenario advances the test clock and checks the group appears within 1 s with the selection kept, then that clearing the filter stops the poll.
+- [x] 2.4 Persist the Duplicates view's filter and sort (design D3). Verify:
   `scenario_duplicate_review_filter_kept_across_restarts` passes, and a corrupt state file opens the view
   unfiltered with a logged warning.
+  Progress: `UiState.duplicates` (`DuplicatesViewState`), handed to the view through `ViewContext` and saved by the shell when the view publishes `DuplicatesState`; `ReviewFilter` and `InsightCriteria` deserialize with defaults, so an older or partial file still loads (an unreadable one is already logged and ignored by `UiStateFile::load`). The restart scenario passes.
 
 ## 3. AI Review: open matching duplicates
 
-- [ ] 3.1 Add "Review duplicates of these" (a button and a command-palette entry) that dispatches
+- [x] 3.1 Add "Review duplicates of these" (a button and a command-palette entry) that dispatches
   `OpenDuplicatesFiltered` (design D4). Verify: `scenario_ai_review_review_duplicates_of_filtered_photos` passes.
+  Progress: an `ai-review-duplicates` button and a palette command (AI › Review Duplicates of These) open Duplicates via `Shell::open_duplicates_filtered` with the category and contains criteria.
 
 ## 4. CLI
 
-- [ ] 4.1 Add `--category`, `--people`, `--children`, `--pets`, `--pet-kind`, `--people-min`, `--people-max`,
+- [x] 4.1 Add `--category`, `--people`, `--children`, `--pets`, `--pet-kind`, `--people-min`, `--people-max`,
   `--undescribed` and `--unreviewed` to `groups list`. With any of them set, it lists through `review::list_with`
   and the lookup matcher, and the JSON adds `matching` / `matching_reviewed` (design D5). Document them in the
   command's `--help`. Verify: `scenario_cli_cli_lists_groups_with_pets` and `scenario_cli_cli_lists_undescribed_groups`
   pass, and `groups list --help` shows the flags.
+  Progress: flags documented in `--help` (checked by the undescribed scenario); the pets scenario also checks `--pet-kind dog`.
 
 ## 5. Verification
 

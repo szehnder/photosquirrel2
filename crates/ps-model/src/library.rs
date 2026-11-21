@@ -31,6 +31,7 @@ impl ThumbKey {
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[serde(default)]
 pub struct InsightCriteria {
     /// Main or secondary category.
     pub category: Option<SceneCategory>,

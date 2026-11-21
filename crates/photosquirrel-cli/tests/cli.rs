@@ -1144,3 +1144,146 @@ fn scenario_settings_scan_new_sources_setting_persists() {
     .unwrap();
     assert!(added.contains("not scanned yet"), "{added}");
 }
+
+// ---- ai-filtered-duplicates: insight filters on `groups list` --------------------------------------------------
+
+/// The ids `groups list` printed.
+fn listed_ids(v: &Value) -> Vec<i64> {
+    let mut ids: Vec<i64> = v["data"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["id"].as_i64().unwrap())
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn scenario_cli_cli_lists_groups_with_pets() {
+    let data = scanned();
+    let all = json(&ok(
+        data.path(),
+        &["--json", "groups", "list", "--limit", "100000"],
+    ));
+    let total = all["data"]["totals"]["groups"].as_u64().unwrap();
+    let ids = listed_ids(&all);
+    assert!(ids.len() >= 3);
+    // The AI describes two groups' files with pets (one through a copy, not the keeper) and a third without.
+    {
+        let svc = ps_service::scan::ScanService::open(
+            data.path(),
+            ps_service::scan::ScanOptions::default(),
+        )
+        .unwrap();
+        let cat = svc.engine().catalog();
+        let describe = |group: i64, keeper: bool, pets: &[&str]| {
+            let d = json(&ok(
+                data.path(),
+                &["--json", "groups", "show", &group.to_string()],
+            ));
+            let member = d["data"]["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["keeper"].as_bool() == Some(keeper))
+                .unwrap()["file"]
+                .as_i64()
+                .unwrap();
+            let content = cat
+                .read()
+                .file_by_id(ps_model::FileId(member))
+                .unwrap()
+                .and_then(|r| r.identity)
+                .unwrap();
+            cat.writer()
+                .ai_complete(ps_catalog::AiResultRow {
+                    content,
+                    provider: "test".into(),
+                    model: "test".into(),
+                    schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
+                    prompt_version: 1,
+                    insight: serde_json::json!({
+                        "subject": "test", "category": if pets.is_empty() { "landscape" } else { "pets" }, "is_photo": true,
+                        "people": {"total": 0, "adults": 0, "children": 0},
+                        "pets": pets, "confidence": 0.9
+                    })
+                    .to_string(),
+                    latency_ms: 1,
+                    requests: 1,
+                    at_ms: 1,
+                })
+                .unwrap();
+        };
+        describe(ids[0], true, &["dog"]);
+        describe(ids[1], false, &["cat"]);
+        describe(ids[2], true, &[]);
+        cat.writer().flush().unwrap();
+    }
+    let v = json(&ok(
+        data.path(),
+        &["--json", "groups", "list", "--pets", "--limit", "100000"],
+    ));
+    assert_eq!(
+        listed_ids(&v),
+        vec![ids[0], ids[1]],
+        "exactly the groups with pets"
+    );
+    assert_eq!(v["data"]["matching"].as_u64(), Some(2));
+    assert_eq!(v["data"]["matching_reviewed"].as_u64(), Some(0));
+    assert_eq!(
+        v["data"]["totals"]["groups"].as_u64(),
+        Some(total),
+        "the total is unchanged"
+    );
+    // The CLI-only extras: a pet kind.
+    let dogs = json(&ok(
+        data.path(),
+        &[
+            "--json",
+            "groups",
+            "list",
+            "--pet-kind",
+            "dog",
+            "--limit",
+            "100000",
+        ],
+    ));
+    assert_eq!(listed_ids(&dogs), vec![ids[0]]);
+}
+
+#[test]
+fn scenario_cli_cli_lists_undescribed_groups() {
+    let data = scanned();
+    let v = json(&ok(
+        data.path(),
+        &[
+            "--json",
+            "groups",
+            "list",
+            "--undescribed",
+            "--limit",
+            "100000",
+        ],
+    ));
+    let total = v["data"]["totals"]["groups"].as_u64().unwrap();
+    assert!(total > 0);
+    assert_eq!(listed_ids(&v).len() as u64, total, "every group is listed");
+    assert_eq!(v["data"]["matching"].as_u64(), Some(total));
+    // The flags are documented.
+    let help = String::from_utf8_lossy(&ok(data.path(), &["groups", "list", "--help"]).stdout)
+        .into_owned();
+    for flag in [
+        "--category",
+        "--people",
+        "--children",
+        "--pets",
+        "--pet-kind",
+        "--people-min",
+        "--people-max",
+        "--undescribed",
+        "--unreviewed",
+    ] {
+        assert!(help.contains(flag), "{flag} in {help}");
+    }
+}

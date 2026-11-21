@@ -62,6 +62,15 @@ const SURFACES: &[Surface] = &[
         ui_state: None,
     },
     Surface {
+        name: "duplicates-ai-filter",
+        caption: "Duplicates filtered by an AI insight (contains people), with the matching progress",
+        seeded: true,
+        args: &["--command", "shell::ShowDuplicates"],
+        ui_state: Some(
+            r#"{"version": 1, "active_view": "duplicates", "duplicates": {"filter": {"insight": {"people": true}}}}"#,
+        ),
+    },
+    Surface {
         name: "ai-review",
         caption: "AI Review with recorded demo insights",
         seeded: true,

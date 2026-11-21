@@ -1216,3 +1216,381 @@ fn scenario_app_shell_count_rises_again_when_a_reviewed_group_changes(cx: &mut T
         Some(format!("1 left to review of {} groups", p.groups).as_str())
     );
 }
+
+// ---- ai-filtered-duplicates: AI filters on the Duplicates list -------------------------------------------------
+
+use ps_model::library::InsightCriteria;
+
+/// Store an AI result for `file`'s content, as the AI queue does.
+fn describe_file(
+    backend: &CatalogBackend,
+    file: FileId,
+    category: &str,
+    children: u32,
+    pets: &[&str],
+) {
+    let cat = backend.catalog().unwrap();
+    let content = cat
+        .read()
+        .file_by_id(file)
+        .unwrap()
+        .and_then(|r| r.identity)
+        .unwrap();
+    let people = children + u32::from(category == "people");
+    cat.writer()
+        .ai_complete(ps_catalog::AiResultRow {
+            content,
+            provider: "test".into(),
+            model: "test".into(),
+            schema_version: ps_model::INSIGHT_SCHEMA_VERSION,
+            prompt_version: 1,
+            insight: serde_json::json!({
+                "subject": "test", "category": category, "is_photo": true,
+                "people": {"total": people, "adults": people - children, "children": children},
+                "pets": pets, "confidence": 0.9
+            })
+            .to_string(),
+            latency_ms: 1,
+            requests: 1,
+            at_ms: 1,
+        })
+        .unwrap();
+    cat.writer().flush().unwrap();
+}
+
+/// The listed groups, in id order (`ids()` of the review rows).
+fn group_ids(view: &Entity<DuplicatesView>, cx: &mut VisualTestContext) -> Vec<FileId> {
+    let mut v: Vec<FileId> = cx.update(|_, cx| {
+        view.read(cx)
+            .list()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.id)
+            .collect()
+    });
+    v.sort();
+    v
+}
+
+/// A group's keeper and one copy that is not the keeper.
+fn keeper_and_copy(backend: &CatalogBackend, group: FileId) -> (FileId, FileId) {
+    let d = ps_service::review::show(backend.scan().unwrap(), &ReviewStore::in_memory(), group)
+        .unwrap();
+    let copy = d.group.members.iter().find(|m| !m.keeper).unwrap().file;
+    (d.group.keeper, copy)
+}
+
+fn set_filter_and_wait(
+    view: &Entity<DuplicatesView>,
+    filter: ReviewFilter,
+    cx: &mut VisualTestContext,
+) {
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.set_filter(filter, cx)));
+    }
+    settle(view, cx);
+    let v = view.clone();
+    wait_until(cx, "the filtered list", move |cx| {
+        cx.update(|_, cx| v.read(cx).list().is_some() && !v.read(cx).is_busy())
+    });
+    settle(view, cx);
+}
+
+fn ai(c: InsightCriteria) -> ReviewFilter {
+    ReviewFilter {
+        insight: Some(c),
+        ..ReviewFilter::default()
+    }
+}
+
+fn children() -> InsightCriteria {
+    InsightCriteria {
+        children: true,
+        ..InsightCriteria::default()
+    }
+}
+
+fn pets() -> InsightCriteria {
+    InsightCriteria {
+        pets: true,
+        ..InsightCriteria::default()
+    }
+}
+
+/// The first `n` groups of the list, in id order.
+fn some_groups(view: &Entity<DuplicatesView>, n: usize, cx: &mut VisualTestContext) -> Vec<FileId> {
+    let ids = group_ids(view, cx);
+    assert!(ids.len() >= n);
+    ids[..n].to_vec()
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_filter_groups_with_children(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let g = some_groups(&view, 3, &mut cx);
+    let (k0, _) = keeper_and_copy(&backend, g[0]);
+    let (_, c1) = keeper_and_copy(&backend, g[1]);
+    let (k2, _) = keeper_and_copy(&backend, g[2]);
+    describe_file(&backend, k0, "people", 1, &[]);
+    describe_file(&backend, c1, "people", 2, &[]); // a copy, not the keeper
+    describe_file(&backend, k2, "people", 0, &[]); // adults only
+    set_filter_and_wait(&view, ai(children()), &mut cx);
+    assert_eq!(group_ids(&view, &mut cx), vec![g[0], g[1]]);
+    assert!(
+        exists("duplicates-ai-chip-children", &mut cx),
+        "a removable chip"
+    );
+    click("duplicates-ai-chip-children", &mut cx);
+    settle(&view, &mut cx);
+    assert!(
+        cx.update(|_, cx| view.read(cx).filter.insight.is_none()),
+        "the chip removes the filter"
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_a_user_correction_decides_the_match(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let g = some_groups(&view, 1, &mut cx);
+    let (k, _) = keeper_and_copy(&backend, g[0]);
+    describe_file(&backend, k, "nature", 0, &[]);
+    let pets_category = ai(InsightCriteria {
+        category: Some(ps_model::SceneCategory::Pets),
+        ..InsightCriteria::default()
+    });
+    set_filter_and_wait(&view, pets_category, &mut cx);
+    assert!(!group_ids(&view, &mut cx).contains(&g[0]));
+    let cat = backend.catalog().unwrap();
+    let content = cat
+        .read()
+        .file_by_id(k)
+        .unwrap()
+        .and_then(|r| r.identity)
+        .unwrap();
+    ps_service::insights::correct(
+        cat,
+        backend.insight_store().unwrap(),
+        &content.to_hex(),
+        ps_service::insights::Correction {
+            category: Some(ps_model::SceneCategory::Pets),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    set_filter_and_wait(&view, pets_category, &mut cx);
+    assert!(
+        group_ids(&view, &mut cx).contains(&g[0]),
+        "the correction wins"
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_groups_not_described_yet(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let all = group_ids(&view, &mut cx);
+    let g = some_groups(&view, 3, &mut cx);
+    for id in &g {
+        let (k, _) = keeper_and_copy(&backend, *id);
+        describe_file(&backend, k, "travel", 0, &[]);
+    }
+    set_filter_and_wait(
+        &view,
+        ReviewFilter {
+            undescribed: true,
+            ..ReviewFilter::default()
+        },
+        &mut cx,
+    );
+    let expected: Vec<FileId> = all.into_iter().filter(|id| !g.contains(id)).collect();
+    assert_eq!(group_ids(&view, &mut cx), expected);
+    assert!(exists("duplicates-ai-chip-undescribed", &mut cx));
+}
+
+/// Describe the first `n` groups' keepers with a dog.
+fn pet_groups(
+    backend: &CatalogBackend,
+    view: &Entity<DuplicatesView>,
+    n: usize,
+    cx: &mut VisualTestContext,
+) -> Vec<FileId> {
+    let g = some_groups(view, n, cx);
+    for id in &g {
+        let (k, _) = keeper_and_copy(backend, *id);
+        describe_file(backend, k, "pets", 0, &["dog"]);
+    }
+    g
+}
+
+fn mark_reviewed(id: FileId, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        ui_workspace::review_source::ReviewGlobal::get(cx)
+            .unwrap()
+            .set_reviewed(id, true)
+            .unwrap();
+    });
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_ai_filter_combines_with_unreviewed(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let g = pet_groups(&backend, &view, 4, &mut cx);
+    mark_reviewed(g[0], &mut cx);
+    mark_reviewed(g[1], &mut cx);
+    set_filter_and_wait(
+        &view,
+        ReviewFilter {
+            unreviewed: true,
+            ..ai(pets())
+        },
+        &mut cx,
+    );
+    assert_eq!(group_ids(&view, &mut cx), vec![g[2], g[3]]);
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_matching_progress_shown(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let groups = total_groups(&view, &mut cx);
+    let g = pet_groups(&backend, &view, 5, &mut cx);
+    mark_reviewed(g[0], &mut cx);
+    mark_reviewed(g[1], &mut cx);
+    set_filter_and_wait(&view, ai(pets()), &mut cx);
+    assert_eq!(
+        label("duplicates-progress-matching", &mut cx).as_deref(),
+        Some("Matching: 2 of 5 reviewed")
+    );
+    assert_eq!(
+        label("duplicates-progress-left", &mut cx).as_deref(),
+        Some(format!("{} left", groups - 2).as_str()),
+        "the main figure still counts every group"
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_review_advances_within_the_filter(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let g = pet_groups(&backend, &view, 3, &mut cx);
+    set_filter_and_wait(&view, ai(pets()), &mut cx);
+    let rows: Vec<FileId> = cx.update(|_, cx| {
+        view.read(cx)
+            .list()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.id)
+            .collect()
+    });
+    assert_eq!(rows.len(), 3);
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.select_index(0, cx)));
+    }
+    settle(&view, &mut cx);
+    cx.simulate_keystrokes("r");
+    settle(&view, &mut cx);
+    let v = view.clone();
+    let first = rows[0];
+    wait_until(&mut cx, "the next group", move |cx| {
+        cx.update(|_, cx| v.read(cx).selected().is_some_and(|s| s != first))
+    });
+    let now = cx.update(|_, cx| view.read(cx).selected().unwrap());
+    assert!(g.contains(&now), "the next group opened has pets too");
+    assert_eq!(now, rows[1]);
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_newly_described_group_joins_the_list(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let g = some_groups(&view, 2, &mut cx);
+    let (k0, _) = keeper_and_copy(&backend, g[0]);
+    let (k1, _) = keeper_and_copy(&backend, g[1]);
+    describe_file(&backend, k0, "people", 1, &[]);
+    set_filter_and_wait(&view, ai(children()), &mut cx);
+    assert_eq!(group_ids(&view, &mut cx), vec![g[0]]);
+    assert!(cx.update(|_, cx| view.read(cx).watching_insights()));
+    let selected = cx.update(|_, cx| view.read(cx).selected());
+    // The AI queue describes another keeper with a child.
+    describe_file(&backend, k1, "people", 1, &[]);
+    let start = std::time::Instant::now();
+    let v = view.clone();
+    let mut simulated = std::time::Duration::ZERO;
+    while !cx.update(|_, cx| {
+        v.read(cx)
+            .list()
+            .is_some_and(|l| l.rows.iter().any(|r| r.id == g[1]))
+    }) {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        simulated += std::time::Duration::from_millis(100);
+        cx.run_until_parked();
+        assert!(
+            simulated <= std::time::Duration::from_secs(1),
+            "joined within 1 s of storage"
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
+    }
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).selected()),
+        selected,
+        "the selection stays"
+    );
+    // No AI filter, no polling.
+    set_filter_and_wait(&view, ReviewFilter::default(), &mut cx);
+    assert!(!cx.update(|_, cx| view.read(cx).watching_insights()));
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_filter_kept_across_restarts(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    {
+        let t = template();
+        std::fs::create_dir_all(dirs.data()).unwrap();
+        for entry in std::fs::read_dir(&t.dir).unwrap() {
+            let p = entry.unwrap().path();
+            if p.is_file() && !p.to_string_lossy().ends_with(".lock") {
+                std::fs::copy(&p, dirs.data().join(p.file_name().unwrap())).unwrap();
+            }
+        }
+    }
+    let people = ai(InsightCriteria {
+        people: true,
+        ..InsightCriteria::default()
+    });
+    {
+        let backend = Arc::new(CatalogBackend::open(&dirs.data()).unwrap());
+        init_app(cx, backend, Some(&dirs));
+        let (shell, mut vcx) = open(cx);
+        wait_loaded(&shell, &mut vcx);
+        shell.update_in(&mut vcx, |s, w, cx| s.show_view(ViewId::Duplicates, w, cx));
+        wait_until(&mut vcx, "the duplicates view", |cx| {
+            cx.update(|_, cx| duplicates::current(cx).is_some())
+        });
+        let view = vcx.update(|_, cx| duplicates::current(cx).unwrap());
+        set_filter_and_wait(&view, people, &mut vcx);
+        // The app quits (the layout is written when the window closes).
+        shell.update_in(&mut vcx, |s, w, cx| s.save_now(w, cx));
+    }
+    let saved = ui_workspace::persist::UiStateFile::in_dir(&dirs.data())
+        .load()
+        .unwrap();
+    assert_eq!(saved.duplicates.filter, people);
+    // A restart: a new shell reads the layout and opens the Duplicates list filtered by "contains people".
+    let (shell, mut vcx) = open(cx);
+    wait_loaded(&shell, &mut vcx);
+    shell.update_in(&mut vcx, |s, w, cx| s.show_view(ViewId::Duplicates, w, cx));
+    wait_until(&mut vcx, "the duplicates view", |cx| {
+        cx.update(|_, cx| duplicates::current(cx).is_some_and(|v| v.read(cx).list().is_some()))
+    });
+    let view = vcx.update(|_, cx| duplicates::current(cx).unwrap());
+    assert_eq!(vcx.update(|_, cx| view.read(cx).filter), people);
+    assert!(exists("duplicates-ai-chip-people", &mut vcx));
+}

@@ -14,15 +14,70 @@ struct ListOut {
     totals: GroupTotals,
     offset: u64,
     groups: Vec<GroupListItem>,
+    /// With a filter: the groups its AI part keeps (every group without one), and how many of them are reviewed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matching: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matching_reviewed: Option<u64>,
 }
 
-pub fn list(ctx: &Ctx, order: GroupOrder, offset: u64, limit: u64) -> Result<()> {
+pub fn list(
+    ctx: &Ctx,
+    order: GroupOrder,
+    offset: u64,
+    limit: u64,
+    filter: &crate::GroupsFilterArgs,
+) -> Result<()> {
+    use ps_service::review::{
+        self, InsightExtra, LookupMatcher, ReviewFilter, ReviewSort, ReviewStore,
+    };
     let svc = ctx.reader()?;
     let g = svc.groups();
-    let out = ListOut {
-        totals: g.totals()?,
-        offset,
-        groups: g.list(order, offset, limit)?,
+    let criteria = ps_model::library::InsightCriteria {
+        category: filter.category,
+        children: filter.children,
+        pets: filter.pets,
+        people: filter.people,
+    };
+    let extra = InsightExtra {
+        pet_kind: filter.pet_kind.clone(),
+        people_min: filter.people_min,
+        people_max: filter.people_max,
+    };
+    let rf = ReviewFilter {
+        insight: (!criteria.is_empty() || !extra.is_empty()).then_some(criteria),
+        undescribed: filter.undescribed,
+        unreviewed: filter.unreviewed,
+        ..ReviewFilter::default()
+    };
+    let out = if rf.is_empty() {
+        ListOut {
+            totals: g.totals()?,
+            offset,
+            groups: g.list(order, offset, limit)?,
+            matching: None,
+            matching_reviewed: None,
+        }
+    } else {
+        let store = ReviewStore::for_service(&svc);
+        let istore = ps_service::insights::InsightStore::for_catalog(svc.engine().catalog());
+        let matcher = LookupMatcher::new(&svc, &istore, criteria, extra)?;
+        let listed = review::list_with(&svc, &store, rf, ReviewSort::Reclaimable, Some(&matcher))?;
+        let keep: std::collections::HashSet<FileId> = listed.rows.iter().map(|r| r.id).collect();
+        let groups = g
+            .list(order, 0, u64::MAX)?
+            .into_iter()
+            .filter(|x| keep.contains(&x.id))
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        ListOut {
+            totals: g.totals()?,
+            offset,
+            groups,
+            matching: Some(listed.matching),
+            matching_reviewed: Some(listed.matching_reviewed),
+        }
     };
     emit(ctx.json, "groups list", &out, |o| {
         println!(
@@ -32,6 +87,9 @@ pub fn list(ctx: &Ctx, order: GroupOrder, offset: u64, limit: u64) -> Result<()>
             bytes(o.totals.reclaimable_bytes),
             o.totals.suggestions
         );
+        if let (Some(m), Some(r)) = (o.matching, o.matching_reviewed) {
+            println!("{m} groups match the filter, {r} of them reviewed");
+        }
         let rows: Vec<Vec<String>> = o
             .groups
             .iter()

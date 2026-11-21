@@ -238,6 +238,8 @@ enum GroupsCommand {
         limit: u64,
         #[arg(long, default_value_t = 0)]
         offset: u64,
+        #[command(flatten)]
+        filter: GroupsFilterArgs,
     },
     /// Show a group: each member's path, join reason and distances, and why the keeper was chosen.
     Show { group: i64 },
@@ -262,6 +264,45 @@ enum GroupsCommand {
     Explain { a: i64, b: i64 },
     /// Regroup now (normally automatic after each scan).
     Regroup,
+}
+
+/// Filters of `groups list` (ai-filtered-duplicates). AI filters match a group when any of its files' effective
+/// insight (your corrections win) matches; AI insights are advisory and never change a group.
+#[derive(Args, Debug, Clone, Default)]
+pub struct GroupsFilterArgs {
+    /// Only groups with a file the AI put in this category (main or secondary): portrait, people, pets, animals,
+    /// nature, landscape, travel, urban, food, event, sports, document, screenshot, artwork, object, other.
+    #[arg(long, value_parser = parse_category)]
+    pub category: Option<ps_model::SceneCategory>,
+    /// Only groups with a file the AI saw people in.
+    #[arg(long)]
+    pub people: bool,
+    /// Only groups with a file the AI saw children in.
+    #[arg(long)]
+    pub children: bool,
+    /// Only groups with a file the AI saw pets in.
+    #[arg(long)]
+    pub pets: bool,
+    /// Only groups with a file showing this pet kind ("dog", "cat", ...).
+    #[arg(long, value_name = "KIND")]
+    pub pet_kind: Option<String>,
+    /// Only groups with a file showing at least this many people.
+    #[arg(long, value_name = "N")]
+    pub people_min: Option<u32>,
+    /// Only groups with a file showing at most this many people.
+    #[arg(long, value_name = "N")]
+    pub people_max: Option<u32>,
+    /// Only groups in which no file has an AI insight yet.
+    #[arg(long, conflicts_with_all = ["category", "people", "children", "pets", "pet_kind", "people_min", "people_max"])]
+    pub undescribed: bool,
+    /// Only groups not marked reviewed.
+    #[arg(long)]
+    pub unreviewed: bool,
+}
+
+fn parse_category(s: &str) -> Result<ps_model::SceneCategory, String> {
+    serde_json::from_value(serde_json::Value::String(s.to_ascii_lowercase()))
+        .map_err(|_| format!("unknown category {s:?}"))
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -557,6 +598,7 @@ fn run(cli: Cli) -> Result<()> {
                 order,
                 limit,
                 offset,
+                filter,
             } => cmd::groups::list(
                 &ctx,
                 match order {
@@ -565,6 +607,7 @@ fn run(cli: Cli) -> Result<()> {
                 },
                 offset,
                 limit,
+                &filter,
             ),
             GroupsCommand::Show { group } => cmd::groups::show(&ctx, group),
             GroupsCommand::SetKeeper { group, file } => cmd::groups::set_keeper(&ctx, group, file),

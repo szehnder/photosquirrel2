@@ -250,9 +250,7 @@ fn scenario_performance_budgets_duplicates_list_reload_within_budget() {
     );
     let group_rows: Vec<GroupRow> = (0..groups)
         .map(|g| {
-            let files: Vec<FileId> = (0..3)
-                .map(|k| ids[(g * 3 + k) as usize])
-                .collect();
+            let files: Vec<FileId> = (0..3).map(|k| ids[(g * 3 + k) as usize]).collect();
             GroupRow {
                 id: files[0],
                 keeper: files[0],

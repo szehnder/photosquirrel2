@@ -563,3 +563,72 @@ fn truncated_chips_show_their_full_label_on_hover(cx: &mut TestAppContext) {
         "the tooltip holds the full label: {tip:?} vs {chip:?}"
     );
 }
+
+/// ai-filtered-duplicates 3.1: "Review duplicates of these" opens the Duplicates view with this view's filter.
+#[gpui_kit::test]
+fn scenario_ai_review_review_duplicates_of_filtered_photos(cx: &mut TestAppContext) {
+    use ps_service::review::{self, ReviewFilter, ReviewSort, ReviewStore};
+    let (_tmp, data) = catalog_copy();
+    let (backend, view, mut cx) = open_ai(cx, &data);
+    // Two groups whose keepers the AI saw a dog in.
+    let scan = backend.scan().unwrap();
+    let store = ReviewStore::in_memory();
+    let all = review::list(
+        scan,
+        &store,
+        ReviewFilter::default(),
+        ReviewSort::Reclaimable,
+    )
+    .unwrap();
+    assert!(all.rows.len() >= 2, "the corpus has groups");
+    let mut want: Vec<ps_model::FileId> = all.rows[..2].iter().map(|r| r.id).collect();
+    want.sort();
+    for r in &all.rows[..2] {
+        let content = backend
+            .catalog()
+            .unwrap()
+            .read()
+            .file_by_id(r.keeper)
+            .unwrap()
+            .and_then(|f| f.identity)
+            .unwrap();
+        let mut i = insight(SceneCategory::Pets, 0, 0, true);
+        i.pets = vec!["dog".into()];
+        record(&backend, content, &i, 10);
+    }
+    backend.catalog().unwrap().writer().flush().unwrap();
+    settle(&view, &mut cx);
+    set_filter(
+        &view,
+        InsightFilter {
+            pets: true,
+            ..InsightFilter::default()
+        },
+        &mut cx,
+    );
+    click("ai-review-duplicates", &mut cx);
+    wait_until(&mut cx, "the filtered duplicates list", |cx| {
+        cx.update(|_, cx| {
+            ui_workspace::views::duplicates::current(cx).is_some_and(|v| {
+                let v = v.read(cx);
+                v.filter.insight.is_some_and(|c| c.pets) && v.list().is_some() && !v.is_busy()
+            })
+        })
+    });
+    for _ in 0..5 {
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+    }
+    let dups = cx.update(|_, cx| ui_workspace::views::duplicates::current(cx).unwrap());
+    let mut shown: Vec<ps_model::FileId> = cx.update(|_, cx| {
+        dups.read(cx)
+            .list()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.id)
+            .collect()
+    });
+    shown.sort();
+    assert_eq!(shown, want, "exactly the groups that contain pets");
+}

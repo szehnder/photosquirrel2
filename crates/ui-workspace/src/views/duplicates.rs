@@ -126,16 +126,29 @@ pub fn register(cx: &mut App) {
             CommandRegistry::register(cx, meta);
         }
     }
-    ViewRegistry::register(cx, ViewId::Duplicates, |_, window, cx| {
+    ViewRegistry::register(cx, ViewId::Duplicates, |ctx, window, cx| {
         let source = ReviewGlobal::get(cx);
         let gallery = cx.global::<ShellGlobals>().gallery.clone();
-        let view = cx.new(|cx| DuplicatesView::new(source, gallery, window, cx));
+        let state = ctx.duplicates;
+        let view = cx.new(|cx| DuplicatesView::new(source, gallery, state, window, cx));
         cx.set_global(Current(view.downgrade()));
         view.into()
     });
 }
 
 struct Current(WeakEntity<DuplicatesView>);
+
+/// The Duplicates list's filter and sort as last set, for the shell to remember (ai-filtered-duplicates).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DuplicatesState(pub crate::persist::DuplicatesViewState);
+
+impl Global for DuplicatesState {}
+
+impl DuplicatesState {
+    pub fn get(cx: &App) -> Option<crate::persist::DuplicatesViewState> {
+        cx.try_global::<DuplicatesState>().map(|s| s.0)
+    }
+}
 
 /// Review progress over every group, shared with the navigator: the view publishes it after every list load,
 /// and the shell when the catalog summary is refreshed (start-up, after a scan), so the count is right before
@@ -266,6 +279,8 @@ pub struct DuplicatesView {
     generation: u64,
     /// Re-renders while a cleanup run is moving files, so the edits come back when it ends.
     cleanup_poll: Option<Task<()>>,
+    /// While an AI filter is set: the insight stamp last seen, and the task polling it (ADR-0019).
+    insight_poll: Option<Task<()>>,
 }
 
 /// Shown while a cleanup run is moving files: the edits are not offered (ADR-0099).
@@ -276,6 +291,7 @@ impl DuplicatesView {
     pub fn new(
         source: Option<Arc<dyn ReviewSource>>,
         gallery: SharedSource,
+        state: crate::persist::DuplicatesViewState,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
@@ -285,8 +301,8 @@ impl DuplicatesView {
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             tab: Tab::Groups,
-            sort: ReviewSort::Reclaimable,
-            filter: ReviewFilter::default(),
+            sort: state.sort,
+            filter: state.filter,
             list: None,
             selected: None,
             detail: None,
@@ -302,6 +318,7 @@ impl DuplicatesView {
             busy: false,
             generation: 0,
             cleanup_poll: None,
+            insight_poll: None,
         };
         if std::env::var("PHOTOSQUIRREL_REVIEW_TAB").as_deref() == Ok("suggestions") {
             // Dev-only: scripted screenshots of the suggestions panel (KDE gives agents one frame).
@@ -311,6 +328,7 @@ impl DuplicatesView {
         if let Some(l) = &this.list {
             DuplicatesProgress::publish(l.as_ref().into(), cx);
         }
+        this.watch_insights(cx);
         if !primed {
             this.reload(cx);
             this.reload_suggestions(cx);
@@ -670,14 +688,108 @@ impl DuplicatesView {
 
     pub fn set_sort(&mut self, sort: ReviewSort, cx: &mut Context<'_, Self>) {
         self.sort = sort;
+        self.remember(cx);
         self.reload(cx);
         cx.notify();
     }
 
     pub fn set_filter(&mut self, filter: ReviewFilter, cx: &mut Context<'_, Self>) {
+        let mut filter = filter;
+        // "Not described yet" and an insight criterion never both hold: the newer choice wins.
+        if filter.undescribed && filter.insight.is_some() {
+            if self.filter.undescribed {
+                filter.undescribed = false;
+            } else {
+                filter.insight = None;
+            }
+        }
+        if filter
+            .insight
+            .is_some_and(|c| c == ps_model::library::InsightCriteria::default())
+        {
+            filter.insight = None;
+        }
         self.filter = filter;
+        self.remember(cx);
+        self.watch_insights(cx);
         self.reload(cx);
         cx.notify();
+    }
+
+    /// Change only the AI criteria (the menu and the chips).
+    pub fn update_ai(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+        f: impl FnOnce(&mut ps_model::library::InsightCriteria),
+    ) {
+        let mut c = self.filter.insight.unwrap_or_default();
+        f(&mut c);
+        let filter = ReviewFilter {
+            insight: Some(c),
+            undescribed: false,
+            ..self.filter
+        };
+        self.set_filter(filter, cx);
+    }
+
+    /// Hand the filter and sort to the shell, which writes them with the layout.
+    fn remember(&self, cx: &mut Context<'_, Self>) {
+        cx.set_global(DuplicatesState(crate::persist::DuplicatesViewState {
+            filter: self.filter,
+            sort: self.sort,
+        }));
+    }
+
+    /// While an AI filter is set, poll the insight stamp every half second and reload when it changes, so groups
+    /// join or leave the list as the AI queue describes photos or the user corrects them (ADR-0019). No poll
+    /// without an AI filter.
+    fn watch_insights(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.filter.has_ai() {
+            self.insight_poll = None;
+            return;
+        }
+        if self.insight_poll.is_some() {
+            return;
+        }
+        let Some(src) = self.source.clone() else {
+            return;
+        };
+        self.insight_poll = Some(cx.spawn(async move |this, cx| {
+            let mut last = None;
+            loop {
+                let s = src.clone();
+                let stamp = cx
+                    .background_executor()
+                    .spawn(async move { s.ai_stamp().ok() })
+                    .await;
+                let go_on = this
+                    .update(cx, |this, cx| {
+                        if !this.filter.has_ai() {
+                            this.insight_poll = None;
+                            return false;
+                        }
+                        if last.is_some() && stamp.is_some() && stamp != last {
+                            this.reload(cx);
+                        }
+                        if stamp.is_some() {
+                            last = stamp;
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !go_on {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(crate::views::ai_review::POLL)
+                    .await;
+            }
+        }));
+    }
+
+    /// Polling the insight stamp (tests).
+    pub fn watching_insights(&self) -> bool {
+        self.insight_poll.is_some()
     }
 
     pub fn set_tab(&mut self, tab: Tab, cx: &mut Context<'_, Self>) {
@@ -1099,6 +1211,67 @@ fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElemen
         .into_any_element()
 }
 
+/// One removable chip per active AI filter ("People ×", "Pets ×", "Category: Travel ×", "Not described yet ×").
+fn ai_chips(f: ReviewFilter, cx: &mut Context<'_, DuplicatesView>) -> Vec<AnyElement> {
+    use ps_model::library::InsightCriteria;
+    let mut out = Vec::new();
+    if f.undescribed {
+        out.push(filter_chip(
+            "duplicates-ai-chip-undescribed",
+            "Not described yet ×",
+            true,
+            cx,
+            |v, cx| {
+                let filter = ReviewFilter {
+                    undescribed: false,
+                    ..v.filter
+                };
+                v.set_filter(filter, cx);
+            },
+        ));
+    }
+    let Some(c) = f.insight else {
+        return out;
+    };
+    let toggles: [(&'static str, &'static str, bool, fn(&mut InsightCriteria)); 3] = [
+        ("people", "People ×", c.people, |c| c.people = false),
+        ("children", "Children ×", c.children, |c| {
+            c.children = false
+        }),
+        ("pets", "Pets ×", c.pets, |c| c.pets = false),
+    ];
+    for (id, label, on, off) in toggles {
+        if on {
+            out.push(filter_chip(
+                format!("duplicates-ai-chip-{id}"),
+                label,
+                true,
+                cx,
+                move |v, cx| v.update_ai(cx, off),
+            ));
+        }
+    }
+    if let Some(cat) = c.category {
+        out.push(filter_chip(
+            "duplicates-ai-chip-category",
+            format!("{} ×", crate::views::ai_review::category_label(cat)),
+            true,
+            cx,
+            |v, cx| v.update_ai(cx, |c| c.category = None),
+        ));
+    }
+    out
+}
+
+/// "Matching: 2 of 5 reviewed": the groups the AI part of the filter keeps, whatever the other chips.
+pub fn matching_text(l: &ReviewList) -> String {
+    format!(
+        "Matching: {} of {} reviewed",
+        format_count(l.matching_reviewed),
+        format_count(l.matching)
+    )
+}
+
 /// The progress card's main figure and its line below: ("28 left", "12 of 40 reviewed"), or the done state
 /// ("All 40 groups reviewed", "Nothing left to review"). Every group counts, whatever the filter.
 pub fn progress_card_text(groups: u64, reviewed: u64) -> (String, String) {
@@ -1126,7 +1299,7 @@ pub fn progress_card_text(groups: u64, reviewed: u64) -> (String, String) {
 
 /// The review progress card: the visual anchor of the Duplicates list (groups left, big; reviewed and the bar
 /// below), tinted with the accent, and with the success tone once every group is reviewed.
-fn progress_card(list: Option<&ReviewList>, fraction: f32, cx: &App) -> AnyElement {
+fn progress_card(list: Option<&ReviewList>, fraction: f32, ai: bool, cx: &App) -> AnyElement {
     let colors = *ui_theme::colors(cx);
     let Some(l) = list else {
         return div()
@@ -1194,6 +1367,19 @@ fn progress_card(list: Option<&ReviewList>, fraction: f32, cx: &App) -> AnyEleme
                 .text_color(colors.text_muted)
                 .child(sub),
         )
+        .when(ai, |e| {
+            let t = matching_text(l);
+            e.child(
+                div()
+                    .id("duplicates-progress-matching")
+                    .test_support()
+                    .aria_label(SharedString::from(t.clone()))
+                    .text_size(Tokens::text_sm())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors.text)
+                    .child(t),
+            )
+        })
         .child(progress_bar_on(
             if done { 1.0 } else { fraction },
             colors.border_strong,
@@ -1254,7 +1440,12 @@ impl DuplicatesView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Duplicates"),
             )
-            .child(progress_card(list.as_deref(), fraction, cx))
+            .child(progress_card(
+                list.as_deref(),
+                fraction,
+                self.filter.has_ai(),
+                cx,
+            ))
             .child(
                 div()
                     .text_size(Tokens::text_xs())
@@ -1305,6 +1496,79 @@ impl DuplicatesView {
                 })
         };
         let f = self.filter;
+        let ai_menu = {
+            let weak = weak.clone();
+            let c = f.insight.unwrap_or_default();
+            let n = usize::from(c.children)
+                + usize::from(c.pets)
+                + usize::from(c.people)
+                + usize::from(c.category.is_some())
+                + usize::from(f.undescribed);
+            Button::new("duplicates-ai")
+                .label(match n {
+                    0 => "AI insight".to_owned(),
+                    n => format!("AI insight ({n})"),
+                })
+                .icon(Icon::new(IconName::Sparkles))
+                .compact()
+                .dropdown_caret(true)
+                .dropdown_menu(move |menu, _, _| {
+                    use ps_model::library::InsightCriteria;
+                    let mut menu = menu.label("Contains");
+                    let toggles: [(&'static str, fn(&mut InsightCriteria) -> &mut bool); 3] = [
+                        ("People", |c| &mut c.people),
+                        ("Children", |c| &mut c.children),
+                        ("Pets", |c| &mut c.pets),
+                    ];
+                    for (label, field) in toggles {
+                        let weak = weak.clone();
+                        let on = *field(&mut c.clone());
+                        menu = menu.item(PopupMenuItem::new(label).checked(on).on_click(
+                            move |_, _, cx| {
+                                let _ = weak.update(cx, |v, cx| {
+                                    v.update_ai(cx, |c| *field(c) = !on);
+                                });
+                            },
+                        ));
+                    }
+                    menu = menu.separator().label("Category");
+                    let any = std::iter::once(None)
+                        .chain(ps_model::SceneCategory::ALL.into_iter().map(Some));
+                    for cat in any {
+                        let weak = weak.clone();
+                        let label =
+                            cat.map_or("Any category", crate::views::ai_review::category_label);
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(c.category == cat)
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak
+                                        .update(cx, |v, cx| v.update_ai(cx, |c| c.category = cat));
+                                }),
+                        );
+                    }
+                    menu = menu.separator();
+                    {
+                        let weak = weak.clone();
+                        let on = f.undescribed;
+                        menu = menu.item(
+                            PopupMenuItem::new("Not described yet")
+                                .checked(on)
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak.update(cx, |v, cx| {
+                                        let filter = ReviewFilter {
+                                            undescribed: !on,
+                                            insight: None,
+                                            ..v.filter
+                                        };
+                                        v.set_filter(filter, cx);
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
+        };
         let filters = h_flex()
             .flex_wrap()
             .gap(Tokens::space(1.5))
@@ -1362,7 +1626,8 @@ impl DuplicatesView {
                     f.has_suggestions = !f.has_suggestions;
                     v.set_filter(f, cx);
                 },
-            ));
+            ))
+            .children(ai_chips(f, cx));
         let controls = v_flex()
             .flex_none()
             .px(Tokens::space(4.0))
@@ -1371,12 +1636,17 @@ impl DuplicatesView {
             .border_b_1()
             .border_color(colors.border)
             .child(
-                h_flex().child(sort_menu).child(div().flex_1()).child(
-                    div()
-                        .text_size(Tokens::text_2xs())
-                        .text_color(colors.text_faint)
-                        .child(format!("{} shown", format_count(self.rows().len() as u64))),
-                ),
+                h_flex()
+                    .gap(Tokens::space(1.5))
+                    .child(sort_menu)
+                    .child(ai_menu)
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(Tokens::text_2xs())
+                            .text_color(colors.text_faint)
+                            .child(format!("{} shown", format_count(self.rows().len() as u64))),
+                    ),
             )
             .child(filters);
 

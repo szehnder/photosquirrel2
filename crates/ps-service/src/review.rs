@@ -175,6 +175,7 @@ impl ReviewSort {
 
 /// Filters of the review list (all must hold).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReviewFilter {
     /// Only groups of byte-identical copies.
     pub exact_only: bool,
