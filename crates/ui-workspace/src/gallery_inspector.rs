@@ -1667,48 +1667,6 @@ impl Render for GalleryInspector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::exclude_label;
-    use ps_model::ItemId;
-    use ps_model::library::{CopyInfo, ItemDetail};
-
-    fn copy(path: &str, keeper: bool) -> CopyInfo {
-        CopyInfo {
-            id: ItemId::default(),
-            source: "Laptop".into(),
-            path: path.into(),
-            dimensions: None,
-            size: 1,
-            join_reason: String::new(),
-            keeper,
-            online: true,
-            why_keeper: None,
-        }
-    }
-
-    /// Excluding a keeper takes its group's copies with it: the action says so.
-    #[test]
-    fn excluding_a_keeper_names_its_copies() {
-        let mut d = ItemDetail {
-            path: "/a/IMG_1.JPG".into(),
-            copies: vec![
-                copy("/a/IMG_1.JPG", true),
-                copy("/b/IMG_1.JPG", false),
-                copy("/c/IMG_1 (1).JPG", false),
-            ],
-            ..ItemDetail::default()
-        };
-        assert_eq!(exclude_label(&d), "Exclude this photo and its 2 copies");
-        d.copies.truncate(2);
-        assert_eq!(exclude_label(&d), "Exclude this photo and its copy");
-        d.path = "/b/IMG_1.JPG".into();
-        assert_eq!(exclude_label(&d), "Exclude from Library", "not the keeper");
-        d.copies.clear();
-        assert_eq!(exclude_label(&d), "Exclude from Library");
-    }
-}
-
 /// Open in player on a video copy row (ADR-0134): enabled for an online source, otherwise disabled with the reason.
 fn open_in_player_button(
     ix: usize,
@@ -1751,4 +1709,46 @@ fn open_in_player_button(
             .build(window, cx)
         })
         .child(Icon::new(IconName::Play).size(Tokens::icon_sm()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exclude_label;
+    use ps_model::ItemId;
+    use ps_model::library::{CopyInfo, ItemDetail};
+
+    fn copy(path: &str, keeper: bool) -> CopyInfo {
+        CopyInfo {
+            id: ItemId::default(),
+            source: "Laptop".into(),
+            path: path.into(),
+            dimensions: None,
+            size: 1,
+            join_reason: String::new(),
+            keeper,
+            online: true,
+            why_keeper: None,
+        }
+    }
+
+    /// Excluding a keeper takes its group's copies with it: the action says so.
+    #[test]
+    fn excluding_a_keeper_names_its_copies() {
+        let mut d = ItemDetail {
+            path: "/a/IMG_1.JPG".into(),
+            copies: vec![
+                copy("/a/IMG_1.JPG", true),
+                copy("/b/IMG_1.JPG", false),
+                copy("/c/IMG_1 (1).JPG", false),
+            ],
+            ..ItemDetail::default()
+        };
+        assert_eq!(exclude_label(&d), "Exclude this photo and its 2 copies");
+        d.copies.truncate(2);
+        assert_eq!(exclude_label(&d), "Exclude this photo and its copy");
+        d.path = "/b/IMG_1.JPG".into();
+        assert_eq!(exclude_label(&d), "Exclude from Library", "not the keeper");
+        d.copies.clear();
+        assert_eq!(exclude_label(&d), "Exclude from Library");
+    }
 }

@@ -908,9 +908,12 @@ impl LoupeView {
             .gap(lpx(BADGE_PAD))
             .rounded(lpx(NOTICE_PX * 1.2))
             .bg(colors.notice_bg)
+            .border_1()
+            .border_color(colors.placeholder_stroke)
             .text_color(colors.notice_text)
             .text_size(lpx(NOTICE_PX))
             .cursor_pointer()
+            .hover(|d| d.border_color(colors.focus))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, _, cx| this.open_in_player(cx)))
             .child(

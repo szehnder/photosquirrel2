@@ -203,7 +203,7 @@ impl GallerySource for CatalogBackend {
     }
 
     fn video_duration_ms(&self, id: ItemId) -> anyhow::Result<Option<u64>> {
-        Ok(self.lib.video_duration_ms(id)?)
+        self.lib.video_duration_ms(id)
     }
 
     fn stack_members(&self, keeper: ItemId) -> anyhow::Result<Vec<ItemId>> {
