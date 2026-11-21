@@ -37,11 +37,11 @@ and the `RecordingOpener`; the real-ffmpeg test runs where ffmpeg is installed, 
 
 ## 4. Verification
 
-- [ ] 4.1 Screenshot review by a fresh reviewer: the loupe with a video in both themes, and the inspector's Open in
+- [x] 4.1 Screenshot review by a fresh reviewer: the loupe with a video in both themes, and the inspector's Open in
   player. Verify: the PNGs reviewed.
 - [ ] 4.2 Manual: Open in player on this Linux machine opens the default player for a `.mov`. Verify: noted here.
-- [ ] 4.3 `cargo xtask ci` passes. Verify: the command is green.
-- [ ] 4.4 `openspec validate video-previews-and-play --strict` passes. Verify: the command reports it valid.
+- [x] 4.3 `cargo xtask ci` passes. Verify: the command is green.
+- [x] 4.4 `openspec validate video-previews-and-play --strict` passes. Verify: the command reports it valid.
 
 ## Workflow follow-up
 

@@ -30,7 +30,7 @@ btrfs filesystem, except the existing workspace test, which runs where CI runs.
   `"volume_uuid":"aae63871-beac-4e9b-be85-95061b95f9f0"`, `"stable_file_ids":true` (before: `unknown` and `null`).
   `sources list` has no filesystem-type field; the stored hint's `fs=btrfs` is checked by
   `scenario_sources_source_added_before_the_fix_gains_its_identity`. `rescan-nochange-100k`: 0.34 s (budget 4 s).
-- [ ] 3.2 `cargo xtask ci` passes with no failing test. Verify: the command is green.
+- [x] 3.2 `cargo xtask ci` passes with no failing test. Verify: the command is green.
 - [x] 3.3 `openspec validate btrfs-volume-identity --strict` passes. Verify: the command reports it valid.
 
 ## Workflow follow-up
