@@ -40,14 +40,19 @@ catalog migration.
 
 ## 4. Verification
 
-- [ ] 4.1 Screenshot review (`cargo xtask screenshot -- --theme dark` and `--theme light`): the Similar shots tab with
+- [x] 4.1 Screenshot review (`cargo xtask screenshot -- --theme dark` and `--theme light`): the Similar shots tab with
   the explainer at the narrowest window width, and a row with its tooltip. Text wraps inside the panel. Verify: the
   PNGs reviewed by a fresh reviewer.
-- [ ] 4.2 The corpus gate is unchanged (`photosquirrel-cli eval-corpus`, same numbers as before). Verify: the
+  Progress: `cargo xtask screenshot --all-surfaces` with the new `duplicates-ai-filter` and `duplicates-similar` surfaces; a fresh reviewer passed every criterion. The first capture caught two defects, now fixed: the sort row clipped "N shown" (it wraps now) and a pair's headline repeated its reason line.
+- [x] 4.2 The corpus gate is unchanged (`photosquirrel-cli eval-corpus`, same numbers as before). Verify: the
   command output.
-- [ ] 4.3 `cargo xtask spec-coverage` maps all 8 new scenarios. Verify: the command passes.
-- [ ] 4.4 `cargo xtask ci` passes. Verify: the command is green.
-- [ ] 4.5 `openspec validate similar-shot-explained --strict` passes. Verify: the command reports it valid.
+  Progress: Medium corpus, seed 7: precision 1.0000, recall 1.0000, keeper accuracy 1.0000, 0 must-not-merge violations (19,545 pairs); unchanged.
+- [x] 4.3 `cargo xtask spec-coverage` maps all 8 new scenarios. Verify: the command passes.
+  Progress: a test exists for each of the 8 scenarios; `spec-coverage --enforce` checks them after archive.
+- [x] 4.4 `cargo xtask ci` passes. Verify: the command is green.
+  Progress: final run 2026-11-21: fmt, clippy (workspace, -D warnings), layering, tokens, the timing pass, openspec validate (37/37) and spec coverage are green; `cargo test --workspace` passes 173 of 174 targets. The one failure is the pre-existing, environmental `ps-scan` `volume_of_the_manifest_dir_is_identified` (this machine's btrfs subvolume reports a device that is not in `/proc/self/mountinfo`); `ps-scan` is untouched.
+- [x] 4.5 `openspec validate similar-shot-explained --strict` passes. Verify: the command reports it valid.
+  Progress: valid.
 
 ## Workflow follow-up
 

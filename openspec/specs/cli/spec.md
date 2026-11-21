@@ -168,3 +168,25 @@ When a scan ends with damaged files on its sources (catalogued as could not be r
 #### Scenario: No damaged line for intact files
 - **WHEN** the small corpus is scanned
 - **THEN** the text summary has no damaged line and the `--json` summary has `damaged` 0
+
+### Requirement: Groups filtered by insight
+The groups list command SHALL accept the Duplicates list's insight filters (category, people, children, pets, not described yet), a pet kind and a people count range, and an unreviewed filter, and its JSON output SHALL report the matching group count and how many of them are reviewed, alongside the totals.
+
+#### Scenario: CLI lists groups with pets
+- **WHEN** insights are stored for the scanned small corpus and the groups list command runs with the pets filter and JSON output
+- **THEN** it lists exactly the groups that contain pets and reports their count as matching, with the total group count unchanged
+
+#### Scenario: CLI lists undescribed groups
+- **WHEN** no AI queue has run and the groups list command runs with the not-described-yet filter
+- **THEN** every group is listed and matching equals the total
+
+### Requirement: Suggestions explained
+The suggestions command's JSON output SHALL give each suggestion a reason kind (capture time, sub-second, camera serial, camera model, two camera originals or frame) and the same plain-words explanation the app shows, and the explain command SHALL print that explanation for a pair that is a suggestion.
+
+#### Scenario: Suggestion JSON carries the explanation
+- **WHEN** the suggestions command runs with JSON output on the scanned small corpus
+- **THEN** each burst pair has reason kind capture time and an explanation that names its time difference
+
+#### Scenario: Explain prints the reason
+- **WHEN** the explain command runs on the two files of a burst pair taken N seconds apart
+- **THEN** it prints "Look the same, but taken N s apart" with both distances and their limits

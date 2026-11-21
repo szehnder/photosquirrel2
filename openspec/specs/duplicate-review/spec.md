@@ -121,3 +121,78 @@ The Duplicates list header SHALL show review progress as a card on a tinted surf
 #### Scenario: Card ignores the list filter
 - **WHEN** the user marks 2 groups reviewed and then filters by unreviewed
 - **THEN** the card still counts every group and shows 2 reviewed
+
+### Requirement: AI insight filters on groups
+The Duplicates list SHALL filter groups by category, contains people, contains children, contains pets and "Not described yet" (the AI filters the gallery offers), combined with its other filters. A group SHALL match when any of its files' effective insights matches. "Not described yet" SHALL match groups in which no file has an insight. The filter SHALL be kept across restarts.
+
+#### Scenario: Filter groups with children
+- **WHEN** insights are stored for the scanned small corpus's keepers and the user filters the Duplicates list by "contains children"
+- **THEN** exactly the groups having a file whose effective insight has at least one child are listed
+
+#### Scenario: A user correction decides the match
+- **WHEN** the user corrects a keeper's category from "nature" to "pets" and filters the Duplicates list by category "pets"
+- **THEN** that keeper's group is listed
+
+#### Scenario: Groups not described yet
+- **WHEN** insights are stored for half of the corpus's keepers and the user filters by "Not described yet"
+- **THEN** exactly the groups with no described file are listed
+
+#### Scenario: AI filter combines with unreviewed
+- **WHEN** the user reviews 2 of the groups that contain pets and then filters by "contains pets" and unreviewed
+- **THEN** the groups that contain pets are listed except those 2
+
+#### Scenario: Filter kept across restarts
+- **WHEN** the user filters the Duplicates list by "contains people" and restarts the application
+- **THEN** the Duplicates list opens filtered by "contains people"
+
+#### Scenario: Filtering never changes groups
+- **WHEN** the user applies and clears every AI filter in turn
+- **THEN** every group's members and keeper are identical to before
+
+### Requirement: Filtered review progress
+With an AI filter set, the review progress card SHALL also show how many matching groups are reviewed ("Matching: N of M reviewed"), and marking a group reviewed SHALL open the next unreviewed matching group. J and K SHALL move only between matching groups.
+
+#### Scenario: Matching progress shown
+- **WHEN** 5 groups contain pets, the user filters by "contains pets" and marks 2 of them reviewed
+- **THEN** the card reads "Matching: 2 of 5 reviewed" and its main figure still counts every group
+
+#### Scenario: Review advances within the filter
+- **WHEN** the list is filtered by "contains pets" and the user presses R on a group
+- **THEN** the next unreviewed group that contains pets opens, skipping groups that do not match
+
+### Requirement: Filtered list follows new insights
+While an AI filter is set, a group SHALL join or leave the list within 1 s of an insight or correction being stored that changes its match, keeping the selected group and the scroll position when the selected group still matches.
+
+#### Scenario: Newly described group joins the list
+- **WHEN** the list is filtered by "contains children" and a recording provider stores an insight with 1 child for an undescribed keeper
+- **THEN** that keeper's group appears in the list within 1 s and the selected group stays selected
+
+### Requirement: How similar shots are found
+The first time the user opens the similar shots, the view SHALL show an explainer stating the look-alike thresholds the grouping uses, that a pair is listed only when its metadata shows two shots, that similar shots are never merged, and that shots of one moment which look different are not listed. Dismissing it SHALL be kept across restarts, and an info button SHALL reopen it.
+
+#### Scenario: Explainer shown the first time
+- **WHEN** the user opens the Similar shots tab for the first time on a catalog with suggestions
+- **THEN** the explainer is shown and names the perceptual hash limits 6 and 8 and the 2% aspect-ratio limit
+
+#### Scenario: Explainer stays dismissed
+- **WHEN** the user dismisses the explainer, restarts the application and opens the Similar shots tab
+- **THEN** the explainer is not shown, and pressing the tab's info button shows it
+
+#### Scenario: Explainer from a group
+- **WHEN** the user has never seen the explainer and follows "Show similar shots" from a group
+- **THEN** the explainer is shown
+
+#### Scenario: Explainer thresholds follow the grouping
+- **WHEN** the explainer is shown
+- **THEN** the limits it names equal the limits the grouping applies to derivative edges
+
+### Requirement: Suggestion reasons in plain words
+Every similar-shot suggestion SHALL show a one-line reason in plain words naming what shows the two files are different shots (capture time difference, different camera, different frame, or two camera originals), and its tooltip SHALL add both hash distances against their limits and why such pairs are kept separate.
+
+#### Scenario: Burst pair reason
+- **WHEN** the suggestions panel shows a corpus burst pair taken N seconds apart
+- **THEN** its reason reads "Look the same, but taken N s apart" and its tooltip names the pair's pHash and dHash distances with the limits 6 and 8
+
+#### Scenario: Different frames reason
+- **WHEN** the suggestions panel shows two converted burst frames that record different frame numbers
+- **THEN** its reason names both frame numbers

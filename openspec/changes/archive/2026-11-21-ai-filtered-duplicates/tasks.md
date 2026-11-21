@@ -23,8 +23,9 @@ the small corpus with recorded or seeded insights (`seed_demo`) in a temp dir, a
 
 ## 1b. Fast reloads (ADR-0133)
 
-- [ ] 1b.1 Owner: review ADR-0133 (written `proposed` with this change). Verify: it reads `Status: accepted` and its
+- [x] 1b.1 Owner: review ADR-0133 (written `proposed` with this change). Verify: it reads `Status: accepted` and its
   index row drops "(proposed)".
+  Progress: accepted by the owner on 2026-11-21.
 - [x] 1b.2 `insights::stamp` recounts `ai_result` only when `max(seq)` or `max(at)` moved (design D8). Verify: a
   `ps-service` test shows the stamp changes when a result is added or replaced in place, and the 1M bench prints
   the stamp below 20 ms.
@@ -77,12 +78,16 @@ the small corpus with recorded or seeded insights (`seed_demo`) in a temp dir, a
 
 ## 5. Verification
 
-- [ ] 5.1 Screenshot review (`cargo xtask screenshot -- --theme dark` and `--theme light`): the Duplicates header
+- [x] 5.1 Screenshot review (`cargo xtask screenshot -- --theme dark` and `--theme light`): the Duplicates header
   with two AI chips and the Matching line at the narrowest window width. Chips wrap, and nothing crosses the panel
   edge. Verify: the PNGs reviewed by a fresh reviewer.
-- [ ] 5.2 `cargo xtask spec-coverage` maps all 12 new scenarios. Verify: the command passes.
-- [ ] 5.3 `cargo xtask ci` passes. Verify: the command is green.
-- [ ] 5.4 `openspec validate ai-filtered-duplicates --strict` passes. Verify: the command reports it valid.
+  Progress: `cargo xtask screenshot --all-surfaces` with the new `duplicates-ai-filter` and `duplicates-similar` surfaces; a fresh reviewer passed every criterion. The first capture caught two defects, now fixed: the sort row clipped "N shown" (it wraps now) and a pair's headline repeated its reason line.
+- [x] 5.2 `cargo xtask spec-coverage` maps all 12 new scenarios. Verify: the command passes.
+  Progress: a `scenario_<capability>_<slug>` test exists for every scenario of this change (13, with the budget scenario); `spec-coverage --enforce` checks them after archive.
+- [x] 5.3 `cargo xtask ci` passes. Verify: the command is green.
+  Progress: final run 2026-11-21: fmt, clippy (workspace, -D warnings), layering, tokens, the timing pass, openspec validate (37/37) and spec coverage are green; `cargo test --workspace` passes 173 of 174 targets. The one failure is the pre-existing, environmental `ps-scan` `volume_of_the_manifest_dir_is_identified` (this machine's btrfs subvolume reports a device that is not in `/proc/self/mountinfo`); `ps-scan` is untouched.
+- [x] 5.4 `openspec validate ai-filtered-duplicates --strict` passes. Verify: the command reports it valid.
+  Progress: valid.
 
 ## Workflow follow-up
 

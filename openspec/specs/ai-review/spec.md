@@ -62,3 +62,10 @@ Putting a file excluded by an accepted AI suggestion back in the Library SHALL m
 #### Scenario: Put back stays put after another AI run
 - **WHEN** the user puts back a file excluded by an accepted document suggestion and the AI queue then re-describes it with the same result
 - **THEN** no exclusion suggestion is open for the file and it stays in the Library
+
+### Requirement: Open matching duplicates
+The AI Review view SHALL offer "Review duplicates of these", which opens the Duplicates view with the AI Review view's current insight filter applied to the group list.
+
+#### Scenario: Review duplicates of filtered photos
+- **WHEN** the AI Review view is filtered by "contains pets" and the user chooses "Review duplicates of these"
+- **THEN** the Duplicates view opens filtered by "contains pets" and lists exactly the groups that contain pets

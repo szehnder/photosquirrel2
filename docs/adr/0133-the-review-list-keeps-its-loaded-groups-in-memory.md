@@ -1,6 +1,6 @@
 # 0133. The review list keeps its loaded groups in memory; a reload re-filters them
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-21
 - Deciders: maintainers
 
