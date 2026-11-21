@@ -47,7 +47,8 @@ source is stat'ed the same way, so ext4 on a partition is unchanged.
 
 When a scan starts on an online source whose record has no `volume_uuid` or no `device_hint`, it submits the
 values found now (a new catalog command, `SetVolumeIdentity { source, volume_uuid, device_hint }`, which writes
-only columns that are NULL). A recorded UUID is never overwritten, because a different UUID means another drive
+only columns that are NULL, and treats a hint recorded with `fs=?` as missing, since that is what a failed
+identification stored). A recorded UUID is never overwritten, because a different UUID means another drive
 (`Scanner::online`). No migration is needed, as the columns exist.
 
 ## Risks / Trade-offs

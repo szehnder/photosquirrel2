@@ -106,6 +106,14 @@ pub enum Command {
         source: SourceId,
         device_hint: String,
     },
+    /// A source's volume identity found by a scan (btrfs-volume-identity): fills a missing `volume_uuid` and a
+    /// missing or unidentified (`fs=?`) device hint. A recorded UUID is never replaced, since another UUID means
+    /// another drive.
+    SetVolumeIdentity {
+        source: SourceId,
+        volume_uuid: Option<String>,
+        device_hint: Option<String>,
+    },
     /// A source's total size and content fingerprint, recorded by its first completed scan (ADR-0121). `None`
     /// leaves the fingerprint unset (no file to sample yet), so a later completed scan measures again.
     SetSourceMeasure {
@@ -190,6 +198,7 @@ impl Command {
             Command::SetSourceMeasure { .. } => "set_source_measure",
             Command::RelinkSource { .. } => "relink_source",
             Command::SetDeviceHint { .. } => "set_device_hint",
+            Command::SetVolumeIdentity { .. } => "set_volume_identity",
             Command::FoldSource { .. } => "fold_source",
             Command::RemoveSource { .. } => "remove_source",
             Command::MoveFile { .. } => "move_file",
@@ -902,6 +911,23 @@ impl WriterThread {
                 let n = c
                     .prepare_cached("UPDATE source SET device_hint = ?2 WHERE id = ?1")?
                     .execute(params![source.0, device_hint])?;
+                expect_one(n, "unknown source")
+            }),
+            Command::SetVolumeIdentity {
+                source,
+                volume_uuid,
+                device_hint,
+            } => self.row(name, None, |c| {
+                let n = c
+                    .prepare_cached(
+                        "UPDATE source SET volume_uuid = coalesce(volume_uuid, ?2),
+                                device_hint = CASE
+                                    WHEN device_hint IS NULL OR instr(device_hint, ';fs=?;') > 0
+                                    THEN coalesce(?3, device_hint)
+                                    ELSE device_hint END
+                         WHERE id = ?1",
+                    )?
+                    .execute(params![source.0, volume_uuid, device_hint])?;
                 expect_one(n, "unknown source")
             }),
             Command::SetSourceMeasure {

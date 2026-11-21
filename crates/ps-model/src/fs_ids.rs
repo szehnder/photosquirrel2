@@ -196,6 +196,78 @@ pub fn mountinfo_entry(text: &str, major: u64, minor: u64) -> Option<(String, St
     })
 }
 
+/// One line of `/proc/self/mountinfo`: where it is mounted, its filesystem type and its mount source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MountEntry {
+    /// The mount point, with the mount table's octal escapes decoded.
+    pub mount_point: String,
+    pub fs_type: String,
+    /// The mounted device or share (`/dev/sda2`, `nas:/photos`), escapes decoded.
+    pub source: String,
+}
+
+/// Decodes the mount table's octal escapes (`\040` space, `\011` tab, `\012` newline, `\134` backslash).
+pub fn unescape_mount_field(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && i + 3 < b.len()
+            && b[i + 1..i + 4].iter().all(|c| (b'0'..=b'7').contains(c))
+        {
+            let v = (b[i + 1] - b'0') as u32 * 64
+                + (b[i + 2] - b'0') as u32 * 8
+                + (b[i + 3] - b'0') as u32;
+            if let Ok(c) = u8::try_from(v) {
+                out.push(c);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The mount holding `path` (an absolute, canonical path) in the text of `/proc/self/mountinfo`: the entry whose
+/// mount point is the longest component-wise prefix of `path`. Of two entries on the same mount point (one mounted
+/// over another), the later line wins, as in the kernel. Used when the folder's device number is not in the table
+/// (btrfs subvolumes, bind mounts).
+pub fn mountinfo_by_path(text: &str, path: &str) -> Option<MountEntry> {
+    let target = std::path::Path::new(path);
+    let mut best: Option<(usize, MountEntry)> = None;
+    for l in text.lines() {
+        let mut parts = l.split(" - ");
+        let (Some(pre), Some(post)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let pre: Vec<&str> = pre.split_whitespace().collect();
+        let post: Vec<&str> = post.split_whitespace().collect();
+        let (Some(mp), Some(fs), Some(src)) = (pre.get(4), post.first(), post.get(1)) else {
+            continue;
+        };
+        let mount_point = unescape_mount_field(mp);
+        let mp_path = std::path::Path::new(&mount_point);
+        if !target.starts_with(mp_path) {
+            continue;
+        }
+        let depth = mp_path.components().count();
+        if best.as_ref().is_none_or(|(d, _)| depth >= *d) {
+            best = Some((
+                depth,
+                MountEntry {
+                    mount_point,
+                    fs_type: fs.to_string(),
+                    source: unescape_mount_field(src),
+                },
+            ));
+        }
+    }
+    best.map(|(_, e)| e)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +463,57 @@ mod tests {
         );
         assert_eq!(linux_fs_ids(0xef53, None, &disk("exfat")), FsIds::STABLE);
         assert_eq!(udev_fs_type("E:ID_FS_TYPE=\n"), None);
+    }
+
+    #[test]
+    fn mount_by_path_on_btrfs_subvolumes() {
+        // Every subvolume is listed with the superblock's anonymous device 0:28; folders report 0:48.
+        let text = "26 1 0:28 /@ / rw,relatime shared:1 - btrfs /dev/sda2 rw,ssd,subvol=/@\n\
+                    30 26 0:28 /@home /home rw,relatime shared:2 - btrfs /dev/sda2 rw,subvol=/@home\n\
+                    31 26 0:28 /@cache /var/cache rw shared:3 - btrfs /dev/sda2 rw,subvol=/@cache\n\
+                    40 26 0:35 / /tmp rw - tmpfs tmpfs rw\n";
+        assert_eq!(mountinfo_entry(text, 0, 48), None);
+        let e = mountinfo_by_path(text, "/home/me/Sandbox").unwrap();
+        assert_eq!(
+            e,
+            MountEntry {
+                mount_point: "/home".into(),
+                fs_type: "btrfs".into(),
+                source: "/dev/sda2".into()
+            }
+        );
+        assert_eq!(
+            mountinfo_by_path(text, "/var/cache/x").unwrap().mount_point,
+            "/var/cache"
+        );
+        assert_eq!(
+            mountinfo_by_path(text, "/usr/bin").unwrap().mount_point,
+            "/"
+        );
+        // Component-wise: /homework is not under /home.
+        assert_eq!(
+            mountinfo_by_path(text, "/homework").unwrap().mount_point,
+            "/"
+        );
+        assert_eq!(mountinfo_by_path(text, "/tmp").unwrap().fs_type, "tmpfs");
+    }
+
+    #[test]
+    fn mount_by_path_nested_escaped_stacked_and_none() {
+        let text = "1 0 8:2 / / rw - ext4 /dev/sda2 rw\n\
+                    2 1 8:3 / /home rw - ext4 /dev/sda3 rw\n\
+                    3 2 8:17 / /home/me/My\\040Photos rw - exfat /dev/sdb1 rw\n\
+                    4 1 8:33 / /mnt/a rw - ext4 /dev/sdc1 rw\n\
+                    5 4 8:49 / /mnt/a rw - xfs /dev/sdd1 rw\n";
+        let e = mountinfo_by_path(text, "/home/me/My Photos/2024").unwrap();
+        assert_eq!(e.mount_point, "/home/me/My Photos");
+        assert_eq!(e.fs_type, "exfat");
+        // Mounted over another: the later line wins.
+        assert_eq!(mountinfo_by_path(text, "/mnt/a/b").unwrap().fs_type, "xfs");
+        // Under no listed mount (no root line, or a relative path).
+        let no_root = "2 1 8:3 / /home rw - ext4 /dev/sda3 rw\n";
+        assert_eq!(mountinfo_by_path(no_root, "/srv/x"), None);
+        assert_eq!(unescape_mount_field("a\\011b\\134c\\012"), "a\tb\\c\n");
+        assert_eq!(unescape_mount_field("trailing\\04"), "trailing\\04");
     }
 }

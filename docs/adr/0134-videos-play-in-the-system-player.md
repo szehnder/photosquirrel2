@@ -1,6 +1,6 @@
 # 0134. Videos play in the system's default player; no in-app playback for now
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-21
 - Deciders: maintainers
 

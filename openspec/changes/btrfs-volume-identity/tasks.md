@@ -5,18 +5,18 @@ btrfs filesystem, except the existing workspace test, which runs where CI runs.
 
 ## 1. Mount-point fallback
 
-- [ ] 1.1 Add `fs_ids::mountinfo_by_path` with octal-escape decoding and longest component-wise prefix (design D1).
+- [x] 1.1 Add `fs_ids::mountinfo_by_path` with octal-escape decoding and longest component-wise prefix (design D1).
   Verify: `ps-model` unit tests on a recorded btrfs mount table (`/@`, `/@home`, `/@cache` on `0:28`), on nested
   mounts with an escaped space, on a mount over another, and on a path under no listed mount.
-- [ ] 1.2 `volume_info` falls back to it, and stats the mount source for the UUID and class (design D2). Verify:
+- [x] 1.2 `volume_info` falls back to it, and stats the mount source for the UUID and class (design D2). Verify:
   `scenario_sources_volume_on_a_btrfs_subvolume_identified` and `scenario_sources_longest_mount_point_wins` pass,
   using an injectable mount-table text and device stat, and ext4/FAT fixtures still resolve by device number.
-- [ ] 1.3 Rename the existing workspace test to `scenario_sources_workspace_volume_identified`. Verify: it passes on
+- [x] 1.3 Rename the existing workspace test to `scenario_sources_workspace_volume_identified`. Verify: it passes on
   the dev machine (btrfs), where it failed before.
 
 ## 2. Existing sources
 
-- [ ] 2.1 Add the catalog command `SetVolumeIdentity`, which fills only NULL columns, and have a scan submit it for
+- [x] 2.1 Add the catalog command `SetVolumeIdentity`, which fills only NULL columns, and have a scan submit it for
   an online source missing either value (design D3). Verify:
   `scenario_sources_source_added_before_the_fix_gains_its_identity` passes (a source row with NULL identity gains
   it, and a recorded UUID survives a scan reporting another one), and a no-change rescan of 100k still meets
@@ -24,10 +24,14 @@ btrfs filesystem, except the existing workspace test, which runs where CI runs.
 
 ## 3. Verification
 
-- [ ] 3.1 `photosquirrel-cli --json sources list` on the dev machine shows the btrfs source's filesystem type,
+- [x] 3.1 `photosquirrel-cli --json sources list` on the dev machine shows the btrfs source's filesystem type,
   UUID and solid-state hint. Verify: the output pasted in this task's progress note.
+  Progress (2026-11-21, a new folder under the btrfs `/home` subvolume): `"device":"solid_state"`,
+  `"volume_uuid":"aae63871-beac-4e9b-be85-95061b95f9f0"`, `"stable_file_ids":true` (before: `unknown` and `null`).
+  `sources list` has no filesystem-type field; the stored hint's `fs=btrfs` is checked by
+  `scenario_sources_source_added_before_the_fix_gains_its_identity`. `rescan-nochange-100k`: 0.34 s (budget 4 s).
 - [ ] 3.2 `cargo xtask ci` passes with no failing test. Verify: the command is green.
-- [ ] 3.3 `openspec validate btrfs-volume-identity --strict` passes. Verify: the command reports it valid.
+- [x] 3.3 `openspec validate btrfs-volume-identity --strict` passes. Verify: the command reports it valid.
 
 ## Workflow follow-up
 
