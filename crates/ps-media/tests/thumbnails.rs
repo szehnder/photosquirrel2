@@ -967,6 +967,8 @@ fn real_ffmpeg_large_preview_keeps_the_size_and_never_upscales() {
         return;
     };
     let timeout = ps_media::poster::DEFAULT_TIMEOUT;
+    // The loupe's duration comes from the container's `moov`, which ffmpeg writes after the media data.
+    assert_eq!(ps_media::video::duration_of_file(&hd), Some(2_000));
     for (clip, want) in [(&hd, (1920, 1080)), (&small, (640, 360))] {
         let jpeg = thumb::poster_preview(&ffmpeg, clip, Some(2_000), timeout, &|| false)
             .expect("preview frame");

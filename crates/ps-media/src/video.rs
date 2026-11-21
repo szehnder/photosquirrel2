@@ -121,3 +121,46 @@ pub fn movie_info(buf: &[u8], moov: &BoxRef) -> VideoInfo {
 }
 
 const MAC_EPOCH_UNIX: i64 = crate::util::MAC_EPOCH_OFFSET;
+
+/// Largest `moov` box [`duration_of_file`] reads (16 MB): longer clips' sample tables stay well below.
+pub const MOOV_READ_MAX: u64 = 16 * 1024 * 1024;
+
+/// A movie's duration from its `moov` box, wherever it lies in the file: the top-level boxes are walked by their
+/// headers (seeks, no data read), so a `moov` after the media data (cameras without fast-start) is found too.
+/// The file is opened read-only (ADR-0004). `None` when there is no readable `moov` or no duration.
+pub fn duration_of_file(path: &std::path::Path) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = crate::fs::open_read_only(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut pos = 0u64;
+    while pos + 8 <= len {
+        f.seek(SeekFrom::Start(pos)).ok()?;
+        let mut head = [0u8; 16];
+        let n = f.read(&mut head).ok()?;
+        if n < 8 {
+            return None;
+        }
+        let size32 = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as u64;
+        let size = match size32 {
+            0 => len - pos,
+            1 if n >= 16 => u64::from_be_bytes(head[8..16].try_into().ok()?),
+            1 => return None,
+            s => s,
+        };
+        if size < 8 {
+            return None;
+        }
+        if &head[4..8] == b"moov" {
+            if size > MOOV_READ_MAX || pos + size > len {
+                return None;
+            }
+            let mut buf = vec![0u8; size as usize];
+            f.seek(SeekFrom::Start(pos)).ok()?;
+            f.read_exact(&mut buf).ok()?;
+            let moov = bmff::moov_box(&buf)?;
+            return movie_info(&buf, &moov).duration_ms;
+        }
+        pos = pos.checked_add(size)?;
+    }
+    None
+}

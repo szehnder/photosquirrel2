@@ -1184,6 +1184,22 @@ impl Library {
         }
     }
 
+    /// A video's duration from its container's `moov`, wherever it lies (read-only, ADR-0004); `None` for a photo, an offline copy or
+    /// a container without one.
+    pub fn video_duration_ms(&self, id: ItemId) -> Result<Option<u64>> {
+        let Some(r) = self.catalog()?.read().file_by_id(FileId::from(id))? else {
+            return Ok(None);
+        };
+        if r.media_kind() != Some(MediaKind::Video) {
+            return Ok(None);
+        }
+        let (path, online, _) = self.path_of(&r)?;
+        if !online {
+            return Ok(None);
+        }
+        Ok(ps_media::video::duration_of_file(&path))
+    }
+
     /// A video's large preview (video-previews-and-play): a poster frame of up to 2048 px from the poster-frame
     /// tool, one call at a time across the process, cached like a photo's. Without the tool, or when it gets no
     /// frame, the preview is unavailable with the reason its placeholder gives; nothing is written to the catalog.
@@ -1198,10 +1214,8 @@ impl Library {
         if !online || !path.exists() {
             return Ok(Preview::Offline);
         }
-        // The thumbnail's seek: the probe reads the container header only (read-only, ADR-0004).
-        let duration = ps_media::probe_path(&path)
-            .video
-            .and_then(|v| v.duration_ms);
+        // The thumbnail's seek, from the container's `moov` (read-only, ADR-0004).
+        let duration = ps_media::video::duration_of_file(&path);
         let _one_at_a_time = lock(&VIDEO_PREVIEW_GATE);
         // Another request may have made it while this one waited.
         if let Some(k) = key

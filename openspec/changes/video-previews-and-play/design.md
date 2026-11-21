@@ -46,9 +46,12 @@ For a video:
 2. Without a poster tool (the decoder registry's `poster_frames` entry, as the scan uses), return
    `Preview::Unavailable` with the placeholder reason text for "needs a poster-frame tool".
 3. Otherwise, if the source is offline, return `Preview::Offline`.
-4. Otherwise take the process-wide preview poster gate (a `Mutex<()>`, so one call at a time), call
+4. Read the clip's duration for the thumbnail's seek with `video::duration_of_file`, which walks the top-level
+   boxes to the `moov` wherever it lies (the scan's probe window misses a `moov` written after the media data,
+   as ffmpeg and cameras without fast-start do). The loupe's duration mark uses the same reader.
+5. Otherwise take the process-wide preview poster gate (a `Mutex<()>`, so one call at a time), call
    `poster_preview` with the scan's timeout, cache the JPEG and return it.
-5. On `PosterError`, return `Unavailable` with the same reason text a scan would record ("poster frame failed:
+6. On `PosterError`, return `Unavailable` with the same reason text a scan would record ("poster frame failed:
    <error>"). Nothing is written to the catalog.
 
 The call is bounded by the scan's poster timeout (the library has no cancellation flag), and the preview cache is
@@ -58,8 +61,10 @@ not held while the tool runs, so photo previews do not wait for it.
 
 When the item is a video, the loupe paints a play glyph and the duration chip in the frame's corner (tokens,
 ADR-0028) over the large preview, or over the placeholder when the preview is unavailable. For a video it never
-paints the "Large preview unavailable" chip. The placeholder already says why. It adds an **Open in player**
-button to the loupe's top bar, and the `OpenInPlayer` action is bound to `o` in the loupe and gallery contexts.
+paints the "Large preview unavailable" chip. The placeholder already says why. The loupe has no top bar, so an
+**Open in player** button sits over its top-right corner while a video is shown, and the `LoupeOpenInPlayer`
+action is bound to `o` in the loupe context. The duration comes from the container header, read off the UI thread
+with the preview (`GallerySource::video_duration_ms`).
 
 ### D4. `Opener::open` (ADR-0134)
 

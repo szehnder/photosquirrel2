@@ -202,6 +202,10 @@ impl GallerySource for CatalogBackend {
         self.lib.preview(id)
     }
 
+    fn video_duration_ms(&self, id: ItemId) -> anyhow::Result<Option<u64>> {
+        Ok(self.lib.video_duration_ms(id)?)
+    }
+
     fn stack_members(&self, keeper: ItemId) -> anyhow::Result<Vec<ItemId>> {
         self.lib.stack_members(keeper)
     }

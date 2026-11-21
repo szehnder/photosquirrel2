@@ -42,6 +42,17 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
+### What's new in 0.5.1
+
+- **Videos in the loupe.** A video now opens as a sharp, full-size frame with a play mark and its duration, instead
+  of a blurry thumbnail under "Large preview unavailable (video)". Without ffmpeg, the loupe says why, as the grid
+  does.
+- **Open in player.** Press **O** in the loupe, or use the play button on a video copy in the inspector, to watch
+  the video in your system's default player. PhotoSquirrel does not play videos itself (ADR-0134).
+- **btrfs sources.** Folders on btrfs subvolumes (Fedora, openSUSE, Manjaro) are now identified: their drive's
+  UUID and SSD or HDD type are recorded, so scans start with the right number of readers and an unplugged drive is
+  recognised. Sources added before this release pick it up at their next scan.
+
 ### What's new in 0.5.0
 
 - **See how much review is left.** The Duplicates list opens with a card showing the groups left to review, and the

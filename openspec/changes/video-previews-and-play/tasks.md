@@ -22,16 +22,16 @@ and the `RecordingOpener`; the real-ffmpeg test runs where ffmpeg is installed, 
 
 ## 3. Loupe and inspector
 
-- [ ] 3.1 Loupe: the play mark, the duration, no "unavailable" chip for videos, the placeholder with its reason
+- [x] 3.1 Loupe: the play mark, the duration, no "unavailable" chip for videos, the placeholder with its reason
   (design D3). Verify: `scenario_gallery_video_shown_large_in_the_loupe` and
   `scenario_gallery_video_without_a_poster_tool_in_the_loupe` pass.
-- [ ] 3.2 `Opener::open` on every platform, the `OpenInPlayer` action on `o`, and the loupe button (design D4).
+- [x] 3.2 `Opener::open` on every platform, the `OpenInPlayer` action on `o`, and the loupe button (design D4).
   Verify: `scenario_gallery_open_in_player_from_the_loupe` passes with the `RecordingOpener`, and the file's bytes
   and mtime are unchanged.
-- [ ] 3.3 Inspector: Open in player on video copy rows, disabled for offline sources. Verify:
+- [x] 3.3 Inspector: Open in player on video copy rows, disabled for offline sources. Verify:
   `scenario_photo_inspector_open_a_video_copy_in_the_player` and `scenario_photo_inspector_offline_video_copy`
   pass.
-- [ ] 3.4 A `loupe-video` screenshot surface (a seeded library with a video, opened in the loupe). Add the manual
+- [x] 3.4 A `loupe-video` screenshot surface (a seeded library with a video, opened in the loupe). Add the manual
   check "Open in player" for each platform to `docs/manual-checks`. Verify: the surface renders, and the
   manual-check file lists the three platforms.
 

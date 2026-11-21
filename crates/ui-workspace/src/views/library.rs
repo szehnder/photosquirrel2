@@ -446,6 +446,7 @@ impl LibraryView {
                 |this, _, e: &LoupeEvent, window, cx| match e {
                     LoupeEvent::Close(i) => this.close_loupe(*i, window, cx),
                     LoupeEvent::PlaceholderInfo(id) => open_preview_help(*id, window, cx),
+                    LoupeEvent::OpenInPlayer(id) => this.open_in_player(*id, window, cx),
                     LoupeEvent::Moved(_) => {}
                 },
             ),
@@ -1308,6 +1309,56 @@ impl Render for LibraryView {
 }
 
 /// Open "Why no preview?" for `id` in this window's shell (deferred: the caller may be updating a view).
+/// The path Open in player opens for an item (ADR-0134): the item's own copy when its source is online, else
+/// its first online copy; `None` when every copy is offline.
+pub fn player_path(d: &ps_model::library::ItemDetail) -> Option<String> {
+    if d.source_online {
+        return Some(d.path.clone());
+    }
+    d.copies.iter().find(|c| c.online).map(|c| c.path.clone())
+}
+
+impl LibraryView {
+    /// Open in player for a video in the loupe (ADR-0134): the system's default application opens the file;
+    /// PhotoSquirrel never opens or changes it. The item's detail is read off the UI thread.
+    fn open_in_player(&mut self, id: ItemId, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let source = self.model.read(cx).source().clone();
+        let task = cx
+            .background_executor()
+            .spawn(async move { source.detail(id) });
+        let window_handle = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            let detail = task.await;
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let result = match detail {
+                    Ok(Some(d)) => match player_path(&d) {
+                        Some(p) => crate::gallery_inspector::opener(cx)
+                            .open(std::path::Path::new(&p))
+                            .map_err(|e| format!("{e:#}")),
+                        None => Err("The source is offline. Connect it to play this video.".into()),
+                    },
+                    Ok(None) => Err("This file is no longer in the catalog.".into()),
+                    Err(e) => Err(format!("{e:#}")),
+                };
+                if let Err(body) = result
+                    && let Some(shell) = Shell::for_window(window, cx)
+                {
+                    shell.update(cx, |s, cx| {
+                        s.show_toast(
+                            crate::shell::ToastKind::Warning,
+                            "Could not open the video",
+                            body,
+                            true,
+                            cx,
+                        )
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+}
+
 pub fn open_preview_help(id: ItemId, window: &mut Window, cx: &mut App) {
     window.defer(cx, move |window, cx| {
         if let Some(shell) = Shell::for_window(window, cx) {

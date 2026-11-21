@@ -5,6 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ps_model::ItemId;
 
@@ -20,7 +21,8 @@ actions!(
         LoupePrev,
         LoupeClose,
         LoupeToggleZoom,
-        LoupeShowPlaceholderInfo
+        LoupeShowPlaceholderInfo,
+        LoupeOpenInPlayer
     ]
 );
 
@@ -39,6 +41,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("z", LoupeToggleZoom, c),
         KeyBinding::new("space", LoupeToggleZoom, c),
         KeyBinding::new("shift-i", LoupeShowPlaceholderInfo, c),
+        KeyBinding::new("o", LoupeOpenInPlayer, c),
     ]);
 }
 
@@ -50,6 +53,26 @@ pub enum LoupeEvent {
     Moved(usize),
     /// "Why no preview?" for the item shown, which has a placeholder (ADR-0109).
     PlaceholderInfo(ItemId),
+    /// Open in player (O, or the button) for the video shown (ADR-0134).
+    OpenInPlayer(ItemId),
+}
+
+/// The mark over a video in the loupe: a play glyph and its duration ("0:12"), when known.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VideoMark {
+    pub duration: Option<String>,
+    pub bounds: Bounds<Pixels>,
+}
+
+/// "1:04:09", "0:12": a video's duration as a clock.
+pub fn clock_label(ms: u64) -> String {
+    let s = ms / 1000;
+    let (h, m, s) = (s / 3600, (s / 60) % 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 #[derive(Clone)]
@@ -96,6 +119,13 @@ pub struct LoupeView {
     drag_from: Option<Point<Pixels>>,
     bounds: Bounds<Pixels>,
     shown: Shown,
+    /// Video durations, loaded with the preview.
+    durations: HashMap<ItemId, Option<u64>>,
+    /// The notice chip painted last, and the video mark.
+    notice: Option<String>,
+    video_mark: Option<VideoMark>,
+    /// The item shown is a video (Open in player).
+    showing_video: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -116,6 +146,10 @@ impl LoupeView {
             drag_from: None,
             bounds: Bounds::default(),
             shown: Shown::Nothing,
+            durations: HashMap::new(),
+            notice: None,
+            video_mark: None,
+            showing_video: false,
             _subscriptions: subs,
         }
     }
@@ -130,6 +164,35 @@ impl LoupeView {
 
     pub fn shown(&self) -> &Shown {
         &self.shown
+    }
+
+    /// The notice chip over the item shown ("Source offline · ..."), if any.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    /// The play mark over the video shown, if it is one with a large preview.
+    pub fn video_mark(&self) -> Option<&VideoMark> {
+        self.video_mark.as_ref()
+    }
+
+    /// Whether the item shown is a video, which offers Open in player.
+    pub fn showing_video(&self) -> bool {
+        self.showing_video
+    }
+
+    /// Open in player for the video shown (ADR-0134); nothing for a photo.
+    pub fn open_in_player(&mut self, cx: &mut Context<'_, Self>) {
+        let (id, video) = {
+            let m = self.model.read(cx);
+            (
+                m.index.id(self.index),
+                m.summary(self.index).is_some_and(|s| s.video),
+            )
+        };
+        if let (Some(id), true) = (id, video) {
+            cx.emit(LoupeEvent::OpenInPlayer(id));
+        }
     }
 
     pub fn is_actual_size(&self) -> bool {
@@ -199,6 +262,8 @@ impl LoupeView {
             return;
         };
         let source = self.model.read(cx).source().clone();
+        let duration = source.video_duration_ms(id).ok().flatten();
+        self.durations.insert(id, duration);
         let slot = match source.preview(id) {
             Ok(Preview::Jpeg(bytes)) => match decode_jpeg_bgra(&bytes, 0) {
                 Ok(bgra) => {
@@ -229,10 +294,11 @@ impl LoupeView {
         self.slots.insert(id, Slot::Loading);
         self.order.push_back(id);
         while self.order.len() > KEEP_PREVIEWS {
-            if let Some(old) = self.order.pop_front()
-                && let Some(Slot::Ready(img)) = self.slots.remove(&old)
-            {
-                self.released.push(img);
+            if let Some(old) = self.order.pop_front() {
+                self.durations.remove(&old);
+                if let Some(Slot::Ready(img)) = self.slots.remove(&old) {
+                    self.released.push(img);
+                }
             }
         }
         // The filmstrip and the offline fallback need the item's summary page.
@@ -240,7 +306,8 @@ impl LoupeView {
             .update(cx, |m, cx| m.request_pages(index..index + 1, cx));
         let source = self.model.read(cx).source().clone();
         let task = cx.background_executor().spawn(async move {
-            match source.preview(id) {
+            let duration = source.video_duration_ms(id).ok().flatten();
+            let slot = match source.preview(id) {
                 Ok(Preview::Jpeg(bytes)) => match decode_jpeg_bgra(&bytes, 0) {
                     Ok(bgra) => {
                         render_image(bgra).map_or(Slot::Unavailable("decode".into()), Slot::Ready)
@@ -250,11 +317,13 @@ impl LoupeView {
                 Ok(Preview::Offline) => Slot::Offline,
                 Ok(Preview::Unavailable(why)) => Slot::Unavailable(why),
                 Err(e) => Slot::Unavailable(format!("{e:#}")),
-            }
+            };
+            (slot, duration)
         });
         cx.spawn(async move |this, cx| {
-            let slot = task.await;
+            let (slot, duration) = task.await;
             let _ = this.update(cx, |this, cx| {
+                this.durations.insert(id, duration);
                 if let Some(s) = this.slots.get_mut(&id) {
                     *s = slot;
                     cx.notify();
@@ -363,10 +432,15 @@ impl LoupeView {
             let m = self.model.read(cx);
             (m.index.id(self.index), m.summary(self.index).cloned())
         };
+        self.notice = None;
+        self.video_mark = None;
         let Some(id) = id else {
             self.shown = Shown::Nothing;
+            self.showing_video = false;
             return;
         };
+        let video = summary.as_ref().is_some_and(|s| s.video);
+        self.showing_video = video;
         let slot = self.slots.get(&id).cloned().unwrap_or(Slot::Loading);
         let thumb = summary.as_ref().and_then(|s| s.thumb);
         let mut notice = None;
@@ -383,6 +457,11 @@ impl LoupeView {
                     height: s.height.0 as u32,
                     fitted,
                 };
+                if video {
+                    let duration = self.durations.get(&id).copied().flatten().map(clock_label);
+                    let clip = fitted.intersect(&area);
+                    self.video_mark = Some(paint_video_mark(clip, duration, &colors, window, cx));
+                }
             }
             other => {
                 let texture = thumb.and_then(|t| self.model.update(cx, |m, _| m.any_texture(t)));
@@ -438,6 +517,8 @@ impl LoupeView {
                             notice: "Source offline".into(),
                         }
                     }
+                    // A video says why on its placeholder, never with this chip.
+                    Slot::Unavailable(why) if video => Shown::Thumbnail { notice: why },
                     Slot::Unavailable(why) => {
                         notice = Some(format!("Large preview unavailable ({why})"));
                         Shown::Thumbnail { notice: why }
@@ -451,6 +532,7 @@ impl LoupeView {
         }
         if let Some(text) = notice {
             paint_chip(&text, area, &colors, window, cx);
+            self.notice = Some(text);
         }
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             self.paint_filmstrip(bounds, &colors, window, cx)
@@ -653,6 +735,72 @@ fn paint_large_placeholder(
     Shown::Placeholder { reason, info }
 }
 
+/// The play glyph and duration in the bottom-left corner of a video's frame (`clip`).
+fn paint_video_mark(
+    clip: Bounds<Pixels>,
+    duration: Option<String>,
+    colors: &GridColors,
+    window: &mut Window,
+    cx: &mut App,
+) -> VideoMark {
+    let h = lpx(NOTICE_PX * 2.4);
+    let icon = lpx(NOTICE_PX * 1.3);
+    let pad = lpx(BADGE_PAD * 2.0);
+    let line = duration.as_ref().map(|d| {
+        let text: SharedString = d.clone().into();
+        let run = TextRun {
+            len: text.len(),
+            font: Font {
+                weight: FontWeight::MEDIUM,
+                ..font(ui_theme::fonts::UI_FONT_FAMILY)
+            },
+            color: colors.notice_text,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        window
+            .text_system()
+            .shape_line(text, lpx(NOTICE_PX), &[run], None)
+    });
+    let text_w = line.as_ref().map_or(lpx(0.0), |l| l.width + lpx(BADGE_PAD));
+    let w = pad + icon + text_w + pad;
+    let margin = lpx(BADGE_MARGIN * 2.0);
+    let b = Bounds::new(
+        point(clip.left() + margin, clip.bottom() - margin - h),
+        size(w, h),
+    );
+    window.paint_layer(b, |window| {
+        window.paint_quad(fill(b, colors.notice_bg).corner_radii(h / 2.0));
+        let ib = Bounds::new(
+            point(b.left() + pad, b.top() + (h - icon) / 2.0),
+            size(icon, icon),
+        );
+        let _ = window.paint_svg(
+            ib,
+            gpui_kit::assets::IconName::Play.path(),
+            None,
+            TransformationMatrix::unit(),
+            colors.notice_text,
+            cx,
+        );
+        if let Some(line) = &line {
+            let _ = line.paint(
+                point(ib.right() + lpx(BADGE_PAD), b.top()),
+                h,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+    });
+    VideoMark {
+        duration,
+        bounds: b,
+    }
+}
+
 /// A notice chip centred near the top of `area`.
 fn paint_chip(
     text: &str,
@@ -725,6 +873,7 @@ impl Render for LoupeView {
             .on_action(cx.listener(|this, _: &LoupeShowPlaceholderInfo, _, cx| {
                 this.show_placeholder_info(cx)
             }))
+            .on_action(cx.listener(|this, _: &LoupeOpenInPlayer, _, cx| this.open_in_player(cx)))
             .child(
                 canvas(
                     move |_, _, _| {},
@@ -734,6 +883,41 @@ impl Render for LoupeView {
                 )
                 .size_full(),
             )
+            .when(self.showing_video, |d| {
+                d.child(self.open_in_player_button(cx))
+            })
+    }
+}
+
+impl LoupeView {
+    /// Open in player, over the loupe's top-right corner while a video is shown (ADR-0134).
+    fn open_in_player_button(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        let colors = GridColors::current(cx);
+        div()
+            .id("loupe-open-in-player")
+            .test_support()
+            .role(Role::Button)
+            .aria_label("Open in player (O)")
+            .absolute()
+            .top(lpx(BADGE_MARGIN * 2.0))
+            .right(lpx(BADGE_MARGIN * 2.0))
+            .h(lpx(NOTICE_PX * 2.4))
+            .px(lpx(BADGE_PAD * 2.0))
+            .flex()
+            .items_center()
+            .gap(lpx(BADGE_PAD))
+            .rounded(lpx(NOTICE_PX * 1.2))
+            .bg(colors.notice_bg)
+            .text_color(colors.notice_text)
+            .text_size(lpx(NOTICE_PX))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _, cx| this.open_in_player(cx)))
+            .child(
+                gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Play)
+                    .size(lpx(NOTICE_PX * 1.3)),
+            )
+            .child("Open in player")
     }
 }
 
