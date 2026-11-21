@@ -123,6 +123,7 @@ the test now asserts 800 ms, and an xtask unit test keeps every `budget(...)` bo
 | `export-replan-50k` | median <= 800 ms | component | export | 547.045 ms |
 | `tiff-analysis-decode` | median <= 1000 ms | component | tiff-support | 319.56 ms |
 | `tiff-stream-memory` | max <= 4 MB | component | tiff-support | 0.94 MB |
+| `duplicates-list-reload` | median <= 150 ms (ADR-0133) | component | ai-filtered-duplicates | 52.38 ms |
 
 Recorded 2026-10-21 with `cargo xtask bench --check --update-baseline` (balanced power profile, on AC, load
 average below 2). Repeated runs on this machine vary by up to about 60% for the sub-millisecond hashing
@@ -134,6 +135,11 @@ The two TIFF budgets were recorded 2026-10-24 on the same machine with `cargo xt
 decoder's own accounting (its largest strip, compressed plus decoded, plus the downsampling accumulator), not the
 resident size of a process: it is deterministic, but allocator overhead and the `tiff` crate's internal buffers
 are not in it. The process-level figure is the peak resident size quoted below.
+
+`duplicates-list-reload` was recorded 2026-11-21 with `cargo xtask bench --check --update-baseline --only
+duplicates-list-reload` (ADR-0133): the slower of a reload after a review mark and a reload with an AI filter, on
+1M files with 100,000 groups of 3 and an insight per keeper, through the review cache. The first, uncached load of
+the same list is about 0.67 s and is not budgeted; before the cache every reload cost that (0.9 s with an AI filter).
 
 ### Large TIFF scans (ADR-0084, ADR-0086)
 

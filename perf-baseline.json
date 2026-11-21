@@ -6,6 +6,7 @@
     "cold-start": 254.3,
     "control-latency-p95": 77.567,
     "dedup-regroup-1k-of-1m": 22.727,
+    "duplicates-list-reload": 52.382,
     "excluded-view-open": 104.045,
     "export-replan-50k": 482.966,
     "first-gallery-frame": 529.2,
