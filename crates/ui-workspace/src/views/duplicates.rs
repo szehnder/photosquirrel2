@@ -1194,7 +1194,11 @@ fn progress_card(list: Option<&ReviewList>, fraction: f32, cx: &App) -> AnyEleme
                 .text_color(colors.text_muted)
                 .child(sub),
         )
-        .child(progress_bar(if done { 1.0 } else { fraction }, cx))
+        .child(progress_bar_on(
+            if done { 1.0 } else { fraction },
+            colors.border_strong,
+            cx,
+        ))
         .into_any_element()
 }
 

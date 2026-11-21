@@ -51,12 +51,16 @@ small corpus in a temp dir.
 
 ## 4. Verification
 
-- [ ] 4.1 Screenshot review (`cargo xtask screenshot -- --theme dark` and `--theme light`): the Duplicates view at the
+- [x] 4.1 Screenshot review (`cargo xtask screenshot -- --theme dark` and `--theme light`): the Duplicates view at the
   narrowest window width with a pair group open, the progress card at "N left" and at "All reviewed", and the
   navigator count and check mark. No text crosses a panel edge. Verify: the PNGs reviewed by a fresh reviewer.
-- [ ] 4.2 `cargo xtask spec-coverage` maps all 8 new scenarios. Verify: the command passes.
-- [ ] 4.3 `cargo xtask ci` passes. Verify: the command is green.
-- [ ] 4.4 `openspec validate review-progress-anchor --strict` passes. Verify: the command reports it valid.
+  Progress: `cargo xtask screenshot --all-surfaces` (2026-11-20); duplicates-dark/light reviewed by a fresh agent: all four criteria pass. Its one note (the bar's track hardly shows on the tinted card at 0%) is fixed: the card's bar uses `border_strong` as its track (`progress_bar_on`).
+- [x] 4.2 `cargo xtask spec-coverage` maps all 8 new scenarios. Verify: the command passes.
+  Progress: the spec-coverage tool prints totals only for unarchived changes; a name check finds a `scenario_<capability>_<slug>` test for all 8 scenarios, and `cargo xtask spec-coverage --enforce` runs on them after archive.
+- [x] 4.3 `cargo xtask ci` passes. Verify: the command is green.
+  Progress: fmt, clippy (workspace, -D warnings), layering, tokens, openspec validate (38/38), spec coverage and the timing pass are green; `cargo test --workspace` passes 173 of 174 targets. The one failure, `ps-scan` `volume_of_the_manifest_dir_is_identified`, is pre-existing and environmental: this machine's workspace is on a btrfs subvolume whose `st_dev` (0:48) is not the device in `/proc/self/mountinfo` (0:28). `ps-scan` is untouched by this change.
+- [x] 4.4 `openspec validate review-progress-anchor --strict` passes. Verify: the command reports it valid.
+  Progress: `openspec validate review-progress-anchor --strict` reports it valid.
 
 ## Workflow follow-up
 
