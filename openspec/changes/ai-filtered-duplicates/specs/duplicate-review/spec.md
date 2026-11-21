@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: AI insight filters on groups
-The Duplicates list SHALL filter groups by category, contains people, contains children, contains pets, pet kind, people count range and "Not described yet", combined with its other filters. A group SHALL match when any of its files' effective insights matches. "Not described yet" SHALL match groups in which no file has an insight. The filter SHALL be kept across restarts.
+The Duplicates list SHALL filter groups by category, contains people, contains children, contains pets and "Not described yet" (the AI filters the gallery offers), combined with its other filters. A group SHALL match when any of its files' effective insights matches. "Not described yet" SHALL match groups in which no file has an insight. The filter SHALL be kept across restarts.
 
 #### Scenario: Filter groups with children
 - **WHEN** insights are stored for the scanned small corpus's keepers and the user filters the Duplicates list by "contains children"

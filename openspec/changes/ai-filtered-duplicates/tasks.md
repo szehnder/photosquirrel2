@@ -5,16 +5,17 @@ the small corpus with recorded or seeded insights (`seed_demo`) in a temp dir, a
 
 ## 1. Service: insight filter on the review list
 
-- [ ] 1.1 Add `insight: Option<InsightFilter>` and `undescribed: bool` to `ReviewFilter`, and `matching` /
-  `matching_reviewed` to `ReviewList` (design D1). Read effective insights for the groups' contents in one batch,
-  and only when an AI filter is set. Verify: `ps-service` unit tests show that a group matches on a non-keeper's
-  insight, that undescribed groups are listed, that `matching` ignores the unreviewed chip, and that a list without
-  an AI filter reads no insights.
+- [ ] 1.1 Add `insight: Option<InsightCriteria>` and `undescribed: bool` to `ReviewFilter`, `matching` /
+  `matching_reviewed` to `ReviewList`, and `review::list_with` with the `GroupMatcher` trait, an index matcher
+  over `ItemSet`s and a lookup matcher (design D1). Verify: `ps-service` tests show that a group matches on a
+  non-keeper's insight, that undescribed groups are listed, that `matching` ignores the unreviewed chip, that a
+  list without an AI filter consults no matcher, and that the index matcher and the lookup matcher list the same
+  groups on a seeded corpus.
 - [ ] 1.2 Write `scenario_duplicate_review_filtering_never_changes_groups` in `ps-service`: snapshot every group's
   members and keeper, apply and clear each AI filter, and compare. Verify: it passes.
-- [ ] 1.3 Measure `groups(filter)` with "contains people" on the 1M bench catalog with seeded insights (design
-  risk). Verify: record p95 in this task's progress note. If it is over 150 ms, stop and propose a budget and ADR
-  before continuing.
+- [ ] 1.3 Measure the app's filtered list with "contains people" on the 1M catalog with 100k groups and seeded
+  insights, after the index is built (design risk). Verify: record p95 in this task's progress note. If it is over
+  150 ms, stop and propose a budget and ADR before continuing.
 
 ## 2. Duplicates view: AI filter, progress and navigation
 
@@ -39,10 +40,11 @@ the small corpus with recorded or seeded insights (`seed_demo`) in a temp dir, a
 
 ## 4. CLI
 
-- [ ] 4.1 Add the insight flags and `--unreviewed` to `groups list`, and add `matching` / `matching_reviewed` to its
-  JSON output (design D5). Document them in the command's `--help`. Verify:
-  `scenario_cli_cli_lists_groups_with_pets` and `scenario_cli_cli_lists_undescribed_groups` pass, and `groups list
-  --help` shows the flags.
+- [ ] 4.1 Add `--category`, `--people`, `--children`, `--pets`, `--pet-kind`, `--people-min`, `--people-max`,
+  `--undescribed` and `--unreviewed` to `groups list`. With any of them set, it lists through `review::list_with`
+  and the lookup matcher, and the JSON adds `matching` / `matching_reviewed` (design D5). Document them in the
+  command's `--help`. Verify: `scenario_cli_cli_lists_groups_with_pets` and `scenario_cli_cli_lists_undescribed_groups`
+  pass, and `groups list --help` shows the flags.
 
 ## 5. Verification
 

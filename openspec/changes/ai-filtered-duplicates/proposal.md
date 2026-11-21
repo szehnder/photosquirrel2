@@ -17,9 +17,10 @@ Both need the same thing: the AI insight filters on the Duplicates list, and pro
 
 ## What Changes
 
-- **AI filters on the Duplicates list.** A filter control in the Duplicates list header offers the same filters
-  as the gallery: category, contains people, contains children, contains pets, pet kind, a people-count range, and
-  "Not described yet". They combine with the existing chips (unreviewed, exact only, has derivatives, overridden,
+- **AI filters on the Duplicates list.** A filter control in the Duplicates list header offers the same AI filters
+  as the gallery and AI Review: category, contains people, contains children and contains pets, plus "Not described
+  yet". (Pet kind and people count stay CLI-only, like everywhere else in the app today; owner's choice,
+  2026-11-20.) They combine with the existing chips (unreviewed, exact only, has derivatives, overridden,
   has suggestions). A group matches when **any** of its files' effective insights (with the user's corrections)
   matches. Usually that is just the keeper, since the AI queue describes keepers first (`ai-queue` "Persisted queue
   order"). "Not described yet" matches groups in which no file has an insight.
@@ -66,6 +67,7 @@ None.
 
 ### Out of scope
 
+- Pet-kind and people-count filters in the app (no screen offers them yet; the CLI has them).
 - Free-text search over AI descriptions and tags.
 - Changing the AI queue's order, for example describing the groups that match a filter first.
 - Using AI labels to choose keepers or to mark groups reviewed automatically. The AI stays advisory.

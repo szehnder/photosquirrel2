@@ -27,24 +27,29 @@
 
 ## Decisions
 
-### D1. `ReviewFilter` gains `insight: Option<InsightFilter>` and `undescribed: bool`
+### D1. `ReviewFilter` gains `insight: Option<InsightCriteria>` and `undescribed: bool`, matched through a `GroupMatcher`
 
-`ReviewFilter::keeps` gets one more clause. For a row with an insight filter, look up each member content's
-effective insight and keep the row if `InsightFilter::keeps` holds for any of them. `undescribed` keeps rows where
-no member content has an insight. Building an `InsightItem` for this means no new matching logic, so the Duplicates
-list and AI Review cannot drift apart. Its `suggestions` field (open AI exclusion suggestions) is not offered in the
-Duplicates UI and is ignored there.
+The AI part of the filter is the gallery's own `InsightCriteria` (category, children, pets, people), made `Copy`
+and serialisable. The owner chose (2026-11-20) to offer exactly the AI filters the gallery and AI Review offer.
+`review::list_with(svc, store, filter, sort, &dyn GroupMatcher)` decides each group's match from its member files:
+- `matches(files)`: true when any member file's effective insight meets the criteria;
+- `described(files)`: true when any member file has an insight (for "Not described yet").
 
-*Loading:* when `insight` or `undescribed` is set, `groups(...)` collects the distinct member contents from
-`digest_of` and reads their effective insights in one batch with `effective(...)`, chunked by content id like the
-existing keyed reads. Without an AI filter, nothing extra is read.
+There are two matchers:
+- **The app** uses the gallery's insight index (`Library::insight_matches`, the same effective-insight facets the
+  gallery filters on, built once and updated in place while the AI queue runs). `CatalogReview::groups` asks for
+  the `ItemSet` of the criteria and of the empty criteria ("described"), and membership is a binary search per
+  member file. The Duplicates list and the gallery therefore cannot disagree on the same filter.
+- **The CLI** (and `review::list` without an index) uses a lookup matcher: `insights::effective` per member
+  content, cached per content for the call. It also takes `--pet-kind` and `--people-min/--people-max`, applied
+  with the AI Review predicate (`InsightFilter::keeps`).
 
-*Counts:* `ReviewList` gains `matching: u64` and `matching_reviewed: u64`, which count the rows kept by the AI part
-of the filter alone. That way "Matching: 2 of 5 reviewed" does not shrink when the "unreviewed" chip is also set.
+*Counts:* `ReviewList` gains `matching` and `matching_reviewed`, which count the rows kept by the AI part of the
+filter alone. That way "Matching: 2 of 5 reviewed" does not shrink when the "unreviewed" chip is also set.
 `groups` and `reviewed` keep their meaning: every group.
 
-*Alternative:* match on the keeper only. Rejected because, with "include non-keepers" on, a group whose resized
-copy was described as "pets" but whose keeper wasn't described yet would be hidden for no visible reason.
+*Alternative:* read each group's insights per call (the first draft of this design). Rejected because on 1M
+files it repeats the 2.4 s pass over every result that the gallery's index already pays once.
 
 ### D2. Live refresh by polling the insight stamp (ADR-0019)
 
@@ -73,17 +78,17 @@ one-to-one onto `ReviewFilter`. The JSON output adds `matching` and `matching_re
 
 ### D6. Header layout
 
-An "AI" dropdown button next to Sort opens a menu: categories, "Contains people / children / pets", pet kinds
-seen in the catalog, people count, and "Not described yet". Each active AI filter shows as a removable chip in the
-existing wrapping chip group (`docs/gpui-notes.md`: chips in a `flex_1().min_w_0().flex_wrap()` group). Tokens
-only (ADR-0028).
+An "AI" dropdown button next to Sort opens a menu: every category, "Contains people", "Contains children",
+"Contains pets", and "Not described yet". Each active AI filter shows as a removable chip in the existing wrapping
+chip group (`docs/gpui-notes.md`: chips in a `flex_1().min_w_0().flex_wrap()` group). Tokens only (ADR-0028).
 
 ## Risks / Trade-offs
 
-- [Reading insights for every group's contents on a 1M-file catalog could make the filtered list slow to open] →
-  Measure `groups(filter)` with an AI filter on the 1M bench catalog, with insights seeded with `seed_demo`. If p95
-  is above the Excluded view's 150 ms (`excluded-view-open`), propose a `duplicates-ai-filter-open` budget and its
-  ADR in this change, rather than shipping a slow filter.
+- [The first AI-filtered list builds the gallery's insight index (~2.4 s on 1M), if the gallery has not already]
+  → It runs on the background executor, and the list header shows "Loading…" meanwhile. Later filters reuse the
+  index. Measure `groups(filter)` with "contains people" on a 1M catalog with groups and seeded insights. If p95
+  after the index is built is above the Excluded view's 150 ms (`excluded-view-open`), propose a
+  `duplicates-ai-filter-open` budget and its ADR in this change, rather than shipping a slow filter.
 - [The AI has described only keepers, so a group can match on a keeper the user then overrides] → The match uses
   every member with an insight. After an override, the old keeper still has its insight, so the group keeps
   matching. This is the any-member rule working as intended.
