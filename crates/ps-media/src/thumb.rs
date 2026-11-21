@@ -437,6 +437,53 @@ pub fn video_thumbnail_with_stop(
     }
 }
 
+/// One poster frame of `long_edge` px at the thumbnail's seek, retried once at 0 s when that seek gets no frame
+/// (ADR-0120). A timeout, a cancel or a tool that cannot start is not retried.
+fn poster_jpeg(
+    tool: &std::path::Path,
+    source_path: &std::path::Path,
+    duration_ms: Option<u64>,
+    long_edge: u32,
+    timeout: std::time::Duration,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, crate::poster::PosterError> {
+    use crate::poster::{PosterError, poster_frame, seek_for};
+    let seek = seek_for(duration_ms);
+    match poster_frame(tool, source_path, seek, long_edge, timeout, stop) {
+        Err(PosterError::Timeout(d)) => Err(PosterError::Timeout(d)),
+        Err(PosterError::Cancelled) => Err(PosterError::Cancelled),
+        Err(PosterError::Spawn(e)) => Err(PosterError::Spawn(e)),
+        Err(_) if !seek.is_zero() => poster_frame(
+            tool,
+            source_path,
+            std::time::Duration::ZERO,
+            long_edge,
+            timeout,
+            stop,
+        ),
+        r => r,
+    }
+}
+
+/// A video's large preview: a poster frame of up to [`PREVIEW_LONG_EDGE`] px (never upscaled) at the
+/// thumbnail's seek, as the JPEG the tool made (sRGB, like the thumbnail's frame).
+pub fn poster_preview(
+    tool: &std::path::Path,
+    source_path: &std::path::Path,
+    duration_ms: Option<u64>,
+    timeout: std::time::Duration,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<u8>, crate::poster::PosterError> {
+    poster_jpeg(
+        tool,
+        source_path,
+        duration_ms,
+        PREVIEW_LONG_EDGE,
+        timeout,
+        stop,
+    )
+}
+
 /// A video placeholder waiting for a poster-frame tool (ADR-0111).
 pub fn no_poster_tool_placeholder(
     probe: &ProbeRecord,
@@ -478,17 +525,15 @@ pub fn poster_thumbnail(
     timeout: std::time::Duration,
     stop: &dyn Fn() -> bool,
 ) -> Result<ThumbnailRecord, crate::poster::PosterError> {
-    use crate::poster::{PosterError, poster_frame, seek_for};
-    let seek = seek_for(duration_ms);
-    let jpeg = match poster_frame(tool, source_path, seek, timeout, stop) {
-        Err(PosterError::Timeout(d)) => return Err(PosterError::Timeout(d)),
-        Err(PosterError::Cancelled) => return Err(PosterError::Cancelled),
-        Err(PosterError::Spawn(e)) => return Err(PosterError::Spawn(e)),
-        Err(_) if !seek.is_zero() => {
-            poster_frame(tool, source_path, std::time::Duration::ZERO, timeout, stop)?
-        }
-        r => r?,
-    };
+    use crate::poster::PosterError;
+    let jpeg = poster_jpeg(
+        tool,
+        source_path,
+        duration_ms,
+        THUMB_LONG_EDGE,
+        timeout,
+        stop,
+    )?;
     let (img, _) = decode::decode_jpeg(&jpeg, THUMB_LONG_EDGE)
         .map_err(|e| PosterError::Failed(format!("the frame could not be decoded: {e}")))?;
     thumbnail_from_image(&img, ThumbKind::PosterFrame, &ColourSource::srgb())

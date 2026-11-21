@@ -6,15 +6,15 @@ and the `RecordingOpener`; the real-ffmpeg test runs where ffmpeg is installed, 
 
 ## 1. Decisions
 
-- [ ] 1.1 Owner: review ADR-0134, then set it to `accepted` and drop "(proposed)" from its index row. Verify: the
+- [x] 1.1 Owner: review ADR-0134, then set it to `accepted` and drop "(proposed)" from its index row. Verify: the
   file reads `Status: accepted`.
 
 ## 2. Large previews of videos
 
-- [ ] 2.1 `poster_frame` and `poster_thumbnail` take a long edge, and add `poster_preview` (design D1). Verify:
+- [x] 2.1 `poster_frame` takes a long edge, and add `poster_preview` (design D1). Verify:
   `ps-media` poster tests pass with 384, and a real-ffmpeg test on a 1920x1080 clip returns 1920x1080 at 2048 and
   never upscales a 640x360 clip.
-- [ ] 2.2 `Library::preview` handles videos: cache, tool check, offline, one call at a time, reasons (design D2).
+- [x] 2.2 `Library::preview` handles videos: cache, tool check, offline, one call at a time, reasons (design D2).
   Verify: `scenario_thumbnails_large_preview_of_a_mov` (the second request does not call the tool, counted by the
   fake tool), `scenario_thumbnails_large_preview_without_the_tool` and
   `scenario_thumbnails_large_preview_when_the_tool_fails` pass, and a test shows two concurrent requests run the

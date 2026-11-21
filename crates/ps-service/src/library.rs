@@ -366,6 +366,12 @@ impl std::fmt::Debug for Library {
     }
 }
 
+/// One video preview tool call at a time across the process (video-previews-and-play).
+static VIDEO_PREVIEW_GATE: Mutex<()> = Mutex::new(());
+
+/// The large-preview reason of a video without a poster-frame tool, as its placeholder says.
+pub const NO_POSTER_TOOL_REASON: &str = "no poster-frame tool";
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -1132,9 +1138,6 @@ impl Library {
         let Some(r) = self.catalog()?.read().file_by_id(FileId::from(id))? else {
             return Ok(Preview::Unavailable("not in the catalog".into()));
         };
-        if r.media_kind() == Some(MediaKind::Video) {
-            return Ok(Preview::Unavailable("video".into()));
-        }
         let key = r.identity.as_ref().map(preview_cache_key);
         let mut cache = lock(&self.previews);
         if cache.is_none() {
@@ -1145,6 +1148,10 @@ impl Library {
             && let Some(bytes) = c.get(k)
         {
             return Ok(Preview::Jpeg(bytes));
+        }
+        if r.media_kind() == Some(MediaKind::Video) {
+            drop(cache);
+            return self.video_preview(&r, key.as_deref());
         }
         let (path, online, _) = self.path_of(&r)?;
         if !online || !path.exists() {
@@ -1174,6 +1181,48 @@ impl Library {
                 Ok(Preview::Jpeg(jpeg))
             }
             Err(e) => Ok(Preview::Unavailable(format!("{e}"))),
+        }
+    }
+
+    /// A video's large preview (video-previews-and-play): a poster frame of up to 2048 px from the poster-frame
+    /// tool, one call at a time across the process, cached like a photo's. Without the tool, or when it gets no
+    /// frame, the preview is unavailable with the reason its placeholder gives; nothing is written to the catalog.
+    fn video_preview(&self, r: &ps_catalog::FileRecord, key: Option<&str>) -> Result<Preview> {
+        let scan = self.scan()?;
+        scan.engine().refresh_poster_tool();
+        let opts = scan.engine().options();
+        let Some(tool) = opts.poster_tool.clone() else {
+            return Ok(Preview::Unavailable(NO_POSTER_TOOL_REASON.into()));
+        };
+        let (path, online, _) = self.path_of(r)?;
+        if !online || !path.exists() {
+            return Ok(Preview::Offline);
+        }
+        // The thumbnail's seek: the probe reads the container header only (read-only, ADR-0004).
+        let duration = ps_media::probe_path(&path)
+            .video
+            .and_then(|v| v.duration_ms);
+        let _one_at_a_time = lock(&VIDEO_PREVIEW_GATE);
+        // Another request may have made it while this one waited.
+        if let Some(k) = key
+            && let Some(bytes) = lock(&self.previews).as_mut().and_then(|c| c.get(k))
+        {
+            return Ok(Preview::Jpeg(bytes));
+        }
+        match ps_media::thumb::poster_preview(&tool, &path, duration, opts.poster_timeout, &|| {
+            false
+        }) {
+            Ok(jpeg) => {
+                if let (Some(c), Some(k)) = (lock(&self.previews).as_mut(), key) {
+                    let _ = c.insert(k, &jpeg);
+                }
+                Ok(Preview::Jpeg(jpeg))
+            }
+            // A tool that cannot be started is no tool, as for thumbnails.
+            Err(ps_media::poster::PosterError::Spawn(_)) => {
+                Ok(Preview::Unavailable(NO_POSTER_TOOL_REASON.into()))
+            }
+            Err(e) => Ok(Preview::Unavailable(format!("poster frame failed: {e}"))),
         }
     }
 

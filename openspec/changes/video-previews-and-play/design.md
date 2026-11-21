@@ -31,12 +31,13 @@
 
 ### D1. `poster_frame` takes the long edge
 
-Change `poster_frame` and `poster_thumbnail` to take a `long_edge: u32` (`THUMB_LONG_EDGE` = 384 for scans,
-`PREVIEW_LONG_EDGE` = 2048 for previews). The ffmpeg filter becomes
+`poster_frame` takes a `long_edge: u32`. At 384 px and less (thumbnails) the filter is unchanged, so thumbnails
+stay exactly 384 px as before. Above it (`PREVIEW_LONG_EDGE` = 2048) the filter is
 `scale='if(gt(iw,ih),min({e},iw),-2)':'if(gt(iw,ih),-2,min({e},ih))'`, which never upscales and keeps even
-dimensions. Add `thumb::poster_preview(tool, path, duration_ms, timeout, stop) -> Result<Vec<u8>, PosterError>`
-with the same 0 s retry, returning the JPEG as ffmpeg made it (sRGB; BT.709 frames are already display-referred,
-as for thumbnails).
+dimensions, and the JPEG is written at `-q:v 2`. `poster_thumbnail` keeps its signature, and the new
+`thumb::poster_preview(tool, path, duration_ms, timeout, stop) -> Result<Vec<u8>, PosterError>` shares its 0 s
+retry (ADR-0120), returning the JPEG as ffmpeg made it (sRGB; BT.709 frames are already display-referred, as for
+thumbnails).
 
 ### D2. `Library::preview` handles videos
 
@@ -50,7 +51,8 @@ For a video:
 5. On `PosterError`, return `Unavailable` with the same reason text a scan would record ("poster frame failed:
    <error>"). Nothing is written to the catalog.
 
-The `stop` closure is the library's cancellation flag, so closing the app kills the child.
+The call is bounded by the scan's poster timeout (the library has no cancellation flag), and the preview cache is
+not held while the tool runs, so photo previews do not wait for it.
 
 ### D3. The loupe marks videos and offers Open in player
 
