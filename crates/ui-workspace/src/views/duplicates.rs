@@ -1720,12 +1720,17 @@ impl DuplicatesView {
             .border_color(colors.border)
             .child(
                 h_flex()
+                    .flex_wrap()
                     .gap(Tokens::space(1.5))
                     .child(sort_menu)
                     .child(ai_menu)
                     .child(div().flex_1())
                     .child(
                         div()
+                            .id("duplicates-shown")
+                            .test_support()
+                            .flex_none()
+                            .whitespace_nowrap()
                             .text_size(Tokens::text_2xs())
                             .text_color(colors.text_faint)
                             .child(format!("{} shown", format_count(self.rows().len() as u64))),
@@ -3110,7 +3115,6 @@ impl DuplicatesView {
         };
         let a = side(&s.a, "duplicates-suggestion-a", self, cx);
         let b = side(&s.b, "duplicates-suggestion-b", self, cx);
-        let delta = s.delta_label();
         let explain = self
             .explain
             .as_ref()
@@ -3178,37 +3182,20 @@ impl DuplicatesView {
                                         div()
                                             .id("duplicates-suggestion-delta")
                                             .test_support()
+                                            .aria_label(SharedString::from(s.info.explanation()))
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child(match &delta {
-                                                Some(d) => format!("Taken {d}"),
-                                                None => "Capture time unknown".into(),
-                                            }),
+                                            .child(s.info.explanation()),
                                     )
                                     .child({
-                                        let line = s.info.explanation();
-                                        let tip = s.info.explanation_detail();
+                                        let detail = s.info.explanation_detail();
                                         div()
                                             .id("duplicates-suggestion-reason-line")
                                             .test_support()
-                                            .aria_label(SharedString::from(line.clone()))
+                                            .aria_label(SharedString::from(detail.clone()))
                                             .text_size(Tokens::text_sm())
                                             .text_color(colors.text_muted)
-                                            .tooltip(move |window, cx| {
-                                                gpui_kit::component::tooltip::Tooltip::new(tip.clone())
-                                                    .build(window, cx)
-                                            })
-                                            .child(line)
+                                            .child(detail)
                                     }),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT_FAMILY)
-                                    .text_size(Tokens::text_2xs())
-                                    .text_color(colors.text_faint)
-                                    .child(format!(
-                                        "pHash {} · dHash {}",
-                                        s.info.phash_distance, s.info.dhash_distance
-                                    )),
                             ),
                     )
                     .child(h_flex().items_start().gap(Tokens::space(4.0)).child(a).child(b))

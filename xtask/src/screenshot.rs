@@ -65,10 +65,27 @@ const SURFACES: &[Surface] = &[
         name: "duplicates-ai-filter",
         caption: "Duplicates filtered by an AI insight (contains people), with the matching progress",
         seeded: true,
-        args: &["--command", "shell::ShowDuplicates"],
+        args: &[
+            "--demo-ai-insights",
+            "400",
+            "--command",
+            "shell::ShowDuplicates",
+        ],
         ui_state: Some(
             r#"{"version": 1, "active_view": "duplicates", "duplicates": {"filter": {"insight": {"people": true}}}}"#,
         ),
+    },
+    Surface {
+        name: "duplicates-similar",
+        caption: "Similar shots with the first-time explainer and plain-words reasons",
+        seeded: true,
+        args: &[
+            "--command",
+            "shell::ShowDuplicates",
+            "--command",
+            "duplicates::ToggleSuggestions",
+        ],
+        ui_state: None,
     },
     Surface {
         name: "ai-review",

@@ -1750,9 +1750,14 @@ fn scenario_duplicate_review_burst_pair_reason(cx: &mut TestAppContext) {
         "the row"
     );
     assert_eq!(
-        label("duplicates-suggestion-reason-line", &mut cx).as_deref(),
+        label("duplicates-suggestion-delta", &mut cx).as_deref(),
         Some(want.as_str()),
-        "the pair's detail"
+        "the pair's headline"
+    );
+    assert_eq!(
+        label("duplicates-suggestion-reason-line", &mut cx),
+        Some(all[ix].info.explanation_detail()),
+        "the distances and the rule under it"
     );
     // Its tooltip: both distances against the limits 6 and 8.
     let s = &all[ix].info;
@@ -1785,7 +1790,7 @@ fn scenario_duplicate_review_different_frames_reason(cx: &mut TestAppContext) {
     }
     let line = label(&format!("duplicates-suggestion-reason-{ix}"), &mut cx).unwrap();
     assert_eq!(
-        label("duplicates-suggestion-reason-line", &mut cx).as_deref(),
+        label("duplicates-suggestion-delta", &mut cx).as_deref(),
         Some(line.as_str())
     );
     assert!(
