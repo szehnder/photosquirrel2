@@ -260,11 +260,33 @@ struct InsightIndex {
     files: Vec<(ItemId, u32)>,
     /// The corrections the index reflects (few; diffed against the store when its revision changes).
     corrections: HashMap<[u8; 32], Correction>,
-    /// The last criteria's matching files.
-    last: Option<(InsightCriteria, Arc<ItemSet>)>,
+    /// The matching files of the last two criteria, newest first (the Duplicates list asks for its criteria and
+    /// for "any insight" on every load, so one slot would rebuild both each time).
+    last: Vec<(InsightCriteria, Arc<ItemSet>)>,
 }
 
 impl InsightIndex {
+    /// The files meeting `criteria`, from the last two answers when one of them was for the same criteria.
+    fn matches(&mut self, criteria: &InsightCriteria) -> Arc<ItemSet> {
+        if let Some(p) = self.last.iter().position(|(c, _)| c == criteria) {
+            let hit = self.last.remove(p);
+            let set = hit.1.clone();
+            self.last.insert(0, hit);
+            return set;
+        }
+        let meets: Vec<bool> = self.facets.iter().map(|f| f.meets(criteria)).collect();
+        let set: ItemSet = self
+            .files
+            .iter()
+            .filter(|(_, k)| meets[*k as usize])
+            .map(|(id, _)| *id)
+            .collect();
+        let set = Arc::new(set);
+        self.last.insert(0, (*criteria, set.clone()));
+        self.last.truncate(2);
+        set
+    }
+
     fn kind(&mut self, f: Facets) -> u32 {
         *self.kinds.entry(f).or_insert_with(|| {
             self.facets.push(f);
@@ -758,6 +780,12 @@ impl Library {
 
     /// Files whose effective insight meets `criteria` (corrections win over the AI's values).
     pub fn insight_matches(&self, criteria: &InsightCriteria) -> Result<Arc<ItemSet>> {
+        Ok(self.insight_matches_many(&[*criteria])?.remove(0))
+    }
+
+    /// [`Self::insight_matches`] for several criteria with one freshness check (the stamp is a pass over every
+    /// AI result, ~0.2 s on 1M): the Duplicates list asks for its criteria and for "any insight" together.
+    pub fn insight_matches_many(&self, criteria: &[InsightCriteria]) -> Result<Vec<Arc<ItemSet>>> {
         let cat = self.catalog()?;
         let store = self.insight_store()?;
         let stamp = crate::insights::stamp(cat, store)?;
@@ -772,23 +800,9 @@ impl Library {
             lock(&self.insight_index_stats).full_builds += 1;
         }
         let Some(index) = idx.as_mut() else {
-            return Ok(Arc::new(ItemSet::new()));
+            return Ok(criteria.iter().map(|_| Arc::new(ItemSet::new())).collect());
         };
-        if let Some((c, set)) = &index.last
-            && c == criteria
-        {
-            return Ok(set.clone());
-        }
-        let meets: Vec<bool> = index.facets.iter().map(|f| f.meets(criteria)).collect();
-        let set: ItemSet = index
-            .files
-            .iter()
-            .filter(|(_, k)| meets[*k as usize])
-            .map(|(id, _)| *id)
-            .collect();
-        let set = Arc::new(set);
-        index.last = Some((criteria.clone(), set.clone()));
-        Ok(set)
+        Ok(criteria.iter().map(|c| index.matches(c)).collect())
     }
 
     /// How the insight index has been maintained so far.
@@ -857,7 +871,7 @@ impl Library {
             index.set_files(&r.files_with_digest(d)?, kind);
         }
         index.stamp = stamp;
-        index.last = None;
+        index.last.clear();
         let mut s = lock(&self.insight_index_stats);
         s.updates += 1;
         s.last_update_contents = digests.len();
@@ -912,7 +926,7 @@ impl Library {
             kinds,
             files,
             corrections,
-            last: None,
+            last: Vec::new(),
         })
     }
 

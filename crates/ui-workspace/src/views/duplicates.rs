@@ -126,16 +126,50 @@ pub fn register(cx: &mut App) {
             CommandRegistry::register(cx, meta);
         }
     }
-    ViewRegistry::register(cx, ViewId::Duplicates, |_, window, cx| {
+    ViewRegistry::register(cx, ViewId::Duplicates, |ctx, window, cx| {
         let source = ReviewGlobal::get(cx);
         let gallery = cx.global::<ShellGlobals>().gallery.clone();
-        let view = cx.new(|cx| DuplicatesView::new(source, gallery, window, cx));
+        let state = ctx.duplicates;
+        let view = cx.new(|cx| DuplicatesView::new(source, gallery, state, window, cx));
         cx.set_global(Current(view.downgrade()));
         view.into()
     });
 }
 
 struct Current(WeakEntity<DuplicatesView>);
+
+/// The Duplicates list's filter and sort as last set, for the shell to remember (ai-filtered-duplicates).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DuplicatesState(pub crate::persist::DuplicatesViewState);
+
+impl Global for DuplicatesState {}
+
+impl DuplicatesState {
+    pub fn get(cx: &App) -> Option<crate::persist::DuplicatesViewState> {
+        cx.try_global::<DuplicatesState>().map(|s| s.0)
+    }
+}
+
+/// Review progress over every group, shared with the navigator: the view publishes it after every list load,
+/// and the shell when the catalog summary is refreshed (start-up, after a scan), so the count is right before
+/// the view is ever opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DuplicatesProgress(pub ps_service::review::ReviewProgress);
+
+impl Global for DuplicatesProgress {}
+
+impl DuplicatesProgress {
+    pub fn get(cx: &App) -> Option<ps_service::review::ReviewProgress> {
+        cx.try_global::<DuplicatesProgress>().map(|p| p.0)
+    }
+
+    /// Set it, only when it changed (observers re-render the navigator).
+    pub fn publish(p: ps_service::review::ReviewProgress, cx: &mut App) {
+        if Self::get(cx) != Some(p) {
+            cx.set_global(DuplicatesProgress(p));
+        }
+    }
+}
 
 impl Global for Current {}
 
@@ -245,6 +279,14 @@ pub struct DuplicatesView {
     generation: u64,
     /// Re-renders while a cleanup run is moving files, so the edits come back when it ends.
     cleanup_poll: Option<Task<()>>,
+    /// While an AI filter is set: the insight stamp last seen, and the task polling it (ADR-0019).
+    insight_poll: Option<Task<()>>,
+    /// The similar-shot list's scroll, so the selected pair is always drawn.
+    suggestion_scroll: UniformListScrollHandle,
+    /// "How similar shots are found" was dismissed (remembered per catalog).
+    similar_explained: bool,
+    /// The explainer reopened from an info button.
+    show_explainer: bool,
 }
 
 /// Shown while a cleanup run is moving files: the edits are not offered (ADR-0099).
@@ -255,6 +297,7 @@ impl DuplicatesView {
     pub fn new(
         source: Option<Arc<dyn ReviewSource>>,
         gallery: SharedSource,
+        state: crate::persist::DuplicatesViewState,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
@@ -264,8 +307,8 @@ impl DuplicatesView {
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             tab: Tab::Groups,
-            sort: ReviewSort::Reclaimable,
-            filter: ReviewFilter::default(),
+            sort: state.sort,
+            filter: state.filter,
             list: None,
             selected: None,
             detail: None,
@@ -281,12 +324,20 @@ impl DuplicatesView {
             busy: false,
             generation: 0,
             cleanup_poll: None,
+            insight_poll: None,
+            suggestion_scroll: UniformListScrollHandle::new(),
+            similar_explained: state.similar_shots_explained,
+            show_explainer: false,
         };
         if std::env::var("PHOTOSQUIRREL_REVIEW_TAB").as_deref() == Ok("suggestions") {
             // Dev-only: scripted screenshots of the suggestions panel (KDE gives agents one frame).
             this.tab = Tab::Suggestions;
         }
         let primed = crate::startup::StartupGrace::deadline(cx).is_some_and(|d| this.load_now(d));
+        if let Some(l) = &this.list {
+            DuplicatesProgress::publish(l.as_ref().into(), cx);
+        }
+        this.watch_insights(cx);
         if !primed {
             this.reload(cx);
             this.reload_suggestions(cx);
@@ -484,6 +535,7 @@ impl DuplicatesView {
                         let want = select.or(this.selected);
                         let keep = want.filter(|id| list.rows.iter().any(|r| r.id == *id));
                         let next = keep.or_else(|| list.rows.first().map(|r| r.id));
+                        DuplicatesProgress::publish((&list).into(), cx);
                         this.list = Some(Rc::new(list));
                         this.error = None;
                         if next != this.selected || this.detail.is_none() || keep.is_some() {
@@ -645,14 +697,131 @@ impl DuplicatesView {
 
     pub fn set_sort(&mut self, sort: ReviewSort, cx: &mut Context<'_, Self>) {
         self.sort = sort;
+        self.remember(cx);
         self.reload(cx);
         cx.notify();
     }
 
     pub fn set_filter(&mut self, filter: ReviewFilter, cx: &mut Context<'_, Self>) {
+        let mut filter = filter;
+        // "Not described yet" and an insight criterion never both hold: the newer choice wins.
+        if filter.undescribed && filter.insight.is_some() {
+            if self.filter.undescribed {
+                filter.undescribed = false;
+            } else {
+                filter.insight = None;
+            }
+        }
+        if filter
+            .insight
+            .is_some_and(|c| c == ps_model::library::InsightCriteria::default())
+        {
+            filter.insight = None;
+        }
         self.filter = filter;
+        self.remember(cx);
+        self.watch_insights(cx);
         self.reload(cx);
         cx.notify();
+    }
+
+    /// Change only the AI criteria (the menu and the chips).
+    pub fn update_ai(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+        f: impl FnOnce(&mut ps_model::library::InsightCriteria),
+    ) {
+        let mut c = self.filter.insight.unwrap_or_default();
+        f(&mut c);
+        let filter = ReviewFilter {
+            insight: Some(c),
+            undescribed: false,
+            ..self.filter
+        };
+        self.set_filter(filter, cx);
+    }
+
+    /// Hand the filter and sort to the shell, which writes them with the layout.
+    fn remember(&self, cx: &mut Context<'_, Self>) {
+        cx.set_global(DuplicatesState(crate::persist::DuplicatesViewState {
+            filter: self.filter,
+            sort: self.sort,
+            similar_shots_explained: self.similar_explained,
+        }));
+    }
+
+    /// The "How similar shots are found" panel is showing (similar-shot-explained).
+    pub fn explainer_shown(&self) -> bool {
+        self.tab == Tab::Suggestions && (!self.similar_explained || self.show_explainer)
+    }
+
+    /// "Got it": hide the explainer and remember that across restarts.
+    pub fn dismiss_explainer(&mut self, cx: &mut Context<'_, Self>) {
+        self.similar_explained = true;
+        self.show_explainer = false;
+        self.remember(cx);
+        cx.notify();
+    }
+
+    /// An info button: the similar shots with the explainer, without forgetting it was dismissed.
+    pub fn show_explainer(&mut self, cx: &mut Context<'_, Self>) {
+        self.show_explainer = true;
+        if self.tab != Tab::Suggestions {
+            self.set_tab(Tab::Suggestions, cx);
+        }
+        cx.notify();
+    }
+
+    /// While an AI filter is set, poll the insight stamp every half second and reload when it changes, so groups
+    /// join or leave the list as the AI queue describes photos or the user corrects them (ADR-0019). No poll
+    /// without an AI filter.
+    fn watch_insights(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.filter.has_ai() {
+            self.insight_poll = None;
+            return;
+        }
+        if self.insight_poll.is_some() {
+            return;
+        }
+        let Some(src) = self.source.clone() else {
+            return;
+        };
+        self.insight_poll = Some(cx.spawn(async move |this, cx| {
+            let mut last = None;
+            loop {
+                let s = src.clone();
+                let stamp = cx
+                    .background_executor()
+                    .spawn(async move { s.ai_stamp().ok() })
+                    .await;
+                let go_on = this
+                    .update(cx, |this, cx| {
+                        if !this.filter.has_ai() {
+                            this.insight_poll = None;
+                            return false;
+                        }
+                        if last.is_some() && stamp.is_some() && stamp != last {
+                            this.reload(cx);
+                        }
+                        if stamp.is_some() {
+                            last = stamp;
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !go_on {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(crate::views::ai_review::POLL)
+                    .await;
+            }
+        }));
+    }
+
+    /// Polling the insight stamp (tests).
+    pub fn watching_insights(&self) -> bool {
+        self.insight_poll.is_some()
     }
 
     pub fn set_tab(&mut self, tab: Tab, cx: &mut Context<'_, Self>) {
@@ -924,6 +1093,8 @@ impl DuplicatesView {
     pub fn select_suggestion(&mut self, ix: usize, cx: &mut Context<'_, Self>) {
         self.selected_suggestion = ix;
         self.explain = None;
+        self.suggestion_scroll
+            .scroll_to_item(ix, ScrollStrategy::Center);
         cx.notify();
     }
 
@@ -1074,6 +1245,224 @@ fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElemen
         .into_any_element()
 }
 
+/// The explainer's text, with the limits the grouping applies (similar-shot-explained).
+pub fn explainer_text() -> String {
+    let l = ps_service::groups::similar_shot_limits();
+    format!(
+        "Two photos are listed here when they look alike as closely as copies do (pHash within {}, dHash \
+         within {}, shape within {}%) but their details show two different shots: different capture times, \
+         cameras or frame numbers. PhotoSquirrel never merges them; every shot stays in your library and is \
+         exported. Shots of the same moment that look different, because someone moved or the camera turned, \
+         are not listed here.",
+        l.phash,
+        l.dhash,
+        (l.aspect_percent * 100.0).round() / 100.0
+    )
+}
+
+/// A small info icon that opens the similar-shots explainer.
+fn info_button(
+    id: &'static str,
+    tip: &'static str,
+    cx: &mut Context<'_, DuplicatesView>,
+) -> AnyElement {
+    let colors = *ui_theme::colors(cx);
+    h_flex()
+        .id(id)
+        .test_support()
+        .role(Role::Button)
+        .aria_label(SharedString::from(tip))
+        .flex_none()
+        .p(Tokens::space(0.5))
+        .rounded(Tokens::RADIUS_SM)
+        .cursor_pointer()
+        .text_color(colors.text_muted)
+        .hover(|d| d.bg(colors.hover).text_color(colors.text))
+        .on_click(cx.listener(|this, _, _, cx| this.show_explainer(cx)))
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+        })
+        .child(Icon::new(IconName::Info).size(Tokens::icon_sm()))
+        .into_any_element()
+}
+
+/// One removable chip per active AI filter ("People ×", "Pets ×", "Category: Travel ×", "Not described yet ×").
+fn ai_chips(f: ReviewFilter, cx: &mut Context<'_, DuplicatesView>) -> Vec<AnyElement> {
+    use ps_model::library::InsightCriteria;
+    let mut out = Vec::new();
+    if f.undescribed {
+        out.push(filter_chip(
+            "duplicates-ai-chip-undescribed",
+            "Not described yet ×",
+            true,
+            cx,
+            |v, cx| {
+                let filter = ReviewFilter {
+                    undescribed: false,
+                    ..v.filter
+                };
+                v.set_filter(filter, cx);
+            },
+        ));
+    }
+    let Some(c) = f.insight else {
+        return out;
+    };
+    let toggles: [(&'static str, &'static str, bool, fn(&mut InsightCriteria)); 3] = [
+        ("people", "People ×", c.people, |c| c.people = false),
+        ("children", "Children ×", c.children, |c| {
+            c.children = false
+        }),
+        ("pets", "Pets ×", c.pets, |c| c.pets = false),
+    ];
+    for (id, label, on, off) in toggles {
+        if on {
+            out.push(filter_chip(
+                format!("duplicates-ai-chip-{id}"),
+                label,
+                true,
+                cx,
+                move |v, cx| v.update_ai(cx, off),
+            ));
+        }
+    }
+    if let Some(cat) = c.category {
+        out.push(filter_chip(
+            "duplicates-ai-chip-category",
+            format!("{} ×", crate::views::ai_review::category_label(cat)),
+            true,
+            cx,
+            |v, cx| v.update_ai(cx, |c| c.category = None),
+        ));
+    }
+    out
+}
+
+/// "Matching: 2 of 5 reviewed": the groups the AI part of the filter keeps, whatever the other chips.
+pub fn matching_text(l: &ReviewList) -> String {
+    format!(
+        "Matching: {} of {} reviewed",
+        format_count(l.matching_reviewed),
+        format_count(l.matching)
+    )
+}
+
+/// The progress card's main figure and its line below: ("28 left", "12 of 40 reviewed"), or the done state
+/// ("All 40 groups reviewed", "Nothing left to review"). Every group counts, whatever the filter.
+pub fn progress_card_text(groups: u64, reviewed: u64) -> (String, String) {
+    let left = groups.saturating_sub(reviewed);
+    if groups > 0 && left == 0 {
+        (
+            format!(
+                "All {} group{} reviewed",
+                format_count(groups),
+                if groups == 1 { "" } else { "s" }
+            ),
+            "Nothing left to review".into(),
+        )
+    } else {
+        (
+            format!("{} left", format_count(left)),
+            format!(
+                "{} of {} reviewed",
+                format_count(reviewed),
+                format_count(groups)
+            ),
+        )
+    }
+}
+
+/// The review progress card: the visual anchor of the Duplicates list (groups left, big; reviewed and the bar
+/// below), tinted with the accent, and with the success tone once every group is reviewed.
+fn progress_card(list: Option<&ReviewList>, fraction: f32, ai: bool, cx: &App) -> AnyElement {
+    let colors = *ui_theme::colors(cx);
+    let Some(l) = list else {
+        return div()
+            .id("duplicates-progress-card")
+            .test_support()
+            .p(Tokens::space(3.0))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(colors.accent_soft)
+            .child(
+                div()
+                    .id("duplicates-progress")
+                    .test_support()
+                    .text_size(Tokens::text_sm())
+                    .text_color(colors.text_muted)
+                    .child("Loading…"),
+            )
+            .into_any_element();
+    };
+    let done = l.groups > 0 && l.reviewed >= l.groups;
+    let (main, sub) = progress_card_text(l.groups, l.reviewed);
+    let (bg, fg) = if done {
+        (
+            ui_theme::Colors::chip_bg(colors.success),
+            colors.tone_text(colors.success),
+        )
+    } else {
+        (colors.accent_soft, colors.accent_text)
+    };
+    v_flex()
+        .id("duplicates-progress-card")
+        .test_support()
+        .gap(Tokens::space(1.5))
+        .p(Tokens::space(3.0))
+        .rounded(Tokens::RADIUS_MD)
+        .bg(bg)
+        .child(
+            h_flex()
+                .gap(Tokens::space(2.0))
+                .items_center()
+                .when(done, |e| {
+                    e.child(
+                        Icon::new(IconName::Check)
+                            .size(Tokens::icon_md())
+                            .text_color(fg),
+                    )
+                })
+                .child(
+                    div()
+                        .id("duplicates-progress-left")
+                        .test_support()
+                        .aria_label(SharedString::from(main.clone()))
+                        .min_w_0()
+                        .text_size(Tokens::text_xl())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(fg)
+                        .child(main),
+                ),
+        )
+        .child(
+            div()
+                .id("duplicates-progress")
+                .test_support()
+                .aria_label(SharedString::from(sub.clone()))
+                .text_size(Tokens::text_sm())
+                .text_color(colors.text_muted)
+                .child(sub),
+        )
+        .when(ai, |e| {
+            let t = matching_text(l);
+            e.child(
+                div()
+                    .id("duplicates-progress-matching")
+                    .test_support()
+                    .aria_label(SharedString::from(t.clone()))
+                    .text_size(Tokens::text_sm())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors.text)
+                    .child(t),
+            )
+        })
+        .child(progress_bar_on(
+            if done { 1.0 } else { fraction },
+            colors.border_strong,
+            cx,
+        ))
+        .into_any_element()
+}
+
 impl DuplicatesView {
     fn render_list_pane(&mut self, cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
@@ -1111,6 +1500,13 @@ impl DuplicatesView {
                 cx,
             ))
             .child(div().flex_1())
+            .when(tab == Tab::Suggestions, |e| {
+                e.child(info_button(
+                    "duplicates-similar-info",
+                    "How similar shots are found",
+                    cx,
+                ))
+            })
             .child(kbd("B", cx));
         let header = v_flex()
             .flex_none()
@@ -1121,32 +1517,17 @@ impl DuplicatesView {
             .border_b_1()
             .border_color(colors.border)
             .child(
-                h_flex()
-                    .items_baseline()
-                    .gap(Tokens::space(2.0))
-                    .child(
-                        div()
-                            .text_size(Tokens::text_lg())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Duplicates"),
-                    )
-                    .child(
-                        div()
-                            .id("duplicates-progress")
-                            .test_support()
-                            .text_size(Tokens::text_sm())
-                            .text_color(colors.text_muted)
-                            .child(match &list {
-                                Some(l) => format!(
-                                    "{} of {} reviewed",
-                                    format_count(l.reviewed),
-                                    format_count(l.groups)
-                                ),
-                                None => "Loading…".into(),
-                            }),
-                    ),
+                div()
+                    .text_size(Tokens::text_lg())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Duplicates"),
             )
-            .child(progress_bar(fraction, cx))
+            .child(progress_card(
+                list.as_deref(),
+                fraction,
+                self.filter.has_ai(),
+                cx,
+            ))
             .child(
                 div()
                     .text_size(Tokens::text_xs())
@@ -1170,6 +1551,7 @@ impl DuplicatesView {
                 .border_r_1()
                 .border_color(colors.border)
                 .child(header)
+                .children(self.explainer_shown().then(|| self.render_explainer(cx)))
                 .child(self.render_suggestion_list(cx))
                 .into_any_element();
         }
@@ -1197,6 +1579,79 @@ impl DuplicatesView {
                 })
         };
         let f = self.filter;
+        let ai_menu = {
+            let weak = weak.clone();
+            let c = f.insight.unwrap_or_default();
+            let n = usize::from(c.children)
+                + usize::from(c.pets)
+                + usize::from(c.people)
+                + usize::from(c.category.is_some())
+                + usize::from(f.undescribed);
+            Button::new("duplicates-ai")
+                .label(match n {
+                    0 => "AI insight".to_owned(),
+                    n => format!("AI insight ({n})"),
+                })
+                .icon(Icon::new(IconName::Sparkles))
+                .compact()
+                .dropdown_caret(true)
+                .dropdown_menu(move |menu, _, _| {
+                    use ps_model::library::InsightCriteria;
+                    let mut menu = menu.label("Contains");
+                    let toggles: [(&'static str, fn(&mut InsightCriteria) -> &mut bool); 3] = [
+                        ("People", |c| &mut c.people),
+                        ("Children", |c| &mut c.children),
+                        ("Pets", |c| &mut c.pets),
+                    ];
+                    for (label, field) in toggles {
+                        let weak = weak.clone();
+                        let on = *field(&mut c.clone());
+                        menu = menu.item(PopupMenuItem::new(label).checked(on).on_click(
+                            move |_, _, cx| {
+                                let _ = weak.update(cx, |v, cx| {
+                                    v.update_ai(cx, |c| *field(c) = !on);
+                                });
+                            },
+                        ));
+                    }
+                    menu = menu.separator().label("Category");
+                    let any = std::iter::once(None)
+                        .chain(ps_model::SceneCategory::ALL.into_iter().map(Some));
+                    for cat in any {
+                        let weak = weak.clone();
+                        let label =
+                            cat.map_or("Any category", crate::views::ai_review::category_label);
+                        menu = menu.item(
+                            PopupMenuItem::new(label)
+                                .checked(c.category == cat)
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak
+                                        .update(cx, |v, cx| v.update_ai(cx, |c| c.category = cat));
+                                }),
+                        );
+                    }
+                    menu = menu.separator();
+                    {
+                        let weak = weak.clone();
+                        let on = f.undescribed;
+                        menu = menu.item(
+                            PopupMenuItem::new("Not described yet")
+                                .checked(on)
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak.update(cx, |v, cx| {
+                                        let filter = ReviewFilter {
+                                            undescribed: !on,
+                                            insight: None,
+                                            ..v.filter
+                                        };
+                                        v.set_filter(filter, cx);
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                })
+        };
         let filters = h_flex()
             .flex_wrap()
             .gap(Tokens::space(1.5))
@@ -1254,7 +1709,8 @@ impl DuplicatesView {
                     f.has_suggestions = !f.has_suggestions;
                     v.set_filter(f, cx);
                 },
-            ));
+            ))
+            .children(ai_chips(f, cx));
         let controls = v_flex()
             .flex_none()
             .px(Tokens::space(4.0))
@@ -1263,12 +1719,22 @@ impl DuplicatesView {
             .border_b_1()
             .border_color(colors.border)
             .child(
-                h_flex().child(sort_menu).child(div().flex_1()).child(
-                    div()
-                        .text_size(Tokens::text_2xs())
-                        .text_color(colors.text_faint)
-                        .child(format!("{} shown", format_count(self.rows().len() as u64))),
-                ),
+                h_flex()
+                    .flex_wrap()
+                    .gap(Tokens::space(1.5))
+                    .child(sort_menu)
+                    .child(ai_menu)
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("duplicates-shown")
+                            .test_support()
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .text_size(Tokens::text_2xs())
+                            .text_color(colors.text_faint)
+                            .child(format!("{} shown", format_count(self.rows().len() as u64))),
+                    ),
             )
             .child(filters);
 
@@ -1405,12 +1871,63 @@ impl DuplicatesView {
             .into_any_element()
     }
 
+    fn render_explainer(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        let colors = *ui_theme::colors(cx);
+        let text = explainer_text();
+        v_flex()
+            .id("duplicates-similar-explainer")
+            .test_support()
+            .flex_none()
+            .m(Tokens::space(3.0))
+            .p(Tokens::space(3.0))
+            .gap(Tokens::space(2.0))
+            .rounded(Tokens::RADIUS_MD)
+            .bg(colors.accent_soft)
+            .child(
+                h_flex()
+                    .gap(Tokens::space(2.0))
+                    .items_center()
+                    .child(
+                        Icon::new(IconName::Info)
+                            .size(Tokens::icon_sm())
+                            .text_color(colors.accent_text),
+                    )
+                    .child(
+                        div()
+                            .text_size(Tokens::text_sm())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("How similar shots are found"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("duplicates-similar-explainer-text")
+                    .test_support()
+                    .aria_label(SharedString::from(text.clone()))
+                    .min_w_0()
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text)
+                    .child(text),
+            )
+            .child(h_flex().child(div().flex_1()).child(action_button(
+                "duplicates-similar-explainer-ok",
+                "Got it",
+                None,
+                None,
+                Tone::Quiet,
+                cx,
+                |this, _, cx| this.dismiss_explainer(cx),
+            )))
+            .into_any_element()
+    }
+
     fn render_suggestion_list(&mut self, cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
         let items = self.suggestions.clone();
         let n = items.as_ref().map_or(0, |s| s.len());
         let selected = self.selected_suggestion;
         let images = self.images.clone();
+        let scroll = self.suggestion_scroll.clone();
         uniform_list(
             "duplicates-suggestions",
             n,
@@ -1472,21 +1989,35 @@ impl DuplicatesView {
                                                 s.a.card.name, s.b.card.name
                                             )),
                                     )
-                                    .child(
+                                    .child({
+                                        let line = s.info.explanation();
+                                        let tip = s.info.explanation_detail();
                                         div()
-                                            .font_family(MONO_FONT_FAMILY)
+                                            .id(SharedString::from(format!(
+                                                "duplicates-suggestion-reason-{ix}"
+                                            )))
+                                            .test_support()
+                                            .aria_label(SharedString::from(line.clone()))
                                             .text_size(Tokens::text_2xs())
                                             .text_color(colors.text_muted)
-                                            .child(
-                                                s.delta_label().unwrap_or_else(|| "undated".into()),
-                                            ),
-                                    ),
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(
+                                                    tip.clone(),
+                                                )
+                                                .build(window, cx)
+                                            })
+                                            .child(line)
+                                    }),
                             )
                             .into_any_element()
                     })
                     .collect()
             }),
         )
+        .track_scroll(&scroll)
         .flex_1()
         .into_any_element()
     }
@@ -1743,12 +2274,20 @@ impl DuplicatesView {
                     .border_t_1()
                     .border_color(colors.border)
                     .child(eyebrow("In this group", cx))
-                    .children(group_composition(d).into_iter().map(|(n, what)| {
+                    .children(group_composition(d).into_iter().enumerate().map(|(i, (n, what))| {
+                        // `items_start` keeps a wrapped description level with its count, and the text's
+                        // `flex_1().min_w_0()` lets it shrink and wrap instead of running past the panel.
                         h_flex()
+                            .id(SharedString::from(format!("duplicates-why-group-{i}")))
+                            .test_support()
+                            .w_full()
+                            .items_start()
                             .gap(Tokens::space(2.0))
                             .text_size(Tokens::text_sm())
                             .child(
                                 div()
+                                    .id(SharedString::from(format!("duplicates-why-group-{i}-n")))
+                                    .test_support()
                                     .w(Tokens::size(56.0))
                                     .flex_none()
                                     .text_right()
@@ -1756,7 +2295,15 @@ impl DuplicatesView {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(n),
                             )
-                            .child(div().text_color(colors.text_muted).child(what))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("duplicates-why-group-{i}-text")))
+                                    .test_support()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_color(colors.text_muted)
+                                    .child(what),
+                            )
                     }))
             )
             .child(div().flex_1())
@@ -2107,6 +2654,11 @@ impl DuplicatesView {
                         .child(format!(
                             "{related} similar shot{} nearby (bursts are never merged automatically)",
                             if related == 1 { "" } else { "s" }
+                        ))
+                        .child(info_button(
+                            "duplicates-related-info",
+                            "How similar shots are found",
+                            cx,
                         ))
                         .child(div().flex_1())
                         .child(action_button(
@@ -2563,7 +3115,6 @@ impl DuplicatesView {
         };
         let a = side(&s.a, "duplicates-suggestion-a", self, cx);
         let b = side(&s.b, "duplicates-suggestion-b", self, cx);
-        let delta = s.delta_label();
         let explain = self
             .explain
             .as_ref()
@@ -2631,28 +3182,20 @@ impl DuplicatesView {
                                         div()
                                             .id("duplicates-suggestion-delta")
                                             .test_support()
+                                            .aria_label(SharedString::from(s.info.explanation()))
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child(match &delta {
-                                                Some(d) => format!("Taken {d}"),
-                                                None => "Capture time unknown".into(),
-                                            }),
+                                            .child(s.info.explanation()),
                                     )
-                                    .child(
+                                    .child({
+                                        let detail = s.info.explanation_detail();
                                         div()
+                                            .id("duplicates-suggestion-reason-line")
+                                            .test_support()
+                                            .aria_label(SharedString::from(detail.clone()))
                                             .text_size(Tokens::text_sm())
                                             .text_color(colors.text_muted)
-                                            .child(s.info.reason.clone()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT_FAMILY)
-                                    .text_size(Tokens::text_2xs())
-                                    .text_color(colors.text_faint)
-                                    .child(format!(
-                                        "pHash {} · dHash {}",
-                                        s.info.phash_distance, s.info.dhash_distance
-                                    )),
+                                            .child(detail)
+                                    }),
                             ),
                     )
                     .child(h_flex().items_start().gap(Tokens::space(4.0)).child(a).child(b))

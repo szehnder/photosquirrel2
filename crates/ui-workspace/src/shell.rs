@@ -114,6 +114,19 @@ impl Shell {
 
         let subscriptions = vec![
             cx.observe_global::<AppSettings>(|_, cx| cx.notify()),
+            cx.observe_global::<crate::views::duplicates::DuplicatesProgress>(|_, cx| cx.notify()),
+            // The Duplicates list's filter and sort are remembered per catalog (ai-filtered-duplicates).
+            cx.observe_global_in::<crate::views::duplicates::DuplicatesState>(
+                window,
+                |this, window, cx| {
+                    if let Some(state) = crate::views::duplicates::DuplicatesState::get(cx)
+                        && this.layout.duplicates != state
+                    {
+                        this.layout.duplicates = state;
+                        this.schedule_save(window, cx);
+                    }
+                },
+            ),
             cx.observe_window_bounds(window, |this, window, cx| this.schedule_save(window, cx)),
             cx.observe_window_appearance(window, |_, window, cx| {
                 AppSettings::set_appearance(window.appearance(), cx);
@@ -275,6 +288,9 @@ impl Shell {
             .service
             .call(|b| b.summary().map_err(|e| format!("{e:#}")));
         let interrupted = self.service.call(|b| b.interrupted_run().ok().flatten());
+        // The navigator's "left to review" count, on the background executor, after the summary (it is one
+        // pass over the groups, kept out of the start-up summary).
+        let review = crate::review_source::ReviewGlobal::get(cx);
         let first = self.summary.is_loading() && self.frames == 0;
         let grace = crate::startup::StartupGrace::remaining(cx)
             .unwrap_or(START_GRACE)
@@ -303,6 +319,13 @@ impl Shell {
                 Self::publish_totals(&this.summary, cx);
                 cx.notify();
             });
+            if let Some(src) = review {
+                let progress = executor.spawn(async move { src.progress() }).await;
+                let _ = this.update(cx, |_, cx| match progress {
+                    Ok(p) => crate::views::duplicates::DuplicatesProgress::publish(p, cx),
+                    Err(e) => log::warn!("review progress: {e:#}"),
+                });
+            }
             let interrupted = interrupted.wait(executor).await.ok().flatten();
             let _ = this.update(cx, |this, cx| {
                 let offer = AppSettings::get(cx).general.offer_resume;
@@ -559,6 +582,26 @@ impl Shell {
     }
 
     // ---- navigation and layout ----------------------------------------------------------------------
+
+    /// The Duplicates view filtered by `criteria` (AI Review's "Review duplicates of these"); the other chips are
+    /// cleared so the list shows exactly the matching groups.
+    pub fn open_duplicates_filtered(
+        &mut self,
+        criteria: ps_model::library::InsightCriteria,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let filter = ps_service::review::ReviewFilter {
+            insight: (!criteria.is_empty()).then_some(criteria),
+            ..ps_service::review::ReviewFilter::default()
+        };
+        self.layout.duplicates.filter = filter;
+        if let Some(v) = crate::views::duplicates::current(cx) {
+            v.update(cx, |v, cx| v.set_filter(filter, cx));
+        }
+        self.show_view(ViewId::Duplicates, window, cx);
+        self.schedule_save(window, cx);
+    }
 
     pub fn show_view(&mut self, view: ViewId, window: &mut Window, cx: &mut Context<'_, Self>) {
         if self.layout.active_view != view {
@@ -972,6 +1015,7 @@ impl Shell {
             service: self.service.clone(),
             library_mode: self.layout.library_mode,
             excluded: self.layout.excluded.clone(),
+            duplicates: self.layout.duplicates,
             default_inspector: self.inspector_default.clone(),
         }
     }

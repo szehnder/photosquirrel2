@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use ps_catalog::groups::reason_texts;
 use ps_catalog::{FileRecord, Readers};
+use ps_model::library::InsightCriteria;
 use ps_model::{FileId, SourceId, path_from_bytes};
 
 use crate::groups::{GroupDetail, GroupError, GroupMember, MemberEdge, SuggestionInfo};
@@ -55,6 +56,8 @@ struct ReviewState {
 #[derive(Debug)]
 pub struct ReviewStore {
     file: JsonFile<ReviewState>,
+    /// Bumped by every saved change (this process only): part of [`ProgressKey`].
+    revision: std::sync::atomic::AtomicU64,
 }
 
 impl ReviewStore {
@@ -63,6 +66,7 @@ impl ReviewStore {
     pub fn open(data_dir: &Path) -> ReviewStore {
         ReviewStore {
             file: JsonFile::open(data_dir.join(REVIEW_FILE)),
+            revision: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -82,6 +86,7 @@ impl ReviewStore {
     pub fn in_memory() -> ReviewStore {
         ReviewStore {
             file: JsonFile::in_memory(),
+            revision: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -91,10 +96,18 @@ impl ReviewStore {
 
     /// Change and save; a change that cannot be saved is not kept and is an error.
     fn update<T>(&self, f: impl FnOnce(&mut ReviewState) -> T) -> Result<T> {
-        Ok(self.file.update(|st| {
+        let out = self.file.update(|st| {
             st.version = 1;
             f(st)
-        })?)
+        })?;
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(out)
+    }
+
+    /// Changes whenever this store saves a change.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn is_reviewed(&self, key: &str) -> bool {
@@ -162,6 +175,7 @@ impl ReviewSort {
 
 /// Filters of the review list (all must hold).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReviewFilter {
     /// Only groups of byte-identical copies.
     pub exact_only: bool,
@@ -172,9 +186,29 @@ pub struct ReviewFilter {
     pub overridden: bool,
     /// Only groups with similar-shot suggestions.
     pub has_suggestions: bool,
+    /// Only groups having a file whose effective AI insight meets these criteria (ai-filtered-duplicates).
+    #[serde(default)]
+    pub insight: Option<InsightCriteria>,
+    /// Only groups in which no file has an AI insight yet.
+    #[serde(default)]
+    pub undescribed: bool,
 }
 
 impl ReviewFilter {
+    /// The AI part (insight criteria or "not described yet") is set.
+    pub fn has_ai(&self) -> bool {
+        self.insight.is_some() || self.undescribed
+    }
+
+    /// The same filter without its AI part.
+    pub fn without_ai(self) -> ReviewFilter {
+        ReviewFilter {
+            insight: None,
+            undescribed: false,
+            ..self
+        }
+    }
+
     fn keeps(&self, r: &ReviewRow) -> bool {
         (!self.exact_only || r.exact_only)
             && (!self.has_derivatives || r.has_derivatives)
@@ -227,6 +261,135 @@ pub struct ReviewList {
     pub reclaimable_bytes: u64,
     /// Undismissed suggestions.
     pub suggestions: u64,
+    /// Groups the AI part of the filter keeps, whatever the other chips (every group without one).
+    #[serde(default)]
+    pub matching: u64,
+    /// Of those, the reviewed ones.
+    #[serde(default)]
+    pub matching_reviewed: u64,
+}
+
+/// One member of a group as a [`GroupMatcher`] sees it: the file and its content digest.
+pub type GroupFile = (FileId, Option<[u8; 32]>);
+
+/// Decides the AI part of a [`ReviewFilter`] for a group, from its member files. A group matches when *any*
+/// member's effective insight meets the criteria (usually the keeper's: the AI queue describes keepers first).
+pub trait GroupMatcher {
+    /// Some member's effective insight meets the filter's criteria.
+    fn matches(&self, members: &[GroupFile]) -> bool;
+    /// Some member has an insight.
+    fn described(&self, members: &[GroupFile]) -> bool;
+}
+
+/// The app's matcher: the files the gallery's insight index says meet the criteria, and the files with any
+/// insight (both from `Library::insight_matches`, so the Duplicates list and the gallery agree).
+pub struct IndexMatcher {
+    pub matching: std::sync::Arc<ps_model::ItemSet>,
+    pub described: std::sync::Arc<ps_model::ItemSet>,
+}
+
+fn in_set(set: &ps_model::ItemSet, members: &[GroupFile]) -> bool {
+    members
+        .iter()
+        .any(|(f, _)| ps_model::ItemId::try_from(*f).is_ok_and(|id| set.contains(id)))
+}
+
+impl GroupMatcher for IndexMatcher {
+    fn matches(&self, members: &[GroupFile]) -> bool {
+        in_set(&self.matching, members)
+    }
+    fn described(&self, members: &[GroupFile]) -> bool {
+        in_set(&self.described, members)
+    }
+}
+
+/// Extra criteria only the CLI offers (`--pet-kind`, `--people-min`, `--people-max`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InsightExtra {
+    pub pet_kind: Option<String>,
+    pub people_min: Option<u32>,
+    pub people_max: Option<u32>,
+}
+
+impl InsightExtra {
+    pub fn is_empty(&self) -> bool {
+        *self == InsightExtra::default()
+    }
+
+    fn keeps(&self, i: &ps_model::ImageInsight) -> bool {
+        self.pet_kind
+            .as_ref()
+            .is_none_or(|k| i.pets.iter().any(|p| p.eq_ignore_ascii_case(k)))
+            && self.people_min.is_none_or(|m| i.people.total >= m)
+            && self.people_max.is_none_or(|m| i.people.total <= m)
+    }
+}
+
+/// The matcher without an index (the CLI): the effective insight of each member content, read once per call
+/// for the groups' contents only, with the same rule as the gallery's index (a file's own content; the user's
+/// corrections win).
+pub struct LookupMatcher {
+    criteria: InsightCriteria,
+    extra: InsightExtra,
+    effective: HashMap<[u8; 32], ps_model::ImageInsight>,
+}
+
+impl LookupMatcher {
+    /// Effective insights for every grouped content.
+    pub fn new(
+        svc: &ScanService,
+        store: &crate::insights::InsightStore,
+        criteria: InsightCriteria,
+        extra: InsightExtra,
+    ) -> Result<LookupMatcher> {
+        let r = svc.engine().catalog().read();
+        let (_, digest_of) = load_groups(r)?;
+        let mut digests: Vec<[u8; 32]> = digest_of.into_values().collect();
+        digests.sort_unstable();
+        digests.dedup();
+        let corrections = store.corrections();
+        let mut effective = HashMap::new();
+        let mut seen = std::collections::HashSet::new();
+        r.ai_latest_insights_of(&digests, |digest, json| {
+            // Newest first per content: keep the first.
+            if !seen.insert(digest) {
+                return;
+            }
+            let Ok(ai) = serde_json::from_str::<ps_model::ImageInsight>(json) else {
+                return;
+            };
+            let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+            let e = match corrections.get(&hex) {
+                Some(c) => c.apply(&ai),
+                None => ai,
+            };
+            effective.insert(digest, e);
+        })?;
+        Ok(LookupMatcher {
+            criteria,
+            extra,
+            effective,
+        })
+    }
+
+    fn insights<'a>(
+        &'a self,
+        members: &'a [GroupFile],
+    ) -> impl Iterator<Item = &'a ps_model::ImageInsight> + 'a {
+        members
+            .iter()
+            .filter_map(|(_, d)| d.as_ref().and_then(|d| self.effective.get(d)))
+    }
+}
+
+impl GroupMatcher for LookupMatcher {
+    fn matches(&self, members: &[GroupFile]) -> bool {
+        self.insights(members)
+            .any(|i| self.criteria.keeps(i) && self.extra.keeps(i))
+    }
+    fn described(&self, members: &[GroupFile]) -> bool {
+        self.insights(members).next().is_some()
+    }
 }
 
 struct Acc {
@@ -343,90 +506,240 @@ fn attention(acc: &Acc, suggestions: u32) -> (Option<String>, u32) {
     ((!why.is_empty()).then(|| why.join(" · ")), score)
 }
 
-/// The group list, filtered and sorted, with review progress.
+/// Review progress over every group: how many there are and how many of their current memberships are
+/// reviewed. The same rule as [`list`]'s `reviewed`, without the suggestion pass, for the navigator's count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewProgress {
+    pub groups: u64,
+    pub reviewed: u64,
+}
+
+impl ReviewProgress {
+    /// Groups not reviewed yet.
+    pub fn left(&self) -> u64 {
+        self.groups.saturating_sub(self.reviewed)
+    }
+}
+
+impl From<&ReviewList> for ReviewProgress {
+    fn from(l: &ReviewList) -> Self {
+        ReviewProgress {
+            groups: l.groups,
+            reviewed: l.reviewed,
+        }
+    }
+}
+
+/// [`ReviewProgress`] for every group.
+pub fn progress(svc: &ScanService, store: &ReviewStore) -> Result<ReviewProgress> {
+    let r = svc.engine().catalog().read();
+    let (groups, _) = load_groups(r)?;
+    let reviewed = groups
+        .iter()
+        .filter(|(_, acc)| store.is_reviewed(&membership_key(acc.digests.clone())))
+        .count() as u64;
+    Ok(ReviewProgress {
+        groups: groups.len() as u64,
+        reviewed,
+    })
+}
+
+/// The group list, filtered and sorted, with review progress. An AI part of the filter is decided with a
+/// [`LookupMatcher`] (no extra criteria); the app passes the gallery's index through [`list_with`].
 pub fn list(
     svc: &ScanService,
     store: &ReviewStore,
     filter: ReviewFilter,
     sort: ReviewSort,
 ) -> Result<ReviewList> {
-    let r = svc.engine().catalog().read();
-    let (groups, digest_of) = load_groups(r)?;
-    // Undismissed suggestions per group.
-    let mut group_of: HashMap<FileId, FileId> = HashMap::new();
-    for (g, acc) in &groups {
-        for f in &acc.files {
-            group_of.insert(*f, *g);
-        }
+    if !filter.has_ai() {
+        return list_with(svc, store, filter, sort, None);
     }
-    let mut per_group: HashMap<FileId, u32> = HashMap::new();
-    let mut open_suggestions = 0u64;
-    // One suggestion per pair of shots: copies of the same two shots on other drives are not repeated.
-    let mut seen = std::collections::HashSet::new();
-    for (a, b) in r.suggestion_pairs()? {
-        let dismissed = match (
-            digest_of_or_read(r, &digest_of, a),
-            digest_of_or_read(r, &digest_of, b),
-        ) {
-            (Some(x), Some(y)) => {
-                let key = pair_key(x, y);
-                store.is_dismissed(&key) || !seen.insert(key)
+    let istore = crate::insights::InsightStore::for_catalog(svc.engine().catalog());
+    let m = LookupMatcher::new(
+        svc,
+        &istore,
+        filter.insight.unwrap_or_default(),
+        InsightExtra::default(),
+    )?;
+    list_with(svc, store, filter, sort, Some(&m))
+}
+
+/// [`list`] with the AI part of `filter` decided by `matcher` (not consulted when the filter has no AI part).
+pub fn list_with(
+    svc: &ScanService,
+    store: &ReviewStore,
+    filter: ReviewFilter,
+    sort: ReviewSort,
+    matcher: Option<&dyn GroupMatcher>,
+) -> Result<ReviewList> {
+    let loaded = LoadedGroups::load(svc, store)?;
+    Ok(loaded.list(store, filter, sort, matcher))
+}
+
+/// One group as loaded from the catalog: its row without the review state, its membership key and its members.
+#[derive(Debug)]
+struct LoadedGroup {
+    row: ReviewRow,
+    members: Vec<GroupFile>,
+}
+
+/// Every group with its open suggestions, as the catalog and the dismissed suggestions have them: everything the
+/// list shows except the review state, which [`LoadedGroups::list`] adds (ADR-0133).
+#[derive(Debug, Default)]
+pub struct LoadedGroups {
+    groups: Vec<LoadedGroup>,
+    reclaimable_bytes: u64,
+    open_suggestions: u64,
+}
+
+impl LoadedGroups {
+    /// One pass over every group and member, and over the suggestions.
+    pub fn load(svc: &ScanService, store: &ReviewStore) -> Result<LoadedGroups> {
+        let r = svc.engine().catalog().read();
+        let (groups, digest_of) = load_groups(r)?;
+        // Undismissed suggestions per group.
+        let mut group_of: HashMap<FileId, FileId> = HashMap::new();
+        for (g, acc) in &groups {
+            for f in &acc.files {
+                group_of.insert(*f, *g);
             }
-            _ => false,
+        }
+        let mut per_group: HashMap<FileId, u32> = HashMap::new();
+        let mut open_suggestions = 0u64;
+        // One suggestion per pair of shots: copies of the same two shots on other drives are not repeated.
+        let mut seen = std::collections::HashSet::new();
+        for (a, b) in r.suggestion_pairs()? {
+            let dismissed = match (
+                digest_of_or_read(r, &digest_of, a),
+                digest_of_or_read(r, &digest_of, b),
+            ) {
+                (Some(x), Some(y)) => {
+                    let key = pair_key(x, y);
+                    store.is_dismissed(&key) || !seen.insert(key)
+                }
+                _ => false,
+            };
+            if dismissed {
+                continue;
+            }
+            open_suggestions += 1;
+            let ga = group_of.get(&a).copied();
+            let gb = group_of.get(&b).copied();
+            if let Some(g) = ga {
+                *per_group.entry(g).or_default() += 1;
+            }
+            if let Some(g) = gb
+                && gb != ga
+            {
+                *per_group.entry(g).or_default() += 1;
+            }
+        }
+        let mut out = LoadedGroups {
+            groups: Vec::with_capacity(groups.len()),
+            reclaimable_bytes: 0,
+            open_suggestions,
         };
-        if dismissed {
-            continue;
+        for (id, acc) in groups {
+            let suggestions = per_group.get(&id).copied().unwrap_or(0);
+            let (why, score) = attention(&acc, suggestions);
+            let key = membership_key(acc.digests.clone());
+            let overridden = acc
+                .reasons
+                .parse::<serde_json::Value>()
+                .map(|v| reason_texts(&v).iter().any(|t| t == "chosen by you"))
+                .unwrap_or(false);
+            out.reclaimable_bytes += acc.reclaimable;
+            let members = acc
+                .files
+                .iter()
+                .map(|f| (*f, digest_of.get(f).copied()))
+                .collect();
+            out.groups.push(LoadedGroup {
+                row: ReviewRow {
+                    id,
+                    keeper: acc.keeper,
+                    keeper_name: acc.keeper_name,
+                    thumb: acc.keeper_thumb,
+                    member_count: acc.member_count,
+                    reclaimable_bytes: acc.reclaimable,
+                    capture_ms: acc.keeper_capture,
+                    reviewed: false,
+                    overridden,
+                    exact_only: acc.derivative == 0 && !acc.merged,
+                    has_derivatives: acc.derivative > 0,
+                    merged: acc.merged,
+                    suggestions,
+                    attention: why,
+                    attention_score: score,
+                    key,
+                },
+                members,
+            });
         }
-        open_suggestions += 1;
-        let ga = group_of.get(&a).copied();
-        let gb = group_of.get(&b).copied();
-        if let Some(g) = ga {
-            *per_group.entry(g).or_default() += 1;
-        }
-        if let Some(g) = gb
-            && gb != ga
-        {
-            *per_group.entry(g).or_default() += 1;
-        }
+        Ok(out)
     }
-    let mut out = ReviewList {
-        groups: groups.len() as u64,
-        suggestions: open_suggestions,
-        ..ReviewList::default()
-    };
-    let mut rows = Vec::with_capacity(groups.len());
-    for (id, acc) in groups {
-        let suggestions = per_group.get(&id).copied().unwrap_or(0);
-        let (why, score) = attention(&acc, suggestions);
-        let key = membership_key(acc.digests.clone());
-        let reviewed = store.is_reviewed(&key);
-        let overridden = acc
-            .reasons
-            .parse::<serde_json::Value>()
-            .map(|v| reason_texts(&v).iter().any(|t| t == "chosen by you"))
-            .unwrap_or(false);
-        out.reclaimable_bytes += acc.reclaimable;
-        out.reviewed += u64::from(reviewed);
-        rows.push(ReviewRow {
-            id,
-            keeper: acc.keeper,
-            keeper_name: acc.keeper_name,
-            thumb: acc.keeper_thumb,
-            member_count: acc.member_count,
-            reclaimable_bytes: acc.reclaimable,
-            capture_ms: acc.keeper_capture,
-            reviewed,
-            overridden,
-            exact_only: acc.derivative == 0 && !acc.merged,
-            has_derivatives: acc.derivative > 0,
-            merged: acc.merged,
-            suggestions,
-            attention: why,
-            attention_score: score,
-            key,
+
+    /// Review progress: the same membership-key rule as [`Self::list`]'s `reviewed`.
+    pub fn progress(&self, store: &ReviewStore) -> ReviewProgress {
+        let reviewed = store.read(|st| {
+            self.groups
+                .iter()
+                .filter(|g| st.reviewed.contains_key(&g.row.key))
+                .count() as u64
         });
+        ReviewProgress {
+            groups: self.groups.len() as u64,
+            reviewed,
+        }
     }
-    rows.retain(|r| filter.keeps(r));
+
+    /// The list: review state from `store`, the AI part of `filter` from `matcher`, then the other chips and the
+    /// sort. Reads nothing from the catalog.
+    pub fn list(
+        &self,
+        store: &ReviewStore,
+        filter: ReviewFilter,
+        sort: ReviewSort,
+        matcher: Option<&dyn GroupMatcher>,
+    ) -> ReviewList {
+        let mut out = ReviewList {
+            groups: self.groups.len() as u64,
+            suggestions: self.open_suggestions,
+            reclaimable_bytes: self.reclaimable_bytes,
+            ..ReviewList::default()
+        };
+        let ai = filter.has_ai().then_some(matcher).flatten();
+        let mut rows = Vec::with_capacity(self.groups.len());
+        store.read(|st| {
+            for g in &self.groups {
+                let reviewed = st.reviewed.contains_key(&g.row.key);
+                out.reviewed += u64::from(reviewed);
+                let matches = ai.is_none_or(|m| {
+                    filter.insight.is_none_or(|_| m.matches(&g.members))
+                        && (!filter.undescribed || !m.described(&g.members))
+                });
+                if !matches {
+                    continue;
+                }
+                out.matching += 1;
+                out.matching_reviewed += u64::from(reviewed);
+                let row = ReviewRow {
+                    reviewed,
+                    ..g.row.clone()
+                };
+                if filter.keeps(&row) {
+                    rows.push(row);
+                }
+            }
+        });
+        sort_rows(&mut rows, sort);
+        out.rows = rows;
+        out
+    }
+}
+
+fn sort_rows(rows: &mut [ReviewRow], sort: ReviewSort) {
     match sort {
         ReviewSort::Reclaimable => rows.sort_by(|a, b| {
             b.reclaimable_bytes
@@ -453,8 +766,98 @@ pub fn list(
                 .then(a.id.cmp(&b.id))
         }),
     }
-    out.rows = rows;
-    Ok(out)
+}
+
+/// What [`LoadedGroups`] depends on, cheap to read (one query of counts and id sums, no joins): the groups,
+/// their keepers and reasons, their members and edges, the suggestions, the scan runs (a rescan can change a
+/// member's content, name or date) and the review store's dismissed suggestions (ADR-0133). The same key means the
+/// same loaded groups.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct GroupsKey {
+    groups: [i64; 5],
+    members: [i64; 5],
+    suggestions: [i64; 2],
+    runs: [i64; 2],
+    dismissed: (usize, Option<i64>),
+}
+
+pub fn groups_key(svc: &ScanService, store: &ReviewStore) -> Result<GroupsKey> {
+    let mut key = svc.engine().catalog().read().with(|c| {
+        Ok(c.query_row(
+            "SELECT
+                (SELECT count(*) FROM dup_group), (SELECT coalesce(sum(id), 0) FROM dup_group),
+                (SELECT coalesce(sum(keeper_file_id), 0) FROM dup_group),
+                (SELECT coalesce(sum(length(reasons)), 0) FROM dup_group),
+                (SELECT coalesce(sum(reclaimable_bytes), 0) FROM dup_group),
+                count(*), coalesce(sum(file_id), 0), coalesce(sum(group_id), 0),
+                coalesce(sum(rank * 7 + edge_kind), 0), coalesce(sum(in_keeper_set * file_id), 0),
+                (SELECT count(*) FROM dup_suggestion), (SELECT coalesce(sum(file_a * 3 + file_b), 0) FROM dup_suggestion),
+                (SELECT coalesce(max(id), 0) FROM scan_run),
+                (SELECT count(*) FROM scan_run WHERE ended_at IS NOT NULL)
+             FROM dup_member",
+            [],
+            |r| {
+                let g = |i| r.get::<_, i64>(i);
+                Ok(GroupsKey {
+                    groups: [g(0)?, g(1)?, g(2)?, g(3)?, g(4)?],
+                    members: [g(5)?, g(6)?, g(7)?, g(8)?, g(9)?],
+                    suggestions: [g(10)?, g(11)?],
+                    runs: [g(12)?, g(13)?],
+                    dismissed: (0, None),
+                })
+            },
+        )?)
+    })?;
+    key.dismissed = store.read(|s| (s.dismissed.len(), s.dismissed.values().copied().max()));
+    Ok(key)
+}
+
+/// The last [`LoadedGroups`] and its [`GroupsKey`]: a reload after a review mark, a filter change or a new AI
+/// insight re-filters the loaded groups instead of reading the catalog again (ADR-0133). The app keeps one per
+/// catalog; the CLI lists once and needs none.
+#[derive(Debug, Default)]
+pub struct ReviewCache {
+    last: std::sync::Mutex<Option<(GroupsKey, std::sync::Arc<LoadedGroups>)>>,
+}
+
+impl ReviewCache {
+    pub fn new() -> ReviewCache {
+        ReviewCache::default()
+    }
+
+    /// The loaded groups, read again only when the key changed.
+    pub fn groups(
+        &self,
+        svc: &ScanService,
+        store: &ReviewStore,
+    ) -> Result<std::sync::Arc<LoadedGroups>> {
+        let key = groups_key(svc, store)?;
+        if let Some((k, g)) = &*self.last.lock().unwrap_or_else(|e| e.into_inner())
+            && *k == key
+        {
+            return Ok(g.clone());
+        }
+        let loaded = std::sync::Arc::new(LoadedGroups::load(svc, store)?);
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, loaded.clone()));
+        Ok(loaded)
+    }
+
+    /// [`list_with`] over the cached groups.
+    pub fn list(
+        &self,
+        svc: &ScanService,
+        store: &ReviewStore,
+        filter: ReviewFilter,
+        sort: ReviewSort,
+        matcher: Option<&dyn GroupMatcher>,
+    ) -> Result<ReviewList> {
+        Ok(self.groups(svc, store)?.list(store, filter, sort, matcher))
+    }
+
+    /// [`progress`] over the cached groups.
+    pub fn progress(&self, svc: &ScanService, store: &ReviewStore) -> Result<ReviewProgress> {
+        Ok(self.groups(svc, store)?.progress(store))
+    }
 }
 
 fn digest_of_or_read(r: &Readers, map: &DigestOf, f: FileId) -> Option<[u8; 32]> {
@@ -720,19 +1123,7 @@ pub struct SuggestionCard {
 impl SuggestionCard {
     /// "5 s apart", "same second", "2 min apart".
     pub fn delta_label(&self) -> Option<String> {
-        let d = self.time_delta_ms?;
-        let s = d / 1000;
-        Some(if d == 0 {
-            "same instant".into()
-        } else if s == 0 {
-            format!("{d} ms apart")
-        } else if s < 120 {
-            format!("{s} s apart")
-        } else if s < 7_200 {
-            format!("{} min apart", s / 60)
-        } else {
-            format!("{} h apart", s / 3_600)
-        })
+        self.time_delta_ms.map(crate::groups::delta_text)
     }
 }
 

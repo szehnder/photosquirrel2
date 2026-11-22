@@ -336,7 +336,7 @@ impl FilterBar {
             },
             sort: self.sort,
             stacks: !self.stacks_off,
-            insight: self.insight.clone(),
+            insight: self.insight,
             dispositions: self.dispositions.clone(),
         }
     }

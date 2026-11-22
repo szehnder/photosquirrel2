@@ -172,7 +172,9 @@ PhotoSquirrel behave as if no decoder were found.
 
 1. Open PhotoSquirrel and add your sources: folders, drives, backups, network shares.
 2. Scan. You can browse the library while it runs, and pause or cancel at any time.
-3. Look through **Duplicates**: accept the keepers or pick your own.
+3. Look through **Duplicates**: accept the keepers or pick your own. The card at the top and the sidebar count show
+   how many groups are left. With AI insights, the **AI insight** menu narrows the list to what you care about
+   (people, children, pets, a category), and AI Review's **Review duplicates of these** opens that list directly.
 4. Open **Export**, choose an empty library folder and the app you will import into, review the plan and copy.
 5. Check **Reports**, then import the library folder into Apple Photos, Google Photos or Lightroom.
 
@@ -206,6 +208,8 @@ to any command for machine-readable output.
 photosquirrel-cli sources add /Volumes/Backup         # add a source (instant, read-only; not scanned yet)
 photosquirrel-cli scan                                # scan; Ctrl-C cancels, `scan --resume` continues
 photosquirrel-cli groups list                         # duplicate groups and the space they take
+photosquirrel-cli groups list --pets --unreviewed     # only groups the AI saw pets in, not reviewed yet
+photosquirrel-cli groups suggestions                  # similar shots, each with why it was kept apart
 photosquirrel-cli groups show 42                      # members of a group and why the keeper won
 photosquirrel-cli export dry-run --library ~/Pictures/Library     # what would be copied where; writes nothing
 photosquirrel-cli export run --library ~/Pictures/Library --yes   # copy, verify, rename

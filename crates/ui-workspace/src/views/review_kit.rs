@@ -436,12 +436,17 @@ pub fn megapixels(w: Option<u32>, h: Option<u32>) -> Option<String> {
 
 /// A thin progress bar (fraction 0..1).
 pub fn progress_bar(fraction: f32, cx: &App) -> Div {
+    progress_bar_on(fraction, ui_theme::colors(cx).raised, cx)
+}
+
+/// [`progress_bar`] with its own track colour (on a tinted surface, where `raised` hardly shows).
+pub fn progress_bar_on(fraction: f32, track: Hsla, cx: &App) -> Div {
     let colors = ui_theme::colors(cx);
     div()
         .w_full()
         .h(Tokens::size(4.0))
         .rounded(Tokens::RADIUS_SM)
-        .bg(colors.raised)
+        .bg(track)
         .child(
             div()
                 .h_full()

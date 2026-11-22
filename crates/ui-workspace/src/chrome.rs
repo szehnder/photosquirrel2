@@ -176,6 +176,46 @@ pub(crate) fn title_bar(
         .into_any_element()
 }
 
+/// What a navigator item shows on its right.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum NavBadge {
+    Count(u64),
+    /// Every duplicate group is reviewed.
+    Done,
+}
+
+/// The Duplicates item counts groups left to review (ADR-0042 review state), falling back to the group total
+/// until the review progress has loaded.
+fn nav_badge(
+    view: ViewId,
+    summary: &Loadable<CatalogSummary>,
+    review: Option<ps_service::review::ReviewProgress>,
+) -> Option<NavBadge> {
+    if view == ViewId::Duplicates
+        && let Some(p) = review
+    {
+        return match (p.groups, p.left()) {
+            (0, _) => None,
+            (_, 0) => Some(NavBadge::Done),
+            (_, n) => Some(NavBadge::Count(n)),
+        };
+    }
+    nav_count(view, summary).map(NavBadge::Count)
+}
+
+/// The Duplicates item's tooltip: "28 left to review of 40 groups".
+pub fn duplicates_nav_tooltip(p: ps_service::review::ReviewProgress) -> String {
+    if p.left() == 0 {
+        format!("All {} groups reviewed", format_count(p.groups))
+    } else {
+        format!(
+            "{} left to review of {} groups",
+            format_count(p.left()),
+            format_count(p.groups)
+        )
+    }
+}
+
 fn nav_count(view: ViewId, summary: &Loadable<CatalogSummary>) -> Option<u64> {
     let s = summary.ready()?;
     let n = match view {
@@ -210,7 +250,13 @@ fn navigator(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyElement {
             );
         }
         let is_active = view == active;
-        let count = nav_count(view, &summary);
+        let review = crate::views::duplicates::DuplicatesProgress::get(cx);
+        let badge = nav_badge(view, &summary, review);
+        let tip = (view == ViewId::Duplicates)
+            .then_some(review)
+            .flatten()
+            .filter(|p| p.groups > 0)
+            .map(duplicates_nav_tooltip);
         list =
             list.child(
                 h_flex()
@@ -259,11 +305,35 @@ fn navigator(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyElement {
                         },
                     ))
                     .child(div().flex_1().min_w_0().child(view.label()))
-                    .children(count.map(|n| {
-                        div()
+                    .children(badge.map(|b| {
+                        let aria = match (&tip, &b) {
+                            (Some(t), _) => t.clone(),
+                            (None, NavBadge::Count(n)) => format_count(*n),
+                            (None, NavBadge::Done) => "done".into(),
+                        };
+                        let el = div()
+                            .id(SharedString::from(format!("nav-{}-count", view.key())))
+                            .test_support()
+                            .aria_label(SharedString::from(aria))
                             .text_size(Tokens::text_xs())
-                            .text_color(colors.text_faint)
-                            .child(format_count(n))
+                            .text_color(colors.text_faint);
+                        let el = match b {
+                            NavBadge::Count(n) => el.child(format_count(n)),
+                            NavBadge::Done => el.child(
+                                Icon::new(IconName::Check)
+                                    .size(Tokens::icon_sm())
+                                    .text_color(colors.success),
+                            ),
+                        };
+                        match tip.clone() {
+                            Some(t) => el
+                                .tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(t.clone())
+                                        .build(window, cx)
+                                })
+                                .into_any_element(),
+                            None => el.into_any_element(),
+                        }
                     })),
             );
     }

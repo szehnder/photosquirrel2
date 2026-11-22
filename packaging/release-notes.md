@@ -42,6 +42,22 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
+### What's new in 0.5.0
+
+- **See how much review is left.** The Duplicates list opens with a card showing the groups left to review, and the
+  sidebar counts down as you mark groups reviewed, with a check mark when you are done.
+- **Review only what you care about.** If you use AI insights, the Duplicates list has the same AI filters as the
+  gallery: people, children, pets, a category, or groups not described yet. The progress card adds "Matching: 4 of
+  12 reviewed", and **R** moves to the next matching group. In AI Review, **Review duplicates of these** opens the
+  duplicates of what you filtered there. The AI still never decides what is kept. `photosquirrel-cli groups list`
+  takes the same filters.
+- **Similar shots explain themselves.** The first time you open Similar shots, a short note says how they are found,
+  with the actual limits, and which shots are not listed. Every pair says why it was kept apart in plain words, for
+  example "Look the same, but taken 41 s apart".
+- **Faster on big libraries.** After you mark a group reviewed, change a filter, or a new AI description arrives, the
+  Duplicates list refreshes in about 50 ms instead of up to a second on a 1M-file catalog.
+- **Fixed:** the "In this group" lines in "Why this copy" no longer run past the panel's edge.
+
 ### What's new in 0.4.0
 
 - **PhotoSquirrel keeps itself up to date, if you want it to.** It asks once whether to check for updates;

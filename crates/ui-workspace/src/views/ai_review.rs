@@ -51,20 +51,26 @@ actions!(
         PauseQueue,
         /// Test the provider connection (lists models; sends no photo).
         TestConnection,
+        /// Open the Duplicates view filtered like this view (ai-filtered-duplicates).
+        ReviewDuplicatesOfThese,
     ]
 );
 
 pub fn register(cx: &mut App) {
-    for meta in [
-        CommandMeta::new("AI", "Start or Resume AI Queue", StartQueue)
-            .keywords(&["llm", "describe", "run"]),
-        CommandMeta::new("AI", "Pause AI Queue", PauseQueue).keywords(&["stop", "llm"]),
-        CommandMeta::new("AI", "Test AI Provider Connection", TestConnection).keywords(&[
-            "lm studio",
-            "model",
-            "check",
-        ]),
-    ] {
+    for meta in
+        [
+            CommandMeta::new("AI", "Start or Resume AI Queue", StartQueue)
+                .keywords(&["llm", "describe", "run"]),
+            CommandMeta::new("AI", "Pause AI Queue", PauseQueue).keywords(&["stop", "llm"]),
+            CommandMeta::new("AI", "Test AI Provider Connection", TestConnection).keywords(&[
+                "lm studio",
+                "model",
+                "check",
+            ]),
+            CommandMeta::new("AI", "Review Duplicates of These", ReviewDuplicatesOfThese)
+                .keywords(&["duplicates", "groups", "filter"]),
+        ]
+    {
         CommandRegistry::register(cx, meta);
     }
     ViewRegistry::register(cx, ViewId::AiReview, |_, window, cx| {
@@ -343,6 +349,21 @@ impl AiReviewView {
             self.notice = None;
             self.sync_editors(window, cx);
             cx.notify();
+        }
+    }
+
+    /// "Review duplicates of these": the Duplicates view with this view's category and contains filters (the
+    /// criteria both share; "Needs a decision" has no meaning for groups).
+    pub fn review_duplicates(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        let f = &self.filter;
+        let criteria = ps_model::library::InsightCriteria {
+            category: f.category,
+            children: f.children,
+            pets: f.pets,
+            people: f.people,
+        };
+        if let Some(shell) = crate::Shell::for_window(window, cx) {
+            shell.update(cx, |s, cx| s.open_duplicates_filtered(criteria, window, cx));
         }
     }
 
@@ -1073,6 +1094,15 @@ impl AiReviewView {
                     v.set_filter(f, cx);
                 },
             ))
+            .child(action_button(
+                "ai-review-duplicates",
+                "Review duplicates of these",
+                Some(IconName::Layers),
+                None,
+                Tone::Normal,
+                cx,
+                |this, window, cx| this.review_duplicates(window, cx),
+            ))
             .child(div().flex_1())
             .when(open > 0, |e| {
                 e.child(
@@ -1609,6 +1639,11 @@ impl Render for AiReviewView {
             .on_action(cx.listener(|this, _: &StartQueue, _, cx| this.start_queue(cx)))
             .on_action(cx.listener(|this, _: &PauseQueue, _, cx| this.pause_queue(cx)))
             .on_action(cx.listener(|this, _: &TestConnection, _, cx| this.test_connection(cx)))
+            .on_action(
+                cx.listener(|this, _: &ReviewDuplicatesOfThese, window, cx| {
+                    this.review_duplicates(window, cx)
+                }),
+            )
             .child(header)
             .child(
                 h_flex()

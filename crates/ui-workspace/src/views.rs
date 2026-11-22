@@ -193,6 +193,8 @@ pub struct ViewContext {
     pub library_mode: LibraryMode,
     /// The Excluded view's remembered chips, sort and mode.
     pub excluded: crate::persist::ExcludedViewState,
+    /// The Duplicates list's remembered filter and sort.
+    pub duplicates: crate::persist::DuplicatesViewState,
     /// The shell's default inspector (a custom inspector shows it when it has nothing selected).
     pub default_inspector: Entity<crate::inspector::InspectorView>,
 }

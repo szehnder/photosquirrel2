@@ -201,6 +201,11 @@ Programmatic edits followed by `run()` in the same update see the old document, 
 A `flex_1` text child without `min_w_0()` will not shrink, so it pushes siblings (buttons) beyond the
 panel, where clicks land on whatever is drawn there.
 
+A plain text `div` beside a fixed-width column (a right-aligned count, an icon) has the same problem even
+without `flex_1`: it keeps its unwrapped width and runs past the panel's border. Give the text
+`flex_1().min_w_0()` so it wraps, and the row `items_start()` so the column stays level with the first line
+(the Duplicates view's "In this group" lines, `review-progress-anchor`).
+
 ## Headless tests: what you can and cannot inspect
 
 `TestWindowExt` (`find`, `try_find`, `within`, `click`, `input`, ...) sees element ids, not rendered

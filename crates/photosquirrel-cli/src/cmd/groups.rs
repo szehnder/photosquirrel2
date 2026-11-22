@@ -14,15 +14,70 @@ struct ListOut {
     totals: GroupTotals,
     offset: u64,
     groups: Vec<GroupListItem>,
+    /// With a filter: the groups its AI part keeps (every group without one), and how many of them are reviewed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matching: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matching_reviewed: Option<u64>,
 }
 
-pub fn list(ctx: &Ctx, order: GroupOrder, offset: u64, limit: u64) -> Result<()> {
+pub fn list(
+    ctx: &Ctx,
+    order: GroupOrder,
+    offset: u64,
+    limit: u64,
+    filter: &crate::GroupsFilterArgs,
+) -> Result<()> {
+    use ps_service::review::{
+        self, InsightExtra, LookupMatcher, ReviewFilter, ReviewSort, ReviewStore,
+    };
     let svc = ctx.reader()?;
     let g = svc.groups();
-    let out = ListOut {
-        totals: g.totals()?,
-        offset,
-        groups: g.list(order, offset, limit)?,
+    let criteria = ps_model::library::InsightCriteria {
+        category: filter.category,
+        children: filter.children,
+        pets: filter.pets,
+        people: filter.people,
+    };
+    let extra = InsightExtra {
+        pet_kind: filter.pet_kind.clone(),
+        people_min: filter.people_min,
+        people_max: filter.people_max,
+    };
+    let rf = ReviewFilter {
+        insight: (!criteria.is_empty() || !extra.is_empty()).then_some(criteria),
+        undescribed: filter.undescribed,
+        unreviewed: filter.unreviewed,
+        ..ReviewFilter::default()
+    };
+    let out = if rf.is_empty() {
+        ListOut {
+            totals: g.totals()?,
+            offset,
+            groups: g.list(order, offset, limit)?,
+            matching: None,
+            matching_reviewed: None,
+        }
+    } else {
+        let store = ReviewStore::for_service(&svc);
+        let istore = ps_service::insights::InsightStore::for_catalog(svc.engine().catalog());
+        let matcher = LookupMatcher::new(&svc, &istore, criteria, extra)?;
+        let listed = review::list_with(&svc, &store, rf, ReviewSort::Reclaimable, Some(&matcher))?;
+        let keep: std::collections::HashSet<FileId> = listed.rows.iter().map(|r| r.id).collect();
+        let groups = g
+            .list(order, 0, u64::MAX)?
+            .into_iter()
+            .filter(|x| keep.contains(&x.id))
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        ListOut {
+            totals: g.totals()?,
+            offset,
+            groups,
+            matching: Some(listed.matching),
+            matching_reviewed: Some(listed.matching_reviewed),
+        }
     };
     emit(ctx.json, "groups list", &out, |o| {
         println!(
@@ -32,6 +87,9 @@ pub fn list(ctx: &Ctx, order: GroupOrder, offset: u64, limit: u64) -> Result<()>
             bytes(o.totals.reclaimable_bytes),
             o.totals.suggestions
         );
+        if let (Some(m), Some(r)) = (o.matching, o.matching_reviewed) {
+            println!("{m} groups match the filter, {r} of them reviewed");
+        }
         let rows: Vec<Vec<String>> = o
             .groups
             .iter()
@@ -133,17 +191,43 @@ pub fn merge(ctx: &Ctx, a: i64, b: i64) -> Result<()> {
     emit(ctx.json, "groups merge", &d, print_detail)
 }
 
+/// A suggestion with its plain-words reason (similar-shot-explained): the same sentences the app shows.
+#[derive(Serialize)]
+struct SuggestionOut {
+    #[serde(flatten)]
+    info: ps_service::groups::SuggestionInfo,
+    reason_kind: Option<ps_service::groups::ReasonKind>,
+    explanation: String,
+    explanation_detail: String,
+}
+
+impl From<ps_service::groups::SuggestionInfo> for SuggestionOut {
+    fn from(info: ps_service::groups::SuggestionInfo) -> Self {
+        SuggestionOut {
+            reason_kind: info.reason_kind(),
+            explanation: info.explanation(),
+            explanation_detail: info.explanation_detail(),
+            info,
+        }
+    }
+}
+
 pub fn suggestions(ctx: &Ctx, file: Option<i64>, limit: u64) -> Result<()> {
     let svc = ctx.reader()?;
-    let s = svc.groups().suggestions(file.map(FileId), limit)?;
+    let s: Vec<SuggestionOut> = svc
+        .groups()
+        .suggestions(file.map(FileId), limit)?
+        .into_iter()
+        .map(SuggestionOut::from)
+        .collect();
     emit(ctx.json, "groups suggestions", &s, |s| {
         if s.is_empty() {
             println!("no similar-shot suggestions");
         }
         for x in s {
             println!(
-                "files {} and {} (pHash {}, dHash {}): {}",
-                x.file_a, x.file_b, x.phash_distance, x.dhash_distance, x.reason
+                "files {} and {}: {}\n  {}",
+                x.info.file_a, x.info.file_b, x.explanation, x.explanation_detail
             );
         }
     })
@@ -158,10 +242,25 @@ struct ExplainOut {
 
 pub fn explain(ctx: &Ctx, a: i64, b: i64) -> Result<()> {
     let svc = ctx.reader()?;
+    let mut lines = Vec::new();
+    // A stored similar-shot suggestion: its plain-words reason first.
+    if let Some(s) = svc
+        .groups()
+        .suggestions(Some(FileId(a)), u64::MAX / 2)?
+        .into_iter()
+        .find(|s| {
+            (s.file_a, s.file_b) == (FileId(a), FileId(b))
+                || (s.file_a, s.file_b) == (FileId(b), FileId(a))
+        })
+    {
+        lines.push(s.explanation());
+        lines.push(s.explanation_detail());
+    }
+    lines.extend(svc.groups().explain_pair(FileId(a), FileId(b))?);
     let out = ExplainOut {
         a: FileId(a),
         b: FileId(b),
-        lines: svc.groups().explain_pair(FileId(a), FileId(b))?,
+        lines,
     };
     emit(ctx.json, "groups explain", &out, |o| {
         println!("files {} and {}:", o.a, o.b);

@@ -82,6 +82,19 @@ pub struct UiState {
     /// The Excluded view's chips, sort and mode (ADR-0102). The file lives in the catalog's data directory, so
     /// this is remembered per catalog.
     pub excluded: ExcludedViewState,
+    /// The Duplicates list's filter (with its AI part) and sort (ai-filtered-duplicates), per catalog like
+    /// `excluded`.
+    pub duplicates: DuplicatesViewState,
+}
+
+/// The Duplicates list's remembered filter and sort.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DuplicatesViewState {
+    pub filter: ps_service::review::ReviewFilter,
+    pub sort: ps_service::review::ReviewSort,
+    /// "How similar shots are found" was dismissed (similar-shot-explained); an older file reads `false`.
+    pub similar_shots_explained: bool,
 }
 
 /// How the Excluded view shows its files.
@@ -129,6 +142,7 @@ impl Default for UiState {
             active_view: ViewId::Library,
             library_mode: LibraryMode::Grid,
             excluded: ExcludedViewState::default(),
+            duplicates: DuplicatesViewState::default(),
         }
     }
 }

@@ -101,6 +101,126 @@ pub struct SuggestionInfo {
     pub phash_distance: u8,
     pub dhash_distance: u8,
     pub reason: String,
+    /// What showed the two files are different shots (`None` for a reason stored in an older form).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contradiction: Option<ps_dedup::edges::Contradiction>,
+}
+
+/// What a similar-shot suggestion's metadata contradicted (re-exported for the UI and CLI, which do not link
+/// the dedup engine).
+pub use ps_dedup::edges::Contradiction;
+
+/// What showed two look-alike files are different shots, for the plain-words reasons (similar-shot-explained).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasonKind {
+    CaptureTime,
+    SubSecond,
+    CameraSerial,
+    CameraModel,
+    TwoCameraOriginals,
+    Frame,
+}
+
+impl ReasonKind {
+    /// Exhaustive, so a new kind of contradiction cannot ship without its wording.
+    pub fn of(c: &ps_dedup::edges::Contradiction) -> ReasonKind {
+        use ps_dedup::edges::Contradiction as C;
+        match c {
+            C::CaptureSecond { .. } => ReasonKind::CaptureTime,
+            C::SubSecond { .. } => ReasonKind::SubSecond,
+            C::CameraSerial { .. } => ReasonKind::CameraSerial,
+            C::CameraModel { .. } => ReasonKind::CameraModel,
+            C::TwoCameraOriginals { .. } => ReasonKind::TwoCameraOriginals,
+            C::FrameId { .. } => ReasonKind::Frame,
+        }
+    }
+}
+
+/// The look-alike limits the grouping applies to derivative edges (ADR-0013), for the explainer: pHash and
+/// dHash distances and the relative aspect-ratio difference.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SimilarShotLimits {
+    pub phash: u32,
+    pub dhash: u32,
+    /// As a percentage (2.0 for 2%).
+    pub aspect_percent: f64,
+}
+
+pub fn similar_shot_limits() -> SimilarShotLimits {
+    SimilarShotLimits {
+        phash: ps_dedup::edges::MAX_PHASH_DISTANCE,
+        dhash: ps_dedup::edges::MAX_DHASH_DISTANCE,
+        aspect_percent: ps_dedup::edges::MAX_ASPECT_DIFF * 100.0,
+    }
+}
+
+/// "5 s apart", "120 ms apart", "3 min apart", "same instant".
+pub fn delta_text(ms: i64) -> String {
+    let s = ms / 1000;
+    if ms == 0 {
+        "same instant".into()
+    } else if s == 0 {
+        format!("{ms} ms apart")
+    } else if s < 120 {
+        format!("{s} s apart")
+    } else if s < 7_200 {
+        format!("{} min apart", s / 60)
+    } else {
+        format!("{} h apart", s / 3_600)
+    }
+}
+
+impl SuggestionInfo {
+    pub fn reason_kind(&self) -> Option<ReasonKind> {
+        self.contradiction.as_ref().map(ReasonKind::of)
+    }
+
+    /// One line in plain words: what shows the two files are different shots.
+    pub fn explanation(&self) -> String {
+        use ps_dedup::edges::Contradiction as C;
+        match &self.contradiction {
+            Some(C::CaptureSecond { a, b }) => {
+                format!("Look the same, but taken {}", delta_text(a.diff_millis(b)))
+            }
+            Some(C::SubSecond { a_millis, b_millis }) => format!(
+                "Look the same, but {} in one burst",
+                delta_text(i64::from(a_millis.abs_diff(*b_millis)))
+            ),
+            Some(C::CameraSerial { a, b }) => {
+                format!("Look the same, but taken with different cameras ({a} / {b})")
+            }
+            Some(C::CameraModel { a, b }) => {
+                format!("Look the same, but taken with different cameras ({a} / {b})")
+            }
+            Some(C::TwoCameraOriginals { model, .. }) => {
+                format!("Two camera originals of the same size ({model})")
+            }
+            Some(C::FrameId { a, b }) => format!("Look the same, but frames {a} and {b}"),
+            None => format!("Look the same, but {}", self.reason),
+        }
+    }
+
+    /// The tooltip: both distances against their limits, and why such pairs stay apart.
+    pub fn explanation_detail(&self) -> String {
+        let l = similar_shot_limits();
+        let why = match self.reason_kind() {
+            Some(ReasonKind::CaptureTime) => "a different capture time means a different shot",
+            Some(ReasonKind::SubSecond) => {
+                "a different sub-second time means a different burst frame"
+            }
+            Some(ReasonKind::CameraSerial | ReasonKind::CameraModel) => {
+                "a different camera means a different shot"
+            }
+            Some(ReasonKind::TwoCameraOriginals) => "a camera writes one original per shot",
+            Some(ReasonKind::Frame) => "each frame is its own shot",
+            None => "their details show two different shots",
+        };
+        format!(
+            "pHash {} of {}, dHash {} of {}; {why}, so they are kept separate",
+            self.phash_distance, l.phash, self.dhash_distance, l.dhash
+        )
+    }
 }
 
 /// A separation constraint between two members (ADR-0033).
@@ -197,6 +317,10 @@ fn join_reason(edge: MemberEdge, via: Option<FileId>, p: Option<u8>, d: Option<u
         ),
         MemberEdge::UserMerge => format!("merged by you{via}"),
     }
+}
+
+fn suggestion_contradiction(s: &SuggestionRow) -> Option<ps_dedup::edges::Contradiction> {
+    serde_json::from_value(s.reason.get("reason")?.clone()).ok()
 }
 
 fn suggestion_text(s: &SuggestionRow) -> String {
@@ -309,6 +433,7 @@ impl<'a> Groups<'a> {
                         phash_distance: s.phash_distance,
                         dhash_distance: s.dhash_distance,
                         reason: suggestion_text(&s),
+                        contradiction: suggestion_contradiction(&s),
                     });
                 }
             }
@@ -344,6 +469,7 @@ impl<'a> Groups<'a> {
                 phash_distance: s.phash_distance,
                 dhash_distance: s.dhash_distance,
                 reason: suggestion_text(&s),
+                contradiction: suggestion_contradiction(&s),
             });
         }
         Ok(out)

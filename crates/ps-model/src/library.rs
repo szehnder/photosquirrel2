@@ -28,7 +28,10 @@ impl ThumbKey {
 /// AI insight criteria of a gallery list (spec `ai-review`, "Insight filters"), applied to the *effective*
 /// insight (the user's corrections win). Every set field must hold; files without an insight never match a
 /// non-empty criterion.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
 pub struct InsightCriteria {
     /// Main or secondary category.
     pub category: Option<SceneCategory>,
