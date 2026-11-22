@@ -49,13 +49,26 @@ pub fn seek_for(duration_ms: Option<u64>) -> Duration {
     }
 }
 
-/// Grab one frame at `seek`, scaled to 384 px on the long edge, as JPEG bytes on stdout. The source is only read
-/// by the tool; nothing is written next to it. The child is killed after `timeout`, or as soon as `stop` returns
-/// true (checked every 10 ms).
+/// The `-vf` scale of a frame of `long_edge` px on its long edge. Thumbnails (384 px and less) are scaled to
+/// exactly that edge, as they always were; larger frames (the loupe's preview) are never upscaled. Both keep even
+/// dimensions.
+pub fn scale_filter(long_edge: u32) -> String {
+    let e = long_edge;
+    if e <= crate::thumb::THUMB_LONG_EDGE {
+        format!("scale='if(gt(iw,ih),{e},-2)':'if(gt(iw,ih),-2,{e})'")
+    } else {
+        format!("scale='if(gt(iw,ih),min({e},iw),-2)':'if(gt(iw,ih),-2,min({e},ih))'")
+    }
+}
+
+/// Grab one frame at `seek`, scaled to `long_edge` px on the long edge ([`scale_filter`]), as JPEG bytes on
+/// stdout. The source is only read by the tool; nothing is written next to it. The child is killed after
+/// `timeout`, or as soon as `stop` returns true (checked every 10 ms).
 pub fn poster_frame(
     tool: &Path,
     source: &Path,
     seek: Duration,
+    long_edge: u32,
     timeout: Duration,
     stop: &dyn Fn() -> bool,
 ) -> Result<Vec<u8>, PosterError> {
@@ -64,6 +77,13 @@ pub fn poster_frame(
     }
     let threads = TOOL_THREADS.to_string();
     let seek = format!("{:.3}", seek.as_secs_f64());
+    let scale = scale_filter(long_edge);
+    // A large frame gets a high JPEG quality; the thumbnail's bytes stay as they were.
+    let quality: &[&str] = if long_edge > crate::thumb::THUMB_LONG_EDGE {
+        &["-q:v", "2"]
+    } else {
+        &[]
+    };
     let mut child = Command::new(tool)
         .args([
             "-nostdin",
@@ -77,19 +97,9 @@ pub fn poster_frame(
             "-i",
         ])
         .arg(source)
-        .args([
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale='if(gt(iw,ih),384,-2)':'if(gt(iw,ih),-2,384)'",
-            "-threads",
-            &threads,
-            "-f",
-            "image2",
-            "-c:v",
-            "mjpeg",
-            "pipe:1",
-        ])
+        .args(["-frames:v", "1", "-vf", &scale, "-threads", &threads])
+        .args(quality)
+        .args(["-f", "image2", "-c:v", "mjpeg", "pipe:1"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

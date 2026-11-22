@@ -300,6 +300,7 @@ fn hanging_poster_tool_is_killed() {
         &tool,
         Path::new("/x.mov"),
         ps_media::poster::DEFAULT_SEEK,
+        384,
         std::time::Duration::from_millis(300),
         &|| false,
     );
@@ -488,6 +489,7 @@ fn a_stopped_poster_call_kills_the_tool() {
         &tool,
         Path::new("/x.mov"),
         ps_media::poster::DEFAULT_SEEK,
+        384,
         ps_media::poster::DEFAULT_TIMEOUT,
         &stop,
     );
@@ -929,4 +931,52 @@ mod colour_spaces {
             assert_eq!(p.bytes_examined, n);
         }
     }
+}
+
+/// A video's large preview with the real ffmpeg (skipped without one): a 1920x1080 clip keeps its size at the
+/// 2048 px edge, and a 640x360 clip is not upscaled.
+#[test]
+fn real_ffmpeg_large_preview_keeps_the_size_and_never_upscales() {
+    let Some(ffmpeg) = ps_media::poster::ffmpeg_on_path() else {
+        eprintln!("skipped: no ffmpeg on PATH");
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let make = |name: &str, size: &str| {
+        let out = dir.path().join(name);
+        let ok = std::process::Command::new(&ffmpeg)
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg(format!("testsrc=duration=2:size={size}:rate=10"))
+            .args(["-c:v", "mpeg4", "-y"])
+            .arg(&out)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(out)
+    };
+    let (Some(hd), Some(small)) = (make("hd.mov", "1920x1080"), make("small.mov", "640x360"))
+    else {
+        eprintln!("skipped: this ffmpeg cannot make the test clips");
+        return;
+    };
+    let timeout = ps_media::poster::DEFAULT_TIMEOUT;
+    // The loupe's duration comes from the container's `moov`, which ffmpeg writes after the media data.
+    assert_eq!(ps_media::video::duration_of_file(&hd), Some(2_000));
+    for (clip, want) in [(&hd, (1920, 1080)), (&small, (640, 360))] {
+        let jpeg = thumb::poster_preview(&ffmpeg, clip, Some(2_000), timeout, &|| false)
+            .expect("preview frame");
+        let (img, _) = decode_jpeg(&jpeg, 4096).expect("decode");
+        assert_eq!((img.width, img.height), want, "{}", clip.display());
+    }
+    // The thumbnail of the same clip is still 384 px.
+    let t =
+        thumb::poster_thumbnail(&ffmpeg, &small, Some(2_000), timeout, &|| false).expect("thumb");
+    assert_eq!((t.width, t.height), (384, 216));
 }

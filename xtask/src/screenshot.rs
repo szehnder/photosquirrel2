@@ -7,6 +7,7 @@
 //! themes and writes `<target dir>/screenshots/gallery/index.html` for review (ADR-0028). The target dir
 //! follows `CARGO_TARGET_DIR`, as for `bench`.
 //! Surfaces marked `seeded` start from a demo library (`photosquirrel-cli demo`: generated corpus, scanned).
+//! `XTASK_SURFACES=loupe-video,library` captures only the surfaces named.
 //!
 //! Capture backends, tried in order:
 //! - KDE Plasma (Wayland or X11): `spectacle -b -n -a -o FILE` (the active window; the new window takes
@@ -86,6 +87,14 @@ const SURFACES: &[Surface] = &[
             "duplicates::ToggleSuggestions",
         ],
         ui_state: None,
+    },
+    Surface {
+        name: "loupe-video",
+        caption: "A video in the loupe: its large poster frame, play mark, duration and Open in player",
+        // Seeded by `seed_video` instead (a clip made by this machine's ffmpeg).
+        seeded: false,
+        args: &[],
+        ui_state: Some(r#"{"version": 1, "active_view": "library", "library_mode": "loupe"}"#),
     },
     Surface {
         name: "ai-review",
@@ -224,15 +233,65 @@ fn seed_data_dir(root: &Path, dir: &Path, seeded: bool) -> Result<()> {
     Ok(())
 }
 
+/// A library of one 12 s clip made by ffmpeg (`testsrc2`, 1920x1080), added and scanned, so the loupe has a real
+/// poster frame to show (video-previews-and-play). Needs ffmpeg on `PATH`.
+fn seed_video(root: &Path, dir: &Path) -> Result<()> {
+    let clips = dir.join("video-source");
+    std::fs::create_dir_all(&clips)?;
+    let clip = clips.join("IMG_5000.MOV");
+    crate::run(
+        "make a clip with ffmpeg",
+        Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+            ])
+            .arg("testsrc2=duration=12:size=1920x1080:rate=24")
+            .args(["-c:v", "mpeg4", "-q:v", "3", "-y"])
+            .arg(&clip),
+    )?;
+    let cli = release_dir(root).join("photosquirrel-cli");
+    crate::run(
+        "add the clip's folder",
+        Command::new(&cli)
+            .arg("--data-dir")
+            .arg(dir)
+            .args(["sources", "add"])
+            .arg(&clips),
+    )?;
+    crate::run(
+        "scan the clip",
+        Command::new(&cli).arg("--data-dir").arg(dir).arg("scan"),
+    )?;
+    Ok(())
+}
+
 fn gallery(root: &Path, bin: &Path, shots: &Path, delay: f32) -> Result<()> {
     let dir = shots.join("gallery");
     std::fs::create_dir_all(&dir)?;
     let mut rows = Vec::new();
+    let only: Option<Vec<String>> = std::env::var("XTASK_SURFACES")
+        .ok()
+        .map(|v| v.split(',').map(|s| s.trim().to_owned()).collect());
     for surface in SURFACES {
+        if only
+            .as_ref()
+            .is_some_and(|o| !o.iter().any(|n| n == surface.name))
+        {
+            continue;
+        }
         let mut shots_for = Vec::new();
         for theme in ["light", "dark"] {
             let data = dir.join(format!("data-{}-{theme}", surface.name));
             seed_data_dir(root, &data, surface.seeded)?;
+            if surface.name == "loupe-video" {
+                seed_video(root, &data)?;
+            }
             if let Some(state) = surface.ui_state {
                 std::fs::write(data.join("ui-state.json"), state)?;
             }

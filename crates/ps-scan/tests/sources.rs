@@ -520,3 +520,76 @@ fn scenario_sources_remove_keeps_files_on_disk() {
         "the tree on disk is unchanged"
     );
 }
+
+#[test]
+fn scenario_sources_source_added_before_the_fix_gains_its_identity() {
+    let _cores = shared();
+    let tmp = tempfile::tempdir().expect("tmp");
+    let root = small_drive(tmp.path(), "drive");
+    let mut e = env();
+    let id = e.add(&root);
+    let canonical = e.root(id);
+    let volume = ps_scan::source::volume_info(&canonical);
+    // Recorded as a btrfs source was before 0.5.1: no UUID and a hint that identifies nothing.
+    let dir = e.dir.clone();
+    e.close();
+    rusqlite::Connection::open(dir.join(ps_catalog::CATALOG_FILE))
+        .expect("catalog")
+        .execute(
+            "UPDATE source SET volume_uuid = NULL, device_hint = 'class=unknown;fs=?;dev=?' WHERE id = ?1",
+            [id.0],
+        )
+        .expect("forget the identity");
+    e.reopen(ps_scan::ScanOptions::default());
+    completed(&e.scan(&[id]));
+    let record = || {
+        e.readers()
+            .sources()
+            .expect("sources")
+            .into_iter()
+            .find(|r| r.id == id)
+            .expect("record")
+    };
+    let r = record();
+    assert_eq!(r.volume_uuid, volume.uuid, "{volume:?}");
+    let hint = r.device_hint.clone().expect("hint");
+    if let Some(fs) = &volume.fs_type {
+        assert!(hint.contains(&format!(";fs={fs};")), "{hint}");
+        assert_eq!(
+            ps_scan::source::VolumeInfo::class_from_hint(&hint),
+            Some(volume.class)
+        );
+    }
+    // A recorded UUID is never replaced, and a recorded hint is kept.
+    let w = e.s().catalog().writer();
+    w.submit(ps_catalog::Command::SetVolumeIdentity {
+        source: id,
+        volume_uuid: Some("another-drive".into()),
+        device_hint: Some("class=rotational;fs=ext4;dev=/dev/sdz1".into()),
+    })
+    .expect("submit");
+    w.flush().expect("flush");
+    let after = record();
+    if volume.uuid.is_some() {
+        assert_eq!(after.volume_uuid, volume.uuid);
+    } else {
+        // Nothing was recorded here (a volume without a UUID), so the first one found fills it.
+        assert_eq!(after.volume_uuid.as_deref(), Some("another-drive"));
+    }
+    if volume.fs_type.is_some() {
+        assert_eq!(after.device_hint, Some(hint));
+    }
+    // Another scan changes nothing but the hint's `ids=` part (a scan records whether the file ids are stable on a
+    // hint that does not say yet, as on a volume where nothing else could be identified).
+    completed(&e.scan(&[id]));
+    let without_ids = |r: ps_catalog::SourceRecord| ps_catalog::SourceRecord {
+        device_hint: r.device_hint.map(|h| {
+            h.split(';')
+                .filter(|p| !p.starts_with("ids="))
+                .collect::<Vec<_>>()
+                .join(";")
+        }),
+        ..r
+    };
+    assert_eq!(without_ids(record()), without_ids(after));
+}

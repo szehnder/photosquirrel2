@@ -795,13 +795,35 @@ impl Scanner {
                     status: SourceStatus::Online,
                 })?;
             }
+            let volume = source::volume_info(&root);
             let device = match &opts.device_class {
                 Some(f) => f(&root),
-                None => source::volume_info(&root).class,
+                None => volume.class,
             };
             // Whether the filesystem keeps file ids (ADR-0112), recorded when it differs from the stored hint.
             let ids = online.then(|| opts.fs.probe_ids(&root).ids);
-            if let (Some(ids), Some(hint)) = (ids, r.device_hint.as_deref())
+            // A source recorded without a volume identity (added on btrfs before 0.5.1) gains it now; a recorded
+            // UUID is never replaced.
+            let unidentified = r
+                .device_hint
+                .as_deref()
+                .is_none_or(|h| h.contains(";fs=?;"));
+            let new_uuid = volume.uuid.clone().filter(|_| r.volume_uuid.is_none());
+            let new_hint = (unidentified && volume.fs_type.is_some()).then(|| {
+                VolumeInfo {
+                    ids,
+                    ..volume.clone()
+                }
+                .hint()
+            });
+            if online && (new_uuid.is_some() || new_hint.is_some()) {
+                self.catalog.writer().submit(Command::SetVolumeIdentity {
+                    source: r.id,
+                    volume_uuid: new_uuid,
+                    device_hint: new_hint.clone(),
+                })?;
+            }
+            if let (Some(ids), Some(hint), None) = (ids, r.device_hint.as_deref(), &new_hint)
                 && VolumeInfo::ids_from_hint(hint) != Some(ids)
                 && let Some(device_hint) = VolumeInfo::hint_with_ids(hint, ids)
             {

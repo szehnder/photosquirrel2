@@ -137,3 +137,4 @@ One decision per file, never edited once accepted (supersede instead). Template:
 | [0131](0131-staged-rollout-in-the-signed-manifest.md) | A release is rolled out in steps by fields of the signed manifest, with channels for dark deploys and no server (proposed) |
 | [0132](0132-the-job-that-holds-the-update-key-compiles-nothing.md) | The job that holds the update key compiles nothing: a secret-free job writes the manifest text, the stock `minisign` and one script sign it (amends 0125) |
 | [0133](0133-the-review-list-keeps-its-loaded-groups-in-memory.md) | The review list keeps its loaded groups in memory and a reload re-filters them; the insight stamp recounts results only when they changed; budget `duplicates-list-reload` |
+| [0134](0134-videos-play-in-the-system-player.md) | Videos play in the system's default player (Open in player); no in-app playback for now |

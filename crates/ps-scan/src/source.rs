@@ -91,89 +91,123 @@ pub fn volume_info(path: &Path) -> VolumeInfo {
     imp::volume_info(path)
 }
 
+/// What identifying a Linux volume reads, injectable for tests: the mount table, a device node's `st_rdev`,
+/// a block device's `queue/rotational` and the `/dev/disk/by-uuid` links.
+pub trait VolumeIo {
+    /// The text of `/proc/self/mountinfo`.
+    fn mountinfo(&self) -> Option<String>;
+    /// `st_rdev` of a device node (the mount source).
+    fn rdev(&self, path: &str) -> Option<u64>;
+    /// `/sys/dev/block/<major>:<minor>/queue/rotational`, or its parent disk's.
+    fn rotational(&self, major: u64, minor: u64) -> Option<String>;
+    /// `(uuid, st_rdev)` of every `/dev/disk/by-uuid` link.
+    fn uuid_links(&self) -> Vec<(String, u64)>;
+}
+
+const NETWORK_FS: &[&str] = &[
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "9p",
+    "afs",
+    "ceph",
+    "glusterfs",
+    "davfs",
+];
+
+/// The volume of the folder at `path` (absolute and canonical) whose `st_dev` is `dev`. The mount table is
+/// searched by device number first and, when that finds nothing (btrfs subvolumes, bind mounts), by the longest
+/// mount-point prefix of `path`. The UUID and device class come from the mount source's own device when it is a
+/// block device node, otherwise from `dev`.
+pub fn identify_volume(path: &Path, dev: u64, io: &dyn VolumeIo) -> VolumeInfo {
+    use ps_model::fs_ids::{dev_major_minor, mountinfo_by_path, mountinfo_entry};
+    let (major, minor) = dev_major_minor(dev);
+    let text = io.mountinfo().unwrap_or_default();
+    let mount = mountinfo_entry(&text, major, minor).or_else(|| {
+        let e = mountinfo_by_path(&text, path.to_str()?)?;
+        Some((e.fs_type, e.source))
+    });
+    let mut info = VolumeInfo::default();
+    let mut block = dev;
+    if let Some((fs_type, source)) = mount {
+        if source.starts_with("/dev/")
+            && let Some(rdev) = io.rdev(&source)
+        {
+            block = rdev;
+        }
+        let network = NETWORK_FS.contains(&fs_type.as_str())
+            || fs_type.starts_with("fuse.sshfs")
+            || fs_type.starts_with("fuse.rclone");
+        info.class = if network {
+            DeviceClass::Network
+        } else {
+            let (ma, mi) = dev_major_minor(block);
+            match io.rotational(ma, mi).as_deref().map(str::trim) {
+                Some("0") => DeviceClass::SolidState,
+                Some("1") => DeviceClass::Rotational,
+                _ => DeviceClass::Unknown,
+            }
+        };
+        info.fs_type = Some(fs_type);
+        info.device = Some(source);
+    }
+    info.uuid = io
+        .uuid_links()
+        .into_iter()
+        .find_map(|(uuid, rdev)| (rdev == block).then_some(uuid));
+    info
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use super::*;
     use std::os::unix::fs::MetadataExt;
 
-    const NETWORK_FS: &[&str] = &[
-        "nfs",
-        "nfs4",
-        "cifs",
-        "smb3",
-        "smbfs",
-        "9p",
-        "afs",
-        "ceph",
-        "glusterfs",
-        "davfs",
-    ];
-
     pub fn volume_info(path: &Path) -> VolumeInfo {
         let Ok(meta) = std::fs::metadata(path) else {
             return VolumeInfo::default();
         };
-        let dev = meta.dev();
-        let (major, minor) = (major(dev), minor(dev));
-        let mut info = VolumeInfo::default();
-        if let Some((fs_type, source)) = mount_of(major, minor) {
-            let network = NETWORK_FS.contains(&fs_type.as_str())
-                || fs_type.starts_with("fuse.sshfs")
-                || fs_type.starts_with("fuse.rclone");
-            info.class = if network {
-                DeviceClass::Network
-            } else {
-                block_class(major, minor)
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        identify_volume(&path, meta.dev(), &RealIo)
+    }
+
+    struct RealIo;
+
+    impl VolumeIo for RealIo {
+        fn mountinfo(&self) -> Option<String> {
+            std::fs::read_to_string("/proc/self/mountinfo").ok()
+        }
+
+        fn rdev(&self, path: &str) -> Option<u64> {
+            let m = std::fs::metadata(path).ok()?;
+            use std::os::unix::fs::FileTypeExt;
+            m.file_type().is_block_device().then(|| m.rdev())
+        }
+
+        /// The partition's parent disk holds the queue.
+        fn rotational(&self, major: u64, minor: u64) -> Option<String> {
+            let base = std::path::PathBuf::from(format!("/sys/dev/block/{major}:{minor}"));
+            [
+                base.join("queue/rotational"),
+                base.join("../queue/rotational"),
+            ]
+            .iter()
+            .find_map(|p| std::fs::read_to_string(p).ok())
+        }
+
+        fn uuid_links(&self) -> Vec<(String, u64)> {
+            let Ok(rd) = std::fs::read_dir("/dev/disk/by-uuid") else {
+                return Vec::new();
             };
-            info.fs_type = Some(fs_type);
-            info.device = Some(source);
+            rd.flatten()
+                .filter_map(|e| {
+                    let m = std::fs::metadata(e.path()).ok()?;
+                    Some((e.file_name().to_string_lossy().into_owned(), m.rdev()))
+                })
+                .collect()
         }
-        info.uuid = uuid_of(dev);
-        info
-    }
-
-    fn major(dev: u64) -> u64 {
-        ps_model::fs_ids::dev_major_minor(dev).0
-    }
-
-    fn minor(dev: u64) -> u64 {
-        ps_model::fs_ids::dev_major_minor(dev).1
-    }
-
-    /// (fs type, mount source) of the mount with device `major:minor` (`/proc/self/mountinfo`).
-    fn mount_of(major: u64, minor: u64) -> Option<(String, String)> {
-        let text = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
-        ps_model::fs_ids::mountinfo_entry(&text, major, minor)
-    }
-
-    /// Solid-state or rotational from `/sys/dev/block/<maj:min>/queue/rotational` (the partition's parent
-    /// disk holds the queue). Anything without a block device (tmpfs, overlay) is unknown.
-    fn block_class(major: u64, minor: u64) -> DeviceClass {
-        let base = std::path::PathBuf::from(format!("/sys/dev/block/{major}:{minor}"));
-        for p in [
-            base.join("queue/rotational"),
-            base.join("../queue/rotational"),
-        ] {
-            if let Ok(s) = std::fs::read_to_string(&p) {
-                return match s.trim() {
-                    "0" => DeviceClass::SolidState,
-                    "1" => DeviceClass::Rotational,
-                    _ => DeviceClass::Unknown,
-                };
-            }
-        }
-        DeviceClass::Unknown
-    }
-
-    /// The filesystem UUID whose `/dev/disk/by-uuid` link points at device `dev`.
-    fn uuid_of(dev: u64) -> Option<String> {
-        let rd = std::fs::read_dir("/dev/disk/by-uuid").ok()?;
-        for e in rd.flatten() {
-            if std::fs::metadata(e.path()).is_ok_and(|m| m.rdev() == dev) {
-                return Some(e.file_name().to_string_lossy().into_owned());
-            }
-        }
-        None
     }
 }
 
@@ -443,7 +477,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn volume_of_the_manifest_dir_is_identified() {
+    fn scenario_sources_workspace_volume_identified() {
         let v = volume_info(Path::new(env!("CARGO_MANIFEST_DIR")));
         // The workspace lives on a real filesystem with a type and a device.
         assert!(v.fs_type.is_some(), "{v:?}");
@@ -491,5 +525,107 @@ mod tests {
         } else {
             assert_eq!(ids, ps_model::FsIds::UNRECORDED);
         }
+    }
+
+    /// A recorded mount table and device nodes for [`identify_volume`].
+    struct FakeIo {
+        mountinfo: &'static str,
+        nodes: Vec<(&'static str, u64)>,
+        rotational: Vec<((u64, u64), &'static str)>,
+        uuids: Vec<(&'static str, u64)>,
+    }
+
+    impl VolumeIo for FakeIo {
+        fn mountinfo(&self) -> Option<String> {
+            Some(self.mountinfo.into())
+        }
+        fn rdev(&self, path: &str) -> Option<u64> {
+            self.nodes.iter().find(|(p, _)| *p == path).map(|(_, d)| *d)
+        }
+        fn rotational(&self, major: u64, minor: u64) -> Option<String> {
+            self.rotational
+                .iter()
+                .find(|(d, _)| *d == (major, minor))
+                .map(|(_, r)| r.to_string())
+        }
+        fn uuid_links(&self) -> Vec<(String, u64)> {
+            self.uuids
+                .iter()
+                .map(|(u, d)| (u.to_string(), *d))
+                .collect()
+        }
+    }
+
+    const fn mkdev(major: u64, minor: u64) -> u64 {
+        (major << 8) | minor
+    }
+
+    #[test]
+    fn scenario_sources_volume_on_a_btrfs_subvolume_identified() {
+        let io = FakeIo {
+            mountinfo: "26 1 0:28 /@ / rw,relatime shared:1 - btrfs /dev/sda2 rw,ssd,subvol=/@\n\
+                        30 26 0:28 /@home /home rw,relatime shared:2 - btrfs /dev/sda2 rw,subvol=/@home\n\
+                        31 26 0:28 /@cache /var/cache rw shared:3 - btrfs /dev/sda2 rw,subvol=/@cache\n",
+            nodes: vec![("/dev/sda2", mkdev(8, 2))],
+            rotational: vec![((8, 2), "0\n")],
+            uuids: vec![("aaaa-other", mkdev(8, 1)), ("bbbb-root", mkdev(8, 2))],
+        };
+        // The folder reports the subvolume's anonymous device 0:48, which the table does not list.
+        let v = identify_volume(Path::new("/home/me/Photos"), 48, &io);
+        assert_eq!(v.fs_type.as_deref(), Some("btrfs"));
+        assert_eq!(v.device.as_deref(), Some("/dev/sda2"));
+        assert_eq!(v.uuid.as_deref(), Some("bbbb-root"));
+        assert_eq!(v.class, DeviceClass::SolidState);
+    }
+
+    #[test]
+    fn scenario_sources_longest_mount_point_wins() {
+        let io = FakeIo {
+            mountinfo: "1 0 0:28 / / rw - btrfs /dev/sda2 rw\n\
+                        2 1 0:29 / /home rw - btrfs /dev/sda3 rw\n\
+                        3 2 0:30 / /home/me/my\\040photos rw - btrfs /dev/sdb1 rw\n",
+            nodes: vec![
+                ("/dev/sda2", mkdev(8, 2)),
+                ("/dev/sda3", mkdev(8, 3)),
+                ("/dev/sdb1", mkdev(8, 17)),
+            ],
+            rotational: vec![((8, 2), "0"), ((8, 3), "0"), ((8, 17), "1")],
+            uuids: vec![("u-sda3", mkdev(8, 3)), ("u-sdb1", mkdev(8, 17))],
+        };
+        let v = identify_volume(Path::new("/home/me/my photos/2024"), 99, &io);
+        assert_eq!(v.device.as_deref(), Some("/dev/sdb1"));
+        assert_eq!(v.uuid.as_deref(), Some("u-sdb1"));
+        assert_eq!(v.class, DeviceClass::Rotational);
+        let v = identify_volume(Path::new("/home/me/other"), 99, &io);
+        assert_eq!(v.uuid.as_deref(), Some("u-sda3"));
+    }
+
+    #[test]
+    fn device_number_still_decides_first() {
+        // ext4 and FAT on partitions: the device number matches, unchanged from before.
+        let io = FakeIo {
+            mountinfo: "36 25 8:2 / / rw - ext4 /dev/sda2 rw\n\
+                        98 36 179:1 / /run/media/u/EOS rw - vfat /dev/mmcblk0p1 rw\n\
+                        99 36 0:60 / /mnt/nas rw - nfs4 nas:/photos rw\n",
+            nodes: vec![
+                ("/dev/sda2", mkdev(8, 2)),
+                ("/dev/mmcblk0p1", mkdev(179, 1)),
+            ],
+            rotational: vec![((8, 2), "1"), ((179, 1), "0")],
+            uuids: vec![("ext-uuid", mkdev(8, 2)), ("FAT-1234", mkdev(179, 1))],
+        };
+        let v = identify_volume(Path::new("/run/media/u/EOS/DCIM"), mkdev(179, 1), &io);
+        assert_eq!(v.fs_type.as_deref(), Some("vfat"));
+        assert_eq!(v.uuid.as_deref(), Some("FAT-1234"));
+        assert_eq!(v.class, DeviceClass::SolidState);
+        // The device number wins over a path that would point elsewhere.
+        let v = identify_volume(Path::new("/run/media/u/EOS"), mkdev(8, 2), &io);
+        assert_eq!(v.fs_type.as_deref(), Some("ext4"));
+        assert_eq!(v.class, DeviceClass::Rotational);
+        // A network share: class from its type, no block device, no UUID.
+        let v = identify_volume(Path::new("/mnt/nas/x"), 60, &io);
+        assert_eq!(v.class, DeviceClass::Network);
+        assert_eq!(v.device.as_deref(), Some("nas:/photos"));
+        assert_eq!(v.uuid, None);
     }
 }

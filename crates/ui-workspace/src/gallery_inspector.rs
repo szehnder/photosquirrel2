@@ -32,9 +32,12 @@ pub const DECISIONS_WAIT: &str = "A cleanup is running: include and exclude wait
 
 // ---- revealing files ----------------------------------------------------------------------------------
 
-/// Asks the platform file manager to show a file (never opens or changes it).
+/// Asks the platform to show a file in its file manager, or to open it with its default application (a video in
+/// the system player, ADR-0134). PhotoSquirrel itself never opens or changes the file.
 pub trait Opener: Send + Sync + 'static {
     fn reveal(&self, path: &Path) -> anyhow::Result<()>;
+    /// Open `path` with the default application, without waiting for it.
+    fn open(&self, path: &Path) -> anyhow::Result<()>;
 }
 
 /// The platform's file manager: `dbus FileManager1.ShowItems` (falling back to `xdg-open` on the folder)
@@ -76,17 +79,52 @@ impl Opener for SystemOpener {
         }
         Ok(())
     }
+
+    fn open(&self, path: &Path) -> anyhow::Result<()> {
+        // Reaped on a thread so no zombie is left; the player outlives nothing of ours.
+        let mut child = open_command(path)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("No program to open videos was found ({e})"))?;
+        std::thread::spawn(move || child.wait());
+        Ok(())
+    }
 }
 
-/// Records reveal requests (tests).
+/// The command that opens a file with its default application: `xdg-open` on Linux, `open` on macOS,
+/// `explorer.exe` on Windows, with the path as one argument and no shell (ADR-0134).
+pub fn open_command(path: &Path) -> std::process::Command {
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer.exe";
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let program = "xdg-open";
+    let mut c = std::process::Command::new(program);
+    c.arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    c
+}
+
+/// Records reveal and open requests (tests).
 #[derive(Debug, Default)]
 pub struct RecordingOpener {
     pub revealed: Mutex<Vec<PathBuf>>,
+    pub opened: Mutex<Vec<PathBuf>>,
 }
 
 impl Opener for RecordingOpener {
     fn reveal(&self, path: &Path) -> anyhow::Result<()> {
         self.revealed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(path.to_path_buf());
+        Ok(())
+    }
+
+    fn open(&self, path: &Path) -> anyhow::Result<()> {
+        self.opened
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(path.to_path_buf());
@@ -99,7 +137,7 @@ pub struct OpenerGlobal(pub Arc<dyn Opener>);
 
 impl Global for OpenerGlobal {}
 
-fn opener(cx: &App) -> Arc<dyn Opener> {
+pub(crate) fn opener(cx: &App) -> Arc<dyn Opener> {
     cx.try_global::<OpenerGlobal>()
         .map(|o| o.0.clone())
         .unwrap_or_else(|| Arc::new(SystemOpener))
@@ -374,6 +412,14 @@ impl GalleryInspector {
     /// Ask the file manager to reveal a path.
     pub fn reveal(&mut self, path: &str, cx: &mut Context<'_, Self>) {
         if let Err(e) = opener(cx).reveal(Path::new(path)) {
+            self.last_error = Some(format!("{e:#}"));
+            cx.notify();
+        }
+    }
+
+    /// Open a video copy in the system's default player (ADR-0134).
+    pub fn open_in_player(&mut self, path: &str, cx: &mut Context<'_, Self>) {
+        if let Err(e) = opener(cx).open(Path::new(path)) {
             self.last_error = Some(format!("{e:#}"));
             cx.notify();
         }
@@ -1402,6 +1448,7 @@ impl Render for GalleryInspector {
                     .test_support()
                     .gap(Tokens::space(1.5))
                     .px(Tokens::space(1.0));
+                let video = d.video;
                 for (ix, c) in d.copies.iter().enumerate() {
                     let path = c.path.clone();
                     copies = copies.child(
@@ -1447,6 +1494,15 @@ impl Render for GalleryInspector {
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .child("KEEPER"),
                                         )
+                                    })
+                                    .when(video, |d| {
+                                        d.child(open_in_player_button(
+                                            ix,
+                                            path.clone(),
+                                            c.online,
+                                            &colors,
+                                            cx,
+                                        ))
                                     })
                                     .child(
                                         div()
@@ -1609,6 +1665,50 @@ impl Render for GalleryInspector {
             )
             .into_any_element()
     }
+}
+
+/// Open in player on a video copy row (ADR-0134): enabled for an online source, otherwise disabled with the reason.
+fn open_in_player_button(
+    ix: usize,
+    path: String,
+    online: bool,
+    colors: &ui_theme::Colors,
+    cx: &mut Context<'_, GalleryInspector>,
+) -> impl IntoElement {
+    let id = SharedString::from(format!("inspector-open-in-player-{ix}"));
+    let tip_id = SharedString::from(format!("inspector-open-in-player-{ix}-tip"));
+    let tip: SharedString = if online {
+        "Open in player".into()
+    } else {
+        "Source offline".into()
+    };
+    div()
+        .id(id)
+        .test_support()
+        .role(Role::Button)
+        .aria_label(if online {
+            "Open in player"
+        } else {
+            "Open in player (source offline)"
+        })
+        .text_color(if online {
+            colors.text_muted
+        } else {
+            colors.text_faint
+        })
+        .when(online, |d| {
+            d.cursor_pointer()
+                .hover(|d| d.text_color(colors.text))
+                .on_click(cx.listener(move |this, _, _, cx| this.open_in_player(&path, cx)))
+        })
+        .tooltip(move |window, cx| {
+            let (tip_id, tip) = (tip_id.clone(), tip.clone());
+            gpui_kit::component::tooltip::Tooltip::element(move |_, _| {
+                div().id(tip_id.clone()).test_support().child(tip.clone())
+            })
+            .build(window, cx)
+        })
+        .child(Icon::new(IconName::Play).size(Tokens::icon_sm()))
 }
 
 #[cfg(test)]

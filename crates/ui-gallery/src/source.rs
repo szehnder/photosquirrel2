@@ -22,6 +22,10 @@ pub trait GallerySource: Send + Sync + 'static {
     fn thumbnail(&self, key: &ThumbKey) -> anyhow::Result<Option<Vec<u8>>>;
     /// The large preview of an item.
     fn preview(&self, id: ItemId) -> anyhow::Result<Preview>;
+    /// A video's duration in milliseconds, for the loupe's mark; `None` for photos or when unknown.
+    fn video_duration_ms(&self, _id: ItemId) -> anyhow::Result<Option<u64>> {
+        Ok(None)
+    }
     /// Members of the stack `keeper` heads, keeper first, with their sort keys.
     fn stack_members(&self, keeper: ItemId) -> anyhow::Result<Vec<ItemId>>;
     /// Everything about one item.

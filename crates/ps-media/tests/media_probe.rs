@@ -298,4 +298,13 @@ fn moov_at_end_is_a_warning_not_an_error() {
     assert_eq!(r.format, Some(Format::Mov));
     assert!(r.error.is_none());
     assert!(!r.warnings.is_empty());
+    // The loupe's duration walks the boxes to the `moov` at the end.
+    let dir = tempfile::tempdir().expect("io");
+    let p = dir.path().join("late.mov");
+    std::fs::write(&p, &m).expect("io");
+    assert_eq!(ps_media::video::duration_of_file(&p), Some(12_500));
+    std::fs::write(&p, &m[..m.len() - 100]).expect("io");
+    assert_eq!(ps_media::video::duration_of_file(&p), None, "a cut moov");
+    std::fs::write(&p, b"not a movie at all").expect("io");
+    assert_eq!(ps_media::video::duration_of_file(&p), None);
 }
