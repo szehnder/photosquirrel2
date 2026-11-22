@@ -579,7 +579,17 @@ fn scenario_sources_source_added_before_the_fix_gains_its_identity() {
     if volume.fs_type.is_some() {
         assert_eq!(after.device_hint, Some(hint));
     }
-    // Another scan changes nothing.
+    // Another scan changes nothing but the hint's `ids=` part (a scan records whether the file ids are stable on a
+    // hint that does not say yet, as on a volume where nothing else could be identified).
     completed(&e.scan(&[id]));
-    assert_eq!(record(), after);
+    let without_ids = |r: ps_catalog::SourceRecord| ps_catalog::SourceRecord {
+        device_hint: r.device_hint.map(|h| {
+            h.split(';')
+                .filter(|p| !p.starts_with("ids="))
+                .collect::<Vec<_>>()
+                .join(";")
+        }),
+        ..r
+    };
+    assert_eq!(without_ids(record()), without_ids(after));
 }
