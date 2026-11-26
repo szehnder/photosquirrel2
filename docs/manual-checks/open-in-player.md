@@ -34,6 +34,6 @@ with a clip made for it. It takes about two minutes per platform and touches not
 
 | Platform | Date | Build | Player | Result |
 |---|---|---|---|---|
-| Linux (Manjaro, KDE Plasma) | | 0.5.1 | VLC (`xdg-open`) | |
+| Linux (Manjaro, KDE Plasma) | 2026-11-26 | 0.5.1 | VLC (`xdg-open`) | Pass: **O** in the loupe opens the `.mov` in VLC (step 3, reported by the owner) |
 | macOS | | 0.5.1 | QuickTime Player (`open`) | |
 | Windows 11 | | 0.5.1 | Media Player (`explorer.exe`) | |
