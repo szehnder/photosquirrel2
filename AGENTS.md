@@ -67,13 +67,14 @@ they run, so even leaks land on disk; when running `cargo test` by hand, set `TM
 `target/`. Never leave directories in `/tmp`. Delete per-agent target dirs once their work is committed.
 
 ## Useful commands
+The `justfile` wraps the everyday ones (`just` lists them: `just run`, `just demo`, `just test -p <crate>`, `just ci`).
 ```
 cargo xtask doctor                         # prerequisites (libheif, ffmpeg, LM Studio are optional)
 cargo xtask ci                             # everything CI runs (the timing pass last)
 cargo xtask timing --runs 20               # only the wall-clock budget tests, alone (ADR-0075)
 cargo run --release -p photosquirrel       # the app
 cargo run --release -p photosquirrel-cli -- fixtures generate --out corpus --seed 7
-cargo run --release -p photosquirrel-cli -- scan corpus && cargo run -p photosquirrel-cli -- report
+cargo run --release -p photosquirrel-cli -- sources add corpus && cargo run --release -p photosquirrel-cli -- scan
 cargo xtask bench --check                  # performance budgets (ADR-0026)
 cargo xtask screenshot -- --theme dark     # capture the app window to a PNG
 cargo xtask package --docker               # Linux installers into target/packages
