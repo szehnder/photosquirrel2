@@ -128,6 +128,11 @@ pub fn format_count(n: u64) -> String {
     out
 }
 
+/// "1 photo", "0 photos", "12,400 photos": a count with the noun that agrees with it.
+pub fn count_label(n: u64, one: &str, many: &str) -> String {
+    format!("{} {}", format_count(n), if n == 1 { one } else { many })
+}
+
 impl Render for InspectorView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         let colors = *ui_theme::colors(cx);
@@ -237,5 +242,17 @@ impl Render for InspectorView {
                     .p(Tokens::space(4.0))
                     .child(body),
             )
+    }
+}
+
+#[cfg(test)]
+mod count_tests {
+    use super::count_label;
+
+    #[test]
+    fn count_label_agrees_with_the_number() {
+        assert_eq!(count_label(0, "video", "videos"), "0 videos");
+        assert_eq!(count_label(1, "video", "videos"), "1 video");
+        assert_eq!(count_label(12_400, "photo", "photos"), "12,400 photos");
     }
 }

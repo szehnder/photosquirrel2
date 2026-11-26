@@ -10,7 +10,7 @@ use ui_theme::{Motion, Tokens};
 
 use crate::actions::*;
 use crate::assets::IconName;
-use crate::inspector::format_count;
+use crate::inspector::{count_label, format_count};
 use crate::keymap;
 use crate::service::{CatalogSummary, Loadable};
 use crate::shell::{BannerState, DraggedSplitter, Overlay, Shell, Side, ToastKind};
@@ -691,7 +691,7 @@ pub(crate) fn status_bar(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyEleme
 
     let counts = shell.summary().ready().cloned();
     let photo_label = match &counts {
-        Some(s) => format!("{} photos", format_count(s.photos)),
+        Some(s) => count_label(s.photos, "photo", "photos"),
         None => "— photos".to_owned(),
     };
     let zoom = (zoom_percent(cx) != 100).then(|| item().child(format!("{}%", zoom_percent(cx))));
@@ -729,13 +729,13 @@ pub(crate) fn status_bar(shell: &Shell, cx: &mut Context<'_, Shell>) -> AnyEleme
         .children(counts.as_ref().map(|s| {
             item()
                 .id("status-video-count")
-                .child(format!("{} videos", format_count(s.videos)))
+                .child(count_label(s.videos, "video", "videos"))
         }))
         .children(counts.as_ref().map(|s| {
-            item().id("status-source-count").child(format!(
-                "{} {}",
-                s.sources,
-                if s.sources == 1 { "source" } else { "sources" }
+            item().id("status-source-count").child(count_label(
+                s.sources as u64,
+                "source",
+                "sources",
             ))
         }))
         .child(div().flex_1())
