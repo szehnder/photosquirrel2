@@ -451,6 +451,17 @@ cargo run --release -p photosquirrel-cli -- --help
 cargo xtask package                         # installers for this OS into target/packages (needs cargo-packager, cargo-about)
 ```
 
+With [just](https://github.com/casey/just) installed (`pacman -S just`, `brew install just`, `cargo install just`),
+the everyday commands are shorter; run `just` to list them all:
+
+```sh
+just run                    # the app (release build), like `go run`
+just demo                   # a sample corpus in a throwaway catalog under target/demo, then the app on it
+just cli sources add ~/Pictures && just cli scan && just cli report
+just test -p ps-scan        # tests, one crate or (no arguments) all
+just ci                     # everything CI runs
+```
+
 ## Contributing
 
 Architecture decisions are in [`docs/adr/`](docs/adr/README.md) and the specs in [`openspec/`](openspec/).
