@@ -2,9 +2,9 @@
 
 ## 1. Stack rule and calibration (core)
 
-- [ ] 1.1 `StackThresholds` and `StackSimilarity` presets, and the time-sorted sweep with union-find and the 120 s span cap, as a pure function over a grouping. Videos, untimed and excluded groups are skipped. Verify: ps-dedup unit tests for the sweep, the span cap and `scenario_photo_stacks_shots_without_capture_time_are_not_stacked` and `scenario_photo_stacks_stack_span_is_limited`.
-- [ ] 1.2 Separations honoured under any thresholds. Verify: `scenario_photo_stacks_taken_out_shot_stays_out` (core part) and a unit test at the loose preset.
-- [ ] 1.3 Pick ranking (user pick, sharpness with a 10% tie band, clipping in 1% steps, keeper rank, earliest, file id) and reason labels. Verify: `scenario_photo_stacks_the_sharp_frame_is_picked`, `scenario_photo_stacks_clipping_breaks_a_sharpness_tie` and `scenario_photo_stacks_pick_is_stable`, using test-time bursts from `ps-fixtures`.
+- [x] 1.1 `StackThresholds` and `StackSimilarity` presets, and the time-sorted sweep with union-find and the 120 s span cap, as a pure function over a grouping. Videos, untimed and excluded groups are skipped. Verify: ps-dedup unit tests for the sweep, the span cap and `scenario_photo_stacks_shots_without_capture_time_are_not_stacked` and `scenario_photo_stacks_stack_span_is_limited`.
+- [x] 1.2 Separations honoured under any thresholds. Verify: unit test `taken_out_stays_out_under_any_thresholds` (all three presets at a 60 s window); the persisted scenario `scenario_photo_stacks_taken_out_shot_stays_out` is checked in 3.2.
+- [x] 1.3 Pick ranking (user pick, sharpness with a 10% tie band, clipping in 1% steps, keeper rank, earliest, file id) and reason labels. Verify: `scenario_photo_stacks_the_sharp_frame_is_picked`, `scenario_photo_stacks_clipping_breaks_a_sharpness_tie` and `scenario_photo_stacks_pick_is_stable`, as ps-dedup unit tests over synthetic bursts (the corpus-level checks are in 1.4 and 3.2).
 - [ ] 1.4 Calibrate the similarity table on the small and medium corpora (`burst` sets in one stack, no `minutes_apart` set in one) and on the owner's card. Update ADR-0135's table and the presets to the chosen values. Verify: `scenario_photo_stacks_corpus_bursts_form_stacks` passes at the defaults, the table in ADR-0135 matches the code, and the measured figures are recorded in this task.
 - [ ] 1.5 Groups are untouched. Verify: `scenario_photo_stacks_stacks_leave_groups_unchanged`, and `photosquirrel-cli eval-corpus` gives the same scores as before the change.
 

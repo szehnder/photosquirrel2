@@ -31,6 +31,9 @@
 
 ## Decisions
 
+0. **Stacks are made of shots, not only of groups.** A shot is a duplicate group, seen through its keeper, or a
+   photo with no copies. Burst frames are usually photos with no copies, so a rule over groups alone would never
+   stack a burst. A group still counts once. (Found while building task 1.1.)
 1. **The stack layer lives in the core grouping crate,** as a pure function: `stacks(grouping, inputs, thresholds,
    separations, picks, quality) -> Stacks`.
    - It reads each group's keeper input and never mutates the grouping. That keeps it testable without I/O, and lets
@@ -43,6 +46,9 @@
    - Each keeper is compared with the following keepers while the time difference is at most the window. An edge
      needs the look test of ADR-0135 (orientation class, aspect within 2%, pHash and dHash within the limits) and no
      separation between the two contents.
+   - "Best copy" compares only what tells two shots apart as copies: format tier, resolution, metadata completeness
+     and JPEG quality. File size, modification time, path and file id differ between any two burst frames and say
+     nothing about which is better, so they fall to the capture-time tie-break ("First shot").
    - Union-find joins the edges in time order. An edge that would make a stack span over 120 s is skipped; the shot
      then starts or joins another stack.
    - Cost is O(n·k). The 1M bench catalog is about 900k photo keepers, and k is small at a 5 s window (bursts are the
