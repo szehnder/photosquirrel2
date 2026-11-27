@@ -70,6 +70,8 @@ pub struct PlanPreview {
     pub required_bytes: u64,
     /// Why the export cannot start (insufficient space), if it cannot.
     pub blocker: Option<String>,
+    /// "Both" (ADR-0135): the second part, the best of each stack again under `Best of/`: its files and bytes.
+    pub best_of_part: Option<(u64, u64)>,
     /// Planned copies (source, file name, library path) to show where things go, at most
     /// [`PLAN_ROWS_LIMIT`]; `files` + `adopted` says how many there are in all.
     pub examples: Vec<PlanRow>,
@@ -729,7 +731,15 @@ impl ScanBackend for CatalogBackend {
     ) -> anyhow::Result<PlanPreview> {
         let scan = self.scan()?;
         let profile = settings.profile;
-        let (plan, input) = scan.exports().plan(library, settings)?;
+        let best_of_part = if settings.best_of == ps_model::BestOf::Both {
+            scan.exports()
+                .plan_parts(library, settings.clone())?
+                .get(1)
+                .map(|(_, p)| (p.totals.files, p.totals.bytes))
+        } else {
+            None
+        };
+        let (plan, input) = scan.exports().plan(library, settings.clone())?;
         let mut offline: HashMap<String, u64> = HashMap::new();
         for u in &plan.unavailable {
             *offline.entry(u.source_name.clone()).or_default() += 1;
@@ -753,6 +763,7 @@ impl ScanBackend for CatalogBackend {
             })
             .collect();
         Ok(PlanPreview {
+            best_of_part,
             library: plan.library_root.clone(),
             profile,
             sidecars: settings.sidecars,
@@ -1734,6 +1745,7 @@ impl ScanBackend for DemoBackend {
         let bytes = 41_872_000_000;
         let required = bytes + (1 << 20);
         Ok(PlanPreview {
+            best_of_part: None,
             library: library.to_path_buf(),
             profile,
             sidecars: settings.sidecars,
