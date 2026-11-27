@@ -46,8 +46,8 @@
    0` and the digits). It is also the first letter of the action, and the inspector's exclude has no key.
 5. **The list re-filters; it does not reload (ADR-0133).** The group's excluded state is part of the in-memory
    group summary. An exclusion updates that summary and re-filters, within the `duplicates-list-reload` budget.
-6. **Reason prompt:** E excludes at once with no reason, so it stays one keystroke. The header button opens a small
-   popover with an optional reason field. This matches the inspector's reason input.
+6. **Reason prompt:** E excludes at once with no reason, so it stays one keystroke. The header button opens the view's
+   confirm strip (as for Separate) with an optional reason field. This matches the inspector's reason input.
 
 ## Risks / Trade-offs
 

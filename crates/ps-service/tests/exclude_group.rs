@@ -2,6 +2,8 @@
 //! copy is excluded by the user, the group stays out of the export and stays excluded when a rescan changes its
 //! keeper; Include again and Undo put it back. Nothing on disk changes.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

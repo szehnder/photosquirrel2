@@ -8,7 +8,7 @@
 
 ## 2. Duplicates view
 
-- [x] 2.1 `ExcludeGroup` action on E, and an "Exclude group" header button with a popover holding an optional reason. Verify: `scenario_duplicate_review_exclude_a_group_with_e` and `scenario_duplicate_review_excluded_group_with_a_reason`.
+- [x] 2.1 `ExcludeGroup` action on E, and an "Exclude group…" header button that opens a confirm strip with an optional reason. Verify: `scenario_duplicate_review_exclude_a_group_with_e` and `scenario_duplicate_review_excluded_group_with_a_reason`.
 - [x] 2.2 The "Excluded, none kept" state on the list row and the header ("1 of 4 kept" when a later copy is not excluded), the Include again button, and the progress card counting the group as reviewed. Verify: `scenario_duplicate_review_excluded_group_listed_and_counted` and `scenario_duplicate_review_include_the_group_again`.
 - [x] 2.3 A notice with Undo after an exclusion, restoring the decisions and the reviewed state. Verify: `scenario_duplicate_review_undo_an_exclusion`.
 - [x] 2.4 Command palette entries "Exclude Group (Keep None)" and "Include Group Again", and E in the view's key hint line and module docs. Verify: `exclude_and_include_are_in_the_palette` finds both entries. The palette shows no key for Duplicates commands, as for R and S, because their keys apply only in that view.
@@ -20,9 +20,9 @@
 ## 4. Docs and screenshots
 
 - [x] 4.1 README (duplicate review keys, CLI list) and the release notes ("What's new in 0.5.2"). Verify: the text names E and both CLI commands.
-- [ ] 4.2 Screenshot surface `duplicates-excluded` (an excluded group open, light and dark), reviewed by a fresh reviewer. Verify: PNGs under `target/screenshots/` and the review notes.
+- [x] 4.2 Screenshot surface `duplicates-excluded` (an excluded group open, light and dark), reviewed by a fresh reviewer. Verify: PNGs under `target/screenshots/` and the review notes. The first review failed: the body still said a keeper would be exported, and the row label was 2.3:1. After the fixes the re-review passed with notes; the dark danger token is 4.0-4.1:1 and is left for a theme change.
 
 ## 5. Verification
 
-- [ ] 5.1 `cargo xtask ci` passes, and every new scenario maps to a passing test (`cargo xtask spec-coverage`).
-- [ ] 5.2 `openspec validate exclude-group-in-review --strict` passes.
+- [x] 5.1 `cargo xtask ci` passes, and every new scenario maps to a passing test (`cargo xtask spec-coverage`).
+- [x] 5.2 `openspec validate exclude-group-in-review --strict` passes.
