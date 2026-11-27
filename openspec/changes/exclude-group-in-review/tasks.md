@@ -2,8 +2,8 @@
 
 ## 1. Review service
 
-- [ ] 1.1 Exclude a group: write the user decision "exclude" (optional reason) on every current copy in one catalog transaction, mark the group reviewed, and return the decisions it replaced for Undo. Verify: `scenario_duplicate_review_excluded_group_is_not_exported` and `scenario_duplicate_review_excluded_group_stays_out_after_its_keeper_changes` (ps-service, small corpus) pass.
-- [ ] 1.2 Include a group again: restore the replaced decisions when given, otherwise clear the user exclusion this action recorded on each copy. Copies excluded for another reason keep it. Verify: a ps-service unit test with one copy classified as a graphic keeps that copy excluded.
+- [x] 1.1 Exclude a group: write the user decision "exclude" (optional reason) on every current copy in one catalog transaction, mark the group reviewed, and return the decisions it replaced for Undo. Verify: `scenario_duplicate_review_excluded_group_is_not_exported` and `scenario_duplicate_review_excluded_group_stays_out_after_its_keeper_changes` (ps-service, small corpus) pass.
+- [x] 1.2 Include a group again: restore the replaced decisions when given, otherwise clear the user's own exclusions on each copy. Copies excluded for another reason keep it. Verify: `include_again_and_undo_put_the_group_back` and `include_again_keeps_an_exclusion_made_for_another_reason` (an accepted AI exclusion on one copy stays) in ps-service `tests/exclude_group.rs`.
 - [ ] 1.3 The group summary carries `excluded` and `kept` counts; the in-memory list re-filters on an exclusion without a reload (ADR-0133). Verify: `duplicates-list-reload` stays within 150 ms in `cargo xtask bench --check`.
 
 ## 2. Duplicates view

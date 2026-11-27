@@ -31,13 +31,15 @@
      library, and the review shows the group as partly excluded ("1 of 4 kept").
    - Alternative: a group-level exclusion keyed by the keeper's content. Rejected: groups are derived and re-formed
      on every regroup, so a key on a group would need its own migration rules.
-2. **"Include again" and Undo remove only what this action wrote.** The action remembers, for each copy, the
-   decision it replaced (normally none). Undo, and Include again in the same session, restore those decisions.
-   - Include again in a later session clears the user exclusion from every copy whose reason is the action's own.
-     That returns each copy to its automatic state; it does not force "included by you", which would override the
-     classifier for good.
-   - A copy that the classifier or an accepted AI suggestion excluded keeps that exclusion. The header then names
-     that reason.
+2. **"Include again" and Undo remove only what this action wrote.**
+   - A copy that is already excluded is left as it is, so an exclusion recorded by accepting an AI suggestion keeps
+     its origin. The action records the decision it replaced for every copy it changed (normally none).
+   - Undo restores exactly those decisions and the previous review state.
+   - Include again without the undo record (a later session) clears the user's own exclusions from every copy. That
+     returns each copy to its automatic state; it does not force "included by you", which would override the
+     classifier for good. Exclusions from accepted AI suggestions stay, and so does a classifier's exclusion, which
+     is not a user decision. One exception: a copy the user had excluded separately in the inspector is included
+     too, because the catalog does not record which action made a user exclusion.
 3. **An excluded group counts as reviewed.** Excluding is a review decision. Marking it reviewed keeps the progress
    card honest and lets **E** advance like **R**. Undo restores the previous reviewed state.
 4. **E for the key.** It is free in the Duplicates key map (`down up j k r s space x right left enter escape b = -
