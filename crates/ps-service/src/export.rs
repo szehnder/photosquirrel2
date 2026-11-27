@@ -498,9 +498,7 @@ impl<'a> Exports<'a> {
             return self.run_one(library, settings, cfg, cancel);
         }
         let t = settings.stack_thresholds;
-        let everything = settings
-            .clone()
-            .with_best_of(ps_model::BestOf::Everything, t);
+        let everything = settings.with_best_of(ps_model::BestOf::Everything, t);
         let (plan, mut report) = self.run_one(library, everything, cfg, cancel)?;
         if report.stopped.is_none() && !cancel.load(std::sync::atomic::Ordering::Relaxed) {
             let picks = settings.with_best_of(ps_model::BestOf::PicksOnly, t);
@@ -540,9 +538,7 @@ impl<'a> Exports<'a> {
                 library.to_path_buf(),
                 self.plan(
                     library,
-                    settings
-                        .clone()
-                        .with_best_of(ps_model::BestOf::Everything, t),
+                    settings.with_best_of(ps_model::BestOf::Everything, t),
                 )?
                 .0,
             ),
@@ -563,7 +559,7 @@ impl<'a> Exports<'a> {
     ) -> Result<(Plan, ExportReport)> {
         // Not while a scan or a cleanup runs (ADR-0065).
         let _op = self.svc.begin(crate::ops::Operation::Export)?;
-        let (plan, input) = self.plan(library, settings.clone())?;
+        let (plan, input) = self.plan(library, settings)?;
         let id = self.library_id(library)?;
         let mut ledger = CatalogLedger::new(self.catalog().clone(), id);
         let report = ps_export::execute(&plan, &input, &mut ledger, cfg, &NoHooks, cancel)?;

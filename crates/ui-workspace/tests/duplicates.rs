@@ -2144,7 +2144,7 @@ fn scenario_duplicate_review_take_out_with_s(cx: &mut TestAppContext) {
     let rest = s.shots[0];
     cx.simulate_keystrokes("s");
     wait_stacks_reloaded(&view, &mut cx, "the shot taken out", move |v, _| {
-        v.index.get(&rest).is_some() && v.index.get(&out) != v.index.get(&rest)
+        v.index.contains_key(&rest) && v.index.get(&out) != v.index.get(&rest)
     });
     let after = cx.update(|_, cx| view.read(cx).stacks_tab().view.clone().unwrap());
     assert_eq!(after.stack_of(rest).unwrap().shots.len(), s.shots.len() - 1);

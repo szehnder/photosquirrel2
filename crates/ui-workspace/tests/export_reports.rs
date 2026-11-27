@@ -585,13 +585,10 @@ fn export_plan_shows_each_best_of_part(_cx: &mut TestAppContext) {
         ps_model::ExportProfile::GooglePhotos,
     );
     let t = ps_model::StackThresholds::default();
-    let all = backend.export_plan(&fresh, base.clone()).unwrap();
+    let all = backend.export_plan(&fresh, base).unwrap();
     assert!(all.best_of_part.is_none());
     let only = backend
-        .export_plan(
-            &fresh,
-            base.clone().with_best_of(ps_model::BestOf::PicksOnly, t),
-        )
+        .export_plan(&fresh, base.with_best_of(ps_model::BestOf::PicksOnly, t))
         .unwrap();
     assert!(only.files < all.files, "{} < {}", only.files, all.files);
     let both = backend

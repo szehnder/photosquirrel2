@@ -43,7 +43,7 @@
 ## 7. Docs and review
 
 - [x] 7.1 README (Stacks, the thresholds, Best of, the export choice, the CLI), keyboard help, and "What's new in 0.6.0". Verify: the text names T, the two thresholds, the three export choices and `not picked`.
-- [ ] 7.2 Screenshot surfaces `duplicates-stacks`, `gallery-best-of` and `export-best-of` in light and dark, reviewed by a fresh reviewer. Verify: PNGs under `target/screenshots/` and the review notes.
+- [x] 7.2 Screenshot surfaces `duplicates-stacks` (opened with `PHOTOSQUIRREL_REVIEW_TAB=stacks`, loading within the start-up grace), `gallery-best-of` and `export-best-of` (`PHOTOSQUIRREL_EXPORT_BEST_OF=both`), light and dark, reviewed by a fresh reviewer: pass with notes. Fixed after review: Both's wording says what the Best of set holds, Take out is neutral ("Take out of stack"), a caption explains the thresholds, and the tie reason reads "Tied on every score". Left as they are: the gallery's All and Stacks chips (an existing design: media type and grouping), and items against files in the counts.
 - [ ] 7.3 The owner accepts ADR-0135 with the calibrated table. Verify: its status reads accepted, and the README index row has no "(proposed)".
 
 ## 8. Verification

@@ -733,13 +733,13 @@ impl ScanBackend for CatalogBackend {
         let profile = settings.profile;
         let best_of_part = if settings.best_of == ps_model::BestOf::Both {
             scan.exports()
-                .plan_parts(library, settings.clone())?
+                .plan_parts(library, settings)?
                 .get(1)
                 .map(|(_, p)| (p.totals.files, p.totals.bytes))
         } else {
             None
         };
-        let (plan, input) = scan.exports().plan(library, settings.clone())?;
+        let (plan, input) = scan.exports().plan(library, settings)?;
         let mut offline: HashMap<String, u64> = HashMap::new();
         for u in &plan.unavailable {
             *offline.entry(u.source_name.clone()).or_default() += 1;

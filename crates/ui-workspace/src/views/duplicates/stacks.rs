@@ -506,6 +506,15 @@ impl DuplicatesView {
             )
             .child(
                 div()
+                    .text_size(Tokens::text_xs())
+                    .text_color(colors.text_muted)
+                    .child(format!(
+                        "Shots taken within {} s of each other that look alike. Similarity sets how alike.",
+                        t.window_s
+                    )),
+            )
+            .child(
+                div()
                     .id("stacks-count")
                     .test_support()
                     .text_size(Tokens::text_xs())
@@ -798,10 +807,10 @@ impl DuplicatesView {
                             })
                             .child(action_button(
                                 format!("stacks-take-out-{n}"),
-                                "Take out",
-                                Some(IconName::Scissors),
+                                "Take out of stack",
+                                Some(IconName::Unlink),
                                 focused.then_some("S"),
-                                Tone::Caution,
+                                Tone::Normal,
                                 cx,
                                 move |this, _, cx| {
                                     this.stacks.focused = s_index_of(this, file).unwrap_or(0);
@@ -827,7 +836,7 @@ impl DuplicatesView {
                             "As sharp as the others, with the fewest blown highlights or crushed shadows".to_owned()
                         }
                         PickReason::BestCopy => "Equally sharp and exposed; the best copy".to_owned(),
-                        PickReason::FirstShot => "Equal in every respect; the first shot".to_owned(),
+                        PickReason::FirstShot => "Tied on every score, so the earliest shot".to_owned(),
                     }),
             );
         let put_back = self.stacks.taken_out_last.is_some();

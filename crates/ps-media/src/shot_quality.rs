@@ -22,7 +22,9 @@ pub fn shot_quality(img: &RgbImage) -> Option<ShotQuality> {
     }
     let luma: Vec<f32> = img
         .data
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .take(w * h)
         .map(|p| 0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2]))
         .collect();
@@ -121,10 +123,10 @@ mod tests {
     #[test]
     fn blown_and_crushed_pixels_are_counted() {
         let mut img = card(10, 10);
-        for p in img.data.chunks_exact_mut(3).take(20) {
+        for p in img.data.as_chunks_mut::<3>().0.iter_mut().take(20) {
             p.copy_from_slice(&[255, 255, 255]);
         }
-        for p in img.data.chunks_exact_mut(3).skip(90) {
+        for p in img.data.as_chunks_mut::<3>().0.iter_mut().skip(90) {
             p.copy_from_slice(&[0, 0, 0]);
         }
         let q = shot_quality(&img).unwrap();

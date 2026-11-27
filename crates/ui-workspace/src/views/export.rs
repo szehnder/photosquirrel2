@@ -487,7 +487,7 @@ impl ExportView {
                     .when_some(plan.best_of_part, |e, (files, bytes)| {
                         e.child(tile(
                             "plan-best-of",
-                            "then under Best of/",
+                            "under Best of/ too",
                             format_count(files),
                             Some(format!("{} again", kit::format_bytes(bytes))),
                         ))
@@ -1144,7 +1144,8 @@ impl Render for ExportView {
                                      photo in no stack. The rest is reported as not picked; nothing is deleted."
                                 }
                                 ps_model::BestOf::Both => {
-                                    "Everything, then the best of each stack again under Best of/ in the library."
+                                    "Everything, then a second copy of your Best of set (each stack's pick plus every photo in no stack) \
+                                     under Best of/ in the library."
                                 }
                             }),
                     )

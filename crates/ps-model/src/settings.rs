@@ -603,12 +603,11 @@ impl<'de> Deserialize<'de> for Review {
             Some(w) => out.invalid_window = Some(w),
             None => {}
         }
-        match raw.stack_similarity.as_deref() {
-            Some(k) => match crate::StackSimilarity::from_key(k) {
+        if let Some(k) = raw.stack_similarity.as_deref() {
+            match crate::StackSimilarity::from_key(k) {
                 Some(x) => out.stack_similarity = x,
                 None => out.invalid_similarity = Some(k.to_owned()),
-            },
-            None => {}
+            }
         }
         Ok(out)
     }
