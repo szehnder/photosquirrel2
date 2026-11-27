@@ -34,7 +34,7 @@ stacked. ADR-0135 (proposed) records the rule.
 - **Export choice (opt-in, per export):**
   - Everything (the default, unchanged).
   - Best of each stack only.
-  - Both: everything, plus the picks again under `Best of/`.
+  - Both: everything, plus the best-of set (picks and photos in no stack) again under `Best of/`.
   - A photo left out by "best of only" is reported as **not picked**. It is never eligible for cleanup, and never
     deleted.
 - **CLI:**

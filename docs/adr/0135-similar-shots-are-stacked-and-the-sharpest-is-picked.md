@@ -82,7 +82,7 @@ suggestion.**
    A thumbnail that cannot be decoded is recorded as tried, with no score. A photo
    without a thumbnail has no score and ranks after scored shots on that key.
 6. **Export may take only the picks,** as an opt-in choice of each export: everything (the default), the best of
-   each stack only, or both (everything, plus the picks again under `Best of/` in the library).
+   each stack only, or both (everything, plus the best-of set again under `Best of/` in the library, as a library of its own).
    - A photo left out by "best of only" gets the disposition `not picked`. Like `excluded`, it is never eligible
      for cleanup.
    - Photos that are not in any stack count as their own pick.

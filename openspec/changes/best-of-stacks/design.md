@@ -114,8 +114,10 @@
     query.
 12. **Export.** The plan takes a `BestOf { Everything, PicksOnly, Both }` parameter:
     - `PicksOnly` drops non-pick keepers of stacked groups from the plan.
-    - `Both` adds a second destination for each pick: `Best of/<dated layout>`, in the same copy-verify-rename
-      routine, with its own ledger row whose `role = best_of`.
+    - `Both` is two exports through the same copy-verify-rename path: everything into the library, then
+      `PicksOnly` into `<library>/Best of`, registered as a library of its own with its own ledger and manifest.
+      This is simpler than a second destination per unit inside one plan, whose ledger is keyed by content and
+      would read the second copy as already exported. `plan_parts` gives the plan of each part.
     - The ledger records the last export's mode. Dispositions read it: a non-pick group is `not picked` only when
       the last export was `PicksOnly` and no member of the group is in the library.
 13. **Corpus checks without new corpus data.**

@@ -484,8 +484,77 @@ impl<'a> Exports<'a> {
     }
 
     /// Plan and run an export (copy-verify-rename into `library`; sources untouched). `cancel` stops after the
-    /// current files; re-running resumes.
+    /// current files; re-running resumes. "Both" (ADR-0135) is two exports: everything into `library`, then the
+    /// best of each stack only into its `Best of/` folder, a library of its own with its own ledger; the report
+    /// counts both, and the plan returned is the first.
     pub fn run(
+        &self,
+        library: &Path,
+        settings: ProfileSettings,
+        cfg: &ExecConfig,
+        cancel: &AtomicBool,
+    ) -> Result<(Plan, ExportReport)> {
+        if settings.best_of != ps_model::BestOf::Both {
+            return self.run_one(library, settings, cfg, cancel);
+        }
+        let t = settings.stack_thresholds;
+        let everything = settings
+            .clone()
+            .with_best_of(ps_model::BestOf::Everything, t);
+        let (plan, mut report) = self.run_one(library, everything, cfg, cancel)?;
+        if report.stopped.is_none() && !cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            let picks = settings.with_best_of(ps_model::BestOf::PicksOnly, t);
+            let (_, best) =
+                self.run_one(&library.join(ps_model::BEST_OF_FOLDER), picks, cfg, cancel)?;
+            report.copied += best.copied;
+            report.adopted += best.adopted;
+            report.bytes_copied += best.bytes_copied;
+            report.sidecars += best.sidecars;
+            report.suspect.extend(best.suspect);
+            report.failed.extend(best.failed);
+            report.stopped = report.stopped.or(best.stopped);
+            report.elapsed += best.elapsed;
+        }
+        self.catalog()
+            .writer()
+            .set_export_library_best_of(self.library_id(library)?, best_of_record(&settings))?;
+        Ok((plan, report))
+    }
+
+    /// The parts an export makes, each with its plan: one, or for "both" the library and its `Best of/` folder.
+    pub fn plan_parts(
+        &self,
+        library: &Path,
+        settings: ProfileSettings,
+    ) -> Result<Vec<(PathBuf, Plan)>> {
+        if settings.best_of != ps_model::BestOf::Both {
+            return Ok(vec![(
+                library.to_path_buf(),
+                self.plan(library, settings)?.0,
+            )]);
+        }
+        let t = settings.stack_thresholds;
+        let best = library.join(ps_model::BEST_OF_FOLDER);
+        Ok(vec![
+            (
+                library.to_path_buf(),
+                self.plan(
+                    library,
+                    settings
+                        .clone()
+                        .with_best_of(ps_model::BestOf::Everything, t),
+                )?
+                .0,
+            ),
+            (
+                best.clone(),
+                self.plan(&best, settings.with_best_of(ps_model::BestOf::PicksOnly, t))?
+                    .0,
+            ),
+        ])
+    }
+
+    fn run_one(
         &self,
         library: &Path,
         settings: ProfileSettings,

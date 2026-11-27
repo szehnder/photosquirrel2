@@ -197,3 +197,51 @@ fn scenario_cleanup_shots_not_picked_are_not_eligible() {
         );
     }
 }
+
+#[test]
+fn scenario_export_both() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let svc = scanned(tmp.path());
+    let library = tmp.path().join("library");
+    let (_, picks) = left_out_and_picks(&svc);
+    let parts = svc
+        .exports()
+        .plan_parts(&library, settings(BestOf::Both))
+        .unwrap();
+    assert_eq!(
+        parts.len(),
+        2,
+        "the library and its Best of folder, each with its plan"
+    );
+    let (_, report) = svc
+        .exports()
+        .run(
+            &library,
+            settings(BestOf::Both),
+            &ExecConfig::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(
+        report.failed.is_empty() && report.suspect.is_empty(),
+        "every copy verified"
+    );
+    // Every keeper in the dated layout of the library.
+    let (_, main, _) = svc.exports().dispositions(&library, false).unwrap();
+    assert!(
+        main.iter()
+            .all(|x| !matches!(x.disposition, Disposition::Pending | Disposition::NotPicked))
+    );
+    // Every pick again under Best of/.
+    let best = library.join(ps_model::BEST_OF_FOLDER);
+    assert!(best.is_dir());
+    let (_, again, _) = svc.exports().dispositions(&best, false).unwrap();
+    for x in again.iter().filter(|x| picks.contains(&x.file)) {
+        assert!(
+            matches!(x.disposition, Disposition::Exported | Disposition::Covered),
+            "pick {:?} under Best of: {:?}",
+            x.file,
+            x.disposition
+        );
+    }
+}
