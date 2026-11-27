@@ -25,15 +25,18 @@ pub enum Section {
     General,
     Appearance,
     Scanning,
+    /// Stacks of similar shots (best-of-stacks).
+    Review,
     Ai,
     Export,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [
+    pub const ALL: [Section; 6] = [
         Section::General,
         Section::Appearance,
         Section::Scanning,
+        Section::Review,
         Section::Ai,
         Section::Export,
     ];
@@ -43,6 +46,7 @@ impl Section {
             Section::General => "General",
             Section::Appearance => "Appearance",
             Section::Scanning => "Scanning",
+            Section::Review => "Review",
             Section::Ai => "AI",
             Section::Export => "Export",
         }
@@ -53,6 +57,7 @@ impl Section {
             Section::General => IconName::SlidersHorizontal,
             Section::Appearance => IconName::Palette,
             Section::Scanning => IconName::ScanSearch,
+            Section::Review => IconName::Images,
             Section::Ai => IconName::Sparkles,
             Section::Export => IconName::FolderOutput,
         }
@@ -63,6 +68,7 @@ impl Section {
             Section::General => "general",
             Section::Appearance => "appearance",
             Section::Scanning => "scanning",
+            Section::Review => "review",
             Section::Ai => "ai",
             Section::Export => "export",
         }
@@ -375,6 +381,57 @@ pub fn definitions() -> Vec<SettingDef> {
                 },
                 unit: Some("s"),
                 placeholder: "300",
+            },
+        },
+        SettingDef {
+            key: "review.stack_window_s",
+            section: Review,
+            name: "Stack shots taken within",
+            description: "Duplicates > Stacks groups shots taken this close together that look alike, such as \
+                          a burst. Longer stacks more shots together. Nothing is ever merged or deleted.",
+            control: Control::Field {
+                get: |s| s.review.stack_window_s.to_string(),
+                parse: |t, s| {
+                    let w = u32::try_from(parse_u64(t)?)
+                        .map_err(|_| "That number is too large.".to_owned())?;
+                    if !(ps_model::MIN_WINDOW_S..=ps_model::MAX_WINDOW_S).contains(&w) {
+                        return Err(format!(
+                            "Between {} and {} seconds.",
+                            ps_model::MIN_WINDOW_S,
+                            ps_model::MAX_WINDOW_S
+                        ));
+                    }
+                    s.review.set_thresholds(ps_model::StackThresholds {
+                        window_s: w,
+                        similarity: s.review.stack_similarity,
+                    });
+                    Ok(())
+                },
+                unit: Some("s"),
+                placeholder: "5",
+            },
+        },
+        SettingDef {
+            key: "review.stack_similarity",
+            section: Review,
+            name: "Stack similarity",
+            description: "How alike two shots must look to be stacked. Strict: perceptual hashes within 8 and \
+                          10 bits. Balanced: 12 and 16. Loose: 18 and 22. Duplicates use 6 and 8.",
+            control: Control::Choice {
+                options: &["Strict", "Balanced", "Loose"],
+                get: |s| {
+                    ps_model::StackSimilarity::ALL
+                        .iter()
+                        .position(|x| *x == s.review.stack_similarity)
+                        .unwrap_or(1)
+                },
+                set: |s, i| {
+                    let t = ps_model::StackThresholds {
+                        window_s: s.review.thresholds().window_s,
+                        similarity: ps_model::StackSimilarity::ALL[i.min(2)],
+                    };
+                    s.review.set_thresholds(t);
+                },
             },
         },
         SettingDef {
