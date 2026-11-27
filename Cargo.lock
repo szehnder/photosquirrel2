@@ -6439,6 +6439,7 @@ dependencies = [
  "ps-dedup",
  "ps-export",
  "ps-fixtures",
+ "ps-hash",
  "ps-llm",
  "ps-media",
  "ps-model",
