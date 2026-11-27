@@ -399,3 +399,23 @@ mod tests {
         assert!(Format::Raw(RawFormat::Cr2).is_raw());
     }
 }
+
+/// How sharp and how well exposed a photo is, from its thumbnail (ADR-0135 decision 5): shot-quality
+/// version 1.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ShotQuality {
+    /// Variance of the Laplacian of the thumbnail's luminance (larger is sharper).
+    pub sharpness: f32,
+    /// Fractions (0..1) of luminance at 250 or above, and at 5 or below.
+    pub clipped_high: f32,
+    pub clipped_low: f32,
+}
+
+impl ShotQuality {
+    pub fn clipped(&self) -> f32 {
+        self.clipped_high + self.clipped_low
+    }
+}
+
+/// The version of [`ShotQuality`]'s computation; stored with the scores so a better one can replace them.
+pub const SHOT_QUALITY_VERSION: u32 = 1;

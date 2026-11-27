@@ -102,21 +102,7 @@ impl StackThresholds {
     }
 }
 
-/// How sharp and how well exposed a photo is, from its thumbnail (ADR-0135 decision 5).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ShotQuality {
-    /// Variance of the Laplacian of the thumbnail's luminance (larger is sharper).
-    pub sharpness: f32,
-    /// Fractions (0..1) of luminance at 250 or above, and at 5 or below.
-    pub clipped_high: f32,
-    pub clipped_low: f32,
-}
-
-impl ShotQuality {
-    pub fn clipped(&self) -> f32 {
-        self.clipped_high + self.clipped_low
-    }
-}
+pub use ps_model::ShotQuality;
 
 /// The user's stack decisions and what else the rule needs from outside the grouping.
 #[derive(Clone, Copy, Debug)]
