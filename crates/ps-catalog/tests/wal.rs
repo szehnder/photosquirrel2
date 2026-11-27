@@ -69,6 +69,7 @@ fn scenario_catalog_migrated_catalog_leaves_an_empty_log() {
              ALTER TABLE file DROP COLUMN clipped_low;
              DROP TABLE stack_separation;
              DROP TABLE stack_pick;
+             ALTER TABLE export_library DROP COLUMN best_of;
              ALTER TABLE file DROP COLUMN colour;
              PRAGMA user_version = {};",
             db::COLOUR_MIGRATION.version - 1

@@ -754,6 +754,7 @@ fn older_catalog_video(cx: &mut TestAppContext, default_tool: Option<PathBuf>) {
          ALTER TABLE file DROP COLUMN clipped_low;
          DROP TABLE stack_separation;
          DROP TABLE stack_pick;
+         ALTER TABLE export_library DROP COLUMN best_of;
          ALTER TABLE file DROP COLUMN colour;
          PRAGMA user_version = 24;",
     )
