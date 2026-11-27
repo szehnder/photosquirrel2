@@ -54,6 +54,7 @@ pub const CATALOG_MIGRATIONS: &[Migration] = &[
     PREVIEW_GEN_MIGRATION,
     VIDEO_PLACEHOLDER_MIGRATION,
     COLOUR_MIGRATION,
+    STACKS_MIGRATION,
 ];
 
 /// Migration 4 (duplicate-groups change: `dup_group`, `dup_member`, `dup_suggestion`, `keeper_override`,
@@ -219,6 +220,13 @@ pub const COLOUR_MIGRATION: Migration = Migration {
     version: 26,
     name: "colour",
     sql: include_str!("../migrations/0026_colour.sql"),
+};
+/// Migration 27 (ADR-0135: `file.shot_quality_version`, `sharpness`, `clipped_high`, `clipped_low`; the user's stack
+/// decisions in `stack_separation` and `stack_pick`). Additive: older versions ignore them.
+pub const STACKS_MIGRATION: Migration = Migration {
+    version: 27,
+    name: "stacks",
+    sql: include_str!("../migrations/0027_stacks.sql"),
 };
 /// SQL that puts a catalog back where migration 26 leaves one written before colour spaces were read (ADR-0113): no
 /// colour recorded, then the migration's own marking statement, so tests that rebuild an old catalog cannot drift

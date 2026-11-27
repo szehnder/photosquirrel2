@@ -185,15 +185,15 @@ pub struct ConstraintRows {
     pub merges: Vec<(ContentId, ContentId)>,
 }
 
-fn ordered(a: ContentId, b: ContentId) -> (ContentId, ContentId) {
+pub(crate) fn ordered(a: ContentId, b: ContentId) -> (ContentId, ContentId) {
     if a <= b { (a, b) } else { (b, a) }
 }
 
-fn kind_code(c: &ContentId) -> i64 {
+pub(crate) fn kind_code(c: &ContentId) -> i64 {
     codes::identity_kind(c.kind)
 }
 
-fn content_from(digest: Vec<u8>, kind: i64) -> Result<ContentId> {
+pub(crate) fn content_from(digest: Vec<u8>, kind: i64) -> Result<ContentId> {
     let digest: [u8; 32] = digest
         .try_into()
         .map_err(|_| CatalogError::Corrupt("content id".into()))?;
@@ -378,7 +378,7 @@ impl Writer {
     }
 }
 
-fn pair_rows(
+pub(crate) fn pair_rows(
     c: &Connection,
     table: &'static str,
     pairs: &[(ContentId, ContentId)],

@@ -21,6 +21,7 @@ pub mod groups;
 mod model;
 pub mod previews;
 mod read;
+pub mod stacks;
 pub mod stores;
 pub mod thumbs;
 pub mod wal;
