@@ -2023,3 +2023,162 @@ fn exclude_and_include_are_in_the_palette(cx: &mut TestAppContext) {
     // Its key, E, works only in the Duplicates view (`Duplicates && !Input`), like R and S, so the palette lists
     // no shortcut for it; `scenario_duplicate_review_exclude_a_group_with_e` presses it.
 }
+
+// ---- best-of-stacks: the Stacks tab ---------------------------------------------------------------------------
+
+fn open_stacks(
+    view: &Entity<DuplicatesView>,
+    cx: &mut VisualTestContext,
+) -> std::sync::Arc<ps_service::stacks::StacksView> {
+    cx.simulate_keystrokes("t");
+    let v = view.clone();
+    wait_until(cx, "the stacks", move |cx| {
+        cx.update(|_, cx| {
+            let v = v.read(cx);
+            v.tab == Tab::Stacks
+                && !v.is_busy()
+                && !v.stacks_tab().loading
+                && v.stacks_tab()
+                    .view
+                    .as_ref()
+                    .is_some_and(|x| !x.stacks.stacks.is_empty())
+        })
+    });
+    cx.update(|_, cx| view.read(cx).stacks_tab().view.clone().unwrap())
+}
+
+fn wait_stacks_reloaded(
+    view: &Entity<DuplicatesView>,
+    cx: &mut VisualTestContext,
+    what: &str,
+    pred: impl Fn(&ps_service::stacks::StacksView, &DuplicatesView) -> bool + 'static,
+) {
+    let v = view.clone();
+    wait_until(cx, what, move |cx| {
+        cx.update(|_, cx| {
+            let v = v.read(cx);
+            !v.is_busy()
+                && !v.stacks_tab().loading
+                && v.stacks_tab().view.as_ref().is_some_and(|x| pred(x, v))
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_open_a_stack(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let stacks = open_stacks(&view, &mut cx);
+    let s = &stacks.stacks.stacks[0];
+    assert!(s.shots.len() >= 2);
+    assert!(present("stacks-shots", &mut cx));
+    let pick_ix = s.shots.iter().position(|f| *f == s.pick).unwrap();
+    assert!(
+        present(&format!("stacks-best-of-{pick_ix}"), &mut cx),
+        "the pick is marked Best of"
+    );
+    assert!(present("stacks-why", &mut cx), "with its reasons");
+    assert!(present("stacks-progress", &mut cx));
+    let (main, _) = duplicates::stacks_progress_text(stacks.stacks.stacks.len() as u64, 0);
+    assert_eq!(main, format!("{} left", stacks.stacks.stacks.len()));
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_pick_with_a_number_key(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let stacks = open_stacks(&view, &mut cx);
+    let s = stacks.stacks.stacks[0].clone();
+    let n = s.shots.iter().position(|f| *f != s.pick).unwrap() + 1;
+    let chosen = s.shots[n - 1];
+    let before = corpus_stamps();
+    cx.simulate_keystrokes(&n.to_string());
+    wait_stacks_reloaded(&view, &mut cx, "the new pick", move |v, _| {
+        v.stack_of(chosen).is_some_and(|x| {
+            x.pick == chosen && x.reason == ps_service::stacks::PickReason::PickedByYou
+        })
+    });
+    assert_eq!(corpus_stamps(), before, "no file changed");
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_review_stacks_with_r(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let stacks = open_stacks(&view, &mut cx);
+    assert!(stacks.stacks.stacks.len() >= 2);
+    let first = stacks.anchor(&stacks.stacks.stacks[0]).unwrap();
+    cx.simulate_keystrokes("r");
+    let v = view.clone();
+    wait_until(&mut cx, "reviewed and the next stack open", move |cx| {
+        cx.update(|_, cx| {
+            let v = v.read(cx);
+            !v.is_busy() && v.stacks_tab().reviewed.contains(&first) && v.stacks_tab().selected == 1
+        })
+    });
+    let n = stacks.stacks.stacks.len() as u64;
+    let (main, sub) = duplicates::stacks_progress_text(n, 1);
+    assert_eq!(main, format!("{} left", n - 1));
+    assert!(sub.starts_with("1 of"));
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_take_out_with_s(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let stacks = open_stacks(&view, &mut cx);
+    let (i, s) = stacks
+        .stacks
+        .stacks
+        .iter()
+        .enumerate()
+        .find(|(_, s)| s.shots.len() >= 3)
+        .map(|(i, s)| (i, s.clone()))
+        .expect("a stack of three");
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.select_stack(i, cx)));
+    }
+    cx.simulate_keystrokes("right");
+    let out = s.shots[1];
+    let rest = s.shots[0];
+    cx.simulate_keystrokes("s");
+    wait_stacks_reloaded(&view, &mut cx, "the shot taken out", move |v, _| {
+        v.index.get(&rest).is_some() && v.index.get(&out) != v.index.get(&rest)
+    });
+    let after = cx.update(|_, cx| view.read(cx).stacks_tab().view.clone().unwrap());
+    assert_eq!(after.stack_of(rest).unwrap().shots.len(), s.shots.len() - 1);
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_retune_from_the_header(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    open_stacks(&view, &mut cx);
+    {
+        let view = view.clone();
+        cx.update(|_, cx| {
+            view.update(cx, |v, cx| {
+                let t = ps_model::StackThresholds {
+                    similarity: ps_model::StackSimilarity::Strict,
+                    ..v.stack_thresholds(cx)
+                };
+                v.set_stack_thresholds(t, cx)
+            })
+        });
+    }
+    wait_stacks_reloaded(&view, &mut cx, "the strict stacks", |v, _| {
+        v.thresholds.similarity == ps_model::StackSimilarity::Strict
+    });
+    let saved = cx.update(|_, cx| {
+        ui_workspace::settings::AppSettings::get(cx)
+            .review
+            .stack_similarity
+    });
+    assert_eq!(
+        saved,
+        ps_model::StackSimilarity::Strict,
+        "the setting is saved"
+    );
+    assert!(present("stacks-count", &mut cx));
+}

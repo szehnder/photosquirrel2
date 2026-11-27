@@ -53,6 +53,40 @@ pub trait ReviewSource: Send + Sync + 'static {
     ) -> anyhow::Result<ReviewDetail> {
         anyhow::bail!("including a group is not available here")
     }
+    /// The stacks of similar shots under `t` (best-of-stacks, ADR-0135).
+    fn stacks(
+        &self,
+        _t: ps_model::StackThresholds,
+    ) -> anyhow::Result<std::sync::Arc<ps_service::stacks::StacksView>> {
+        anyhow::bail!("stacks are not available here")
+    }
+    /// Make `file` its stack's pick under `t`.
+    fn stack_pick(&self, _t: ps_model::StackThresholds, _file: FileId) -> anyhow::Result<()> {
+        anyhow::bail!("stacks are not available here")
+    }
+    /// Take `file` out of its stack under `t`.
+    fn stack_take_out(&self, _t: ps_model::StackThresholds, _file: FileId) -> anyhow::Result<()> {
+        anyhow::bail!("stacks are not available here")
+    }
+    /// Put `file` back into the stacks it was taken out of.
+    fn stack_put_back(&self, _file: FileId) -> anyhow::Result<()> {
+        anyhow::bail!("stacks are not available here")
+    }
+    /// Of `anchors`, the stacks marked reviewed.
+    fn stacks_reviewed(
+        &self,
+        _anchors: Vec<ps_model::ContentId>,
+    ) -> anyhow::Result<std::collections::HashSet<ps_model::ContentId>> {
+        Ok(std::collections::HashSet::new())
+    }
+    /// Mark a stack (by its anchor) reviewed or not.
+    fn set_stack_reviewed(
+        &self,
+        _anchor: ps_model::ContentId,
+        _reviewed: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("stacks are not available here")
+    }
     /// A cleanup run is moving files: keeper, group and exclusion edits are refused until it ends (ADR-0099).
     /// Never blocks (called while rendering).
     fn cleanup_running(&self) -> bool {
@@ -95,6 +129,8 @@ pub struct CatalogReview {
     ai: Mutex<Option<(String, ps_service::ai::AiService)>>,
     /// The loaded groups, re-filtered on every reload while they are unchanged (ADR-0133).
     cache: ps_service::review::ReviewCache,
+    /// The loaded stack inputs, recomputed into stacks on every threshold change (ADR-0135).
+    stacks: ps_service::stacks::StackCache,
 }
 
 impl CatalogReview {
@@ -104,6 +140,7 @@ impl CatalogReview {
             review: std::sync::OnceLock::new(),
             ai: Mutex::new(None),
             cache: ps_service::review::ReviewCache::new(),
+            stacks: ps_service::stacks::StackCache::new(),
         }
     }
 
@@ -200,6 +237,56 @@ impl ReviewSource for CatalogReview {
         )?;
         self.backend.library().forget_dispositions();
         Ok(d)
+    }
+    fn stacks(
+        &self,
+        t: ps_model::StackThresholds,
+    ) -> anyhow::Result<std::sync::Arc<ps_service::stacks::StacksView>> {
+        Ok(std::sync::Arc::new(self.stacks.view(
+            self.backend.scan()?,
+            self.store()?,
+            t,
+        )?))
+    }
+    fn stack_pick(&self, t: ps_model::StackThresholds, file: FileId) -> anyhow::Result<()> {
+        let scan = self.backend.scan()?;
+        let v = self.stacks.view(scan, self.store()?, t)?;
+        ps_service::stacks::pick(scan, &v, file)?;
+        self.backend.library().forget_dispositions();
+        Ok(())
+    }
+    fn stack_take_out(&self, t: ps_model::StackThresholds, file: FileId) -> anyhow::Result<()> {
+        let scan = self.backend.scan()?;
+        let v = self.stacks.view(scan, self.store()?, t)?;
+        ps_service::stacks::take_out(scan, &v, file)?;
+        self.backend.library().forget_dispositions();
+        Ok(())
+    }
+    fn stack_put_back(&self, file: FileId) -> anyhow::Result<()> {
+        ps_service::stacks::put_back(self.backend.scan()?, file)?;
+        self.backend.library().forget_dispositions();
+        Ok(())
+    }
+    fn stacks_reviewed(
+        &self,
+        anchors: Vec<ps_model::ContentId>,
+    ) -> anyhow::Result<std::collections::HashSet<ps_model::ContentId>> {
+        let store = self.store()?;
+        Ok(anchors
+            .into_iter()
+            .filter(|a| ps_service::review::stack_reviewed(store, a))
+            .collect())
+    }
+    fn set_stack_reviewed(
+        &self,
+        anchor: ps_model::ContentId,
+        reviewed: bool,
+    ) -> anyhow::Result<()> {
+        Ok(ps_service::review::set_stack_reviewed(
+            self.store()?,
+            &anchor,
+            reviewed,
+        )?)
     }
     fn suggestions(&self, limit: u64) -> anyhow::Result<Vec<SuggestionCard>> {
         Ok(ps_service::review::suggestions(

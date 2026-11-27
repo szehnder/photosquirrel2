@@ -38,6 +38,9 @@ use crate::views::review_kit::*;
 use crate::views::{ViewId, ViewRegistry};
 use crate::widgets::{eyebrow, kbd, segmented};
 
+mod stacks;
+pub use stacks::{StacksTab, clipping_words, sharpness_words, stacks_progress_text};
+
 /// Key context of the Duplicates view.
 pub const CONTEXT: &str = "Duplicates";
 const KEYS: &str = "Duplicates && !Input";
@@ -61,6 +64,8 @@ actions!(
         ExcludeGroup,
         /// Put the open excluded group back in the library.
         IncludeGroup,
+        /// Stacks of similar shots and the best of each (T).
+        ToggleStacks,
         FocusNextMember,
         FocusPrevMember,
         ConfirmPending,
@@ -91,6 +96,7 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("space", ToggleCompare, c),
         KeyBinding::new("x", DismissSuggestion, c),
         KeyBinding::new("e", ExcludeGroup, c),
+        KeyBinding::new("t", ToggleStacks, c),
         KeyBinding::new("right", FocusNextMember, c),
         KeyBinding::new("left", FocusPrevMember, c),
         KeyBinding::new("enter", ConfirmPending, c),
@@ -131,6 +137,8 @@ pub fn register(cx: &mut App) {
                 ),
                 CommandMeta::new("Duplicates", "Exclude Group (Keep None)", ExcludeGroup)
                     .keywords(&["keep none", "remove", "drop", "skip"]),
+                CommandMeta::new("Duplicates", "Stacks of Similar Shots", ToggleStacks)
+                    .keywords(&["burst", "best of", "stack"]),
                 CommandMeta::new("Duplicates", "Include Group Again", IncludeGroup).keywords(&[
                     "put back",
                     "restore",
@@ -238,6 +246,8 @@ pub fn why_compare_line(d: &ReviewDetail) -> Option<String> {
 pub enum Tab {
     Groups,
     Suggestions,
+    /// Stacks of similar shots (best-of-stacks).
+    Stacks,
 }
 
 /// An action waiting for confirmation.
@@ -308,6 +318,8 @@ pub struct DuplicatesView {
     reason: Entity<InputState>,
     /// The exclusion just made, for the notice's Undo.
     undo_exclusion: Option<GroupExclusion>,
+    /// The Stacks tab.
+    stacks: StacksTab,
 }
 
 /// Shown while a cleanup run is moving files: the edits are not offered (ADR-0099).
@@ -351,6 +363,7 @@ impl DuplicatesView {
             show_explainer: false,
             reason: cx.new(|cx| InputState::new(window, cx).placeholder("Reason (optional)")),
             undo_exclusion: None,
+            stacks: StacksTab::default(),
         };
         if std::env::var("PHOTOSQUIRREL_REVIEW_TAB").as_deref() == Ok("suggestions") {
             // Dev-only: scripted screenshots of the suggestions panel (KDE gives agents one frame).
@@ -863,6 +876,9 @@ impl DuplicatesView {
         self.explain = None;
         if tab == Tab::Suggestions {
             self.reload_suggestions(cx);
+        }
+        if tab == Tab::Stacks {
+            self.reload_stacks(cx);
         }
         cx.notify();
     }
@@ -1645,17 +1661,21 @@ impl DuplicatesView {
             .gap(Tokens::space(1.0))
             .child(segmented(
                 "duplicates-tab",
-                &["Groups", "Similar shots"],
-                usize::from(tab == Tab::Suggestions),
+                &["Groups", "Similar shots", "Stacks"],
+                match tab {
+                    Tab::Groups => 0,
+                    Tab::Suggestions => 1,
+                    Tab::Stacks => 2,
+                },
                 {
                     let weak = weak.clone();
                     move |ix, _, cx| {
                         let _ = weak.update(cx, |v, cx| {
                             v.set_tab(
-                                if ix == 1 {
-                                    Tab::Suggestions
-                                } else {
-                                    Tab::Groups
+                                match ix {
+                                    1 => Tab::Suggestions,
+                                    2 => Tab::Stacks,
+                                    _ => Tab::Groups,
                                 },
                                 cx,
                             )
@@ -1672,7 +1692,10 @@ impl DuplicatesView {
                     cx,
                 ))
             })
-            .child(kbd("B", cx));
+            .child(kbd(if tab == Tab::Stacks { "T" } else { "B" }, cx));
+        if tab == Tab::Stacks {
+            return self.render_stacks_list(tabs.into_any_element(), cx);
+        }
         let header = v_flex()
             .flex_none()
             .px(Tokens::space(4.0))
@@ -3172,6 +3195,7 @@ impl DuplicatesView {
                     })
                 })
             })
+            .or_else(|| self.stack_shot_thumb(f))
             .unwrap_or((None, String::new()));
         let img = self
             .images
@@ -3630,6 +3654,10 @@ impl Render for DuplicatesView {
         let detail = match self.tab {
             Tab::Groups => self.render_detail(window, cx),
             Tab::Suggestions => self.render_suggestion_detail(window, cx),
+            Tab::Stacks => match self.compare {
+                Some(c) => self.render_compare(c, window, cx),
+                None => self.render_stack_detail(cx),
+            },
         };
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
@@ -3640,11 +3668,49 @@ impl Render for DuplicatesView {
             .track_focus(&self.focus)
             .size_full()
             .bg(colors.background)
-            .on_action(cx.listener(|this, _: &NextGroup, _, cx| this.step(1, cx)))
-            .on_action(cx.listener(|this, _: &PrevGroup, _, cx| this.step(-1, cx)))
-            .on_action(cx.listener(|this, _: &MarkReviewed, _, cx| this.mark_reviewed(cx)))
-            .on_action(cx.listener(|this, _: &SeparateFocused, _, cx| this.ask_separate(cx)))
-            .on_action(cx.listener(|this, _: &ToggleCompare, _, cx| this.toggle_compare(cx)))
+            .on_action(cx.listener(|this, _: &NextGroup, _, cx| {
+                if this.tab == Tab::Stacks {
+                    this.stack_step(1, cx)
+                } else {
+                    this.step(1, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &PrevGroup, _, cx| {
+                if this.tab == Tab::Stacks {
+                    this.stack_step(-1, cx)
+                } else {
+                    this.step(-1, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &MarkReviewed, _, cx| {
+                if this.tab == Tab::Stacks {
+                    this.stack_mark_reviewed(cx)
+                } else {
+                    this.mark_reviewed(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SeparateFocused, _, cx| {
+                if this.tab == Tab::Stacks {
+                    this.stack_take_out(cx)
+                } else {
+                    this.ask_separate(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleCompare, _, cx| {
+                if this.tab == Tab::Stacks {
+                    this.stack_compare(cx)
+                } else {
+                    this.toggle_compare(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleStacks, _, cx| {
+                let tab = if this.tab == Tab::Stacks {
+                    Tab::Groups
+                } else {
+                    Tab::Stacks
+                };
+                this.set_tab(tab, cx)
+            }))
             .on_action(cx.listener(|this, _: &DismissSuggestion, _, cx| this.dismiss_selected(cx)))
             .on_action(cx.listener(|this, _: &ExcludeGroup, _, cx| {
                 if this.tab == Tab::Groups {
@@ -3653,10 +3719,16 @@ impl Render for DuplicatesView {
             }))
             .on_action(cx.listener(|this, _: &IncludeGroup, _, cx| this.include_group(cx)))
             .on_action(cx.listener(|this, _: &FocusNextMember, _, cx| {
+                if this.tab == Tab::Stacks {
+                    return this.stack_focus(1, cx);
+                }
                 let n = this.focused + 1;
                 this.focus_member(n, cx)
             }))
             .on_action(cx.listener(|this, _: &FocusPrevMember, _, cx| {
+                if this.tab == Tab::Stacks {
+                    return this.stack_focus(-1, cx);
+                }
                 if let Some(n) = this.focused.checked_sub(1) {
                     this.focus_member(n, cx)
                 }
@@ -3674,7 +3746,13 @@ impl Render for DuplicatesView {
             .on_action(cx.listener(|this, _: &CompareZoomIn, _, cx| this.zoom_step(1, cx)))
             .on_action(cx.listener(|this, _: &CompareZoomOut, _, cx| this.zoom_step(-1, cx)))
             .on_action(cx.listener(|this, _: &CompareZoomFit, _, cx| this.zoom_step(0, cx)))
-            .on_action(cx.listener(|this, a: &PickKeeper, _, cx| this.pick_keeper(a.0, cx)))
+            .on_action(cx.listener(|this, a: &PickKeeper, _, cx| {
+                if this.tab == Tab::Stacks {
+                    this.stack_pick(a.0, cx)
+                } else {
+                    this.pick_keeper(a.0, cx)
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {

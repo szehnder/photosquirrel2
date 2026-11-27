@@ -30,8 +30,8 @@
 
 ## 5. UI
 
-- [ ] 5.1 Stacks tab (T): the stack list, a filmstrip in time order, the pick marked "Best of" with reasons, the score words, and the progress card. Verify: `scenario_duplicate_review_open_a_stack`.
-- [ ] 5.2 Keys in a stack: digits pick, Space compares, S takes out, R reviews, J and K move; plus a "Taken out" disclosure with Put back. Verify: `scenario_duplicate_review_pick_with_a_number_key`, `scenario_duplicate_review_review_stacks_with_r` and `scenario_duplicate_review_take_out_with_s`.
+- [x] 5.1 Stacks tab (T, and a third segment beside Groups and Similar shots): the stack list (pick thumbnail, shot count, span, reviewed check), the shots in time order with the pick marked "Best of", its reason, score words ("Sharp", "Slightly soft", "3% blown highlights", "Scores pending"), and a stacks progress card. Computed on a background executor with a generation counter. Verify: `scenario_duplicate_review_open_a_stack`.
+- [x] 5.2 Keys in the Stacks tab: digits pick, Space compares the pick with the focused shot (the loupe), S takes out, R reviews and opens the next unreviewed stack, J/K and arrows move; a Put back button undoes the last take-out (and `stacks` CLI or a later review can put back others). Verify: `scenario_duplicate_review_pick_with_a_number_key`, `scenario_duplicate_review_review_stacks_with_r` and `scenario_duplicate_review_take_out_with_s`.
 - [ ] 5.3 Header threshold controls with a live count, writing settings debounced by 300 ms; and the Settings > Review page. Verify: `scenario_duplicate_review_retune_from_the_header`.
 - [ ] 5.4 Gallery "Best of" filter chip over the stack snapshot. Verify: `scenario_gallery_best_of_shows_one_shot_per_stack` and `scenario_gallery_best_of_follows_a_new_pick`; `gallery-scroll` p95 unchanged.
 - [ ] 5.5 Export view: the "What to export" choice with per-part counts and bytes in the plan. Verify: a UI test that the plan shows the three parts, plus the export scenarios from 4.1 driven from the view.

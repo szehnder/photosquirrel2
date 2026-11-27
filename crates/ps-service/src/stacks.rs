@@ -114,6 +114,8 @@ pub struct StacksView {
     pub unscored: HashSet<FileId>,
     /// Each shot's scores.
     pub quality: HashMap<FileId, ShotQuality>,
+    /// Each shot's file name.
+    pub names: HashMap<FileId, String>,
 }
 
 impl StacksView {
@@ -196,7 +198,17 @@ impl StackCache {
             .keys()
             .filter_map(|f| quality.get(f).map(|q| (*f, *q)))
             .collect();
+        let names = index
+            .keys()
+            .filter_map(|f| {
+                inputs.input(*f).map(|x| {
+                    let name = x.path.rsplit('/').next().unwrap_or(&x.path);
+                    (*f, name.to_owned())
+                })
+            })
+            .collect();
         Ok(StacksView {
+            names,
             thresholds,
             stacks,
             index,
