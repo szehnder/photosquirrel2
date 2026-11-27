@@ -872,6 +872,12 @@ impl DuplicatesView {
     /// Choose the copy at display number `n` (1-based) as keeper.
     pub fn pick_keeper(&mut self, n: usize, cx: &mut Context<'_, Self>) {
         let Some(d) = &self.detail else { return };
+        if d.keeper_excluded() {
+            self.notice =
+                Some("This group is excluded: Include again first, then choose its keeper.".into());
+            cx.notify();
+            return;
+        }
         let Some(m) = d.members().get(n.wrapping_sub(1)) else {
             return;
         };
@@ -1318,7 +1324,12 @@ pub fn group_composition(d: &ReviewDetail) -> Vec<(String, String)> {
 /// The member's join badge and its tooltip: "Keeper", "Exact copy of the keeper", "Resized copy of #2", ...,
 /// short enough for a card at the default font size, with the full wording in the tooltip.
 pub fn edge_label(d: &ReviewDetail, m: &GroupMember) -> (String, String) {
-    let via = d.matched_label(m.file);
+    let excluded = d.keeper_excluded();
+    let mut via = d.matched_label(m.file);
+    if excluded && via == " of the keeper" {
+        // An excluded group has no keeper to export: name the copy, not what it would follow.
+        via.clear();
+    }
     let against = via.strip_prefix(" of ").unwrap_or_default();
     let matched = |what: &str| {
         if against.is_empty() {
@@ -1328,6 +1339,10 @@ pub fn edge_label(d: &ReviewDetail, m: &GroupMember) -> (String, String) {
         }
     };
     match m.edge {
+        MemberEdge::Keeper if excluded => (
+            "Not exported".to_owned(),
+            "Excluded by you: no copy of this group goes to the library".to_owned(),
+        ),
         MemberEdge::Keeper => (
             "Keeper".to_owned(),
             "Keeper: the copy export takes".to_owned(),
@@ -1349,8 +1364,15 @@ pub fn edge_label(d: &ReviewDetail, m: &GroupMember) -> (String, String) {
 fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElement {
     let colors = *ui_theme::colors(cx);
     let (label, tip) = edge_label(d, m);
+    let excluded = d.keeper_excluded();
     let (fg, bg) = match m.edge {
+        MemberEdge::Keeper if excluded => (
+            colors.tone_text(colors.danger),
+            ui_theme::Colors::chip_bg(colors.danger),
+        ),
         MemberEdge::Keeper => (colors.on_accent, colors.accent),
+        // No copy of an excluded group is exported: no tone suggests that one of them is.
+        _ if excluded => (colors.text_muted, colors.hover),
         MemberEdge::Exact => (
             colors.tone_text(colors.success),
             ui_theme::Colors::chip_bg(colors.success),
@@ -1373,7 +1395,14 @@ fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElemen
                 .test_support(),
         )
         .when(m.edge == MemberEdge::Keeper, |c| {
-            c.child(chip_icon(IconName::Crown, fg))
+            c.child(chip_icon(
+                if excluded {
+                    IconName::EyeOff
+                } else {
+                    IconName::Crown
+                },
+                fg,
+            ))
         })
         .tooltip(move |window, cx| {
             gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
@@ -1946,7 +1975,8 @@ impl DuplicatesView {
                                                 .id(("duplicates-row-excluded", ix))
                                                 .test_support()
                                                 .text_size(Tokens::text_2xs())
-                                                .text_color(colors.danger)
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(colors.tone_text(colors.danger))
                                                 .child("Excluded, none kept"),
                                         )
                                     })
@@ -2214,16 +2244,19 @@ impl DuplicatesView {
         });
         let mut actions = h_flex().gap(Tokens::space(1.5)).flex_wrap();
         if !m.keeper && !self.edits_blocked() {
+            let excluded = d.keeper_excluded();
             actions = actions
-                .child(action_button(
-                    format!("duplicates-keep-{n}"),
-                    "Make keeper",
-                    Some(IconName::Crown),
-                    (n <= 9).then(|| ["1", "2", "3", "4", "5", "6", "7", "8", "9"][n - 1]),
-                    Tone::Normal,
-                    cx,
-                    move |this, _, cx| this.pick_keeper(n, cx),
-                ))
+                .when(!excluded, |a| {
+                    a.child(action_button(
+                        format!("duplicates-keep-{n}"),
+                        "Make keeper",
+                        Some(IconName::Crown),
+                        (n <= 9).then(|| ["1", "2", "3", "4", "5", "6", "7", "8", "9"][n - 1]),
+                        Tone::Normal,
+                        cx,
+                        move |this, _, cx| this.pick_keeper(n, cx),
+                    ))
+                })
                 .child(action_button(
                     format!("duplicates-separate-{n}"),
                     "Not the same photo",
@@ -2364,6 +2397,54 @@ impl DuplicatesView {
 
     fn render_why(&self, d: &ReviewDetail, cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
+        if d.keeper_excluded() {
+            return v_flex()
+                .id("duplicates-why-excluded")
+                .test_support()
+                .w(Tokens::size(300.0))
+                .flex_none()
+                .gap(Tokens::space(2.0))
+                .p(Tokens::space(4.0))
+                .rounded(Tokens::RADIUS_LG)
+                .bg(colors.raised)
+                .border_1()
+                .border_color(colors.border)
+                .child(
+                    h_flex()
+                        .gap(Tokens::space(2.0))
+                        .child(
+                            Icon::new(IconName::EyeOff)
+                                .size(Tokens::icon_md())
+                                .text_color(colors.tone_text(colors.danger)),
+                        )
+                        .child(
+                            div()
+                                .text_size(Tokens::text_md())
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("You kept none of these"),
+                        ),
+                )
+                .child(div().text_size(Tokens::text_sm()).child(format!(
+                    "None of these {} copies goes to the library. Every file stays where it is on disk.",
+                    d.members().len()
+                )))
+                .child(
+                    div()
+                        .text_size(Tokens::text_sm())
+                        .text_color(colors.text_muted)
+                        .child("Include again to export the keeper as before, or to choose another one."),
+                )
+                .child(action_button(
+                    "duplicates-why-include",
+                    "Include again",
+                    Some(IconName::Undo2),
+                    None,
+                    Tone::Normal,
+                    cx,
+                    |this, _, cx| this.include_group(cx),
+                ))
+                .into_any_element();
+        }
         let compare_line = why_compare_line(d);
         v_flex()
             .id("duplicates-why")
@@ -2535,14 +2616,25 @@ impl DuplicatesView {
             .child(
                 h_flex()
                     .gap(Tokens::space(2.0))
-                    .child(icon_chip(
-                        "duplicates-pair-keeper",
-                        IconName::Crown,
-                        "Keeper",
-                        colors.on_accent,
-                        colors.accent,
-                        cx,
-                    ))
+                    .child(if d.keeper_excluded() {
+                        icon_chip(
+                            "duplicates-pair-keeper",
+                            IconName::EyeOff,
+                            "Not exported",
+                            colors.tone_text(colors.danger),
+                            ui_theme::Colors::chip_bg(colors.danger),
+                            cx,
+                        )
+                    } else {
+                        icon_chip(
+                            "duplicates-pair-keeper",
+                            IconName::Crown,
+                            "Keeper",
+                            colors.on_accent,
+                            colors.accent,
+                            cx,
+                        )
+                    })
                     .when(d.is_pair(), |e| {
                         e.child(chip(
                             "duplicates-pair-note",
@@ -2719,9 +2811,16 @@ impl DuplicatesView {
                                     .text_size(Tokens::text_xs())
                                     .text_color(colors.text_muted)
                                     .child(format!(
-                                        "{} copies · {} not copied again{}",
+                                        "{} copies · {}{}",
                                         d.members().len(),
-                                        format_bytes(d.group.reclaimable_bytes),
+                                        if d.keeper_excluded() {
+                                            "none exported".to_owned()
+                                        } else {
+                                            format!(
+                                                "{} not copied again",
+                                                format_bytes(d.group.reclaimable_bytes)
+                                            )
+                                        },
                                         captured
                                             .map(|c| format!(" · captured {c}"))
                                             .unwrap_or_default()
@@ -2729,7 +2828,7 @@ impl DuplicatesView {
                             ),
                     ),
             )
-            .when(!edits_blocked, |h| h.child(merge))
+            .when(!edits_blocked && !d.keeper_excluded(), |h| h.child(merge))
             .when(!edits_blocked && d.excluded.is_empty(), |h| {
                 h.child(action_button(
                     "duplicates-exclude",
@@ -2745,7 +2844,7 @@ impl DuplicatesView {
                 h.child(action_button(
                     "duplicates-include",
                     "Include again",
-                    Some(IconName::Check),
+                    Some(IconName::Undo2),
                     None,
                     Tone::Normal,
                     cx,
@@ -2813,7 +2912,11 @@ impl DuplicatesView {
                         div()
                             .text_size(Tokens::text_2xs())
                             .text_color(colors.text_faint)
-                            .child("1–9 keeper · ←/→ focus · S not the same photo · E keep none · Space compare · J/K next/previous"),
+                            .child(if d.keeper_excluded() {
+                                "Include again to choose a keeper · ←/→ focus · Space compare · J/K next/previous"
+                            } else {
+                                "1–9 keeper · ←/→ focus · S not the same photo · E keep none · Space compare · J/K next/previous"
+                            }),
                     ),
             )
             .child(

@@ -1952,6 +1952,18 @@ fn scenario_duplicate_review_include_the_group_again(cx: &mut TestAppContext) {
     let d = open_group(&view, &backend, &mut cx, move |d| d.group.id == group);
     assert!(d.keeper_excluded());
     assert!(present("duplicates-excluded-chip", &mut cx));
+    // The body agrees: no keeper is exported, and no copy is "of the keeper".
+    assert!(present("duplicates-why-excluded", &mut cx));
+    assert!(!present("duplicates-why", &mut cx));
+    let shown = detail(&view, &mut cx);
+    for m in shown.members() {
+        let (label, _) = duplicates::edge_label(&shown, m);
+        assert!(!label.contains("eeper"), "{label}");
+    }
+    assert_eq!(
+        duplicates::edge_label(&shown, &shown.members()[0]).0,
+        "Not exported"
+    );
     {
         let view = view.clone();
         cx.update(|_, cx| view.update(cx, |v, cx| v.include_group(cx)));
