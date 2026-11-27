@@ -11,7 +11,8 @@ use ps_service::ai::AiStatus;
 use ps_service::groups::SeparateOutcome;
 use ps_service::insights::{Correction, InsightFilter, InsightItem, InsightStamp, InsightStore};
 use ps_service::review::{
-    ReviewDetail, ReviewFilter, ReviewList, ReviewProgress, ReviewSort, ReviewStore, SuggestionCard,
+    GroupExclusion, ReviewDetail, ReviewFilter, ReviewList, ReviewProgress, ReviewSort,
+    ReviewStore, SuggestionCard,
 };
 use ps_service::secrets::Secrets;
 
@@ -36,6 +37,22 @@ pub trait ReviewSource: Send + Sync + 'static {
     /// Undo the user merges inside `group` (back to automatic matching).
     fn undo_merges(&self, group: FileId) -> anyhow::Result<ReviewDetail>;
     fn set_reviewed(&self, group: FileId, reviewed: bool) -> anyhow::Result<bool>;
+    /// Exclude every copy of `group` ("keep none") and mark it reviewed; returns what Undo needs.
+    fn exclude_group(
+        &self,
+        _group: FileId,
+        _reason: Option<String>,
+    ) -> anyhow::Result<GroupExclusion> {
+        anyhow::bail!("excluding a group is not available here")
+    }
+    /// Put an excluded group back: exactly as before with `undo`, else by clearing the user's exclusions.
+    fn include_group(
+        &self,
+        _group: FileId,
+        _undo: Option<GroupExclusion>,
+    ) -> anyhow::Result<ReviewDetail> {
+        anyhow::bail!("including a group is not available here")
+    }
     /// A cleanup run is moving files: keeper, group and exclusion edits are refused until it ends (ADR-0099).
     /// Never blocks (called while rendering).
     fn cleanup_running(&self) -> bool {
@@ -158,6 +175,31 @@ impl ReviewSource for CatalogReview {
             group,
             reviewed,
         )?)
+    }
+    fn exclude_group(
+        &self,
+        group: FileId,
+        reason: Option<String>,
+    ) -> anyhow::Result<GroupExclusion> {
+        let x =
+            ps_service::review::exclude_group(self.backend.scan()?, self.store()?, group, reason)?;
+        // A decision moves files between excluded and pending.
+        self.backend.library().forget_dispositions();
+        Ok(x)
+    }
+    fn include_group(
+        &self,
+        group: FileId,
+        undo: Option<GroupExclusion>,
+    ) -> anyhow::Result<ReviewDetail> {
+        let d = ps_service::review::include_group(
+            self.backend.scan()?,
+            self.store()?,
+            group,
+            undo.as_ref(),
+        )?;
+        self.backend.library().forget_dispositions();
+        Ok(d)
     }
     fn suggestions(&self, limit: u64) -> anyhow::Result<Vec<SuggestionCard>> {
         Ok(ps_service::review::suggestions(

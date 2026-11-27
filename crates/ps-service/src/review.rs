@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use ps_catalog::groups::reason_texts;
-use ps_catalog::{FileRecord, Readers};
+use ps_catalog::{DecisionWrite, FileRecord, Readers, UserDecision};
 use ps_model::library::InsightCriteria;
 use ps_model::{FileId, SourceId, path_from_bytes};
 
@@ -248,6 +248,12 @@ pub struct ReviewRow {
     pub attention_score: u32,
     /// The membership key review state is stored under.
     pub key: String,
+    /// Members the user (or an accepted AI suggestion) excluded (exclude-group-in-review).
+    #[serde(default)]
+    pub excluded: u32,
+    /// The keeper is excluded, so no copy of the group goes to the library: "Excluded, none kept".
+    #[serde(default)]
+    pub keeper_excluded: bool,
 }
 
 /// The review list with progress.
@@ -574,7 +580,8 @@ pub fn list_with(
     matcher: Option<&dyn GroupMatcher>,
 ) -> Result<ReviewList> {
     let loaded = LoadedGroups::load(svc, store)?;
-    Ok(loaded.list(store, filter, sort, matcher))
+    let excluded = Exclusions::load(svc)?;
+    Ok(loaded.list_excluding(store, filter, sort, matcher, &excluded))
 }
 
 /// One group as loaded from the catalog: its row without the review state, its membership key and its members.
@@ -673,6 +680,8 @@ impl LoadedGroups {
                     attention: why,
                     attention_score: score,
                     key,
+                    excluded: 0,
+                    keeper_excluded: false,
                 },
                 members,
             });
@@ -703,6 +712,18 @@ impl LoadedGroups {
         sort: ReviewSort,
         matcher: Option<&dyn GroupMatcher>,
     ) -> ReviewList {
+        self.list_excluding(store, filter, sort, matcher, &Exclusions::default())
+    }
+
+    /// [`Self::list`] with each row's excluded members counted from `excluded`.
+    pub fn list_excluding(
+        &self,
+        store: &ReviewStore,
+        filter: ReviewFilter,
+        sort: ReviewSort,
+        matcher: Option<&dyn GroupMatcher>,
+        excluded: &Exclusions,
+    ) -> ReviewList {
         let mut out = ReviewList {
             groups: self.groups.len() as u64,
             suggestions: self.open_suggestions,
@@ -726,6 +747,12 @@ impl LoadedGroups {
                 out.matching_reviewed += u64::from(reviewed);
                 let row = ReviewRow {
                     reviewed,
+                    excluded: g
+                        .members
+                        .iter()
+                        .filter(|(f, _)| excluded.0.contains(f))
+                        .count() as u32,
+                    keeper_excluded: excluded.0.contains(&g.row.keeper),
                     ..g.row.clone()
                 };
                 if filter.keeps(&row) {
@@ -818,6 +845,8 @@ pub fn groups_key(svc: &ScanService, store: &ReviewStore) -> Result<GroupsKey> {
 #[derive(Debug, Default)]
 pub struct ReviewCache {
     last: std::sync::Mutex<Option<(GroupsKey, std::sync::Arc<LoadedGroups>)>>,
+    /// The excluded files, read again only when the stored decisions changed.
+    excluded: std::sync::Mutex<Option<(ExclusionsKey, std::sync::Arc<Exclusions>)>>,
 }
 
 impl ReviewCache {
@@ -851,7 +880,23 @@ impl ReviewCache {
         sort: ReviewSort,
         matcher: Option<&dyn GroupMatcher>,
     ) -> Result<ReviewList> {
-        Ok(self.groups(svc, store)?.list(store, filter, sort, matcher))
+        let excluded = self.exclusions(svc)?;
+        Ok(self
+            .groups(svc, store)?
+            .list_excluding(store, filter, sort, matcher, &excluded))
+    }
+
+    /// The files excluded by a user decision, cached by [`exclusions_key`].
+    pub fn exclusions(&self, svc: &ScanService) -> Result<std::sync::Arc<Exclusions>> {
+        let key = exclusions_key(svc)?;
+        if let Some((k, e)) = &*self.excluded.lock().unwrap_or_else(|e| e.into_inner())
+            && *k == key
+        {
+            return Ok(e.clone());
+        }
+        let loaded = std::sync::Arc::new(Exclusions::load(svc)?);
+        *self.excluded.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, loaded.clone()));
+        Ok(loaded)
     }
 
     /// [`progress`] over the cached groups.
@@ -933,6 +978,9 @@ pub struct ReviewDetail {
     pub cards: Vec<MemberCard>,
     pub reviewed: bool,
     pub key: String,
+    /// Members excluded by a user decision (or an accepted AI suggestion), in display order.
+    #[serde(default)]
+    pub excluded: Vec<FileId>,
 }
 
 impl ReviewDetail {
@@ -990,6 +1038,16 @@ impl ReviewDetail {
     /// The keeper set has more than one file (RAW+JPEG, ADR-0014/0037).
     pub fn is_pair(&self) -> bool {
         self.group.keeper_set.len() > 1
+    }
+
+    /// No copy of the group goes to the library: its keeper is excluded.
+    pub fn keeper_excluded(&self) -> bool {
+        self.excluded.contains(&self.group.keeper)
+    }
+
+    /// Members not excluded.
+    pub fn kept(&self) -> usize {
+        self.group.members.len() - self.excluded.len()
     }
 }
 
@@ -1070,11 +1128,22 @@ pub fn show(svc: &ScanService, store: &ReviewStore, id: FileId) -> Result<Review
         }
     }
     let key = membership_key(digests);
+    let ids: Vec<FileId> = group.members.iter().map(|m| m.file).collect();
+    let decisions = r.user_decisions_of(&ids)?;
+    let excluded = ids
+        .into_iter()
+        .filter(|f| {
+            decisions
+                .get(f)
+                .is_some_and(|d| d.decision == UserDecision::Exclude)
+        })
+        .collect();
     Ok(ReviewDetail {
         reviewed: store.is_reviewed(&key),
         group,
         cards,
         key,
+        excluded,
     })
 }
 
@@ -1095,6 +1164,184 @@ pub fn set_reviewed(
     })?;
     svc.groups().set_reviewed(id, reviewed)?;
     Ok(reviewed)
+}
+
+// ---- excluding a group (exclude-group-in-review) --------------------------------------------------------------
+
+/// The files a user decision (or an accepted AI suggestion) excludes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Exclusions(pub std::collections::HashSet<FileId>);
+
+impl Exclusions {
+    pub fn load(svc: &ScanService) -> Result<Exclusions> {
+        Ok(Exclusions(
+            svc.engine()
+                .catalog()
+                .read()
+                .user_excluded_files()?
+                .into_iter()
+                .collect(),
+        ))
+    }
+}
+
+/// What [`Exclusions`] depends on: the count, id sum and latest time of the stored exclusions.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ExclusionsKey([i64; 3]);
+
+pub fn exclusions_key(svc: &ScanService) -> Result<ExclusionsKey> {
+    let r = svc.engine().catalog().read();
+    if !r.has_user_decisions()? {
+        return Ok(ExclusionsKey::default());
+    }
+    Ok(r.with(|c| {
+        Ok(c.query_row(
+            "SELECT count(*), coalesce(sum(file_id), 0), coalesce(max(at), 0)
+             FROM user_inclusion WHERE decision = 'exclude'",
+            [],
+            |row| Ok(ExclusionsKey([row.get(0)?, row.get(1)?, row.get(2)?])),
+        )?)
+    })?)
+}
+
+/// A copy's stored decision before a group exclusion replaced it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PriorDecision {
+    pub file: FileId,
+    pub decision: Option<UserDecision>,
+    pub reason: Option<String>,
+    pub ai_kind: Option<ps_model::AiKind>,
+}
+
+/// What [`exclude_group`] replaced, so [`include_group`] can undo it exactly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupExclusion {
+    pub group: FileId,
+    pub was_reviewed: bool,
+    pub prior: Vec<PriorDecision>,
+}
+
+/// Exclude every copy of `group` ("keep none"): each member gets the user decision "exclude" with `reason`, in one
+/// catalog transaction, and the group is marked reviewed. Nothing on disk changes. Refused while a cleanup run is
+/// moving files (ADR-0099).
+pub fn exclude_group(
+    svc: &ScanService,
+    store: &ReviewStore,
+    group: FileId,
+    reason: Option<String>,
+) -> Result<GroupExclusion> {
+    let d = show(svc, store, group)?;
+    let ids: Vec<FileId> = d.members().iter().map(|m| m.file).collect();
+    let reason = reason
+        .map(|r| r.trim().to_owned())
+        .filter(|r| !r.is_empty());
+    let prior = {
+        let _edit = svc.edit()?;
+        let r = svc.engine().catalog().read();
+        let before = r.user_decisions_of(&ids)?;
+        let prior = ids
+            .iter()
+            .filter(|f| {
+                before
+                    .get(f)
+                    .is_none_or(|x| x.decision != UserDecision::Exclude)
+            })
+            .map(|f| match before.get(f) {
+                Some(x) => PriorDecision {
+                    file: *f,
+                    decision: Some(x.decision),
+                    reason: x.reason.clone(),
+                    ai_kind: x.ai_kind,
+                },
+                None => PriorDecision {
+                    file: *f,
+                    decision: None,
+                    reason: None,
+                    ai_kind: None,
+                },
+            })
+            .collect();
+        // A copy already excluded keeps its own record (an accepted AI suggestion stays one).
+        let already = |f: &FileId| {
+            before
+                .get(f)
+                .is_some_and(|x| x.decision == UserDecision::Exclude)
+        };
+        svc.engine().catalog().writer().set_user_decisions(
+            ids.iter()
+                .filter(|f| !already(f))
+                .map(|f| DecisionWrite {
+                    file: *f,
+                    decision: Some(UserDecision::Exclude),
+                    reason: reason.clone(),
+                    ai_kind: None,
+                })
+                .collect(),
+        )?;
+        prior
+    };
+    if !d.reviewed {
+        set_reviewed(svc, store, group, true)?;
+    }
+    Ok(GroupExclusion {
+        group,
+        was_reviewed: d.reviewed,
+        prior,
+    })
+}
+
+/// Put an excluded group back. With `undo` (the [`GroupExclusion`] of the exclusion just made), every copy gets
+/// back the decision it had and the group its review state. Without it, the user's own exclusions are cleared
+/// from every member, returning each copy to its automatic state; exclusions recorded by accepting an AI
+/// suggestion are kept. Returns the group as it is now.
+pub fn include_group(
+    svc: &ScanService,
+    store: &ReviewStore,
+    group: FileId,
+    undo: Option<&GroupExclusion>,
+) -> Result<ReviewDetail> {
+    let d = show(svc, store, group)?;
+    {
+        let _edit = svc.edit()?;
+        let rows: Vec<DecisionWrite> = match undo {
+            Some(u) => u
+                .prior
+                .iter()
+                .map(|p| DecisionWrite {
+                    file: p.file,
+                    decision: p.decision,
+                    reason: p.reason.clone(),
+                    ai_kind: p.ai_kind,
+                })
+                .collect(),
+            None => {
+                let ids: Vec<FileId> = d.members().iter().map(|m| m.file).collect();
+                let before = svc.engine().catalog().read().user_decisions_of(&ids)?;
+                ids.into_iter()
+                    .filter(|f| {
+                        before.get(f).is_some_and(|x| {
+                            x.decision == UserDecision::Exclude && x.ai_kind.is_none()
+                        })
+                    })
+                    .map(|f| DecisionWrite {
+                        file: f,
+                        decision: None,
+                        reason: None,
+                        ai_kind: None,
+                    })
+                    .collect()
+            }
+        };
+        if !rows.is_empty() {
+            svc.engine().catalog().writer().set_user_decisions(rows)?;
+        }
+    }
+    if let Some(u) = undo
+        && !u.was_reviewed
+    {
+        set_reviewed(svc, store, group, false)?;
+    }
+    show(svc, store, group)
 }
 
 // ---- suggestions --------------------------------------------------------------------------------------------

@@ -89,6 +89,14 @@ const SURFACES: &[Surface] = &[
         ui_state: None,
     },
     Surface {
+        name: "duplicates-excluded",
+        caption: "A group excluded from the review (keep none): its state, Include again, and the list row",
+        // Seeded, then the first group is excluded with `groups exclude` (see `exclude_first_group`).
+        seeded: true,
+        args: &["--command", "shell::ShowDuplicates"],
+        ui_state: None,
+    },
+    Surface {
         name: "loupe-video",
         caption: "A video in the loupe: its large poster frame, play mark, duration and Open in player",
         // Seeded by `seed_video` instead (a clip made by this machine's ffmpeg).
@@ -271,6 +279,31 @@ fn seed_video(root: &Path, dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Exclude the first listed group (the one the Duplicates view opens on) with a reason.
+fn exclude_first_group(root: &Path, dir: &Path) -> Result<()> {
+    let cli = release_dir(root).join("photosquirrel-cli");
+    let out = Command::new(&cli)
+        .arg("--data-dir")
+        .arg(dir)
+        .args(["--json", "groups", "list", "--limit", "1"])
+        .output()
+        .context("list groups")?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).context("groups list JSON")?;
+    let id = v["data"]["groups"][0]["id"]
+        .as_i64()
+        .context("a group in the demo library")?;
+    crate::run(
+        "exclude the first group",
+        Command::new(&cli).arg("--data-dir").arg(dir).args([
+            "groups",
+            "exclude",
+            &id.to_string(),
+            "--reason",
+            "not ours",
+        ]),
+    )
+}
+
 fn gallery(root: &Path, bin: &Path, shots: &Path, delay: f32) -> Result<()> {
     let dir = shots.join("gallery");
     std::fs::create_dir_all(&dir)?;
@@ -291,6 +324,9 @@ fn gallery(root: &Path, bin: &Path, shots: &Path, delay: f32) -> Result<()> {
             seed_data_dir(root, &data, surface.seeded)?;
             if surface.name == "loupe-video" {
                 seed_video(root, &data)?;
+            }
+            if surface.name == "duplicates-excluded" {
+                exclude_first_group(root, &data)?;
             }
             if let Some(state) = surface.ui_state {
                 std::fs::write(data.join("ui-state.json"), state)?;

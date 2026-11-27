@@ -1,4 +1,4 @@
-//! `groups list|show|set-keeper|clear-keeper|separate|merge|suggestions|explain|regroup`.
+//! `groups list|show|set-keeper|clear-keeper|separate|merge|exclude|include|suggestions|explain|regroup`.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -9,11 +9,19 @@ use ps_service::groups::{GroupDetail, GroupListItem, GroupOrder, GroupTotals};
 use super::{Ctx, table};
 use crate::out::{bytes, emit};
 
+/// A listed group and whether it is excluded (its keeper is, so no copy goes to the library).
+#[derive(Serialize)]
+struct GroupOut {
+    #[serde(flatten)]
+    item: GroupListItem,
+    excluded: bool,
+}
+
 #[derive(Serialize)]
 struct ListOut {
     totals: GroupTotals,
     offset: u64,
-    groups: Vec<GroupListItem>,
+    groups: Vec<GroupOut>,
     /// With a filter: the groups its AI part keeps (every group without one), and how many of them are reviewed.
     #[serde(skip_serializing_if = "Option::is_none")]
     matching: Option<u64>,
@@ -33,6 +41,16 @@ pub fn list(
     };
     let svc = ctx.reader()?;
     let g = svc.groups();
+    let excluded = review::Exclusions::load(&svc)?;
+    let out_of = |items: Vec<GroupListItem>| -> Vec<GroupOut> {
+        items
+            .into_iter()
+            .map(|item| GroupOut {
+                excluded: excluded.0.contains(&item.keeper),
+                item,
+            })
+            .collect()
+    };
     let criteria = ps_model::library::InsightCriteria {
         category: filter.category,
         children: filter.children,
@@ -54,7 +72,7 @@ pub fn list(
         ListOut {
             totals: g.totals()?,
             offset,
-            groups: g.list(order, offset, limit)?,
+            groups: out_of(g.list(order, offset, limit)?),
             matching: None,
             matching_reviewed: None,
         }
@@ -71,6 +89,7 @@ pub fn list(
             .skip(offset as usize)
             .take(limit as usize)
             .collect();
+        let groups = out_of(groups);
         ListOut {
             totals: g.totals()?,
             offset,
@@ -95,10 +114,14 @@ pub fn list(
             .iter()
             .map(|g| {
                 vec![
-                    g.id.to_string(),
-                    g.member_count.to_string(),
-                    bytes(g.reclaimable_bytes),
-                    g.keeper_path.display().to_string(),
+                    g.item.id.to_string(),
+                    g.item.member_count.to_string(),
+                    bytes(g.item.reclaimable_bytes),
+                    if g.excluded {
+                        format!("{} (excluded, none kept)", g.item.keeper_path.display())
+                    } else {
+                        g.item.keeper_path.display().to_string()
+                    },
                 ]
             })
             .collect();
@@ -189,6 +212,57 @@ pub fn merge(ctx: &Ctx, a: i64, b: i64) -> Result<()> {
     let svc = ctx.service()?;
     let d = svc.groups().merge(FileId(a), FileId(b))?;
     emit(ctx.json, "groups merge", &d, print_detail)
+}
+
+#[derive(Serialize)]
+struct ExcludeOut {
+    group: FileId,
+    /// Copies now excluded.
+    excluded: usize,
+    copies: usize,
+    reviewed: bool,
+}
+
+pub fn exclude(ctx: &Ctx, group: i64, reason: Option<String>) -> Result<()> {
+    let svc = ctx.service()?;
+    let store = ps_service::review::ReviewStore::for_service(&svc);
+    ps_service::review::exclude_group(&svc, &store, FileId(group), reason)?;
+    let d = ps_service::review::show(&svc, &store, FileId(group))?;
+    let out = ExcludeOut {
+        group: d.group.id,
+        excluded: d.excluded.len(),
+        copies: d.members().len(),
+        reviewed: d.reviewed,
+    };
+    emit(ctx.json, "groups exclude", &out, |o| {
+        println!(
+            "group {} excluded: none of its {} copies goes to the library, and it is marked reviewed. No file was \
+             touched; `groups include {}` puts it back.",
+            o.group, o.copies, o.group
+        );
+    })
+}
+
+pub fn include(ctx: &Ctx, group: i64) -> Result<()> {
+    let svc = ctx.service()?;
+    let store = ps_service::review::ReviewStore::for_service(&svc);
+    let d = ps_service::review::include_group(&svc, &store, FileId(group), None)?;
+    let out = ExcludeOut {
+        group: d.group.id,
+        excluded: d.excluded.len(),
+        copies: d.members().len(),
+        reviewed: d.reviewed,
+    };
+    emit(ctx.json, "groups include", &out, |o| {
+        if o.excluded == 0 {
+            println!("group {} is back in the library with its keeper", o.group);
+        } else {
+            println!(
+                "group {} is back; {} of its {} copies stay excluded for another reason",
+                o.group, o.excluded, o.copies
+            );
+        }
+    })
 }
 
 /// A suggestion with its plain-words reason (similar-shot-explained): the same sentences the app shows.

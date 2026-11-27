@@ -1359,3 +1359,103 @@ fn scenario_cli_explain_prints_the_reason() {
         "{out}"
     );
 }
+
+// ---- exclude-group-in-review: `groups exclude` / `groups include` -----------------------------------------------
+
+/// Files excluded by the user, from `report excluded --json`.
+fn excluded_by_you(data: &Path) -> u64 {
+    let v = json(&ok(data, &["--json", "report", "excluded"]));
+    v["data"]["counts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["category"] == "you")
+        .map(|r| r["files"].as_u64().unwrap())
+        .sum()
+}
+
+/// The first listed group (most reclaimable) and its copy count.
+fn biggest_listed(data: &Path) -> (i64, u64) {
+    let list = json(&ok(data, &["--json", "groups", "list", "--limit", "1"]));
+    let g = &list["data"]["groups"][0];
+    (
+        g["id"].as_i64().unwrap(),
+        g["member_count"].as_u64().unwrap(),
+    )
+}
+
+fn listed(data: &Path, id: i64) -> Value {
+    let list = json(&ok(
+        data,
+        &["--json", "groups", "list", "--limit", "100000"],
+    ));
+    list["data"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["id"].as_i64() == Some(id))
+        .unwrap()
+        .clone()
+}
+
+/// Size and modification time of every corpus file.
+fn corpus_stamps() -> std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![corpus().to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let m = std::fs::metadata(&p).unwrap();
+            if m.is_dir() {
+                stack.push(p);
+            } else {
+                out.insert(p, (m.len(), m.modified().unwrap()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn scenario_cli_exclude_a_group_from_the_cli() {
+    let data = scanned();
+    let (id, copies) = biggest_listed(data.path());
+    assert!(copies >= 2);
+    assert_eq!(listed(data.path(), id)["excluded"], false);
+    let before_you = excluded_by_you(data.path());
+    let before = corpus_stamps();
+    let v = json(&ok(
+        data.path(),
+        &[
+            "--json",
+            "groups",
+            "exclude",
+            &id.to_string(),
+            "--reason",
+            "not ours",
+        ],
+    ));
+    assert_eq!(v["command"], "groups exclude");
+    assert_eq!(v["data"]["excluded"].as_u64(), Some(copies));
+    let g = listed(data.path(), id);
+    assert_eq!(g["excluded"], true, "{g}");
+    assert_eq!(g["reviewed"], true, "{g}");
+    assert_eq!(excluded_by_you(data.path()), before_you + copies);
+    assert_eq!(corpus_stamps(), before, "no file changed");
+}
+
+#[test]
+fn scenario_cli_include_a_group_from_the_cli() {
+    let data = scanned();
+    let (id, _) = biggest_listed(data.path());
+    let before_you = excluded_by_you(data.path());
+    ok(data.path(), &["groups", "exclude", &id.to_string()]);
+    let v = json(&ok(
+        data.path(),
+        &["--json", "groups", "include", &id.to_string()],
+    ));
+    assert_eq!(v["command"], "groups include");
+    assert_eq!(v["data"]["excluded"].as_u64(), Some(0));
+    assert_eq!(listed(data.path(), id)["excluded"], false);
+    assert_eq!(excluded_by_you(data.path()), before_you);
+}

@@ -1798,3 +1798,228 @@ fn scenario_duplicate_review_different_frames_reason(cx: &mut TestAppContext) {
         "{line} names {a} and {b}"
     );
 }
+
+// ---- keep none: excluding a group (exclude-group-in-review) ------------------------------------------------
+
+/// Members of `d` the catalog records as excluded by a user decision.
+fn excluded_members(backend: &CatalogBackend, d: &ReviewDetail) -> Vec<FileId> {
+    let scan = backend.scan().unwrap();
+    ps_service::review::show(scan, &ReviewStore::in_memory(), d.group.id)
+        .unwrap()
+        .excluded
+}
+
+/// Size and modification time of every file under the template's corpus.
+fn corpus_stamps() -> std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)> {
+    let root = template().dir.parent().unwrap().join("corpus");
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![root];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            let m = std::fs::metadata(&p).unwrap();
+            if m.is_dir() {
+                stack.push(p);
+            } else {
+                out.insert(p, (m.len(), m.modified().unwrap()));
+            }
+        }
+    }
+    out
+}
+
+fn wait_row(
+    view: &Entity<DuplicatesView>,
+    cx: &mut VisualTestContext,
+    what: &str,
+    group: FileId,
+    pred: impl Fn(&ps_service::review::ReviewRow) -> bool + 'static,
+) {
+    let v = view.clone();
+    wait_until(cx, what, move |cx| {
+        cx.update(|_, cx| {
+            let v = v.read(cx);
+            !v.is_busy()
+                && v.list()
+                    .and_then(|l| l.rows.iter().find(|r| r.id == group))
+                    .is_some_and(&pred)
+        })
+    });
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_exclude_a_group_with_e(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_group(&view, &backend, &mut cx, |d| {
+        d.members().len() == 3 && !d.reviewed
+    });
+    let group = d.group.id;
+    let before = corpus_stamps();
+    cx.simulate_keystrokes("e");
+    wait_row(&view, &mut cx, "the group excluded", group, |r| {
+        r.keeper_excluded && r.reviewed && r.excluded == 3
+    });
+    let v = view.clone();
+    wait_until(&mut cx, "the next unreviewed group", move |cx| {
+        cx.update(|_, cx| {
+            let v = v.read(cx);
+            v.selected() != Some(group) && v.detail().is_some_and(|d| !d.reviewed)
+        })
+    });
+    let members: Vec<FileId> = d.members().iter().map(|m| m.file).collect();
+    assert_eq!(excluded_members(&backend, &d), members);
+    assert!(cx.update(|_, cx| view.read(cx).undo_available()));
+    assert_eq!(corpus_stamps(), before, "no file changed");
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_excluded_group_with_a_reason(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_group(&view, &backend, &mut cx, |d| d.members().len() >= 2);
+    {
+        let view = view.clone();
+        cx.update(|window, cx| view.update(cx, |v, cx| v.ask_exclude(window, cx)));
+    }
+    assert!(present("duplicates-confirm-exclude", &mut cx));
+    cx.simulate_input("not ours");
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.confirm(cx)));
+    }
+    wait_row(&view, &mut cx, "the group excluded", d.group.id, |r| {
+        r.keeper_excluded
+    });
+    let ids: Vec<ps_model::ItemId> = d
+        .members()
+        .iter()
+        .map(|m| ps_model::ItemId::try_from(m.file).unwrap())
+        .collect();
+    let rows = backend.library().excluded_page(&ids).unwrap();
+    assert_eq!(rows.len(), ids.len());
+    for r in &rows {
+        assert!(
+            r.reasons.iter().any(|x| x == "excluded by you: not ours"),
+            "{:?}",
+            r.reasons
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_excluded_group_listed_and_counted(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_group(&view, &backend, &mut cx, |d| !d.reviewed);
+    let group = d.group.id;
+    cx.simulate_keystrokes("e");
+    wait_row(&view, &mut cx, "the group excluded", group, |r| {
+        r.keeper_excluded
+    });
+    for _ in 0..2 {
+        settle(&view, &mut cx);
+        cx.simulate_keystrokes("r");
+        settle(&view, &mut cx);
+    }
+    let v = view.clone();
+    wait_until(&mut cx, "3 reviewed", move |cx| {
+        cx.update(|_, cx| v.read(cx).list().is_some_and(|l| l.reviewed == 3))
+    });
+    let list = cx.update(|_, cx| view.read(cx).list().unwrap().clone());
+    let (_, sub) = duplicates::progress_card_text(list.groups, list.reviewed);
+    assert!(sub.starts_with("3 of"), "{sub}");
+    assert!(
+        list.rows
+            .iter()
+            .find(|r| r.id == group)
+            .unwrap()
+            .keeper_excluded
+    );
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_include_the_group_again(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_group(&view, &backend, &mut cx, |d| d.members().len() >= 2);
+    let (group, keeper) = (d.group.id, d.group.keeper);
+    cx.simulate_keystrokes("e");
+    wait_row(&view, &mut cx, "the group excluded", group, |r| {
+        r.keeper_excluded
+    });
+    // Back to the excluded group, then Include again.
+    let d = open_group(&view, &backend, &mut cx, move |d| d.group.id == group);
+    assert!(d.keeper_excluded());
+    assert!(present("duplicates-excluded-chip", &mut cx));
+    // The body agrees: no keeper is exported, and no copy is "of the keeper".
+    assert!(present("duplicates-why-excluded", &mut cx));
+    assert!(!present("duplicates-why", &mut cx));
+    let shown = detail(&view, &mut cx);
+    for m in shown.members() {
+        let (label, _) = duplicates::edge_label(&shown, m);
+        assert!(!label.contains("eeper"), "{label}");
+    }
+    assert_eq!(
+        duplicates::edge_label(&shown, &shown.members()[0]).0,
+        "Not exported"
+    );
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.include_group(cx)));
+    }
+    wait_row(&view, &mut cx, "the group back", group, |r| {
+        !r.keeper_excluded && r.excluded == 0
+    });
+    let now = detail(&view, &mut cx);
+    assert!(now.excluded.is_empty());
+    assert_eq!(now.group.keeper, keeper);
+    assert!(excluded_members(&backend, &now).is_empty());
+    assert!(!present("duplicates-excluded-chip", &mut cx));
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_undo_an_exclusion(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let d = open_group(&view, &backend, &mut cx, |d| {
+        !d.reviewed && d.members().len() >= 2
+    });
+    let group = d.group.id;
+    cx.simulate_keystrokes("e");
+    wait_row(&view, &mut cx, "the group excluded", group, |r| {
+        r.keeper_excluded
+    });
+    assert!(present("duplicates-undo-exclude", &mut cx));
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.undo_exclude(cx)));
+    }
+    wait_row(&view, &mut cx, "the group as before", group, |r| {
+        !r.keeper_excluded && r.excluded == 0 && !r.reviewed
+    });
+    assert!(excluded_members(&backend, &d).is_empty());
+    assert!(!cx.update(|_, cx| view.read(cx).undo_available()));
+}
+
+#[gpui_kit::test]
+fn exclude_and_include_are_in_the_palette(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, shell, _view, mut cx) = open_dups(cx, &data);
+    let titles: Vec<&str> = cx.update(|_, cx| {
+        ui_workspace::palette::CommandRegistry::commands(cx)
+            .iter()
+            .map(|c| c.title)
+            .collect()
+    });
+    assert!(titles.contains(&"Exclude Group (Keep None)"));
+    assert!(titles.contains(&"Include Group Again"));
+    cx.simulate_keystrokes("ctrl-k");
+    cx.simulate_input("keep none");
+    cx.run_until_parked();
+    let rows = cx.update(|_, cx| shell.read(cx).palette().unwrap().read(cx).rows().to_vec());
+    let first = rows.first().expect("a match");
+    assert_eq!(first.title, "Exclude Group (Keep None)");
+    // Its key, E, works only in the Duplicates view (`Duplicates && !Input`), like R and S, so the palette lists
+    // no shortcut for it; `scenario_duplicate_review_exclude_a_group_with_e` presses it.
+}

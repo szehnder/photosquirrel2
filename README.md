@@ -39,8 +39,8 @@ and copies those best copies into one clean library folder ready for Apple Photo
   versions by perceptual hash. Burst shots and near-identical frames are only *suggested*, never
   merged for you.
 - **Picks the best copy and says why.** Resolution, original file over re-encode, quality, metadata and capture
-  date decide the keeper; every group explains its choice, and you can pick another keeper, split a group or
-  merge two.
+  date decide the keeper; every group explains its choice, and you can pick another keeper, split a group,
+  merge two, or keep none of it.
 - **Keeps photos apart from clutter.** Icons, web and app graphics, tiny images and thumbnail caches are
   recognised and kept out of the way (you can review them under Excluded), so the library is your actual photos.
 - **Reads the formats archives hold.** JPEG, PNG, WebP, GIF, BMP, camera RAW (through its embedded preview),
@@ -175,6 +175,8 @@ PhotoSquirrel behave as if no decoder were found.
 3. Look through **Duplicates**: accept the keepers or pick your own. The card at the top and the sidebar count show
    how many groups are left. With AI insights, the **AI insight** menu narrows the list to what you care about
    (people, children, pets, a category), and AI Review's **Review duplicates of these** opens that list directly.
+   Don't want any copy of a group? Press **E** (or **Exclude group…** for a reason): every copy is left out of the
+   library and the next group opens. Nothing is deleted; **Undo** or **Include again** puts it back.
 4. Open **Export**, choose an empty library folder and the app you will import into, review the plan and copy.
 5. Check **Reports**, then import the library folder into Apple Photos, Google Photos or Lightroom.
 
@@ -211,6 +213,8 @@ photosquirrel-cli groups list                         # duplicate groups and the
 photosquirrel-cli groups list --pets --unreviewed     # only groups the AI saw pets in, not reviewed yet
 photosquirrel-cli groups suggestions                  # similar shots, each with why it was kept apart
 photosquirrel-cli groups show 42                      # members of a group and why the keeper won
+photosquirrel-cli groups exclude 42 --reason "not ours"  # keep none of a group (no file is touched)
+photosquirrel-cli groups include 42                   # put it back
 photosquirrel-cli export dry-run --library ~/Pictures/Library     # what would be copied where; writes nothing
 photosquirrel-cli export run --library ~/Pictures/Library --yes   # copy, verify, rename
 photosquirrel-cli export run --library ~/Pictures/Library --upgrade --yes  # also copy better copies beside

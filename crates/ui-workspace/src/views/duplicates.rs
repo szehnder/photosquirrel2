@@ -5,22 +5,23 @@
 //! panel, where bursts are shown side by side and never merged (ADR-0013, ADR-0035).
 //!
 //! Keyboard first: J/K (or ↓/↑) next/previous group, 1-9 choose keeper, ←/→ focus a copy, S separate the
-//! focused copy, R mark reviewed (and open the next unreviewed group), Space compare, X dismiss a suggestion,
-//! B switch between groups and similar shots. Every key is a GPUI action, so it is in the command palette.
+//! focused copy, R mark reviewed (and open the next unreviewed group), E exclude the group (keep none), Space
+//! compare, X dismiss a suggestion, B switch between groups and similar shots. Every key is a GPUI action, so it is in the command palette.
 
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::menu::PopupMenuItem;
-use gpui_kit::component::{Icon, button::Button, h_flex, v_flex};
+use gpui_kit::component::{Icon, Sizable as _, button::Button, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ps_model::FileId;
 use ps_service::groups::{GroupMember, MemberEdge};
 use ps_service::review::{
-    CLOSE_DHASH, CLOSE_PHASH, MemberCard, ReviewDetail, ReviewFilter, ReviewList, ReviewRow,
-    ReviewSort, SuggestionCard,
+    CLOSE_DHASH, CLOSE_PHASH, GroupExclusion, MemberCard, ReviewDetail, ReviewFilter, ReviewList,
+    ReviewRow, ReviewSort, SuggestionCard,
 };
 use ui_gallery::source::SharedSource;
 use ui_gallery::theme::lpx;
@@ -56,6 +57,10 @@ actions!(
         ToggleCompare,
         /// Dismiss the selected similar-shot suggestion (X).
         DismissSuggestion,
+        /// Exclude every copy of the open group, keeping none of them (E).
+        ExcludeGroup,
+        /// Put the open excluded group back in the library.
+        IncludeGroup,
         FocusNextMember,
         FocusPrevMember,
         ConfirmPending,
@@ -85,6 +90,7 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("s", SeparateFocused, c),
         KeyBinding::new("space", ToggleCompare, c),
         KeyBinding::new("x", DismissSuggestion, c),
+        KeyBinding::new("e", ExcludeGroup, c),
         KeyBinding::new("right", FocusNextMember, c),
         KeyBinding::new("left", FocusPrevMember, c),
         KeyBinding::new("enter", ConfirmPending, c),
@@ -102,27 +108,36 @@ pub fn register(cx: &mut App) {
     }
     cx.bind_keys(bindings);
     {
-        for meta in [
-            CommandMeta::new("Duplicates", "Next Group", NextGroup).keywords(&["j", "review"]),
-            CommandMeta::new("Duplicates", "Previous Group", PrevGroup).keywords(&["k"]),
-            CommandMeta::new("Duplicates", "Mark Group Reviewed", MarkReviewed)
-                .keywords(&["done", "ok"]),
-            CommandMeta::new(
-                "Duplicates",
-                "Not the Same Photo (Separate Copy)",
-                SeparateFocused,
-            )
-            .keywords(&["split", "different", "wrong"]),
-            CommandMeta::new("Duplicates", "Compare Side by Side", ToggleCompare)
-                .keywords(&["loupe", "zoom"]),
-            CommandMeta::new("Duplicates", "Similar Shots", ToggleSuggestions)
-                .keywords(&["burst", "suggestions"]),
-            CommandMeta::new(
-                "Duplicates",
-                "Dismiss Similar-Shot Suggestion",
-                DismissSuggestion,
-            ),
-        ] {
+        for meta in
+            [
+                CommandMeta::new("Duplicates", "Next Group", NextGroup).keywords(&["j", "review"]),
+                CommandMeta::new("Duplicates", "Previous Group", PrevGroup).keywords(&["k"]),
+                CommandMeta::new("Duplicates", "Mark Group Reviewed", MarkReviewed)
+                    .keywords(&["done", "ok"]),
+                CommandMeta::new(
+                    "Duplicates",
+                    "Not the Same Photo (Separate Copy)",
+                    SeparateFocused,
+                )
+                .keywords(&["split", "different", "wrong"]),
+                CommandMeta::new("Duplicates", "Compare Side by Side", ToggleCompare)
+                    .keywords(&["loupe", "zoom"]),
+                CommandMeta::new("Duplicates", "Similar Shots", ToggleSuggestions)
+                    .keywords(&["burst", "suggestions"]),
+                CommandMeta::new(
+                    "Duplicates",
+                    "Dismiss Similar-Shot Suggestion",
+                    DismissSuggestion,
+                ),
+                CommandMeta::new("Duplicates", "Exclude Group (Keep None)", ExcludeGroup)
+                    .keywords(&["keep none", "remove", "drop", "skip"]),
+                CommandMeta::new("Duplicates", "Include Group Again", IncludeGroup).keywords(&[
+                    "put back",
+                    "restore",
+                    "undo exclude",
+                ]),
+            ]
+        {
             CommandRegistry::register(cx, meta);
         }
     }
@@ -230,6 +245,8 @@ pub enum Tab {
 pub enum Pending {
     /// Separate this copy from the group.
     Separate(FileId),
+    /// Exclude the whole group (asked from the header, with an optional reason).
+    Exclude,
 }
 
 /// The compare loupe: two copies with one shared zoom and pan.
@@ -287,6 +304,10 @@ pub struct DuplicatesView {
     similar_explained: bool,
     /// The explainer reopened from an info button.
     show_explainer: bool,
+    /// The optional reason of an exclusion asked from the header.
+    reason: Entity<InputState>,
+    /// The exclusion just made, for the notice's Undo.
+    undo_exclusion: Option<GroupExclusion>,
 }
 
 /// Shown while a cleanup run is moving files: the edits are not offered (ADR-0099).
@@ -328,6 +349,8 @@ impl DuplicatesView {
             suggestion_scroll: UniformListScrollHandle::new(),
             similar_explained: state.similar_shots_explained,
             show_explainer: false,
+            reason: cx.new(|cx| InputState::new(window, cx).placeholder("Reason (optional)")),
+            undo_exclusion: None,
         };
         if std::env::var("PHOTOSQUIRREL_REVIEW_TAB").as_deref() == Ok("suggestions") {
             // Dev-only: scripted screenshots of the suggestions panel (KDE gives agents one frame).
@@ -442,6 +465,15 @@ impl DuplicatesView {
 
     pub fn suggestions(&self) -> Option<&[SuggestionCard]> {
         self.suggestions.as_ref().map(|s| s.as_slice())
+    }
+
+    /// The exclusion the notice can undo.
+    pub fn undo_available(&self) -> bool {
+        self.undo_exclusion.is_some()
+    }
+
+    pub fn reason_input(&self) -> &Entity<InputState> {
+        &self.reason
     }
 
     pub fn notice(&self) -> Option<&str> {
@@ -840,6 +872,12 @@ impl DuplicatesView {
     /// Choose the copy at display number `n` (1-based) as keeper.
     pub fn pick_keeper(&mut self, n: usize, cx: &mut Context<'_, Self>) {
         let Some(d) = &self.detail else { return };
+        if d.keeper_excluded() {
+            self.notice =
+                Some("This group is excluded: Include again first, then choose its keeper.".into());
+            cx.notify();
+            return;
+        }
         let Some(m) = d.members().get(n.wrapping_sub(1)) else {
             return;
         };
@@ -893,8 +931,14 @@ impl DuplicatesView {
         if !self.may_edit(cx) {
             return;
         }
-        let Some(Pending::Separate(file)) = self.pending.take() else {
-            return;
+        let file = match self.pending.take() {
+            Some(Pending::Separate(file)) => file,
+            Some(Pending::Exclude) => {
+                let reason = self.reason.read(cx).value().to_string();
+                self.exclude_group(Some(reason).filter(|r| !r.trim().is_empty()), cx);
+                return;
+            }
+            None => return,
         };
         let Some(d) = &self.detail else { return };
         let group = d.group.id;
@@ -923,6 +967,104 @@ impl DuplicatesView {
         {
             cx.notify();
         }
+    }
+
+    /// Ask for an exclusion of the open group with an optional reason (the header's button).
+    pub fn ask_exclude(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) || self.detail.is_none() {
+            return;
+        }
+        self.pending = Some(Pending::Exclude);
+        self.reason.update(cx, |r, cx| r.set_value("", window, cx));
+        let focus = self.reason.focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Exclude every copy of the open group ("keep none"), mark it reviewed and open the next unreviewed group.
+    /// Nothing on disk changes; the notice offers Undo.
+    pub fn exclude_group(&mut self, reason: Option<String>, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
+        let Some(d) = &self.detail else { return };
+        if d.keeper_excluded() {
+            return;
+        }
+        let group = d.group.id;
+        let copies = d.members().len();
+        let rows = self.rows().to_vec();
+        let at = self.index().unwrap_or(0);
+        let next = (1..=rows.len())
+            .map(|k| &rows[(at + k) % rows.len()])
+            .find(|r| !r.reviewed && r.id != group)
+            .map(|r| r.id);
+        self.run(
+            cx,
+            move |s| s.exclude_group(group, reason),
+            move |this, x, cx| {
+                this.notice = Some(format!(
+                    "Excluded the group: none of its {copies} copies goes to the library. Nothing on disk changed."
+                ));
+                this.undo_exclusion = Some(x);
+                this.compare = None;
+                this.reload_then(next.or(Some(group)), cx);
+                crate::views::library::refresh_after_decision(cx);
+            },
+        );
+    }
+
+    /// Undo the exclusion the notice names: every copy gets back its decision and the group its review state.
+    pub fn undo_exclude(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
+        let Some(x) = self.undo_exclusion.take() else {
+            return;
+        };
+        let group = x.group;
+        self.run(
+            cx,
+            move |s| s.include_group(group, Some(x)),
+            move |this, d, cx| {
+                this.notice = Some("Exclusion undone: the group is back as it was.".into());
+                let id = d.group.id;
+                this.show_detail(d);
+                this.reload_then(Some(id), cx);
+                crate::views::library::refresh_after_decision(cx);
+            },
+        );
+    }
+
+    /// Put the open excluded group back in the library (the user's exclusions on its copies are cleared).
+    pub fn include_group(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
+        let Some(d) = &self.detail else { return };
+        if d.excluded.is_empty() {
+            return;
+        }
+        let group = d.group.id;
+        let undo = self.undo_exclusion.take().filter(|x| x.group == group);
+        self.run(
+            cx,
+            move |s| s.include_group(group, undo),
+            move |this, d, cx| {
+                this.notice = Some(if d.excluded.is_empty() {
+                    "The group is back in the library with its keeper.".to_owned()
+                } else {
+                    format!(
+                        "The group is back in the library; {} of its copies stay excluded for another reason.",
+                        d.excluded.len()
+                    )
+                });
+                let id = d.group.id;
+                this.show_detail(d);
+                this.reload_then(Some(id), cx);
+                crate::views::library::refresh_after_decision(cx);
+            },
+        );
     }
 
     pub fn merge_with(&mut self, other: FileId, cx: &mut Context<'_, Self>) {
@@ -1182,7 +1324,12 @@ pub fn group_composition(d: &ReviewDetail) -> Vec<(String, String)> {
 /// The member's join badge and its tooltip: "Keeper", "Exact copy of the keeper", "Resized copy of #2", ...,
 /// short enough for a card at the default font size, with the full wording in the tooltip.
 pub fn edge_label(d: &ReviewDetail, m: &GroupMember) -> (String, String) {
-    let via = d.matched_label(m.file);
+    let excluded = d.keeper_excluded();
+    let mut via = d.matched_label(m.file);
+    if excluded && via == " of the keeper" {
+        // An excluded group has no keeper to export: name the copy, not what it would follow.
+        via.clear();
+    }
     let against = via.strip_prefix(" of ").unwrap_or_default();
     let matched = |what: &str| {
         if against.is_empty() {
@@ -1192,6 +1339,10 @@ pub fn edge_label(d: &ReviewDetail, m: &GroupMember) -> (String, String) {
         }
     };
     match m.edge {
+        MemberEdge::Keeper if excluded => (
+            "Not exported".to_owned(),
+            "Excluded by you: no copy of this group goes to the library".to_owned(),
+        ),
         MemberEdge::Keeper => (
             "Keeper".to_owned(),
             "Keeper: the copy export takes".to_owned(),
@@ -1213,8 +1364,15 @@ pub fn edge_label(d: &ReviewDetail, m: &GroupMember) -> (String, String) {
 fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElement {
     let colors = *ui_theme::colors(cx);
     let (label, tip) = edge_label(d, m);
+    let excluded = d.keeper_excluded();
     let (fg, bg) = match m.edge {
+        MemberEdge::Keeper if excluded => (
+            colors.tone_text(colors.danger),
+            ui_theme::Colors::chip_bg(colors.danger),
+        ),
         MemberEdge::Keeper => (colors.on_accent, colors.accent),
+        // No copy of an excluded group is exported: no tone suggests that one of them is.
+        _ if excluded => (colors.text_muted, colors.hover),
         MemberEdge::Exact => (
             colors.tone_text(colors.success),
             ui_theme::Colors::chip_bg(colors.success),
@@ -1237,7 +1395,14 @@ fn edge_chip(d: &ReviewDetail, m: &GroupMember, n: usize, cx: &App) -> AnyElemen
                 .test_support(),
         )
         .when(m.edge == MemberEdge::Keeper, |c| {
-            c.child(chip_icon(IconName::Crown, fg))
+            c.child(chip_icon(
+                if excluded {
+                    IconName::EyeOff
+                } else {
+                    IconName::Crown
+                },
+                fg,
+            ))
         })
         .tooltip(move |window, cx| {
             gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
@@ -1804,6 +1969,17 @@ impl DuplicatesView {
                                                 d.child("·").child(date_of(ms))
                                             }),
                                     )
+                                    .when(r.keeper_excluded, |d| {
+                                        d.child(
+                                            div()
+                                                .id(("duplicates-row-excluded", ix))
+                                                .test_support()
+                                                .text_size(Tokens::text_2xs())
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(colors.tone_text(colors.danger))
+                                                .child("Excluded, none kept"),
+                                        )
+                                    })
                                     .when_some(r.attention.clone(), |d, why| {
                                         d.child(
                                             div()
@@ -2068,16 +2244,19 @@ impl DuplicatesView {
         });
         let mut actions = h_flex().gap(Tokens::space(1.5)).flex_wrap();
         if !m.keeper && !self.edits_blocked() {
+            let excluded = d.keeper_excluded();
             actions = actions
-                .child(action_button(
-                    format!("duplicates-keep-{n}"),
-                    "Make keeper",
-                    Some(IconName::Crown),
-                    (n <= 9).then(|| ["1", "2", "3", "4", "5", "6", "7", "8", "9"][n - 1]),
-                    Tone::Normal,
-                    cx,
-                    move |this, _, cx| this.pick_keeper(n, cx),
-                ))
+                .when(!excluded, |a| {
+                    a.child(action_button(
+                        format!("duplicates-keep-{n}"),
+                        "Make keeper",
+                        Some(IconName::Crown),
+                        (n <= 9).then(|| ["1", "2", "3", "4", "5", "6", "7", "8", "9"][n - 1]),
+                        Tone::Normal,
+                        cx,
+                        move |this, _, cx| this.pick_keeper(n, cx),
+                    ))
+                })
                 .child(action_button(
                     format!("duplicates-separate-{n}"),
                     "Not the same photo",
@@ -2218,6 +2397,54 @@ impl DuplicatesView {
 
     fn render_why(&self, d: &ReviewDetail, cx: &mut Context<'_, Self>) -> AnyElement {
         let colors = *ui_theme::colors(cx);
+        if d.keeper_excluded() {
+            return v_flex()
+                .id("duplicates-why-excluded")
+                .test_support()
+                .w(Tokens::size(300.0))
+                .flex_none()
+                .gap(Tokens::space(2.0))
+                .p(Tokens::space(4.0))
+                .rounded(Tokens::RADIUS_LG)
+                .bg(colors.raised)
+                .border_1()
+                .border_color(colors.border)
+                .child(
+                    h_flex()
+                        .gap(Tokens::space(2.0))
+                        .child(
+                            Icon::new(IconName::EyeOff)
+                                .size(Tokens::icon_md())
+                                .text_color(colors.tone_text(colors.danger)),
+                        )
+                        .child(
+                            div()
+                                .text_size(Tokens::text_md())
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("You kept none of these"),
+                        ),
+                )
+                .child(div().text_size(Tokens::text_sm()).child(format!(
+                    "None of these {} copies goes to the library. Every file stays where it is on disk.",
+                    d.members().len()
+                )))
+                .child(
+                    div()
+                        .text_size(Tokens::text_sm())
+                        .text_color(colors.text_muted)
+                        .child("Include again to export the keeper as before, or to choose another one."),
+                )
+                .child(action_button(
+                    "duplicates-why-include",
+                    "Include again",
+                    Some(IconName::Undo2),
+                    None,
+                    Tone::Normal,
+                    cx,
+                    |this, _, cx| this.include_group(cx),
+                ))
+                .into_any_element();
+        }
         let compare_line = why_compare_line(d);
         v_flex()
             .id("duplicates-why")
@@ -2389,14 +2616,25 @@ impl DuplicatesView {
             .child(
                 h_flex()
                     .gap(Tokens::space(2.0))
-                    .child(icon_chip(
-                        "duplicates-pair-keeper",
-                        IconName::Crown,
-                        "Keeper",
-                        colors.on_accent,
-                        colors.accent,
-                        cx,
-                    ))
+                    .child(if d.keeper_excluded() {
+                        icon_chip(
+                            "duplicates-pair-keeper",
+                            IconName::EyeOff,
+                            "Not exported",
+                            colors.tone_text(colors.danger),
+                            ui_theme::Colors::chip_bg(colors.danger),
+                            cx,
+                        )
+                    } else {
+                        icon_chip(
+                            "duplicates-pair-keeper",
+                            IconName::Crown,
+                            "Keeper",
+                            colors.on_accent,
+                            colors.accent,
+                            cx,
+                        )
+                    })
                     .when(d.is_pair(), |e| {
                         e.child(chip(
                             "duplicates-pair-note",
@@ -2541,24 +2779,78 @@ impl DuplicatesView {
                             }),
                     )
                     .child(
-                        div()
+                        h_flex()
                             .min_w_0()
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_size(Tokens::text_xs())
-                            .text_color(colors.text_muted)
-                            .child(format!(
-                                "{} copies · {} not copied again{}",
-                                d.members().len(),
-                                format_bytes(d.group.reclaimable_bytes),
-                                captured
-                                    .map(|c| format!(" · captured {c}"))
-                                    .unwrap_or_default()
-                            )),
+                            .gap(Tokens::space(2.0))
+                            .when(d.keeper_excluded(), |e| {
+                                e.child(icon_chip(
+                                    "duplicates-excluded-chip",
+                                    IconName::EyeOff,
+                                    "Excluded, none kept",
+                                    colors.tone_text(colors.danger),
+                                    ui_theme::Colors::chip_bg(colors.danger),
+                                    cx,
+                                ))
+                            })
+                            .when(!d.excluded.is_empty() && !d.keeper_excluded(), |e| {
+                                e.child(icon_chip(
+                                    "duplicates-partly-excluded-chip",
+                                    IconName::EyeOff,
+                                    format!("{} of {} kept", d.kept(), d.members().len()),
+                                    colors.tone_text(colors.warning),
+                                    ui_theme::Colors::chip_bg(colors.warning),
+                                    cx,
+                                ))
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_size(Tokens::text_xs())
+                                    .text_color(colors.text_muted)
+                                    .child(format!(
+                                        "{} copies · {}{}",
+                                        d.members().len(),
+                                        if d.keeper_excluded() {
+                                            "none exported".to_owned()
+                                        } else {
+                                            format!(
+                                                "{} not copied again",
+                                                format_bytes(d.group.reclaimable_bytes)
+                                            )
+                                        },
+                                        captured
+                                            .map(|c| format!(" · captured {c}"))
+                                            .unwrap_or_default()
+                                    )),
+                            ),
                     ),
             )
-            .when(!edits_blocked, |h| h.child(merge))
+            .when(!edits_blocked && !d.keeper_excluded(), |h| h.child(merge))
+            .when(!edits_blocked && d.excluded.is_empty(), |h| {
+                h.child(action_button(
+                    "duplicates-exclude",
+                    "Exclude group…",
+                    Some(IconName::EyeOff),
+                    Some("E"),
+                    Tone::Caution,
+                    cx,
+                    |this, window, cx| this.ask_exclude(window, cx),
+                ))
+            })
+            .when(!edits_blocked && !d.excluded.is_empty(), |h| {
+                h.child(action_button(
+                    "duplicates-include",
+                    "Include again",
+                    Some(IconName::Undo2),
+                    None,
+                    Tone::Normal,
+                    cx,
+                    |this, _, cx| this.include_group(cx),
+                ))
+            })
             .child(action_button(
                 "duplicates-compare",
                 "Compare",
@@ -2620,7 +2912,11 @@ impl DuplicatesView {
                         div()
                             .text_size(Tokens::text_2xs())
                             .text_color(colors.text_faint)
-                            .child("1–9 keeper · ←/→ focus · S not the same photo · Space compare · J/K next/previous"),
+                            .child(if d.keeper_excluded() {
+                                "Include again to choose a keeper · ←/→ focus · Space compare · J/K next/previous"
+                            } else {
+                                "1–9 keeper · ←/→ focus · S not the same photo · E keep none · Space compare · J/K next/previous"
+                            }),
                     ),
             )
             .child(
@@ -2718,14 +3014,30 @@ impl DuplicatesView {
                         .text_color(tone),
                 )
                 .child(div().flex_1().child(text))
+                .when(
+                    self.undo_exclusion.is_some() && self.error.is_none() && !self.edits_blocked(),
+                    |b| {
+                        b.child(action_button(
+                            "duplicates-undo-exclude",
+                            "Undo",
+                            None,
+                            None,
+                            Tone::Normal,
+                            cx,
+                            |this, _, cx| this.undo_exclude(cx),
+                        ))
+                    },
+                )
                 .into_any_element(),
         )
     }
 
     fn render_confirm(&self, d: &ReviewDetail, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
         let colors = *ui_theme::colors(cx);
-        let Some(Pending::Separate(file)) = &self.pending else {
-            return None;
+        let file = match &self.pending {
+            Some(Pending::Separate(file)) => file,
+            Some(Pending::Exclude) => return Some(self.render_confirm_exclude(d, cx)),
+            None => return None,
         };
         let name = d.card(*file).map(|c| c.name.clone()).unwrap_or_default();
         Some(
@@ -2780,6 +3092,61 @@ impl DuplicatesView {
                 )
                 .into_any_element(),
         )
+    }
+
+    fn render_confirm_exclude(&self, d: &ReviewDetail, cx: &mut Context<'_, Self>) -> AnyElement {
+        let colors = *ui_theme::colors(cx);
+        let n = d.members().len();
+        v_flex()
+            .id("duplicates-confirm-exclude")
+            .test_support()
+            .flex_none()
+            .m(Tokens::space(4.0))
+            .p(Tokens::space(4.0))
+            .gap(Tokens::space(2.0))
+            .rounded(Tokens::RADIUS_LG)
+            .bg(colors.overlay)
+            .border_1()
+            .border_color(colors.danger)
+            .shadow_lg()
+            .child(
+                h_flex()
+                    .gap(Tokens::space(2.0))
+                    .child(Icon::new(IconName::EyeOff).size(Tokens::icon_md()).text_color(colors.danger))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Keep none of these {n} copies?")),
+                    ),
+            )
+            .child(div().text_size(Tokens::text_sm()).text_color(colors.text_muted).child(
+                "Every copy is excluded by you: none goes to the library, and the group stays out after rescans. \
+                 They are listed under Excluded, and Include again puts them back. No file is moved or deleted.",
+            ))
+            .child(Input::new(&self.reason).small())
+            .child(
+                h_flex()
+                    .gap(Tokens::space(2.0))
+                    .child(action_button(
+                        "duplicates-confirm-exclude-ok",
+                        "Exclude group",
+                        Some(IconName::EyeOff),
+                        None,
+                        Tone::Primary,
+                        cx,
+                        |this, _, cx| this.confirm(cx),
+                    ))
+                    .child(action_button(
+                        "duplicates-confirm-exclude-cancel",
+                        "Keep the group",
+                        None,
+                        None,
+                        Tone::Quiet,
+                        cx,
+                        |this, _, cx| this.cancel(cx),
+                    )),
+            )
+            .into_any_element()
     }
 
     fn compare_side(
@@ -3279,6 +3646,12 @@ impl Render for DuplicatesView {
             .on_action(cx.listener(|this, _: &SeparateFocused, _, cx| this.ask_separate(cx)))
             .on_action(cx.listener(|this, _: &ToggleCompare, _, cx| this.toggle_compare(cx)))
             .on_action(cx.listener(|this, _: &DismissSuggestion, _, cx| this.dismiss_selected(cx)))
+            .on_action(cx.listener(|this, _: &ExcludeGroup, _, cx| {
+                if this.tab == Tab::Groups {
+                    this.exclude_group(None, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &IncludeGroup, _, cx| this.include_group(cx)))
             .on_action(cx.listener(|this, _: &FocusNextMember, _, cx| {
                 let n = this.focused + 1;
                 this.focus_member(n, cx)
