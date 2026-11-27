@@ -15,7 +15,7 @@
 
 ## 3. CLI
 
-- [ ] 3.1 `groups exclude <group> [--reason]` and `groups include <group>`, plus `excluded` in `groups list --json`. Verify: `scenario_cli_exclude_a_group_from_the_cli` and `scenario_cli_include_a_group_from_the_cli`.
+- [x] 3.1 `groups exclude <group> [--reason]` and `groups include <group>`, plus `excluded` in `groups list --json`. Verify: `scenario_cli_exclude_a_group_from_the_cli` and `scenario_cli_include_a_group_from_the_cli`.
 
 ## 4. Docs and screenshots
 

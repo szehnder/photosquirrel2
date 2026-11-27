@@ -252,6 +252,16 @@ enum GroupsCommand {
     Separate { group: i64, file: i64 },
     /// Merge two groups into one.
     Merge { a: i64, b: i64 },
+    /// Keep none of a group: exclude every copy ("excluded by you") and mark it reviewed. No file is touched;
+    /// `groups include` puts it back.
+    Exclude {
+        group: i64,
+        /// Why (shown as "excluded by you: <reason>").
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Put an excluded group back: your exclusions of its copies are removed (accepted AI suggestions stay).
+    Include { group: i64 },
     /// Similar-shot suggestions (never merged automatically).
     Suggestions {
         /// Only suggestions involving this file.
@@ -614,6 +624,8 @@ fn run(cli: Cli) -> Result<()> {
             GroupsCommand::ClearKeeper { group } => cmd::groups::clear_keeper(&ctx, group),
             GroupsCommand::Separate { group, file } => cmd::groups::separate(&ctx, group, file),
             GroupsCommand::Merge { a, b } => cmd::groups::merge(&ctx, a, b),
+            GroupsCommand::Exclude { group, reason } => cmd::groups::exclude(&ctx, group, reason),
+            GroupsCommand::Include { group } => cmd::groups::include(&ctx, group),
             GroupsCommand::Suggestions { file, limit } => {
                 cmd::groups::suggestions(&ctx, file, limit)
             }
