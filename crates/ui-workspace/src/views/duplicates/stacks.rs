@@ -105,6 +105,40 @@ impl DuplicatesView {
             return;
         };
         let t = self.stack_thresholds(cx);
+        // Before the first frame (start-up grace), compute on a helper thread and wait for it, so a scripted
+        // launch that opens the tab shows the stacks in its one frame (as `DuplicatesView::load_now` does).
+        if let Some(deadline) = crate::startup::StartupGrace::deadline(cx) {
+            let src2 = src.clone();
+            if let Some(Ok((view, reviewed))) =
+                crate::startup::StartupGrace::within(deadline, move || {
+                    let view = src2.stacks(t)?;
+                    let anchors: Vec<ContentId> = view
+                        .stacks
+                        .stacks
+                        .iter()
+                        .filter_map(|s| view.anchor(s))
+                        .collect();
+                    let reviewed = src2.stacks_reviewed(anchors)?;
+                    anyhow::Ok((view, reviewed))
+                })
+            {
+                for s in view.stacks.stacks.iter().take(12) {
+                    for f in &s.shots {
+                        if let Some(c) = view.contents.get(f)
+                            && std::time::Instant::now() < deadline
+                        {
+                            self.images.prime_thumb(c.digest);
+                        }
+                    }
+                }
+                self.stacks.generation += 1;
+                self.stacks.loading = false;
+                self.stacks.view = Some(view);
+                self.stacks.reviewed = reviewed;
+                cx.notify();
+                return;
+            }
+        }
         self.stacks.generation += 1;
         let generation = self.stacks.generation;
         self.stacks.loading = true;
@@ -353,7 +387,11 @@ impl DuplicatesView {
         let view = self.stacks.view.clone();
         let n = view.as_ref().map_or(0, |v| v.stacks.stacks.len());
         let reviewed = (0..n).filter(|i| self.stack_is_reviewed(*i)).count() as u64;
-        let (main, sub) = stacks_progress_text(n as u64, reviewed);
+        let (main, sub) = if view.is_some() {
+            stacks_progress_text(n as u64, reviewed)
+        } else {
+            ("…".to_owned(), "Computing stacks".to_owned())
+        };
         let done = n > 0 && reviewed as usize >= n;
         let fraction = if n == 0 {
             0.0
@@ -491,6 +529,7 @@ impl DuplicatesView {
                         h_flex()
                             .id(("stacks-row", ix))
                             .test_support()
+                            .w_full()
                             .px(Tokens::space(4.0))
                             .py(Tokens::space(2.0))
                             .gap(Tokens::space(3.0))
@@ -572,10 +611,19 @@ impl DuplicatesView {
         let colors = *ui_theme::colors(cx);
         let Some(view) = self.stacks.view.clone() else {
             return div()
+                .id("stacks-detail-status")
+                .test_support()
                 .flex_1()
                 .p(Tokens::space(6.0))
-                .text_color(colors.text_muted)
-                .child("Computing stacks…")
+                .text_color(if self.error.is_some() {
+                    colors.danger
+                } else {
+                    colors.text_muted
+                })
+                .child(match &self.error {
+                    Some(e) => format!("The stacks could not be computed: {e}"),
+                    None => "Computing stacks…".to_owned(),
+                })
                 .into_any_element();
         };
         let Some(s) = view.stacks.stacks.get(self.stacks.selected).cloned() else {

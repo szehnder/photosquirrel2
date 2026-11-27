@@ -163,6 +163,17 @@ impl ExportView {
             plan_task: None,
             run_task: None,
         };
+        if let Some(b) = std::env::var("PHOTOSQUIRREL_EXPORT_BEST_OF")
+            .ok()
+            .and_then(|v| ps_model::BestOf::from_key(&v))
+        {
+            // Dev-only: scripted screenshots of an export choice (agents' windows get one frame).
+            let t = app
+                .as_ref()
+                .map(|s| s.review.thresholds())
+                .unwrap_or_default();
+            this.settings = this.settings.with_best_of(b, t);
+        }
         if let Some(b) = this.backend.clone() {
             // The startup grace lets a scripted screenshot see the plan in frame one. The library: the one in
             // settings (the last exported to), else the catalog's last, else the suggested folder.
@@ -315,7 +326,7 @@ impl ExportView {
     fn can_export(&self) -> bool {
         matches!(
             self.plan.as_ref().and_then(Loadable::ready),
-            Some(p) if p.blocker.is_none() && p.files + p.adopted > 0
+            Some(p) if p.blocker.is_none() && p.files + p.adopted + p.best_of_part.map_or(0, |b| b.0) > 0
         )
     }
 
@@ -478,10 +489,7 @@ impl ExportView {
                             "plan-best-of",
                             "then under Best of/",
                             format_count(files),
-                            Some(format!(
-                                "{} again: each stack's pick and every photo in no stack",
-                                kit::format_bytes(bytes)
-                            )),
+                            Some(format!("{} again", kit::format_bytes(bytes))),
                         ))
                     })
                     .child(tile(
@@ -624,7 +632,7 @@ impl ExportView {
                 )
             })
             .when(!plan.examples.is_empty(), |d| {
-                let total = (plan.files + plan.adopted) as usize;
+                let total = (plan.files + plan.adopted + plan.best_of_part.map_or(0, |b| b.0)) as usize;
                 let shown = if self.show_all_rows {
                     plan.examples.len()
                 } else {
@@ -1210,7 +1218,7 @@ impl Render for ExportView {
         let action: AnyElement = match self.phase.clone() {
             ExportPhase::Review => {
                 let label = match &plan {
-                    Some(p) => export_label(p.files, p.adopted),
+                    Some(p) => export_label(p.files + p.best_of_part.map_or(0, |b| b.0), p.adopted),
                     None => "Export".into(),
                 };
                 h_flex()

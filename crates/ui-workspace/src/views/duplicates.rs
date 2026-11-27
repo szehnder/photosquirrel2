@@ -365,11 +365,17 @@ impl DuplicatesView {
             undo_exclusion: None,
             stacks: StacksTab::default(),
         };
-        if std::env::var("PHOTOSQUIRREL_REVIEW_TAB").as_deref() == Ok("suggestions") {
-            // Dev-only: scripted screenshots of the suggestions panel (KDE gives agents one frame).
-            this.tab = Tab::Suggestions;
+        match std::env::var("PHOTOSQUIRREL_REVIEW_TAB").as_deref() {
+            // Dev-only: scripted screenshots of the suggestions panel or the stacks (KDE gives agents one frame).
+            Ok("suggestions") => this.tab = Tab::Suggestions,
+            Ok("stacks") => this.tab = Tab::Stacks,
+            _ => {}
         }
         let primed = crate::startup::StartupGrace::deadline(cx).is_some_and(|d| this.load_now(d));
+        if this.tab == Tab::Stacks {
+            // Within the start-up grace this computes the stacks before the first frame.
+            this.reload_stacks(cx);
+        }
         if let Some(l) = &this.list {
             DuplicatesProgress::publish(l.as_ref().into(), cx);
         }

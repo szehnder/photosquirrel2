@@ -777,7 +777,8 @@ impl ScanBackend for CatalogBackend {
             already_exported: plan.totals.already_exported,
             modified: plan.totals.modified,
             free_bytes: plan.free_bytes,
-            required_bytes: plan.required_bytes,
+            // "Both" copies the Best of/ part to the same volume after the first.
+            required_bytes: plan.required_bytes + best_of_part.map_or(0, |b| b.1),
             blocker: plan.blocker().map(|b| b.to_string()),
             examples,
             date_note: plan.totals.dates.note(),
