@@ -38,7 +38,7 @@
 
 ## 6. CLI
 
-- [ ] 6.1 `stacks list [--window] [--similarity] [--json]`, `stacks show`, `stacks pick`, `stacks take-out`, `export run --best-of only|both`, and `not picked` in `report`. Verify: `scenario_cli_list_stacks_as_json`, `scenario_cli_thresholds_from_the_command_line`, `scenario_cli_pick_from_the_cli` and `scenario_cli_best_of_export_from_the_cli`.
+- [x] 6.1 `stacks list [--window] [--similarity] [--json]`, `stacks show`, `stacks pick`, `stacks take-out`, `export run|dry-run --best-of only|both` (thresholds from `[review]`), and `not picked` in `report` (JSON by disposition; text when there are any). Verify: `scenario_cli_list_stacks_as_json`, `scenario_cli_thresholds_from_the_command_line`, `scenario_cli_pick_from_the_cli` and `scenario_cli_best_of_export_from_the_cli`.
 
 ## 7. Docs and review
 

@@ -515,7 +515,7 @@ fn print_report(o: &ReportOut) {
         let f = &s.counts.files;
         println!(
             "source {} {}: {}  exported {}, covered {}, excluded {}, pending {}, unreadable {}, missing {}, \
-             quarantined {}, superseded {}",
+             quarantined {}, superseded {}{}",
             s.source,
             s.root.display(),
             s.badge,
@@ -526,7 +526,12 @@ fn print_report(o: &ReportOut) {
             f["unreadable"],
             f["missing"],
             f["quarantined"],
-            f["superseded"]
+            f["superseded"],
+            if f["not_picked"] > 0 {
+                format!(", not picked {}", f["not_picked"])
+            } else {
+                String::new()
+            }
         );
         if s.rescan_needed > 0 {
             println!(

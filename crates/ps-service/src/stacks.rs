@@ -9,6 +9,8 @@ use ps_model::{ContentId, FileId};
 
 use crate::scan::ScanService;
 
+pub use ps_dedup::{PickReason, Stack};
+
 /// What stacks are computed from: the analyzed files' grouping inputs and the stored group membership.
 #[derive(Debug, Default)]
 pub struct StackInputs {
