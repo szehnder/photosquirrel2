@@ -2675,6 +2675,21 @@ impl DuplicatesView {
                                     .text_ellipsis()
                                     .child(title),
                             )
+                            .when(d.reviewed, |e| {
+                                e.child(icon_chip(
+                                    "duplicates-reviewed-chip",
+                                    IconName::CircleCheck,
+                                    "Reviewed",
+                                    colors.tone_text(colors.success),
+                                    ui_theme::Colors::chip_bg(colors.success),
+                                    cx,
+                                ))
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .gap(Tokens::space(2.0))
                             .when(d.keeper_excluded(), |e| {
                                 e.child(icon_chip(
                                     "duplicates-excluded-chip",
@@ -2695,33 +2710,23 @@ impl DuplicatesView {
                                     cx,
                                 ))
                             })
-                            .when(d.reviewed, |e| {
-                                e.child(icon_chip(
-                                    "duplicates-reviewed-chip",
-                                    IconName::CircleCheck,
-                                    "Reviewed",
-                                    colors.tone_text(colors.success),
-                                    ui_theme::Colors::chip_bg(colors.success),
-                                    cx,
-                                ))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_size(Tokens::text_xs())
-                            .text_color(colors.text_muted)
-                            .child(format!(
-                                "{} copies · {} not copied again{}",
-                                d.members().len(),
-                                format_bytes(d.group.reclaimable_bytes),
-                                captured
-                                    .map(|c| format!(" · captured {c}"))
-                                    .unwrap_or_default()
-                            )),
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_size(Tokens::text_xs())
+                                    .text_color(colors.text_muted)
+                                    .child(format!(
+                                        "{} copies · {} not copied again{}",
+                                        d.members().len(),
+                                        format_bytes(d.group.reclaimable_bytes),
+                                        captured
+                                            .map(|c| format!(" · captured {c}"))
+                                            .unwrap_or_default()
+                                    )),
+                            ),
                     ),
             )
             .when(!edits_blocked, |h| h.child(merge))
