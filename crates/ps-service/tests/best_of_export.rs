@@ -245,3 +245,83 @@ fn scenario_export_both() {
         );
     }
 }
+
+// ---- the Library's "Best of" filter (task 5.4) -----------------------------------------------------------------
+
+fn best_of_lists(
+    lib: &ps_service::library::Library,
+) -> (Vec<ps_model::ItemId>, Vec<ps_model::ItemId>) {
+    let all = ps_model::library::GalleryQuery {
+        filter: ps_service::library::library_filter(),
+        stacks: true,
+        ..Default::default()
+    };
+    let best = ps_model::library::GalleryQuery {
+        best_of: true,
+        ..all.clone()
+    };
+    (
+        lib.id_list(&all).unwrap().ids,
+        lib.id_list(&best).unwrap().ids,
+    )
+}
+
+#[test]
+fn scenario_gallery_best_of_shows_one_shot_per_stack() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    drop(scanned(tmp.path()));
+    let lib = ps_service::library::Library::open(&tmp.path().join("data")).unwrap();
+    let v = StackCache::new()
+        .view(
+            lib.scan().unwrap(),
+            &ReviewStore::in_memory(),
+            StackThresholds::default(),
+        )
+        .unwrap();
+    let (all, best) = best_of_lists(&lib);
+    let item = |f: FileId| ps_model::ItemId::try_from(f).unwrap();
+    let best_set: HashSet<_> = best.iter().copied().collect();
+    let all_set: HashSet<_> = all.iter().copied().collect();
+    for s in &v.stacks.stacks {
+        let shown: Vec<_> = s
+            .shots
+            .iter()
+            .filter(|f| best_set.contains(&item(**f)))
+            .collect();
+        assert_eq!(shown, vec![&s.pick], "exactly the pick of each stack");
+    }
+    // Every photo in no stack is still shown, and nothing else is hidden.
+    let stacked: HashSet<_> = v.index.keys().map(|f| item(*f)).collect();
+    for id in &all {
+        if !stacked.contains(id) {
+            assert!(best_set.contains(id), "{id:?} is in no stack and stays");
+        }
+    }
+    let hidden_shown = v
+        .stacks
+        .stacks
+        .iter()
+        .flat_map(|s| s.shots.iter().filter(move |f| **f != s.pick))
+        .filter(|f| all_set.contains(&item(**f)))
+        .count();
+    assert_eq!(best.len(), all.len() - hidden_shown);
+}
+
+#[test]
+fn scenario_gallery_best_of_follows_a_new_pick() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    drop(scanned(tmp.path()));
+    let lib = ps_service::library::Library::open(&tmp.path().join("data")).unwrap();
+    let svc = lib.scan().unwrap();
+    let v = StackCache::new()
+        .view(svc, &ReviewStore::in_memory(), StackThresholds::default())
+        .unwrap();
+    let s = &v.stacks.stacks[0];
+    let old = s.pick;
+    let new = *s.shots.iter().find(|f| **f != old).unwrap();
+    ps_service::stacks::pick(svc, &v, new).unwrap();
+    let (_, best) = best_of_lists(&lib);
+    let item = |f: FileId| ps_model::ItemId::try_from(f).unwrap();
+    assert!(best.contains(&item(new)), "the new pick is shown");
+    assert!(!best.contains(&item(old)), "the old pick is not");
+}

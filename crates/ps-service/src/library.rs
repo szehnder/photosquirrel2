@@ -341,6 +341,8 @@ pub struct Library {
     data_dir: PathBuf,
     engine: OnceLock<std::result::Result<Arc<ScanService>, String>>,
     settings: Mutex<AppliedSettings>,
+    /// The loaded stack inputs behind "Best of" (ADR-0135).
+    stack_cache: crate::stacks::StackCache,
     /// Pause on battery (`general.pause_on_battery`, ADR-0053).
     power: Arc<crate::power::PowerWatch>,
     insights: OnceLock<InsightStore>,
@@ -383,6 +385,7 @@ impl Library {
             data_dir: data_dir.to_path_buf(),
             engine: OnceLock::new(),
             settings: Mutex::new(AppliedSettings::default()),
+            stack_cache: crate::stacks::StackCache::new(),
             power: Arc::default(),
             insights: OnceLock::new(),
             warm: Mutex::new(None),
@@ -690,10 +693,47 @@ impl Library {
     fn base_list(&self, query: &GalleryQuery) -> Result<IdList> {
         let filter = Self::catalog_filter(query);
         let r = self.catalog()?.read();
-        Ok(match self.restriction(query)? {
+        let mut list = match self.restriction(query)? {
             Some(within) => r.id_list_within(&filter, &query.sort, &within)?,
             None => r.id_list(&filter, &query.sort)?,
-        })
+        };
+        if query.best_of {
+            let hidden = self.not_picked_items()?;
+            if !hidden.is_empty() {
+                let (ids, keys): (Vec<_>, Vec<_>) = list
+                    .ids
+                    .into_iter()
+                    .zip(list.keys)
+                    .filter(|(id, _)| !hidden.contains(id))
+                    .unzip();
+                list = IdList { ids, keys };
+            }
+        }
+        Ok(list)
+    }
+
+    /// The items "Best of" hides: the shots of every stack of similar shots that are not its pick, and their
+    /// copies, under the applied settings' thresholds (ADR-0135).
+    pub fn not_picked_items(&self) -> Result<HashSet<ItemId>> {
+        let thresholds = lock(&self.settings)
+            .settings
+            .as_ref()
+            .map(|s| s.review.thresholds())
+            .unwrap_or_default();
+        let svc = self.scan()?;
+        let store = crate::review::ReviewStore::for_service(svc);
+        let view = self.stack_cache.view(svc, &store, thresholds)?;
+        let shots = view.stacks.not_picked();
+        let mut files: HashSet<FileId> = shots.clone();
+        for (_, members, keeper_set) in self.catalog()?.read().group_memberships()? {
+            if keeper_set.first().is_some_and(|k| shots.contains(k)) {
+                files.extend(members);
+            }
+        }
+        Ok(files
+            .into_iter()
+            .filter_map(|f| ItemId::try_from(f).ok())
+            .collect())
     }
 
     fn compute_id_list(&self, query: &GalleryQuery) -> Result<IdList> {

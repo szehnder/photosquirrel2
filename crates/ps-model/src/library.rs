@@ -67,6 +67,9 @@ pub struct GalleryQuery {
     /// Only files with one of these completion-report dispositions (empty: any). A disposition filter
     /// widens the class and missing-file filters, so "excluded" and "missing" files can be listed.
     pub dispositions: Vec<Disposition>,
+    /// "Best of" (best-of-stacks, ADR-0135): only each stack of similar shots' pick and every photo in no such
+    /// stack; the other shots of every stack, and their copies, are hidden.
+    pub best_of: bool,
 }
 
 /// What a grid cell needs: loaded in pages of 512 around the viewport (ADR-0018).

@@ -211,6 +211,8 @@ pub struct FilterBar {
     pub no_preview: Option<ps_model::NoPreviewFilter>,
     /// Only items of these sources (the damaged files of a run or a report's source, ADR-0115).
     pub sources: Option<Vec<ps_model::SourceId>>,
+    /// "Best of": each stack of similar shots' pick and every photo in no such stack (ADR-0135).
+    pub best_of: bool,
 }
 
 impl FilterBar {
@@ -227,6 +229,7 @@ impl FilterBar {
                 "photos" => f.kind = Some(MediaKind::Image),
                 "videos" => f.kind = Some(MediaKind::Video),
                 "no-stacks" => f.stacks_off = true,
+                "best-of" => f.best_of = true,
                 "no-preview" => f.no_preview = Some(ps_model::NoPreviewFilter::default()),
                 w => {
                     if let Some(spec) = w.strip_prefix("no-preview=") {
@@ -316,6 +319,11 @@ impl FilterBar {
             next.no_preview = None;
             out.push(("no-preview".to_owned(), no_preview_label(np), next));
         }
+        if self.best_of {
+            let mut next = self.clone();
+            next.best_of = false;
+            out.push(("best-of".to_owned(), "Best of".to_owned(), next));
+        }
         if let Some(sources) = &self.sources {
             let mut next = self.clone();
             next.sources = None;
@@ -338,6 +346,7 @@ impl FilterBar {
             stacks: !self.stacks_off,
             insight: self.insight,
             dispositions: self.dispositions.clone(),
+            best_of: self.best_of,
         }
     }
 }
@@ -1153,6 +1162,12 @@ impl LibraryView {
                                 "Stacks",
                                 !f.stacks_off,
                                 with(&|n| n.stacks_off = !n.stacks_off),
+                            ))
+                            .child(chip(
+                                "filter-best-of",
+                                "Best of",
+                                f.best_of,
+                                with(&|n| n.best_of = !n.best_of),
                             )),
                     )
                     .child(
