@@ -748,6 +748,12 @@ fn older_catalog_video(cx: &mut TestAppContext, default_tool: Option<PathBuf>) {
     c.execute_batch(
         "UPDATE file SET preview_gen = NULL, preview_reason = NULL WHERE format = 'mov';
          DROP TABLE catalog_task;
+         ALTER TABLE file DROP COLUMN shot_quality_version;
+         ALTER TABLE file DROP COLUMN sharpness;
+         ALTER TABLE file DROP COLUMN clipped_high;
+         ALTER TABLE file DROP COLUMN clipped_low;
+         DROP TABLE stack_separation;
+         DROP TABLE stack_pick;
          ALTER TABLE file DROP COLUMN colour;
          PRAGMA user_version = 24;",
     )

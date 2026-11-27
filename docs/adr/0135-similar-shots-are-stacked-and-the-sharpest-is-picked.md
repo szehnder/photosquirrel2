@@ -76,8 +76,10 @@ suggestion.**
    - sharpness: the variance of the Laplacian of the 384 px thumbnail's luminance, scaled by the thumbnail area;
    - clipped highlights and clipped shadows, as fractions.
 
-   They are computed from the thumbnail while it is decoded at analysis, at well under 1 ms a file. Existing
-   catalogs are filled in on a background thread from the stored thumbnails, never from the sources. A photo
+   They are computed from the stored thumbnail, never from the sources:
+   - at the end of each completed scan, for the files it thumbed (about 1 ms each);
+   - on a background thread a few seconds after open, for catalogs scored before.
+   A thumbnail that cannot be decoded is recorded as tried, with no score. A photo
    without a thumbnail has no score and ranks after scored shots on that key.
 6. **Export may take only the picks,** as an opt-in choice of each export: everything (the default), the best of
    each stack only, or both (everything, plus the picks again under `Best of/` in the library).

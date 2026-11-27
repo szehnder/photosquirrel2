@@ -71,11 +71,16 @@
    - a 3×3 Laplacian, and its variance divided by the pixel count;
    - the fractions of luma at 250 or above and at 5 or below.
 
-   It runs where the scan already holds the decoded thumbnail (no extra decode) and writes through the catalog
-   writer in the analysis batch.
-   - **Backfill:** at open, a background job pages photos with `shot_quality_version IS NULL` and a stored
-     thumbnail, decodes each thumbnail from the store and writes the scores in batches of 1,000. It pauses while a
-     scan runs and never touches a source.
+   The scores always come from the **stored** thumbnail, by one pass (`ps_scan::shot_quality::fill`):
+   - **At the end of every completed scan**, after the regroup, it scores the files that scan thumbed. That takes
+     about 1 ms per file: one 384 px JPEG decode. An unchanged rescan finds nothing to score.
+   - **In the background**, a few seconds after the catalog opens (`ScanOptions::shot_quality_delay`, 10 s), it
+     fills in catalogs scored before, or by an older version. It pauses while any scan runs, ends when the scanner
+     is dropped, and never touches a source. Writes go in batches of 1,000.
+   - A thumbnail that cannot be decoded is recorded as tried, with no score, so it is not tried again.
+
+   Built this way instead of hooking the analysis, so that there is one code path and no change to the many places
+   that build an analysis result.
    - **Effect on stacks:** stacks show "Scores pending" on shots without scores, and the pick falls back to the later
      keys until the scores arrive.
 6. **The 10% sharpness tie and the 1% clipping steps** are both relative to the stack, compared with the stack's

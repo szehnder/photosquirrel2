@@ -30,6 +30,7 @@ pub mod progress;
 pub mod redate;
 mod report;
 mod scanner;
+pub mod shot_quality;
 pub mod source;
 mod tiff_pass;
 pub mod upgrade;

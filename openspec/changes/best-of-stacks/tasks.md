@@ -13,8 +13,8 @@
 
 - [x] 2.1 `shot_quality` from an RGB thumbnail (luma, Laplacian variance per pixel, clipped fractions). Verify: ps-media unit tests on a sharp and a blurred thumbnail, and on a blown-out one.
 - [x] 2.2 Catalog migration 27: shot-quality columns, `stack_separations` and `stack_picks`, with writer commands. Verify: a migration test from a version-26 fixture, and writer round-trip tests.
-- [ ] 2.3 Compute the scores at analysis from the decoded thumbnail. Verify: `scenario_photo_stacks_scores_for_new_photos`; `rescan-nochange-100k` and `catalog-insert` stay within budget.
-- [ ] 2.4 Background backfill from stored thumbnails at open: batches of 1,000, paused during scans, no source read. Verify: `scenario_photo_stacks_existing_catalog_filled_in_from_thumbnails` (sources offline, no file opened, the gallery responsive) and the `shot-quality-fill` budget.
+- [x] 2.3 Score new photos from their stored thumbnails at the end of every completed scan, after the regroup (design decision 5: one path from the stored thumbnail, about 1 ms per file). Verify: `scenario_photo_stacks_scores_for_new_photos` (a box-blurred copy scores lower). `rescan-nochange-100k` and `catalog-insert` are measured in 8.2.
+- [x] 2.4 Background fill from stored thumbnails: starts `ScanOptions::shot_quality_delay` (10 s) after open, owner process only, in batches of 1,000, paused while any scan runs, ended when the scanner is dropped, never reading a source; undecodable thumbnails are recorded as tried. Verify: `scenario_photo_stacks_existing_catalog_filled_in_from_thumbnails` (sources renamed away, open returns at once, every thumbed photo is scored). The `shot-quality-fill` budget is in 3.3.
 
 ## 3. Service and settings
 

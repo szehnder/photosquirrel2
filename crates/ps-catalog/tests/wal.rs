@@ -63,7 +63,13 @@ fn scenario_catalog_migrated_catalog_leaves_an_empty_log() {
     {
         let c = Connection::open(&path).unwrap();
         c.execute_batch(&format!(
-            "ALTER TABLE file DROP COLUMN colour;
+            "ALTER TABLE file DROP COLUMN shot_quality_version;
+             ALTER TABLE file DROP COLUMN sharpness;
+             ALTER TABLE file DROP COLUMN clipped_high;
+             ALTER TABLE file DROP COLUMN clipped_low;
+             DROP TABLE stack_separation;
+             DROP TABLE stack_pick;
+             ALTER TABLE file DROP COLUMN colour;
              PRAGMA user_version = {};",
             db::COLOUR_MIGRATION.version - 1
         ))

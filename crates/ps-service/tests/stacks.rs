@@ -235,3 +235,175 @@ fn scenario_photo_stacks_no_source_read_for_stacks() {
     assert!(!online.stacks.is_empty());
     assert_eq!(offline, online, "the same stacks with the source gone");
 }
+
+/// Files with a real stored thumbnail (stage thumbed, no placeholder).
+fn thumbed(svc: &ScanService) -> Vec<FileId> {
+    svc.engine()
+        .catalog()
+        .read()
+        .with(|c| {
+            let mut s = c.prepare(
+                "SELECT id FROM file WHERE stage = 3 AND preview_reason IS NULL AND content_id IS NOT NULL",
+            )?;
+            let ids = s
+                .query_map([], |r| Ok(FileId(r.get(0)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(ids)
+        })
+        .unwrap()
+}
+
+/// Box blur of an RGB8 image, horizontal then vertical, radius `r`.
+fn box_blur(src: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
+    let pass = |src: &[u8], horizontal: bool| -> Vec<u8> {
+        let mut out = vec![0u8; src.len()];
+        for y in 0..h {
+            for x in 0..w {
+                for c in 0..3 {
+                    let (mut sum, mut n) = (0u32, 0u32);
+                    for d in 0..=2 * r {
+                        let (xx, yy) = if horizontal {
+                            ((x + d).checked_sub(r), Some(y))
+                        } else {
+                            (Some(x), (y + d).checked_sub(r))
+                        };
+                        if let (Some(xx), Some(yy)) = (xx, yy)
+                            && xx < w
+                            && yy < h
+                        {
+                            sum += u32::from(src[(yy * w + xx) * 3 + c]);
+                            n += 1;
+                        }
+                    }
+                    out[(y * w + x) * 3 + c] = (sum / n) as u8;
+                }
+            }
+        }
+        out
+    };
+    pass(&pass(src, true), false)
+}
+
+#[test]
+fn scenario_photo_stacks_scores_for_new_photos() {
+    use ps_fixtures::jpeg::encode_jpeg;
+    use ps_fixtures::synth::Rgb;
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let dir = tmp.path().join("card");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Detail a thumbnail keeps: stripes and squares of 16-24 px (4-6 px at 384 px).
+    let mut data = Vec::with_capacity(1600 * 1200 * 3);
+    for y in 0..1200u32 {
+        for x in 0..1600u32 {
+            let v: u8 = if (x / 24 + y / 16) % 2 == 0 { 200 } else { 50 };
+            data.extend_from_slice(&[v, v / 2 + 40, 255 - v]);
+        }
+    }
+    let sharp = Rgb {
+        width: 1600,
+        height: 1200,
+        data,
+    };
+    // A soft copy: a separable box blur of radius 8 px.
+    let soft = Rgb {
+        width: 1600,
+        height: 1200,
+        data: box_blur(&sharp.data, 1600, 1200, 8),
+    };
+    std::fs::write(dir.join("sharp.jpg"), encode_jpeg(&sharp, 92)).unwrap();
+    std::fs::write(dir.join("soft.jpg"), encode_jpeg(&soft, 92)).unwrap();
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).unwrap();
+    svc.add_source(&dir).unwrap();
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+
+    let q = svc.engine().catalog().read().shot_qualities().unwrap();
+    let all = thumbed(&svc);
+    assert_eq!(all.len(), 2);
+    assert!(
+        all.iter().all(|f| q.contains_key(f)),
+        "every thumbed photo is scored"
+    );
+    let inputs = StackInputs::load(&svc).unwrap();
+    let by_name = |n: &str| {
+        inputs
+            .inputs
+            .iter()
+            .find(|x| x.path.ends_with(n))
+            .unwrap()
+            .file
+    };
+    let (s, b) = (q[&by_name("/sharp.jpg")], q[&by_name("/soft.jpg")]);
+    assert!(s.sharpness > b.sharpness, "{s:?} vs {b:?}");
+}
+
+#[test]
+fn scenario_photo_stacks_existing_catalog_filled_in_from_thumbnails() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let root = tmp.path().join("corpus");
+    let w = ps_fixtures::DirWriter::new(&root).unwrap();
+    ps_fixtures::generate(42, ps_fixtures::Preset::Small, &w).unwrap();
+    let data = tmp.path().join("data");
+    let quiet = || ScanOptions {
+        shot_quality_delay: None,
+        ..ScanOptions::default()
+    };
+    let expected = {
+        let svc = ScanService::open(&data, quiet()).unwrap();
+        svc.add_source(&root).unwrap();
+        svc.start(&[]).unwrap();
+        svc.wait().unwrap();
+        let n = thumbed(&svc).len();
+        // A catalog from before this change: no scores.
+        svc.engine().catalog().writer().flush().unwrap();
+        let c = rusqlite::Connection::open(data.join("catalog.db")).unwrap();
+        c.execute_batch(
+            "UPDATE file SET shot_quality_version = NULL, sharpness = NULL, clipped_high = NULL, clipped_low = NULL",
+        )
+        .unwrap();
+        n
+    };
+    assert!(expected > 100);
+    // Its sources are offline: only the thumbnail store can be read.
+    std::fs::rename(&root, tmp.path().join("unplugged")).unwrap();
+    let opened = std::time::Instant::now();
+    let svc = ScanService::open(
+        &data,
+        ScanOptions {
+            shot_quality_delay: Some(std::time::Duration::ZERO),
+            ..ScanOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        opened.elapsed() < std::time::Duration::from_secs(2),
+        "opening does not wait for the fill"
+    );
+    assert!(
+        svc.engine()
+            .catalog()
+            .read()
+            .shot_qualities()
+            .unwrap()
+            .len()
+            < expected
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let scored = svc
+            .engine()
+            .catalog()
+            .read()
+            .shot_qualities()
+            .unwrap()
+            .len();
+        if scored == expected {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{scored} of {expected} scored"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}

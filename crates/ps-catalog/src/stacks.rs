@@ -53,8 +53,9 @@ impl Writer {
         })
     }
 
-    /// Store shot-quality scores (version [`SHOT_QUALITY_VERSION`]) in one transaction.
-    pub fn set_shot_quality(&self, rows: Vec<(FileId, ShotQuality)>) -> Result<()> {
+    /// Store shot-quality scores (version [`SHOT_QUALITY_VERSION`]) in one transaction. `None` records that the
+    /// file was tried and has no score (its thumbnail could not be decoded), so it is not tried again.
+    pub fn set_shot_quality(&self, rows: Vec<(FileId, Option<ShotQuality>)>) -> Result<()> {
         self.exec(move |c| {
             let mut stmt = c.prepare_cached(
                 "UPDATE file SET shot_quality_version = ?2, sharpness = ?3, clipped_high = ?4, clipped_low = ?5
@@ -64,9 +65,9 @@ impl Writer {
                 stmt.execute(params![
                     f.0,
                     SHOT_QUALITY_VERSION,
-                    f64::from(q.sharpness),
-                    f64::from(q.clipped_high),
-                    f64::from(q.clipped_low)
+                    q.map(|q| f64::from(q.sharpness)),
+                    q.map(|q| f64::from(q.clipped_high)),
+                    q.map(|q| f64::from(q.clipped_low))
                 ])?;
             }
             Ok(())
@@ -120,12 +121,12 @@ impl Readers {
         })
     }
 
-    /// Up to `limit` photos with a stored thumbnail and no shot-quality score of the current version, with their
-    /// content digest (the thumbnail key), smallest id first after `after`.
-    pub fn unscored_shots(&self, after: FileId, limit: u32) -> Result<Vec<(FileId, [u8; 32])>> {
+    /// Up to `limit` files with a stored thumbnail and no shot-quality score of the current version, with their
+    /// content identity (the thumbnail key), smallest id first after `after`.
+    pub fn unscored_shots(&self, after: FileId, limit: u32) -> Result<Vec<(FileId, ContentId)>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(
-                "SELECT id, content_id FROM file
+                "SELECT id, content_id, identity_kind FROM file
                  WHERE id > ?1 AND stage = 3 AND preview_reason IS NULL AND content_id IS NOT NULL
                    AND (shot_quality_version IS NULL OR shot_quality_version <> ?2)
                  ORDER BY id LIMIT ?3",
@@ -133,10 +134,11 @@ impl Readers {
             let mut rows = stmt.query(params![after.0, SHOT_QUALITY_VERSION, limit])?;
             let mut out = Vec::new();
             while let Some(r) = rows.next()? {
-                let d: Vec<u8> = r.get(1)?;
-                if let Ok(d) = <[u8; 32]>::try_from(d) {
-                    out.push((FileId(r.get(0)?), d));
-                }
+                let kind: Option<i64> = r.get(2)?;
+                out.push((
+                    FileId(r.get(0)?),
+                    content_from(r.get(1)?, kind.unwrap_or(0))?,
+                ));
             }
             Ok(out)
         })
