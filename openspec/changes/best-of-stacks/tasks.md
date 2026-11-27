@@ -18,7 +18,7 @@
 
 ## 3. Service and settings
 
-- [ ] 3.1 `review` settings section (`stack_window_s`, `stack_similarity`) with validation and `doctor` output. Verify: `scenario_settings_review_defaults` and `scenario_settings_invalid_stack_window`.
+- [x] 3.1 `review` settings section (`stack_window_s`, `stack_similarity`) with validation and `doctor` output. Verify: `scenario_settings_review_defaults` and `scenario_settings_invalid_stack_window`.
 - [ ] 3.2 Stacks service: a background recompute on open, on regroup deltas, on threshold changes, on picks and on take-outs, with a generation counter and `Arc` snapshots; review state keyed by the anchor content. Verify: `scenario_photo_stacks_looser_thresholds_make_fewer_larger_stacks`, `scenario_photo_stacks_window_of_1_s_keeps_a_5_s_pair_apart`, `scenario_photo_stacks_no_source_read_for_stacks`, `scenario_photo_stacks_your_pick_is_kept` and `scenario_photo_stacks_taken_out_shot_stays_out`.
 - [ ] 3.3 Benchmarks `stacks-compute` (1M) and `stacks-retune` (100k), added to `perf-budgets.toml`. Verify: `scenario_performance_budgets_stacks_computed_within_budget`, `scenario_performance_budgets_retune_within_budget` and `scenario_performance_budgets_shot_quality_filled_within_budget` in `cargo xtask bench --check`.
 

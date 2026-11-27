@@ -27,82 +27,8 @@ pub const MAX_STACK_SPAN_MS: i64 = 120_000;
 pub const SHARPNESS_TIE: f32 = 0.10;
 /// Clipped-pixel fractions are compared in steps of this size.
 pub const CLIPPING_STEP: f32 = 0.01;
-/// Bounds of the stack window, in whole seconds.
-pub const MIN_WINDOW_S: u32 = 1;
-pub const MAX_WINDOW_S: u32 = 60;
-
-/// How alike two shots must look to be stacked (ADR-0135's table).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StackSimilarity {
-    Strict,
-    #[default]
-    Balanced,
-    Loose,
-}
-
-impl StackSimilarity {
-    pub const ALL: [StackSimilarity; 3] = [
-        StackSimilarity::Strict,
-        StackSimilarity::Balanced,
-        StackSimilarity::Loose,
-    ];
-
-    /// The largest pHash and dHash distances of a stack edge.
-    pub fn limits(self) -> (u32, u32) {
-        match self {
-            StackSimilarity::Strict => (8, 10),
-            StackSimilarity::Balanced => (12, 16),
-            StackSimilarity::Loose => (18, 22),
-        }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            StackSimilarity::Strict => "strict",
-            StackSimilarity::Balanced => "balanced",
-            StackSimilarity::Loose => "loose",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Option<StackSimilarity> {
-        Self::ALL.into_iter().find(|x| x.key() == s)
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            StackSimilarity::Strict => "Strict",
-            StackSimilarity::Balanced => "Balanced",
-            StackSimilarity::Loose => "Loose",
-        }
-    }
-}
-
-/// The user's stack thresholds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct StackThresholds {
-    /// Largest capture-time difference of a stack edge, in whole seconds ([`MIN_WINDOW_S`]..=[`MAX_WINDOW_S`]).
-    pub window_s: u32,
-    pub similarity: StackSimilarity,
-}
-
-impl Default for StackThresholds {
-    fn default() -> Self {
-        StackThresholds {
-            window_s: 5,
-            similarity: StackSimilarity::Balanced,
-        }
-    }
-}
-
-impl StackThresholds {
-    /// The window clamped to its bounds.
-    pub fn window_s(&self) -> u32 {
-        self.window_s.clamp(MIN_WINDOW_S, MAX_WINDOW_S)
-    }
-}
-
 pub use ps_model::ShotQuality;
+pub use ps_model::{MAX_WINDOW_S, MIN_WINDOW_S, StackSimilarity, StackThresholds};
 
 /// The user's stack decisions and what else the rule needs from outside the grouping.
 #[derive(Clone, Copy, Debug)]

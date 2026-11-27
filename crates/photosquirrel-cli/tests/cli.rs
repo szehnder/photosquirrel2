@@ -1459,3 +1459,45 @@ fn scenario_cli_include_a_group_from_the_cli() {
     assert_eq!(listed(data.path(), id)["excluded"], false);
     assert_eq!(excluded_by_you(data.path()), before_you);
 }
+
+// ---- best-of-stacks: the `[review]` settings ------------------------------------------------------------------
+
+#[test]
+fn scenario_settings_review_defaults() {
+    let data = tempfile::tempdir().unwrap();
+    let store = ps_service::settings::SettingsStore::in_dir(data.path().join("config"));
+    let t = store.load().settings.review.thresholds();
+    assert_eq!(t.window_s, 5);
+    assert_eq!(t.similarity, ps_model::StackSimilarity::Balanced);
+    let d = json(&ok(data.path(), &["--json", "doctor"]));
+    assert_eq!(d["data"]["stack_window_s"], 5);
+    assert_eq!(d["data"]["stack_similarity"], "balanced");
+}
+
+#[test]
+fn scenario_settings_invalid_stack_window() {
+    let data = tempfile::tempdir().unwrap();
+    let config = data.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("settings.toml"),
+        "settings_version = 4\n\n[scanning]\nscan_new_sources = false\n\n[review]\nstack_window_s = 0\nstack_similarity = \"loose\"\n",
+    )
+    .unwrap();
+    let store = ps_service::settings::SettingsStore::in_dir(config.clone());
+    let loaded = store.load();
+    assert!(loaded.recovered.is_none(), "not treated as a corrupt file");
+    let s = loaded.settings;
+    let errors = ps_service::settings::validate(&s);
+    assert!(
+        errors.iter().any(|e| e.key == "review.stack_window_s"),
+        "{errors:?}"
+    );
+    assert_eq!(s.review.thresholds().window_s, 5, "the default is used");
+    assert_eq!(
+        s.review.stack_similarity,
+        ps_model::StackSimilarity::Loose,
+        "the rest of the section is kept"
+    );
+    assert!(!s.scanning.scan_new_sources, "every other setting is kept");
+}
