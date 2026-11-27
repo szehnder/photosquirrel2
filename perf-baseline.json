@@ -17,6 +17,9 @@
     "phash-dhash-per-image": 0.0964,
     "rescan-nochange-100k": 0.547,
     "scan-analysis-12mp": 4.615,
+    "shot-quality-fill": 48.965,
+    "stacks-compute": 0.463,
+    "stacks-retune": 26.711,
     "tiff-analysis-decode": 335.59,
     "tiff-stream-memory": 0.94
   }

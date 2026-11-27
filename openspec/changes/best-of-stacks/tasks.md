@@ -42,7 +42,7 @@
 
 ## 7. Docs and review
 
-- [ ] 7.1 README (Stacks, the thresholds, Best of, the export choice, the CLI), keyboard help, and "What's new in 0.6.0". Verify: the text names T, the two thresholds, the three export choices and `not picked`.
+- [x] 7.1 README (Stacks, the thresholds, Best of, the export choice, the CLI), keyboard help, and "What's new in 0.6.0". Verify: the text names T, the two thresholds, the three export choices and `not picked`.
 - [ ] 7.2 Screenshot surfaces `duplicates-stacks`, `gallery-best-of` and `export-best-of` in light and dark, reviewed by a fresh reviewer. Verify: PNGs under `target/screenshots/` and the review notes.
 - [ ] 7.3 The owner accepts ADR-0135 with the calibrated table. Verify: its status reads accepted, and the README index row has no "(proposed)".
 

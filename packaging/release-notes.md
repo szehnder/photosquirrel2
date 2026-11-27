@@ -42,6 +42,19 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
+### What's new in 0.6.0
+
+- **Stacks of similar shots.** Bursts and near-identical frames taken seconds apart are stacked in **Duplicates >
+  Stacks** (press **T**), so you review a moment once. Each stack's best shot is marked **Best of**: the sharpest,
+  then the best exposed. Pick another with a number key; take a shot out with **S**. Stacks never change a group or
+  a file.
+- **You decide how aggressive.** **Within** (1-60 s) and **Similarity** (Strict, Balanced, Loose) are in the Stacks
+  header and in **Settings > Review**, and recount the stacks at once.
+- **Best of in the Library and in exports.** A **Best of** filter shows one shot per stack. Export can copy the best
+  of each stack only, or everything plus a `Best of/` folder. Shots left out are reported as not picked and are
+  never cleaned up; nothing is deleted.
+- **From the command line:** `stacks list`, `stacks pick`, `stacks take-out` and `export run --best-of only|both`.
+
 ### What's new in 0.5.2
 
 - **Keep none of a duplicate group.** In Duplicates, press **E**, or use **Exclude group…** to add a reason, when

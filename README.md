@@ -177,6 +177,8 @@ PhotoSquirrel behave as if no decoder were found.
    (people, children, pets, a category), and AI Review's **Review duplicates of these** opens that list directly.
    Don't want any copy of a group? Press **E** (or **Exclude group…** for a reason): every copy is left out of the
    library and the next group opens. Nothing is deleted; **Undo** or **Include again** puts it back.
+   Bursts and near-identical shots taken seconds apart are under **Stacks** (press **T**): see
+   [Stacks and Best of](#stacks-and-best-of).
 4. Open **Export**, choose an empty library folder and the app you will import into, review the plan and copy.
 5. Check **Reports**, then import the library folder into Apple Photos, Google Photos or Lightroom.
 
@@ -215,6 +217,10 @@ photosquirrel-cli groups suggestions                  # similar shots, each with
 photosquirrel-cli groups show 42                      # members of a group and why the keeper won
 photosquirrel-cli groups exclude 42 --reason "not ours"  # keep none of a group (no file is touched)
 photosquirrel-cli groups include 42                   # put it back
+photosquirrel-cli stacks list                         # stacks of similar shots, each with its pick and why
+photosquirrel-cli stacks list --window 10 --similarity loose   # try other thresholds (settings unchanged)
+photosquirrel-cli stacks pick 1234                    # make a shot its stack's pick
+photosquirrel-cli export run --library ~/Pictures/Library --best-of only --yes   # the best of each stack
 photosquirrel-cli export dry-run --library ~/Pictures/Library     # what would be copied where; writes nothing
 photosquirrel-cli export run --library ~/Pictures/Library --yes   # copy, verify, rename
 photosquirrel-cli export run --library ~/Pictures/Library --upgrade --yes  # also copy better copies beside
@@ -251,6 +257,26 @@ command runs; it has no effect (and says so) when `scan resume` only resumes a s
 terminal. `PHOTOSQUIRREL_POWER_SUPPLY_DIR` points the power check at a folder laid out like Linux's
 `/sys/class/power_supply` instead of the system's own (on any platform; for testing and support; a warning says
 it is in use, and `doctor` shows it).
+
+## Stacks and Best of
+
+Cameras shoot bursts: many near-identical frames of one moment. PhotoSquirrel keeps each frame as its own photo
+(they are different shots, not copies), and also stacks them so you can review them as one moment and keep the
+best. Stacks never change a duplicate group or a file.
+
+- **What is stacked:** photos (a duplicate group counts once) taken within a few seconds of each other that look
+  alike. Two settings decide how aggressively, in **Duplicates > Stacks** and in **Settings > Review**:
+  **Within** (1-60 s, default 5 s) and **Similarity** (Strict, Balanced, Loose). Change them and the stacks are
+  recounted at once; no rescan is needed.
+- **The pick:** each stack's best shot, marked **Best of**: the sharpest, then the one with the fewest blown
+  highlights or crushed shadows, then the better copy, then the first. Sharpness comes from each photo's stored
+  thumbnail. Press a number to pick another shot (kept as "Picked by you"), **S** to take a shot out of its stack,
+  **Space** to compare it with the pick, **R** to mark the stack reviewed.
+- **Best of in the Library:** the **Best of** filter shows each stack's pick and every photo in no stack.
+- **Exporting the best:** the Export view's **What to export** offers Everything (the default), **Best of each
+  stack**, or **Both** (everything, plus the best of each stack again under `Best of/` in the library). Shots left
+  out are reported as **not picked**: accounted for, never cleaned up, and nothing is deleted. An export of
+  everything later copies them.
 
 ## The Excluded view
 
