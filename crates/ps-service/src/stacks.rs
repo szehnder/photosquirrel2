@@ -16,6 +16,8 @@ pub struct StackInputs {
     pub groups: GroupMembership,
     /// Files excluded by a user decision (or an accepted AI suggestion).
     pub excluded: HashSet<FileId>,
+    /// File -> its index in `inputs`.
+    by_file: HashMap<FileId, usize>,
 }
 
 impl StackInputs {
@@ -37,10 +39,16 @@ impl StackInputs {
             Ok(m)
         })?;
         let excluded = r.user_excluded_files()?.into_iter().collect();
+        let by_file = inputs
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (x.file, i))
+            .collect();
         Ok(StackInputs {
             inputs,
             groups,
             excluded,
+            by_file,
         })
     }
 
@@ -63,6 +71,220 @@ impl StackInputs {
 
     /// The input of file `f`.
     pub fn input(&self, f: FileId) -> Option<&DedupInput> {
-        self.inputs.iter().find(|x| x.file == f)
+        self.by_file.get(&f).map(|&i| &self.inputs[i])
     }
+}
+
+/// What [`StackInputs`] and the scores depend on: the stored groups and scan runs (as for the review list), the
+/// stored exclusions and how many files are scored. The same key means the same inputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InputsKey {
+    groups: crate::review::GroupsKey,
+    excluded: crate::review::ExclusionsKey,
+    scored: i64,
+}
+
+fn inputs_key(svc: &ScanService, store: &crate::review::ReviewStore) -> Result<InputsKey> {
+    let scored = svc.engine().catalog().read().with(|c| {
+        Ok(c.query_row(
+            "SELECT count(*) FROM file WHERE shot_quality_version IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0),
+        )?)
+    })?;
+    Ok(InputsKey {
+        groups: crate::review::groups_key(svc, store)?,
+        excluded: crate::review::exclusions_key(svc)?,
+        scored,
+    })
+}
+
+/// The stacks of one set of thresholds, as the review and the gallery read them.
+#[derive(Debug, Default)]
+pub struct StacksView {
+    pub thresholds: StackThresholds,
+    pub stacks: Stacks,
+    /// Shot -> its stack's index.
+    pub index: HashMap<FileId, usize>,
+    /// Each shot's content identity (picks, separations and review state are kept by content).
+    pub contents: HashMap<FileId, ContentId>,
+    /// Shots whose scores are not there yet ("Scores pending").
+    pub unscored: HashSet<FileId>,
+    /// Each shot's scores.
+    pub quality: HashMap<FileId, ShotQuality>,
+}
+
+impl StacksView {
+    /// The stack holding shot `f`.
+    pub fn stack_of(&self, f: FileId) -> Option<&ps_dedup::Stack> {
+        self.index.get(&f).map(|&i| &self.stacks.stacks[i])
+    }
+
+    /// A stack's anchor: the content of its first shot (what its review state is kept under).
+    pub fn anchor(&self, s: &ps_dedup::Stack) -> Option<ContentId> {
+        s.shots.first().and_then(|f| self.contents.get(f)).copied()
+    }
+
+    fn contents_of(&self, s: &ps_dedup::Stack) -> Vec<ContentId> {
+        s.shots
+            .iter()
+            .filter_map(|f| self.contents.get(f))
+            .copied()
+            .collect()
+    }
+}
+
+/// The last loaded inputs and scores: a threshold change, a pick or a take-out recomputes stacks from them without
+/// reading the catalog again (ADR-0135 decision 3).
+#[derive(Debug, Default)]
+pub struct StackCache {
+    last: std::sync::Mutex<
+        Option<(
+            InputsKey,
+            std::sync::Arc<(StackInputs, HashMap<FileId, ShotQuality>)>,
+        )>,
+    >,
+}
+
+impl StackCache {
+    pub fn new() -> StackCache {
+        StackCache::default()
+    }
+
+    fn inputs(
+        &self,
+        svc: &ScanService,
+        store: &crate::review::ReviewStore,
+    ) -> Result<std::sync::Arc<(StackInputs, HashMap<FileId, ShotQuality>)>> {
+        let key = inputs_key(svc, store)?;
+        if let Some((k, v)) = &*self.last.lock().unwrap_or_else(|e| e.into_inner())
+            && *k == key
+        {
+            return Ok(v.clone());
+        }
+        let inputs = StackInputs::load(svc)?;
+        let quality = svc.engine().catalog().read().shot_qualities()?;
+        let v = std::sync::Arc::new((inputs, quality));
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, v.clone()));
+        Ok(v)
+    }
+
+    /// The stacks under `thresholds`, with the stored picks and separations.
+    pub fn view(
+        &self,
+        svc: &ScanService,
+        store: &crate::review::ReviewStore,
+        thresholds: StackThresholds,
+    ) -> Result<StacksView> {
+        let v = self.inputs(svc, store)?;
+        let (inputs, quality) = (&v.0, &v.1);
+        let d = svc.engine().catalog().read().stack_decisions()?;
+        let stacks = inputs.stacks(thresholds, &d.separations, &d.picks, quality);
+        let index = stacks.index();
+        let contents: HashMap<FileId, ContentId> = index
+            .keys()
+            .filter_map(|f| inputs.input(*f).and_then(|x| x.content).map(|c| (*f, c)))
+            .collect();
+        let unscored = index
+            .keys()
+            .filter(|f| !quality.contains_key(f))
+            .copied()
+            .collect();
+        let quality = index
+            .keys()
+            .filter_map(|f| quality.get(f).map(|q| (*f, *q)))
+            .collect();
+        Ok(StacksView {
+            thresholds,
+            stacks,
+            index,
+            contents,
+            unscored,
+            quality,
+        })
+    }
+}
+
+/// Make shot `file` its stack's pick ("Picked by you"; kept by content across restarts and rescans).
+pub fn pick(svc: &ScanService, view: &StacksView, file: FileId) -> Result<()> {
+    let s = view
+        .stack_of(file)
+        .ok_or_else(|| anyhow::anyhow!("file {file} is in no stack"))?;
+    let c = *view
+        .contents
+        .get(&file)
+        .ok_or_else(|| anyhow::anyhow!("file {file} has no content identity"))?;
+    let _edit = svc.edit()?;
+    svc.engine()
+        .catalog()
+        .writer()
+        .set_stack_pick(view.contents_of(s), Some(c))?;
+    Ok(())
+}
+
+/// Back to the automatic pick for the stack holding `file`.
+pub fn clear_pick(svc: &ScanService, view: &StacksView, file: FileId) -> Result<()> {
+    let s = view
+        .stack_of(file)
+        .ok_or_else(|| anyhow::anyhow!("file {file} is in no stack"))?;
+    let _edit = svc.edit()?;
+    svc.engine()
+        .catalog()
+        .writer()
+        .set_stack_pick(view.contents_of(s), None)?;
+    Ok(())
+}
+
+/// Take shot `file` out of its stack: it is never stacked again with the shots that stack holds now, under any
+/// thresholds, until [`put_back`].
+pub fn take_out(svc: &ScanService, view: &StacksView, file: FileId) -> Result<()> {
+    let s = view
+        .stack_of(file)
+        .ok_or_else(|| anyhow::anyhow!("file {file} is in no stack"))?;
+    let c = *view
+        .contents
+        .get(&file)
+        .ok_or_else(|| anyhow::anyhow!("file {file} has no content identity"))?;
+    let pairs: Vec<(ContentId, ContentId)> = view
+        .contents_of(s)
+        .into_iter()
+        .filter(|o| *o != c)
+        .map(|o| (c, o))
+        .collect();
+    let _edit = svc.edit()?;
+    svc.engine()
+        .catalog()
+        .writer()
+        .set_stack_separations(pairs, true)?;
+    Ok(())
+}
+
+/// Put shot `file` back: every "taken out" pair with its content is removed.
+pub fn put_back(svc: &ScanService, file: FileId) -> Result<()> {
+    let r = svc.engine().catalog().read();
+    let c = r
+        .file_by_id(file)?
+        .and_then(|rec| rec.identity)
+        .ok_or_else(|| anyhow::anyhow!("file {file} has no content identity"))?;
+    let pairs: Vec<(ContentId, ContentId)> = r
+        .stack_decisions()?
+        .separations
+        .into_iter()
+        .filter(|(a, b)| *a == c || *b == c)
+        .collect();
+    let _edit = svc.edit()?;
+    svc.engine()
+        .catalog()
+        .writer()
+        .set_stack_separations(pairs, false)?;
+    Ok(())
+}
+
+/// Shots taken out of a stack (each content's file ids are not tracked; the view maps them).
+pub fn taken_out(svc: &ScanService) -> Result<BTreeSet<ContentId>> {
+    let d = svc.engine().catalog().read().stack_decisions()?;
+    Ok(d.separations
+        .into_iter()
+        .flat_map(|(a, b)| [a, b])
+        .collect())
 }

@@ -407,3 +407,160 @@ fn scenario_photo_stacks_existing_catalog_filled_in_from_thumbnails() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
+
+// ---- the stacks service (task 3.2) ------------------------------------------------------------------------------
+
+use ps_service::review::ReviewStore;
+use ps_service::stacks::{StackCache, StacksView};
+
+fn view(svc: &ScanService, t: StackThresholds) -> StacksView {
+    StackCache::new()
+        .view(svc, &ReviewStore::in_memory(), t)
+        .unwrap()
+}
+
+#[test]
+fn scenario_photo_stacks_looser_thresholds_make_fewer_larger_stacks() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let svc = scanned(tmp.path());
+    let cache = StackCache::new();
+    let store = ReviewStore::in_memory();
+    let at = |similarity| {
+        cache
+            .view(
+                &svc,
+                &store,
+                StackThresholds {
+                    window_s: 30,
+                    similarity,
+                },
+            )
+            .unwrap()
+    };
+    let (strict, loose) = (at(StackSimilarity::Strict), at(StackSimilarity::Loose));
+    assert!(
+        loose.stacks.stacked_shots() >= strict.stacks.stacked_shots(),
+        "{} < {}",
+        loose.stacks.stacked_shots(),
+        strict.stacks.stacked_shots()
+    );
+    // Every strict stack lies within one loose stack.
+    for s in &strict.stacks.stacks {
+        let at: std::collections::HashSet<_> = s.shots.iter().map(|f| loose.index.get(f)).collect();
+        assert_eq!(at.len(), 1, "{s:?}");
+    }
+}
+
+/// A camera JPEG of `img` taken at `when` (`YYYY:MM:DD HH:MM:SS`).
+fn dated_jpeg(img: &ps_fixtures::synth::Rgb, when: &str) -> Vec<u8> {
+    use ps_fixtures::tiff::{Endian, Ifd};
+    let mut exif = Ifd::new();
+    exif.ascii(0x9003, when);
+    let mut ifd0 = Ifd::new();
+    ifd0.ascii(0x010F, "Canon").ascii(0x0110, "Canon EOS R6");
+    ifd0.child(0x8769, exif);
+    let app1 = ps_fixtures::jpeg::app1_exif(&ps_fixtures::tiff::write_tiff(&ifd0, Endian::Little));
+    ps_fixtures::jpeg::camera_jpeg(&ps_fixtures::jpeg::encode_jpeg(img, 92), &app1)
+}
+
+#[test]
+fn scenario_photo_stacks_window_of_1_s_keeps_a_5_s_pair_apart() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let dir = tmp.path().join("card");
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = ps_fixtures::synth::Rgb {
+        width: 1200,
+        height: 800,
+        data: ps_fixtures::media::photo_rgb(1200, 800, 21),
+    };
+    // The next frame: the same scene, nudged a little.
+    let mut b = a.clone();
+    for (i, v) in b.data.iter_mut().enumerate() {
+        *v = v.saturating_add((i % 7) as u8);
+    }
+    std::fs::write(
+        dir.join("IMG_0001.JPG"),
+        dated_jpeg(&a, "2024:05:01 12:00:00"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("IMG_0002.JPG"),
+        dated_jpeg(&b, "2024:05:01 12:00:05"),
+    )
+    .unwrap();
+    let svc = ScanService::open(&tmp.path().join("data"), ScanOptions::default()).unwrap();
+    svc.add_source(&dir).unwrap();
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    let one = view(
+        &svc,
+        StackThresholds {
+            window_s: 1,
+            ..Default::default()
+        },
+    );
+    assert!(one.stacks.stacks.is_empty(), "{:?}", one.stacks);
+    let five = view(&svc, StackThresholds::default());
+    assert_eq!(five.stacks.stacks.len(), 1);
+    assert_eq!(five.stacks.stacks[0].shots.len(), 2);
+}
+
+#[test]
+fn scenario_photo_stacks_your_pick_is_kept() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let data = tmp.path().join("data");
+    let (stack_first, chosen) = {
+        let svc = scanned(tmp.path());
+        let v = view(&svc, StackThresholds::default());
+        let s = &v.stacks.stacks[0];
+        let chosen = *s.shots.iter().find(|f| **f != s.pick).unwrap();
+        ps_service::stacks::pick(&svc, &v, chosen).unwrap();
+        (s.shots[0], chosen)
+    };
+    // The application restarts and the stacks are computed again.
+    let svc = ScanService::open(&data, ScanOptions::default()).unwrap();
+    let v = view(&svc, StackThresholds::default());
+    let s = v.stack_of(stack_first).unwrap();
+    assert_eq!(s.pick, chosen);
+    assert_eq!(s.reason, ps_dedup::PickReason::PickedByYou);
+    assert_eq!(s.reason.label(), "Picked by you");
+}
+
+#[test]
+fn scenario_photo_stacks_taken_out_shot_stays_out() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let svc = scanned(tmp.path());
+    let v = view(&svc, StackThresholds::default());
+    let s = v
+        .stacks
+        .stacks
+        .iter()
+        .find(|s| s.shots.len() >= 3)
+        .expect("a stack of three or more")
+        .clone();
+    let out = s.shots[1];
+    ps_service::stacks::take_out(&svc, &v, out).unwrap();
+    // Looser thresholds, and a rescan.
+    svc.start(&[]).unwrap();
+    svc.wait().unwrap();
+    let loose = view(
+        &svc,
+        StackThresholds {
+            window_s: 60,
+            similarity: StackSimilarity::Loose,
+        },
+    );
+    let rest: Vec<FileId> = s.shots.iter().copied().filter(|f| *f != out).collect();
+    let together: std::collections::HashSet<_> = rest.iter().map(|f| loose.index.get(f)).collect();
+    assert_eq!(together.len(), 1, "the others are still stacked together");
+    assert!(together.iter().next().unwrap().is_some());
+    assert_ne!(
+        loose.index.get(&out),
+        loose.index.get(&rest[0]),
+        "the taken-out shot is apart"
+    );
+    // Put back: stacked with them again.
+    ps_service::stacks::put_back(&svc, out).unwrap();
+    let back = view(&svc, StackThresholds::default());
+    assert_eq!(back.index.get(&out), back.index.get(&rest[0]));
+}
