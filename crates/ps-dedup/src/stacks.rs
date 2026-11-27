@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use ps_model::{ContentId, FileId};
 use serde::{Deserialize, Serialize};
 
-use crate::edges::{MAX_ASPECT_DIFF, aspect_diff};
+use crate::edges::MAX_ASPECT_DIFF;
 use crate::group::Grouping;
 use crate::input::DedupInput;
 use crate::rank::FormatTier;
@@ -122,33 +122,33 @@ struct Shot<'a> {
     x: &'a DedupInput,
     /// Capture time, wall clock, ms (sub-seconds only when recorded).
     t_ms: i64,
+    /// Whole seconds of the capture time, and whether its sub-seconds were recorded.
+    secs: i64,
+    subsec: bool,
+    phash: u64,
+    dhash: u64,
+    /// Display aspect ratio (width / height) and orientation class.
+    aspect: f64,
+    landscape: bool,
 }
 
 impl Shot<'_> {
     fn within(&self, other: &Shot<'_>, window_s: u32) -> bool {
-        let (a, b) = (self.x.meta.capture_time, other.x.meta.capture_time);
-        let (Some(a), Some(b)) = (a, b) else {
-            return false;
-        };
-        if self.x.meta.subsec_present && other.x.meta.subsec_present {
-            a.diff_millis(&b) <= i64::from(window_s) * 1000
+        if self.subsec && other.subsec {
+            (self.t_ms - other.t_ms).abs() <= i64::from(window_s) * 1000
         } else {
-            (a.local_seconds - b.local_seconds).abs() <= i64::from(window_s)
+            (self.secs - other.secs).abs() <= i64::from(window_s)
         }
     }
 
     fn looks_alike(&self, other: &Shot<'_>, limits: (u32, u32)) -> bool {
-        let (Some(a), Some(b)) = (self.x.hash, other.x.hash) else {
-            return false;
-        };
-        let (Some(da), Some(db)) = (self.x.meta.display(), other.x.meta.display()) else {
-            return false;
-        };
-        let landscape = |d: ps_model::Dimensions| d.width >= d.height;
-        landscape(da) == landscape(db)
-            && aspect_diff(da, db) <= MAX_ASPECT_DIFF
-            && (a.phash ^ b.phash).count_ones() <= limits.0
-            && (a.dhash ^ b.dhash).count_ones() <= limits.1
+        // The hashes first: they rule out almost every pair. The aspect rule is `aspect_diff`'s.
+        (self.phash ^ other.phash).count_ones() <= limits.0
+            && (self.dhash ^ other.dhash).count_ones() <= limits.1
+            && self.landscape == other.landscape
+            && self.aspect.max(other.aspect) / self.aspect.min(other.aspect).max(f64::MIN_POSITIVE)
+                - 1.0
+                <= MAX_ASPECT_DIFF
     }
 }
 
@@ -200,9 +200,16 @@ fn shots<'a>(
             } else {
                 0
             };
+            let (h, d) = (x.hash?, x.meta.display()?);
             Some(Shot {
                 x,
                 t_ms: c.local_seconds * 1000 + ms,
+                secs: c.local_seconds,
+                subsec: x.meta.subsec_present,
+                phash: h.phash,
+                dhash: h.dhash,
+                aspect: f64::from(d.width) / f64::from(d.height.max(1)),
+                landscape: d.width >= d.height,
             })
         })
         .collect();
@@ -245,7 +252,9 @@ pub fn stacks_of(
                 break;
             }
             let (a, b) = (&shots[i], &shots[j]);
-            if !a.within(b, window_s) || !a.looks_alike(b, limits) || separated(decisions, a.x, b.x)
+            if !a.within(b, window_s)
+                || !a.looks_alike(b, limits)
+                || (!decisions.separations.is_empty() && separated(decisions, a.x, b.x))
             {
                 continue;
             }
@@ -263,12 +272,20 @@ pub fn stacks_of(
             }
         }
     }
-    let mut members: HashMap<usize, Vec<usize>> = HashMap::new();
-    for i in 0..shots.len() {
-        members.entry(uf.find(i)).or_default().push(i);
+    // Shots by root, each root's shots in time order (the sort is stable and `shots` is in time order).
+    let mut by_root: Vec<(usize, usize)> = (0..shots.len()).map(|i| (uf.find(i), i)).collect();
+    by_root.sort_by_key(|&(r, _)| r);
+    let mut members: Vec<Vec<usize>> = Vec::new();
+    for (k, &(r, i)) in by_root.iter().enumerate() {
+        if k == 0 || by_root[k - 1].0 != r {
+            members.push(Vec::new());
+        }
+        if let Some(m) = members.last_mut() {
+            m.push(i);
+        }
     }
     let mut out: Vec<Stack> = members
-        .into_values()
+        .into_iter()
         .filter(|m| m.len() > 1)
         .map(|m| {
             let (pick, reason) = pick(&shots, &m, decisions);
