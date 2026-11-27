@@ -250,22 +250,36 @@ fn separated(d: &StackDecisions<'_>, a: &DedupInput, b: &DedupInput) -> bool {
     }
 }
 
-/// The shots of `inputs` under `grouping`: each group's keeper, and each photo in no group.
+/// Which files are group keepers and which are grouped at all (a file in neither is a photo with no copies).
+#[derive(Clone, Debug, Default)]
+pub struct GroupMembership {
+    pub keepers: HashSet<FileId>,
+    pub grouped: HashSet<FileId>,
+}
+
+impl GroupMembership {
+    pub fn of(grouping: &Grouping) -> GroupMembership {
+        let mut m = GroupMembership::default();
+        for g in &grouping.groups {
+            m.keepers.insert(g.keeper);
+            m.grouped.extend(g.members.iter().map(|x| x.file));
+        }
+        m
+    }
+}
+
+/// The shots of `inputs`: each group's keeper, and each photo in no group.
 fn shots<'a>(
     inputs: &'a [DedupInput],
-    grouping: &Grouping,
+    groups: &GroupMembership,
     d: &StackDecisions<'_>,
 ) -> Vec<Shot<'a>> {
-    let mut in_group: HashSet<FileId> = HashSet::new();
-    let mut keepers: HashSet<FileId> = HashSet::new();
-    for g in &grouping.groups {
-        keepers.insert(g.keeper);
-        in_group.extend(g.members.iter().map(|m| m.file));
-    }
+    let (keepers, in_group) = (&groups.keepers, &groups.grouped);
     let mut out: Vec<Shot<'a>> = inputs
         .iter()
         .filter(|x| keepers.contains(&x.file) || !in_group.contains(&x.file))
-        .filter(|x| x.is_image() && x.hash.is_some() && x.meta.display().is_some())
+        .filter(|x| x.is_image() && x.class == ps_model::PhotoClass::Photo)
+        .filter(|x| x.hash.is_some() && x.meta.display().is_some())
         .filter(|x| !d.excluded.contains(&x.file))
         .filter_map(|x| {
             let c = x.meta.capture_time?;
@@ -291,7 +305,22 @@ pub fn stacks(
     thresholds: StackThresholds,
     decisions: &StackDecisions<'_>,
 ) -> Stacks {
-    let shots = shots(inputs, grouping, decisions);
+    stacks_of(
+        inputs,
+        &GroupMembership::of(grouping),
+        thresholds,
+        decisions,
+    )
+}
+
+/// [`stacks`] with the groups given as their membership (the stored groups of a catalog).
+pub fn stacks_of(
+    inputs: &[DedupInput],
+    groups: &GroupMembership,
+    thresholds: StackThresholds,
+    decisions: &StackDecisions<'_>,
+) -> Stacks {
+    let shots = shots(inputs, groups, decisions);
     let window_s = thresholds.window_s();
     let limits = thresholds.similarity.limits();
     // A shot without sub-seconds may be up to 999 ms later than its whole second says.

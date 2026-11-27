@@ -28,6 +28,6 @@ pub use group::{
 pub use input::{DedupInput, DedupMeta};
 pub use rank::{FormatTier, KeeperReason, Ranking, rank};
 pub use stacks::{
-    PickReason, ShotQuality, Stack, StackDecisions, StackSimilarity, StackThresholds, Stacks,
-    stacks,
+    GroupMembership, PickReason, ShotQuality, Stack, StackDecisions, StackSimilarity,
+    StackThresholds, Stacks, stacks, stacks_of,
 };

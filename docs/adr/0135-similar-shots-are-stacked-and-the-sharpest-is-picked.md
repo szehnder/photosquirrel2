@@ -44,7 +44,15 @@ suggestion.**
    | balanced (default) | 12 | 16 |
    | loose | 18 | 22 |
 
-   The window is 1-60 s and defaults to 5 s. The values above are starting points. Task "calibrate" sets the final
+   The window is 1-60 s and defaults to 5 s.
+
+   Small corpus (seed 42), measured 2026-11-27:
+   - Burst sets lie whole in one stack at 10/14 at 1 s, 11/14 at 2 s, and 14/14 from 5 s on, at every similarity
+     level.
+   - No `minutes_apart` or `crop` set stacks at any window up to 60 s.
+   - `different_camera` sets stack at 1/10 up to 5 s, and at 5/10 at 60 s.
+   - The corpus's burst frames are too alike to separate the similarity levels. The owner's card decides those
+     values. The values above are starting points. Task "calibrate" sets the final
    ones on the corpus and on the owner's card before this ADR is accepted, and this table is updated then:
    - every corpus `burst` set falls in one stack at the defaults;
    - no `minutes_apart` set does.

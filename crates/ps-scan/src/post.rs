@@ -115,7 +115,8 @@ pub fn dedup_input(rec: &FileRecord, meta: Option<&Metadata>) -> Option<DedupInp
     })
 }
 
-fn load_inputs(catalog: &Catalog, ids: Option<&[FileId]>) -> Result<Vec<DedupInput>> {
+/// The grouping inputs of the analyzed files (`ids`, or all).
+pub fn load_inputs(catalog: &Catalog, ids: Option<&[FileId]>) -> Result<Vec<DedupInput>> {
     let mut out = Vec::new();
     catalog.read().analyzed_files(ids, |rec, meta| {
         if let Some(x) = dedup_input(&rec, meta.as_ref()) {
