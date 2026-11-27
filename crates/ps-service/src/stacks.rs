@@ -20,6 +20,8 @@ pub struct StackInputs {
     pub excluded: HashSet<FileId>,
     /// File -> its index in `inputs`.
     by_file: HashMap<FileId, usize>,
+    /// Group keeper -> every member of its group (the keeper included).
+    pub members_of: HashMap<FileId, Vec<FileId>>,
 }
 
 impl StackInputs {
@@ -28,17 +30,20 @@ impl StackInputs {
         let catalog = svc.engine().catalog();
         let inputs = ps_scan::post::load_inputs(catalog, None)?;
         let r = catalog.read();
-        let groups = r.with(|c| {
+        let (groups, members_of) = r.with(|c| {
             let mut m = GroupMembership::default();
+            let mut members_of: HashMap<FileId, Vec<FileId>> = HashMap::new();
             let mut stmt = c.prepare_cached(
                 "SELECT g.keeper_file_id, m.file_id FROM dup_group g JOIN dup_member m ON m.group_id = g.id",
             )?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
-                m.keepers.insert(FileId(row.get(0)?));
-                m.grouped.insert(FileId(row.get(1)?));
+                let (k, f) = (FileId(row.get(0)?), FileId(row.get(1)?));
+                m.keepers.insert(k);
+                m.grouped.insert(f);
+                members_of.entry(k).or_default().push(f);
             }
-            Ok(m)
+            Ok((m, members_of))
         })?;
         let excluded = r.user_excluded_files()?.into_iter().collect();
         let by_file = inputs
@@ -51,6 +56,7 @@ impl StackInputs {
             groups,
             excluded,
             by_file,
+            members_of,
         })
     }
 
@@ -116,6 +122,8 @@ pub struct StacksView {
     pub quality: HashMap<FileId, ShotQuality>,
     /// Each shot's file name.
     pub names: HashMap<FileId, String>,
+    /// Shots that are duplicate groups -> every copy (the shot first).
+    pub copies: HashMap<FileId, Vec<FileId>>,
 }
 
 impl StacksView {
@@ -207,7 +215,18 @@ impl StackCache {
                 })
             })
             .collect();
+        let copies = index
+            .keys()
+            .filter_map(|f| {
+                inputs.members_of.get(f).map(|m| {
+                    let mut all = vec![*f];
+                    all.extend(m.iter().copied().filter(|x| x != f));
+                    (*f, all)
+                })
+            })
+            .collect();
         Ok(StacksView {
+            copies,
             names,
             thresholds,
             stacks,
@@ -301,4 +320,102 @@ pub fn taken_out(svc: &ScanService) -> Result<BTreeSet<ContentId>> {
         .into_iter()
         .flat_map(|(a, b)| [a, b])
         .collect())
+}
+
+impl StacksView {
+    /// Every file of a stack: each shot and, for a shot that is a duplicate group, all its copies.
+    pub fn files_of(&self, s: &ps_dedup::Stack) -> Vec<FileId> {
+        let mut out = Vec::new();
+        for f in &s.shots {
+            match self.copies.get(f) {
+                Some(all) => out.extend(all.iter().copied()),
+                None => out.push(*f),
+            }
+        }
+        out
+    }
+}
+
+/// What [`exclude_stack`] replaced, so [`undo_exclude_stack`] can put it back exactly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StackExclusion {
+    pub prior: Vec<crate::review::PriorDecision>,
+}
+
+/// Keep none of a stack: every copy of every shot gets the user decision "exclude" (with `reason`), in one catalog
+/// transaction; copies already excluded keep their own record. Excluded shots are never stacked, so the stack
+/// leaves the Stacks tab. Nothing on disk changes.
+pub fn exclude_stack(
+    svc: &ScanService,
+    view: &StacksView,
+    stack: usize,
+    reason: Option<String>,
+) -> Result<StackExclusion> {
+    let s = view
+        .stacks
+        .stacks
+        .get(stack)
+        .ok_or_else(|| anyhow::anyhow!("no stack {stack}"))?;
+    let files = view.files_of(s);
+    let reason = reason
+        .map(|r| r.trim().to_owned())
+        .filter(|r| !r.is_empty());
+    let _edit = svc.edit()?;
+    let r = svc.engine().catalog().read();
+    let before = r.user_decisions_of(&files)?;
+    let changed: Vec<FileId> = files
+        .iter()
+        .copied()
+        .filter(|f| {
+            before
+                .get(f)
+                .is_none_or(|x| x.decision != ps_catalog::UserDecision::Exclude)
+        })
+        .collect();
+    let prior = changed
+        .iter()
+        .map(|f| match before.get(f) {
+            Some(x) => crate::review::PriorDecision {
+                file: *f,
+                decision: Some(x.decision),
+                reason: x.reason.clone(),
+                ai_kind: x.ai_kind,
+            },
+            None => crate::review::PriorDecision {
+                file: *f,
+                decision: None,
+                reason: None,
+                ai_kind: None,
+            },
+        })
+        .collect();
+    svc.engine().catalog().writer().set_user_decisions(
+        changed
+            .iter()
+            .map(|f| ps_catalog::DecisionWrite {
+                file: *f,
+                decision: Some(ps_catalog::UserDecision::Exclude),
+                reason: reason.clone(),
+                ai_kind: None,
+            })
+            .collect(),
+    )?;
+    Ok(StackExclusion { prior })
+}
+
+/// Put back what [`exclude_stack`] changed: every copy gets the decision it had.
+pub fn undo_exclude_stack(svc: &ScanService, x: &StackExclusion) -> Result<()> {
+    let _edit = svc.edit()?;
+    svc.engine().catalog().writer().set_user_decisions(
+        x.prior
+            .iter()
+            .map(|p| ps_catalog::DecisionWrite {
+                file: p.file,
+                decision: p.decision,
+                reason: p.reason.clone(),
+                ai_kind: p.ai_kind,
+            })
+            .collect(),
+    )?;
+    Ok(())
 }

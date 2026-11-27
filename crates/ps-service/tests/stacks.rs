@@ -564,3 +564,41 @@ fn scenario_photo_stacks_taken_out_shot_stays_out() {
     let back = view(&svc, StackThresholds::default());
     assert_eq!(back.index.get(&out), back.index.get(&rest[0]));
 }
+
+#[test]
+fn scenario_duplicate_review_exclude_a_stack() {
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let svc = scanned(tmp.path());
+    let v = view(&svc, StackThresholds::default());
+    // A stack holding a duplicate group, if the corpus has one: excluding it takes every copy too.
+    let i = v
+        .stacks
+        .stacks
+        .iter()
+        .position(|s| s.shots.iter().any(|f| v.copies.contains_key(f)))
+        .unwrap_or(0);
+    let s = v.stacks.stacks[i].clone();
+    let files = v.files_of(&s);
+    assert!(files.len() >= s.shots.len());
+    let x = ps_service::stacks::exclude_stack(&svc, &v, i, Some("not ours".into())).unwrap();
+    let decisions = svc
+        .engine()
+        .catalog()
+        .read()
+        .user_decisions_of(&files)
+        .unwrap();
+    assert!(
+        files.iter().all(|f| decisions
+            .get(f)
+            .is_some_and(|d| d.decision == ps_catalog::UserDecision::Exclude)),
+        "every copy of every shot is excluded"
+    );
+    let after = view(&svc, StackThresholds::default());
+    assert!(after.stack_of(s.shots[0]).is_none(), "the stack is gone");
+    ps_service::stacks::undo_exclude_stack(&svc, &x).unwrap();
+    let back = view(&svc, StackThresholds::default());
+    assert_eq!(
+        back.stack_of(s.shots[0]).map(|x| x.shots.clone()),
+        Some(s.shots.clone())
+    );
+}

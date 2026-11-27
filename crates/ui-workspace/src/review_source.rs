@@ -68,6 +68,18 @@ pub trait ReviewSource: Send + Sync + 'static {
     fn stack_take_out(&self, _t: ps_model::StackThresholds, _file: FileId) -> anyhow::Result<()> {
         anyhow::bail!("stacks are not available here")
     }
+    /// Keep none of stack `index` under `t`: every copy of every shot excluded; returns what Undo needs.
+    fn stack_exclude(
+        &self,
+        _t: ps_model::StackThresholds,
+        _index: usize,
+    ) -> anyhow::Result<ps_service::stacks::StackExclusion> {
+        anyhow::bail!("stacks are not available here")
+    }
+    /// Undo [`Self::stack_exclude`].
+    fn stack_undo_exclude(&self, _x: ps_service::stacks::StackExclusion) -> anyhow::Result<()> {
+        anyhow::bail!("stacks are not available here")
+    }
     /// Put `file` back into the stacks it was taken out of.
     fn stack_put_back(&self, _file: FileId) -> anyhow::Result<()> {
         anyhow::bail!("stacks are not available here")
@@ -259,6 +271,22 @@ impl ReviewSource for CatalogReview {
         let scan = self.backend.scan()?;
         let v = self.stacks.view(scan, self.store()?, t)?;
         ps_service::stacks::take_out(scan, &v, file)?;
+        self.backend.library().forget_dispositions();
+        Ok(())
+    }
+    fn stack_exclude(
+        &self,
+        t: ps_model::StackThresholds,
+        index: usize,
+    ) -> anyhow::Result<ps_service::stacks::StackExclusion> {
+        let scan = self.backend.scan()?;
+        let v = self.stacks.view(scan, self.store()?, t)?;
+        let x = ps_service::stacks::exclude_stack(scan, &v, index, None)?;
+        self.backend.library().forget_dispositions();
+        Ok(x)
+    }
+    fn stack_undo_exclude(&self, x: ps_service::stacks::StackExclusion) -> anyhow::Result<()> {
+        ps_service::stacks::undo_exclude_stack(self.backend.scan()?, &x)?;
         self.backend.library().forget_dispositions();
         Ok(())
     }

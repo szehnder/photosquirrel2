@@ -2182,3 +2182,78 @@ fn scenario_duplicate_review_retune_from_the_header(cx: &mut TestAppContext) {
     );
     assert!(present("stacks-count", &mut cx));
 }
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_exclude_a_stack_with_e(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let stacks = open_stacks(&view, &mut cx);
+    let s = stacks.stacks.stacks[0].clone();
+    let first = s.shots[0];
+    let n = stacks.stacks.stacks.len();
+    let before = corpus_stamps();
+    cx.simulate_keystrokes("e");
+    wait_stacks_reloaded(&view, &mut cx, "the stack excluded", move |v, _| {
+        v.stack_of(first).is_none() && v.stacks.stacks.len() == n - 1
+    });
+    let files = stacks.files_of(&s);
+    let d = backend
+        .scan()
+        .unwrap()
+        .engine()
+        .catalog()
+        .read()
+        .user_decisions_of(&files)
+        .unwrap();
+    assert!(
+        files.iter().all(|f| d.contains_key(f)),
+        "every copy of every shot is excluded"
+    );
+    assert_eq!(corpus_stamps(), before, "no file changed");
+    assert!(present("stacks-undo-exclude", &mut cx));
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.stack_undo_exclude(cx)));
+    }
+    wait_stacks_reloaded(&view, &mut cx, "the stack back", move |v, _| {
+        v.stack_of(first).is_some()
+    });
+}
+
+#[gpui_kit::test]
+fn scenario_duplicate_review_a_duplicate_group_in_a_stack(cx: &mut TestAppContext) {
+    let (_tmp, data) = catalog_copy();
+    let (_backend, _shell, view, mut cx) = open_dups(cx, &data);
+    let stacks = open_stacks(&view, &mut cx);
+    // The list draws every stack as a small pile.
+    assert!(cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        window
+            .try_find(gpui_kit::ElementId::from(("stacks-row-pile", 0usize)))
+            .is_some()
+    }));
+    let Some((i, shot)) = stacks.stacks.stacks.iter().enumerate().find_map(|(i, s)| {
+        s.shots
+            .iter()
+            .find(|f| stacks.copies.contains_key(f))
+            .map(|f| (i, *f))
+    }) else {
+        return; // no stacked duplicate group in this corpus
+    };
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.select_stack(i, cx)));
+    }
+    {
+        let view = view.clone();
+        cx.update(|_, cx| view.update(cx, |v, cx| v.open_group_of(shot, cx)));
+    }
+    let v = view.clone();
+    wait_until(&mut cx, "the shot's group open", move |cx| {
+        cx.update(|_, cx| {
+            let v = v.read(cx);
+            v.tab == Tab::Groups && v.detail().is_some_and(|d| d.group.keeper == shot)
+        })
+    });
+}

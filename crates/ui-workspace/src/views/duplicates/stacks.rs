@@ -44,6 +44,45 @@ pub struct StacksTab {
     pub scroll: UniformListScrollHandle,
     /// The shot last taken out, for Put back.
     pub taken_out_last: Option<FileId>,
+    /// The stack exclusion just made, for Undo.
+    pub undo_exclusion: Option<ps_service::stacks::StackExclusion>,
+}
+
+/// A thumbnail drawn as the top card of a small pile (best-of-stacks): `layers` thin offset edges on its right and
+/// bottom say it is one of several. `inner` fills the top card.
+pub fn stacked(inner: AnyElement, layers: usize, cx: &App) -> Div {
+    let colors = *ui_theme::colors(cx);
+    let off = Tokens::space(0.75);
+    let n = layers as f32;
+    let mut d = div().relative().size_full();
+    for k in (1..=layers).rev() {
+        let k = k as f32;
+        d = d.child(
+            div()
+                .absolute()
+                .top(off * k)
+                .left(off * k)
+                .right(off * (n - k))
+                .bottom(off * (n - k))
+                .rounded(Tokens::RADIUS_SM)
+                .bg(colors.raised)
+                .border_1()
+                .border_color(colors.border_strong),
+        );
+    }
+    d.child(
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right(off * n)
+            .bottom(off * n)
+            .rounded(Tokens::RADIUS_SM)
+            .overflow_hidden()
+            .border_1()
+            .border_color(colors.border_strong)
+            .child(inner),
+    )
 }
 
 /// A shot's sharpness relative to its stack's sharpest, in words.
@@ -292,6 +331,59 @@ impl DuplicatesView {
                 crate::views::library::refresh_after_decision(cx);
             },
         );
+    }
+
+    /// Keep none of the open stack: every copy of every shot is excluded and the stack leaves the list; the
+    /// notice offers Undo. Nothing on disk changes.
+    pub fn stack_exclude(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.may_edit(cx) {
+            return;
+        }
+        let Some(s) = self.open_stack() else { return };
+        let n = s.shots.len();
+        let index = self.stacks.selected;
+        let t = self.stack_thresholds(cx);
+        self.run(
+            cx,
+            move |src| src.stack_exclude(t, index),
+            move |this, x, cx| {
+                this.notice = Some(format!(
+                    "Excluded the stack: none of its {n} shots (and their copies) goes to the library. Nothing on \
+                     disk changed."
+                ));
+                this.stacks.undo_exclusion = Some(x);
+                this.compare = None;
+                this.reload_stacks(cx);
+                this.reload(cx);
+                crate::views::library::refresh_after_decision(cx);
+            },
+        );
+    }
+
+    /// Undo the stack exclusion the notice names.
+    pub fn stack_undo_exclude(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(x) = self.stacks.undo_exclusion.take() else {
+            return;
+        };
+        self.run(
+            cx,
+            move |src| src.stack_undo_exclude(x),
+            |this, (), cx| {
+                this.notice = Some("Exclusion undone: the stack is back.".into());
+                this.reload_stacks(cx);
+                this.reload(cx);
+                crate::views::library::refresh_after_decision(cx);
+            },
+        );
+    }
+
+    /// Open the duplicate group of `keeper` in the Groups tab.
+    pub fn open_group_of(&mut self, keeper: FileId, cx: &mut Context<'_, Self>) {
+        let ix = self.rows().iter().position(|r| r.keeper == keeper);
+        self.set_tab(super::Tab::Groups, cx);
+        if let Some(ix) = ix {
+            self.select_index(ix, cx);
+        }
     }
 
     /// Put the last shot taken out back.
@@ -548,11 +640,15 @@ impl DuplicatesView {
                             .on_click(cx.listener(move |this, _, _, cx| this.select_stack(ix, cx)))
                             .child(
                                 div()
-                                    .size(Tokens::size(44.0))
+                                    .id(("stacks-row-pile", ix))
+                                    .test_support()
+                                    .size(Tokens::size(50.0))
                                     .flex_none()
-                                    .rounded(Tokens::RADIUS_SM)
-                                    .overflow_hidden()
-                                    .child(photo(img, false, cx)),
+                                    .child(stacked(
+                                        photo(img, false, cx),
+                                        s.shots.len().min(3) - 1,
+                                        cx,
+                                    )),
                             )
                             .child(
                                 v_flex()
@@ -684,6 +780,15 @@ impl DuplicatesView {
                     ),
             )
             .child(action_button(
+                "stacks-exclude",
+                "Exclude stack",
+                Some(IconName::EyeOff),
+                Some("E"),
+                Tone::Caution,
+                cx,
+                |this, _, cx| this.stack_exclude(cx),
+            ))
+            .child(action_button(
                 "stacks-compare",
                 "Compare",
                 Some(IconName::Columns2),
@@ -751,13 +856,21 @@ impl DuplicatesView {
                         this.stacks.focused = ix;
                         cx.notify();
                     }))
-                    .child(
-                        div()
+                    .child(match view.copies.get(f).map(|c| c.len()) {
+                        Some(c) => div()
+                            .id(("stacks-shot-pile", ix))
+                            .test_support()
+                            .h(Tokens::size(156.0))
+                            .child(stacked(photo(img, false, cx), (c - 1).min(2), cx))
+                            .into_any_element(),
+                        None => div()
+                            .id(("stacks-shot-photo", ix))
                             .h(Tokens::size(150.0))
                             .rounded(Tokens::RADIUS_MD)
                             .overflow_hidden()
-                            .child(photo(img, false, cx)),
-                    )
+                            .child(photo(img, false, cx))
+                            .into_any_element(),
+                    })
                     .child(
                         h_flex()
                             .gap(Tokens::space(1.5))
@@ -780,6 +893,31 @@ impl DuplicatesView {
                             .text_ellipsis()
                             .child(view.names.get(f).cloned().unwrap_or_default()),
                     )
+                    .when_some(view.copies.get(f).map(|c| c.len()), |e, c| {
+                        e.child(
+                            h_flex()
+                                .gap(Tokens::space(1.5))
+                                .flex_wrap()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .id(("stacks-copies", ix))
+                                        .test_support()
+                                        .text_size(Tokens::text_xs())
+                                        .text_color(colors.text_muted)
+                                        .child(format!("{c} copies, kept as one shot")),
+                                )
+                                .child(action_button(
+                                    format!("stacks-open-group-{n}"),
+                                    "Open group",
+                                    Some(IconName::Copy),
+                                    None,
+                                    Tone::Quiet,
+                                    cx,
+                                    move |this, _, cx| this.open_group_of(file, cx),
+                                )),
+                        )
+                    })
                     .child(
                         div()
                             .id(("stacks-words", ix))
@@ -840,6 +978,29 @@ impl DuplicatesView {
                     }),
             );
         let put_back = self.stacks.taken_out_last.is_some();
+        let notice = self.notice.clone().map(|text| {
+            h_flex()
+                .id("stacks-notice")
+                .test_support()
+                .px(Tokens::space(3.0))
+                .py(Tokens::space(2.0))
+                .gap(Tokens::space(2.0))
+                .rounded(Tokens::RADIUS_MD)
+                .bg(ui_theme::Colors::tint(colors.success, 0.12))
+                .text_size(Tokens::text_sm())
+                .child(div().flex_1().child(text))
+                .when(self.stacks.undo_exclusion.is_some(), |b| {
+                    b.child(action_button(
+                        "stacks-undo-exclude",
+                        "Undo",
+                        None,
+                        None,
+                        Tone::Normal,
+                        cx,
+                        |this, _, cx| this.stack_undo_exclude(cx),
+                    ))
+                })
+        });
         v_flex()
             .flex_1()
             .min_w_0()
@@ -854,6 +1015,7 @@ impl DuplicatesView {
                     .px(Tokens::space(5.0))
                     .py(Tokens::space(4.0))
                     .gap(Tokens::space(4.0))
+                    .children(notice)
                     .child(why)
                     .child(
                         h_flex()
@@ -865,7 +1027,7 @@ impl DuplicatesView {
                                 div()
                                     .text_size(Tokens::text_2xs())
                                     .text_color(colors.text_faint)
-                                    .child("1–9 pick · ←/→ focus · S take out · Space compare · R reviewed · J/K next/previous"),
+                                    .child("1–9 pick · ←/→ focus · S take out · E keep none · Space compare · R reviewed · J/K next/previous"),
                             ),
                     )
                     .child(

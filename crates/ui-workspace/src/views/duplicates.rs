@@ -3718,10 +3718,10 @@ impl Render for DuplicatesView {
                 this.set_tab(tab, cx)
             }))
             .on_action(cx.listener(|this, _: &DismissSuggestion, _, cx| this.dismiss_selected(cx)))
-            .on_action(cx.listener(|this, _: &ExcludeGroup, _, cx| {
-                if this.tab == Tab::Groups {
-                    this.exclude_group(None, cx);
-                }
+            .on_action(cx.listener(|this, _: &ExcludeGroup, _, cx| match this.tab {
+                Tab::Groups => this.exclude_group(None, cx),
+                Tab::Stacks => this.stack_exclude(cx),
+                Tab::Suggestions => {}
             }))
             .on_action(cx.listener(|this, _: &IncludeGroup, _, cx| this.include_group(cx)))
             .on_action(cx.listener(|this, _: &FocusNextMember, _, cx| {
