@@ -23,6 +23,12 @@ pub struct ProfileSettings {
     /// copy (`--upgrade`, ADR-0092). Per export only, never a stored default.
     #[serde(default)]
     pub upgrade: bool,
+    /// Everything, the best of each stack only, or both (ADR-0135). Per export only, never a stored default.
+    #[serde(default)]
+    pub best_of: ps_model::BestOf,
+    /// The stack thresholds `best_of` uses.
+    #[serde(default)]
+    pub stack_thresholds: ps_model::StackThresholds,
 }
 
 impl ProfileSettings {
@@ -37,6 +43,8 @@ impl ProfileSettings {
                 verify_library: false,
                 recopy_modified: false,
                 upgrade: false,
+                best_of: ps_model::BestOf::Everything,
+                stack_thresholds: ps_model::StackThresholds::default(),
             },
             ExportProfile::GooglePhotos => Self {
                 profile,
@@ -45,6 +53,8 @@ impl ProfileSettings {
                 verify_library: false,
                 recopy_modified: false,
                 upgrade: false,
+                best_of: ps_model::BestOf::Everything,
+                stack_thresholds: ps_model::StackThresholds::default(),
             },
             ExportProfile::Lightroom => Self {
                 profile,
@@ -53,6 +63,8 @@ impl ProfileSettings {
                 verify_library: false,
                 recopy_modified: false,
                 upgrade: false,
+                best_of: ps_model::BestOf::Everything,
+                stack_thresholds: ps_model::StackThresholds::default(),
             },
         }
     }
@@ -68,6 +80,17 @@ impl ProfileSettings {
     }
 
     /// Copy better copies beside their earlier library copies in this export (ADR-0092).
+    /// Export the best of each stack only, or both, under `thresholds` (ADR-0135).
+    pub fn with_best_of(
+        mut self,
+        best_of: ps_model::BestOf,
+        thresholds: ps_model::StackThresholds,
+    ) -> Self {
+        self.best_of = best_of;
+        self.stack_thresholds = thresholds;
+        self
+    }
+
     pub fn with_upgrade(mut self, on: bool) -> Self {
         self.upgrade = on;
         self

@@ -65,6 +65,9 @@ pub struct FileFacts {
     /// rules (it is copied as is), the report flags it, and cleanup never moves it. A damaged file gone from its
     /// source is not counted (its disposition is missing), as in the run summary's damaged count.
     pub damaged: bool,
+    /// Left out by the library's last export of the best of each stack only, as a shot that is not its stack's
+    /// pick (ADR-0135): without a copy of its group in the library it is not picked instead of pending.
+    pub not_picked: bool,
 }
 
 /// One duplicate group.
@@ -308,6 +311,7 @@ pub fn derive_dispositions(facts: &DispositionFacts<'_>) -> Vec<FileDisposition>
         };
         match reason {
             Some(r) => d(f, Disposition::Excluded, Some(r), None),
+            None if f.not_picked => d(f, Disposition::NotPicked, None, None),
             None => d(f, Disposition::Pending, None, None),
         }
     };
@@ -648,6 +652,7 @@ mod tests {
             user_excluded: false,
             quarantined: Some(rel(&format!(".photosquirrel-quarantine/1/a/{i}.jpg"))),
             damaged: false,
+            not_picked: false,
         }
     }
 

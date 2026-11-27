@@ -47,6 +47,9 @@ pub enum ExportError {
     NoLibrary,
     #[error(transparent)]
     Busy(#[from] crate::ops::Busy),
+    /// Computing the stacks a best-of export needs (ADR-0135).
+    #[error("stacks: {0:#}")]
+    Stacks(anyhow::Error),
 }
 
 pub type Result<T, E = ExportError> = std::result::Result<T, E>;
@@ -454,9 +457,26 @@ impl<'a> Exports<'a> {
             .map(|l| path_from_bytes(&l.root)))
     }
 
+    /// The shots of stacks that are not their stack's pick under `thresholds` (with the stored picks and
+    /// separations, ADR-0135): what "best of only" leaves out.
+    fn not_picked_shots(&self, thresholds: ps_model::StackThresholds) -> Result<HashSet<FileId>> {
+        let store = crate::review::ReviewStore::for_service(self.svc);
+        let view = crate::stacks::StackCache::new()
+            .view(self.svc, &store, thresholds)
+            .map_err(ExportError::Stacks)?;
+        Ok(view.stacks.not_picked())
+    }
+
     /// The dry run: what an export to `library` would copy. Reads only (the library folder need not exist).
     pub fn plan(&self, library: &Path, settings: ProfileSettings) -> Result<(Plan, ExportInput)> {
-        let input = self.input()?;
+        let mut input = self.input()?;
+        if settings.best_of == ps_model::BestOf::PicksOnly {
+            // The best of each stack only: a unit whose keeper is a shot that is not its stack's pick is left out.
+            let out = self.not_picked_shots(settings.stack_thresholds)?;
+            input
+                .units
+                .retain(|u| u.files.first().is_none_or(|k| !out.contains(&k.file)));
+        }
         let ledger = self.ledger_for_read(library)?;
         let root = Self::normalized(library)?;
         let plan = ps_export::plan(&input, &ledger, &root, &FsLibrary::new(&root), settings)?;
@@ -474,10 +494,14 @@ impl<'a> Exports<'a> {
     ) -> Result<(Plan, ExportReport)> {
         // Not while a scan or a cleanup runs (ADR-0065).
         let _op = self.svc.begin(crate::ops::Operation::Export)?;
-        let (plan, input) = self.plan(library, settings)?;
+        let (plan, input) = self.plan(library, settings.clone())?;
         let id = self.library_id(library)?;
         let mut ledger = CatalogLedger::new(self.catalog().clone(), id);
         let report = ps_export::execute(&plan, &input, &mut ledger, cfg, &NoHooks, cancel)?;
+        // What this export chose decides which shots the library's dispositions count as not picked.
+        self.catalog()
+            .writer()
+            .set_export_library_best_of(id, best_of_record(&settings))?;
         Ok((plan, report))
     }
 
@@ -494,7 +518,8 @@ impl<'a> Exports<'a> {
         let root = Self::normalized(library)?;
         let ledger = self.ledger_for_read(&root)?;
         let checks = ps_export::check_library(&root, &ledger, verify);
-        let (files, d) = self.derive(&ledger, &checks)?;
+        let best_of = self.library_best_of(&root)?;
+        let (files, d) = self.derive_with(&ledger, &checks, best_of)?;
         Ok((files, d, checks))
     }
 
@@ -504,11 +529,51 @@ impl<'a> Exports<'a> {
         self.derive(&[], &HashMap::new())
     }
 
+    /// The thresholds of the library's last export when it was of the best of each stack only.
+    fn library_best_of(&self, root: &Path) -> Result<Option<ps_model::StackThresholds>> {
+        let key = path_to_bytes(root);
+        let r = self.catalog().read();
+        let Some(lib) = r.export_libraries()?.into_iter().find(|l| l.root == key) else {
+            return Ok(None);
+        };
+        Ok(r.export_library_best_of(lib.id)?
+            .and_then(|j| serde_json::from_str::<BestOfRecord>(&j).ok())
+            .filter(|b| b.mode == ps_model::BestOf::PicksOnly)
+            .map(|b| ps_model::StackThresholds {
+                window_s: b.window_s,
+                similarity: b.similarity,
+            }))
+    }
+
     fn derive(
         &self,
         ledger: &[LedgerEntry],
         checks: &HashMap<ps_model::RelPath, ps_export::CopyCheck>,
     ) -> Result<(Vec<FileFacts>, Vec<FileDisposition>)> {
+        self.derive_with(ledger, checks, None)
+    }
+
+    /// [`Self::derive`]; with `picks_only`, the members of a stacked group that is not its stack's pick under
+    /// those thresholds are not picked instead of pending (ADR-0135).
+    fn derive_with(
+        &self,
+        ledger: &[LedgerEntry],
+        checks: &HashMap<ps_model::RelPath, ps_export::CopyCheck>,
+        picks_only: Option<ps_model::StackThresholds>,
+    ) -> Result<(Vec<FileFacts>, Vec<FileDisposition>)> {
+        let not_picked: HashSet<FileId> = match picks_only {
+            Some(t) => {
+                let shots = self.not_picked_shots(t)?;
+                let mut files: HashSet<FileId> = shots.clone();
+                for (_, members, keeper_set) in self.catalog().read().group_memberships()? {
+                    if keeper_set.first().is_some_and(|k| shots.contains(k)) {
+                        files.extend(members);
+                    }
+                }
+                files
+            }
+            None => HashSet::new(),
+        };
         let r = self.catalog().read();
         let excluded: HashSet<FileId> = r.user_excluded_files()?.into_iter().collect();
         // Files moved by a cleanup run (ADR-0034): quarantined, not missing. Matched by source, path and
@@ -532,6 +597,7 @@ impl<'a> Exports<'a> {
                 damaged: f.missing_since_ms.is_none()
                     && f.preview
                         .is_some_and(|p| p.reason == ps_model::PreviewReason::Unreadable),
+                not_picked: not_picked.contains(&f.id),
             });
         })?;
         let mut groups: Vec<GroupFacts> = r
@@ -837,4 +903,23 @@ mod tests {
             "a regular sidecar is read"
         );
     }
+}
+
+/// The best-of choice an export records for its library (`export_library.best_of`, ADR-0135).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct BestOfRecord {
+    mode: ps_model::BestOf,
+    window_s: u32,
+    similarity: ps_model::StackSimilarity,
+}
+
+fn best_of_record(settings: &ProfileSettings) -> Option<String> {
+    (settings.best_of != ps_model::BestOf::Everything).then(|| {
+        serde_json::json!(BestOfRecord {
+            mode: settings.best_of,
+            window_s: settings.stack_thresholds.window_s,
+            similarity: settings.stack_thresholds.similarity,
+        })
+        .to_string()
+    })
 }

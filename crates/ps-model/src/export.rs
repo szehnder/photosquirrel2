@@ -190,3 +190,33 @@ mod tests {
         assert_eq!(LedgerState::from_code(9), None);
     }
 }
+
+/// What an export copies (best-of-stacks, ADR-0135): everything (the default), the best of each stack only, or
+/// both (everything, plus each stack's pick again under `Best of/`). Chosen per export, never stored as a default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BestOf {
+    #[default]
+    Everything,
+    PicksOnly,
+    Both,
+}
+
+impl BestOf {
+    pub fn key(self) -> &'static str {
+        match self {
+            BestOf::Everything => "everything",
+            BestOf::PicksOnly => "only",
+            BestOf::Both => "both",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<BestOf> {
+        [BestOf::Everything, BestOf::PicksOnly, BestOf::Both]
+            .into_iter()
+            .find(|b| b.key() == s)
+    }
+}
+
+/// The folder of the library that "both" copies each stack's pick into again.
+pub const BEST_OF_FOLDER: &str = "Best of";

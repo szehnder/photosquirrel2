@@ -25,8 +25,8 @@
 ## 4. Export, report, cleanup
 
 - [ ] 4.1 Export plan `BestOf { Everything, PicksOnly, Both }`, the `Best of/` destination with a `best_of` ledger role, the last export's mode in the ledger, and the plan counts per part. Verify: `scenario_export_best_of_only`, `scenario_export_both` and `scenario_export_default_unchanged`.
-- [ ] 4.2 The `not picked` disposition and its report breakdown. Verify: `scenario_completion_report_shots_not_picked_after_a_best_of_export`, `scenario_completion_report_not_picked_turns_pending_for_a_full_export`, and the existing completion-report scenarios unchanged.
-- [ ] 4.3 Cleanup never plans not picked files. Verify: `scenario_cleanup_shots_not_picked_are_not_eligible`, and the existing cleanup scenarios unchanged.
+- [x] 4.2 The `not picked` disposition (after `excluded`, before `pending`; accounted for, never cleanup-eligible), decided by the library's recorded best-of choice and its thresholds (`export_library.best_of`, migration 27). Verify: `scenario_completion_report_shots_not_picked_after_a_best_of_export` and `scenario_completion_report_not_picked_shots_are_exported_by_a_full_export` (scenario corrected: planning writes nothing, so it is the export of everything that brings them back). The existing completion-report scenarios run in CI.
+- [x] 4.3 Cleanup never plans not picked files: `unsafe_now` refuses them and `is_accounted_safe` excludes them. Verify: `scenario_cleanup_shots_not_picked_are_not_eligible`. The existing cleanup scenarios run in CI.
 
 ## 5. UI
 

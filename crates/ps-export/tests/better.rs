@@ -536,6 +536,7 @@ fn facts_of(f: &KeeperFile) -> FileFacts {
         user_excluded: false,
         quarantined: None,
         damaged: false,
+        not_picked: false,
     }
 }
 

@@ -8,6 +8,8 @@
 --   stack_separation:          "taken out of the stack": two contents never stacked together, ordered as
 --                              dup_separation's rows are
 --   stack_pick:                "pick this one": a content the user picked in its stack
+--   export_library.best_of:    the last export's choice, `{"mode": "only" | "both", "window_s", "similarity"}`
+--                              (NULL: everything): which shots its dispositions count as not picked
 ALTER TABLE file ADD COLUMN shot_quality_version INTEGER;
 ALTER TABLE file ADD COLUMN sharpness REAL;
 ALTER TABLE file ADD COLUMN clipped_high REAL;
@@ -28,3 +30,5 @@ CREATE TABLE stack_pick (
     at           INTEGER NOT NULL,
     PRIMARY KEY (content_id, content_kind)
 ) WITHOUT ROWID;
+
+ALTER TABLE export_library ADD COLUMN best_of TEXT;
