@@ -19,7 +19,7 @@
 
 ## 4. Docs and screenshots
 
-- [ ] 4.1 README (duplicate review keys, CLI list) and the release notes ("What's new in 0.5.2"). Verify: the text names E and both CLI commands.
+- [x] 4.1 README (duplicate review keys, CLI list) and the release notes ("What's new in 0.5.2"). Verify: the text names E and both CLI commands.
 - [ ] 4.2 Screenshot surface `duplicates-excluded` (an excluded group open, light and dark), reviewed by a fresh reviewer. Verify: PNGs under `target/screenshots/` and the review notes.
 
 ## 5. Verification

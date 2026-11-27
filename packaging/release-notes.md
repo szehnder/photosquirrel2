@@ -42,6 +42,14 @@ Without a decoder, HEIC photos are still found, catalogued, de-duplicated as exa
 install, restart PhotoSquirrel and rescan: only those photos are read again, and they get previews and are matched
 to their resized or re-exported JPEG copies.
 
+### What's new in 0.5.2
+
+- **Keep none of a duplicate group.** In Duplicates, press **E**, or use **Exclude group…** to add a reason, when
+  you want no copy of a photo at all. Every copy is left out of the library and marked "excluded by you", the group
+  counts as reviewed, and the next group opens. It stays out even if a later scan finds a better copy. Nothing is
+  deleted or moved: **Undo** right away, or **Include again** later, puts it back. From the command line:
+  `groups exclude <group>` and `groups include <group>`.
+
 ### What's new in 0.5.1
 
 - **See how much review is left.** The Duplicates list opens with a card showing the groups left to review, and the
