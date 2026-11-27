@@ -50,6 +50,6 @@
 
 ## 8. Verification
 
-- [ ] 8.1 `cargo xtask ci` passes, every new scenario maps to a passing test (`cargo xtask spec-coverage`), and `photosquirrel-cli eval-corpus` passes the gate unchanged.
+- [x] 8.1 `cargo xtask ci` passes, every new scenario maps to a passing test (`cargo xtask spec-coverage`), and `photosquirrel-cli eval-corpus` passes the gate unchanged.
 - [ ] 8.2 `cargo xtask bench --check` passes with the three new budgets, and `rescan-nochange-100k`, `duplicates-list-reload` and `gallery-scroll` are unchanged.
-- [ ] 8.3 `openspec validate best-of-stacks --strict` passes.
+- [x] 8.3 `openspec validate best-of-stacks --strict` passes.
