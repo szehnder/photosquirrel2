@@ -383,3 +383,181 @@ fn scenario_performance_budgets_duplicates_list_reload_within_budget() {
         150.0,
     );
 }
+
+// ---- best-of-stacks (ADR-0135) ---------------------------------------------------------------------------------
+
+/// `n` synthetic photos as the stack rule sees them: bursts of 2-12 frames 0.25 s apart whose hashes drift a few
+/// bits per frame, between single shots, one shot every 3 s on average, with photo-like hashes.
+fn stack_inputs(n: u64) -> Vec<ps_dedup::DedupInput> {
+    use ps_model::{CaptureTime, ContentId, PerceptualHash};
+    let mut out = Vec::with_capacity(n as usize);
+    let mut t_ms: i64 = 0;
+    let mut i = 0u64;
+    let mut h = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = || {
+        h ^= h << 13;
+        h ^= h >> 7;
+        h ^= h << 17;
+        h
+    };
+    while i < n {
+        let burst = if next() % 4 == 0 { 2 + next() % 11 } else { 1 };
+        let base = next();
+        t_ms += 1000 + (next() % 4000) as i64;
+        for k in 0..burst.min(n - i) {
+            let mut t = CaptureTime::from_parts(2020, 1, 1, 0, 0, 0);
+            t.local_seconds += (t_ms + k as i64 * 250) / 1000;
+            t.millis = ((t_ms + k as i64 * 250) % 1000) as u16;
+            let drift = (1u64 << (next() % 64)) | (1u64 << (next() % 64));
+            out.push(ps_dedup::DedupInput {
+                file: FileId(i as i64 + 1),
+                content: Some(ContentId::full(*blake3::hash(&i.to_le_bytes()).as_bytes())),
+                hash: Some(PerceptualHash {
+                    phash: base ^ (drift.wrapping_mul(k)),
+                    dhash: base.rotate_left(7) ^ drift,
+                    version: ps_hash::PERCEPTUAL_HASH_VERSION,
+                }),
+                format: Format::Jpeg,
+                class: PhotoClass::Photo,
+                path: format!("1/DCIM/IMG_{i:07}.JPG"),
+                size: 4_000_000,
+                mtime_ns: 0,
+                meta: ps_dedup::DedupMeta {
+                    width: Some(6000),
+                    height: Some(4000),
+                    capture_time: Some(t),
+                    subsec_present: true,
+                    camera_model: Some("EOS R6".into()),
+                    has_maker_notes: true,
+                    camera_original: true,
+                    ..Default::default()
+                },
+            });
+            i += 1;
+        }
+    }
+    out
+}
+
+fn time_stacks(inputs: &[ps_dedup::DedupInput], t: ps_dedup::StackThresholds) -> (f64, usize) {
+    use std::collections::{BTreeSet, HashMap, HashSet};
+    let groups = ps_dedup::GroupMembership::default();
+    let (seps, picks, excluded, quality) = (
+        BTreeSet::new(),
+        BTreeSet::new(),
+        HashSet::new(),
+        HashMap::new(),
+    );
+    let d = ps_dedup::StackDecisions {
+        separations: &seps,
+        picks: &picks,
+        excluded: &excluded,
+        quality: &quality,
+    };
+    let mut times = Vec::new();
+    let mut stacked = 0;
+    for _ in 0..3 {
+        let t0 = Instant::now();
+        let s = ps_dedup::stacks_of(inputs, &groups, t, &d);
+        times.push(t0.elapsed().as_secs_f64());
+        stacked = s.stacked_shots();
+    }
+    times.sort_by(f64::total_cmp);
+    (times[1], stacked)
+}
+
+/// `stacks-compute`: every stack and pick of 1M photos at the widest thresholds (60 s, loose), from inputs in
+/// memory; median of 3.
+#[test]
+fn scenario_performance_budgets_stacks_computed_within_budget() {
+    let inputs = stack_inputs(rows());
+    let (s, stacked) = time_stacks(
+        &inputs,
+        ps_dedup::StackThresholds {
+            window_s: 60,
+            similarity: ps_dedup::StackSimilarity::Loose,
+        },
+    );
+    println!(
+        "stacks of {} photos: {stacked} stacked, {:.0} ms",
+        inputs.len(),
+        s * 1000.0
+    );
+    assert!(stacked > 0);
+    budget("stacks-compute", s, "s", 1.0);
+}
+
+/// `stacks-retune`: the stacks of 100,000 photos after a similarity change (5 s, strict to balanced); median of 3.
+#[test]
+fn scenario_performance_budgets_retune_within_budget() {
+    let inputs = stack_inputs(scale_rows(100_000));
+    let (ms, _) = time_stacks(&inputs, ps_dedup::StackThresholds::default());
+    budget("stacks-retune", ms * 1000.0, "ms", 300.0);
+}
+
+/// `shot-quality-fill`: the scores of 100,000 thumbed photos from the thumbnail store (1,000 distinct 384 px
+/// thumbnails shared by the rows, so the store stays small while every row is decoded).
+#[test]
+fn scenario_performance_budgets_shot_quality_filled_within_budget() {
+    let n = scale_rows(100_000);
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cat = ps_catalog::Catalog::open(tmp.path()).expect("catalog");
+    let src = add_source(&cat, "/mnt/bench");
+    write_rows(&cat, src, 0..n, 2, full_row);
+    let thumbs = ps_catalog::ThumbStore::open(tmp.path()).expect("thumbs");
+    let img = ps_fixtures::synth::Rgb {
+        width: 384,
+        height: 256,
+        data: ps_fixtures::media::photo_rgb(384, 256, 9),
+    };
+    let jpeg = ps_fixtures::jpeg::encode_jpeg(&img, 85);
+    let rec = ps_model::ThumbnailRecord {
+        kind: ps_model::ThumbKind::Image,
+        width: 384,
+        height: 256,
+        dominant_rgb: [90, 90, 90],
+        jpeg,
+        placeholder: None,
+    };
+    let distinct: Vec<ps_model::ContentId> = (0..1000)
+        .map(|i| ps_model::ContentId::full(digest_of(i)))
+        .collect();
+    thumbs
+        .put_many(distinct.iter().map(|c| (c, &rec)))
+        .expect("thumbnails");
+    cat.writer().flush().expect("flush");
+    {
+        let c = rusqlite::Connection::open(tmp.path().join(ps_catalog::CATALOG_FILE)).unwrap();
+        c.execute_batch(
+            "UPDATE file SET stage = 3, preview_reason = NULL, shot_quality_version = NULL
+             WHERE content_id IS NOT NULL;",
+        )
+        .unwrap();
+        let mut st = c
+            .prepare("UPDATE file SET content_id = ?2, identity_kind = 0 WHERE id = ?1")
+            .unwrap();
+        let ids: Vec<i64> = c
+            .prepare("SELECT id FROM file WHERE content_id IS NOT NULL")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for id in &ids {
+            st.execute(rusqlite::params![
+                id,
+                &distinct[(*id as usize) % 1000].digest[..]
+            ])
+            .unwrap();
+        }
+    }
+    let t0 = Instant::now();
+    let r = ps_scan::shot_quality::fill(&cat, &thumbs, &|| false).expect("fill");
+    let s = t0.elapsed().as_secs_f64();
+    println!(
+        "shot quality: {} scored, {} skipped in {s:.1} s",
+        r.scored, r.skipped
+    );
+    assert!(r.scored > 0 && r.skipped == 0);
+    budget("shot-quality-fill", s, "s", 60.0);
+}

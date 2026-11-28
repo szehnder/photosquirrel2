@@ -28,3 +28,22 @@ The Stacks tab header SHALL show the stack window and similarity as controls, wi
 #### Scenario: Retune from the header
 - **WHEN** the user changes Similarity from Balanced to Strict in the Stacks header
 - **THEN** the count of stacks and stacked photos updates within a second, the list shows the new stacks, and the settings file holds `strict`
+
+### Requirement: Exclude a stack
+In the Stacks tab, E and an "Exclude stack" button SHALL exclude every copy of every shot of the open stack ("keep none"), so the stack leaves the list; a notice SHALL offer Undo, which restores every decision it replaced. No file SHALL be changed.
+
+#### Scenario: Exclude a stack
+- **WHEN** a stack of the small corpus is excluded
+- **THEN** every copy of every shot it held is excluded by the user, the stack is no longer listed, and Undo brings it back as it was
+
+#### Scenario: Exclude a stack with E
+- **WHEN** the user presses E on an open stack
+- **THEN** the stack leaves the list, its files are excluded, no file changed, and the notice offers Undo
+
+### Requirement: Duplicates inside a stack
+A shot of a stack that is a duplicate group SHALL say how many copies it holds and offer to open that group in the Groups tab, and stacks and shots with copies SHALL be drawn as a small pile.
+
+#### Scenario: A duplicate group in a stack
+- **WHEN** the user opens a stack holding a duplicate group and chooses Open group on that shot
+- **THEN** the Groups tab opens with that group, whose keeper is the shot
+

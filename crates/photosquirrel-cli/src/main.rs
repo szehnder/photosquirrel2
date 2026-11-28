@@ -53,6 +53,12 @@ enum Command {
         #[command(subcommand)]
         command: GroupsCommand,
     },
+    /// Stacks of similar shots (bursts and near-identical frames) and the best shot of each; never changes a
+    /// group or a file.
+    Stacks {
+        #[command(subcommand)]
+        command: StacksCommand,
+    },
     /// Copy the best copies into a library folder (copy, verify, rename; never overwrites, never deletes).
     Export {
         #[command(subcommand)]
@@ -348,6 +354,43 @@ struct ExportTarget {
     /// library copies are never removed or replaced.
     #[arg(long)]
     upgrade: bool,
+    /// Export the best of each stack only, or both (everything, plus the best-of set under `Best of/`), with the
+    /// stack thresholds from the settings (`[review]`). Shots left out are reported as not picked; nothing is
+    /// deleted.
+    #[arg(long, value_enum)]
+    best_of: Option<BestOfArg>,
+}
+
+#[derive(Subcommand, Debug)]
+enum StacksCommand {
+    /// List the stacks with their pick and why (thresholds from the settings unless given).
+    List {
+        /// Stack shots taken at most this many seconds apart (1-60).
+        #[arg(long)]
+        window: Option<u32>,
+        /// How alike shots must look.
+        #[arg(long, value_enum)]
+        similarity: Option<SimilarityArg>,
+    },
+    /// One stack's shots with their scores.
+    Show { stack: usize },
+    /// Make this shot its stack's pick ("picked by you").
+    Pick { file: i64 },
+    /// Take this shot out of its stack (never stacked with those shots again).
+    TakeOut { file: i64 },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SimilarityArg {
+    Strict,
+    Balanced,
+    Loose,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BestOfArg {
+    Only,
+    Both,
 }
 
 #[derive(Subcommand, Debug)]
@@ -603,6 +646,20 @@ fn run(cli: Cli) -> Result<()> {
                 cmd::export::report(&ctx, r.library.as_deref(), r.verify, &r.sources, r.folders)
             }
         },
+        Command::Stacks { command } => match command {
+            StacksCommand::List { window, similarity } => cmd::stacks::list(
+                &ctx,
+                window,
+                similarity.map(|s| match s {
+                    SimilarityArg::Strict => ps_model::StackSimilarity::Strict,
+                    SimilarityArg::Balanced => ps_model::StackSimilarity::Balanced,
+                    SimilarityArg::Loose => ps_model::StackSimilarity::Loose,
+                }),
+            ),
+            StacksCommand::Show { stack } => cmd::stacks::show(&ctx, stack),
+            StacksCommand::Pick { file } => cmd::stacks::pick(&ctx, file),
+            StacksCommand::TakeOut { file } => cmd::stacks::take_out(&ctx, file),
+        },
         Command::Groups { command } => match command {
             GroupsCommand::List {
                 order,
@@ -633,16 +690,16 @@ fn run(cli: Cli) -> Result<()> {
             GroupsCommand::Regroup => cmd::groups::regroup(&ctx),
         },
         Command::Export { command } => match command {
-            ExportCommand::DryRun(t) => cmd::export::dry_run(&ctx, &t.library, settings(&t)),
+            ExportCommand::DryRun(t) => cmd::export::dry_run(&ctx, &t.library, settings(&ctx, &t)),
             ExportCommand::Run {
                 target,
                 threads,
                 yes,
             } => {
                 if yes {
-                    cmd::export::run(&ctx, &target.library, settings(&target), threads)
+                    cmd::export::run(&ctx, &target.library, settings(&ctx, &target), threads)
                 } else {
-                    cmd::export::confirm_first(&ctx, &target.library, settings(&target))
+                    cmd::export::confirm_first(&ctx, &target.library, settings(&ctx, &target))
                 }
             }
             ExportCommand::Check { library, verify } => cmd::export::check(&ctx, &library, verify),
@@ -744,7 +801,7 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn settings(t: &ExportTarget) -> ps_export::ProfileSettings {
+fn settings(ctx: &cmd::Ctx, t: &ExportTarget) -> ps_export::ProfileSettings {
     let profile = match t.profile {
         ProfileArg::Apple => ps_model::ExportProfile::ApplePhotos,
         ProfileArg::Google => ps_model::ExportProfile::GooglePhotos,
@@ -757,9 +814,26 @@ fn settings(t: &ExportTarget) -> ps_export::ProfileSettings {
     if t.no_sidecars {
         s.sidecars = false;
     }
-    s.with_verify(t.verify)
+    let s = s
+        .with_verify(t.verify)
         .with_recopy_modified(t.recopy_modified)
-        .with_upgrade(t.upgrade)
+        .with_upgrade(t.upgrade);
+    match t.best_of {
+        None => s,
+        Some(b) => {
+            let thresholds = ctx
+                .settings()
+                .map(|x| x.review.thresholds())
+                .unwrap_or_default();
+            s.with_best_of(
+                match b {
+                    BestOfArg::Only => ps_model::BestOf::PicksOnly,
+                    BestOfArg::Both => ps_model::BestOf::Both,
+                },
+                thresholds,
+            )
+        }
+    }
 }
 
 fn main() -> ExitCode {

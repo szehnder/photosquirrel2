@@ -31,6 +31,9 @@
 
 ## Decisions
 
+0. **Stacks are made of shots, not only of groups.** A shot is a duplicate group, seen through its keeper, or a
+   photo with no copies. Burst frames are usually photos with no copies, so a rule over groups alone would never
+   stack a burst. A group still counts once. (Found while building task 1.1.)
 1. **The stack layer lives in the core grouping crate,** as a pure function: `stacks(grouping, inputs, thresholds,
    separations, picks, quality) -> Stacks`.
    - It reads each group's keeper input and never mutates the grouping. That keeps it testable without I/O, and lets
@@ -43,6 +46,9 @@
    - Each keeper is compared with the following keepers while the time difference is at most the window. An edge
      needs the look test of ADR-0135 (orientation class, aspect within 2%, pHash and dHash within the limits) and no
      separation between the two contents.
+   - "Best copy" compares only what tells two shots apart as copies: format tier, resolution, metadata completeness
+     and JPEG quality. File size, modification time, path and file id differ between any two burst frames and say
+     nothing about which is better, so they fall to the capture-time tie-break ("First shot").
    - Union-find joins the edges in time order. An edge that would make a stack span over 120 s is skipped; the shot
      then starts or joins another stack.
    - Cost is O(n·k). The 1M bench catalog is about 900k photo keepers, and k is small at a 5 s window (bursts are the
@@ -65,11 +71,16 @@
    - a 3×3 Laplacian, and its variance divided by the pixel count;
    - the fractions of luma at 250 or above and at 5 or below.
 
-   It runs where the scan already holds the decoded thumbnail (no extra decode) and writes through the catalog
-   writer in the analysis batch.
-   - **Backfill:** at open, a background job pages photos with `shot_quality_version IS NULL` and a stored
-     thumbnail, decodes each thumbnail from the store and writes the scores in batches of 1,000. It pauses while a
-     scan runs and never touches a source.
+   The scores always come from the **stored** thumbnail, by one pass (`ps_scan::shot_quality::fill`):
+   - **At the end of every completed scan**, after the regroup, it scores the files that scan thumbed. That takes
+     about 1 ms per file: one 384 px JPEG decode. An unchanged rescan finds nothing to score.
+   - **In the background**, a few seconds after the catalog opens (`ScanOptions::shot_quality_delay`, 10 s), it
+     fills in catalogs scored before, or by an older version. It pauses while any scan runs, ends when the scanner
+     is dropped, and never touches a source. Writes go in batches of 1,000.
+   - A thumbnail that cannot be decoded is recorded as tried, with no score, so it is not tried again.
+
+   Built this way instead of hooking the analysis, so that there is one code path and no change to the many places
+   that build an analysis result.
    - **Effect on stacks:** stacks show "Scores pending" on shots without scores, and the pick falls back to the later
      keys until the scores arrive.
 6. **The 10% sharpness tie and the 1% clipping steps** are both relative to the stack, compared with the stack's
@@ -103,8 +114,10 @@
     query.
 12. **Export.** The plan takes a `BestOf { Everything, PicksOnly, Both }` parameter:
     - `PicksOnly` drops non-pick keepers of stacked groups from the plan.
-    - `Both` adds a second destination for each pick: `Best of/<dated layout>`, in the same copy-verify-rename
-      routine, with its own ledger row whose `role = best_of`.
+    - `Both` is two exports through the same copy-verify-rename path: everything into the library, then
+      `PicksOnly` into `<library>/Best of`, registered as a library of its own with its own ledger and manifest.
+      This is simpler than a second destination per unit inside one plan, whose ledger is keyed by content and
+      would read the second copy as already exported. `plan_parts` gives the plan of each part.
     - The ledger records the last export's mode. Dispositions read it: a non-pick group is `not picked` only when
       the last export was `PicksOnly` and no member of the group is in the library.
 13. **Corpus checks without new corpus data.**

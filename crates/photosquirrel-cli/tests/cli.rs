@@ -1459,3 +1459,172 @@ fn scenario_cli_include_a_group_from_the_cli() {
     assert_eq!(listed(data.path(), id)["excluded"], false);
     assert_eq!(excluded_by_you(data.path()), before_you);
 }
+
+// ---- best-of-stacks: the `[review]` settings ------------------------------------------------------------------
+
+#[test]
+fn scenario_settings_review_defaults() {
+    let data = tempfile::tempdir().unwrap();
+    let store = ps_service::settings::SettingsStore::in_dir(data.path().join("config"));
+    let t = store.load().settings.review.thresholds();
+    assert_eq!(t.window_s, 5);
+    assert_eq!(t.similarity, ps_model::StackSimilarity::Balanced);
+    let d = json(&ok(data.path(), &["--json", "doctor"]));
+    assert_eq!(d["data"]["stack_window_s"], 5);
+    assert_eq!(d["data"]["stack_similarity"], "balanced");
+}
+
+#[test]
+fn scenario_settings_invalid_stack_window() {
+    let data = tempfile::tempdir().unwrap();
+    let config = data.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("settings.toml"),
+        "settings_version = 4\n\n[scanning]\nscan_new_sources = false\n\n[review]\nstack_window_s = 0\nstack_similarity = \"loose\"\n",
+    )
+    .unwrap();
+    let store = ps_service::settings::SettingsStore::in_dir(config.clone());
+    let loaded = store.load();
+    assert!(loaded.recovered.is_none(), "not treated as a corrupt file");
+    let s = loaded.settings;
+    let errors = ps_service::settings::validate(&s);
+    assert!(
+        errors.iter().any(|e| e.key == "review.stack_window_s"),
+        "{errors:?}"
+    );
+    assert_eq!(s.review.thresholds().window_s, 5, "the default is used");
+    assert_eq!(
+        s.review.stack_similarity,
+        ps_model::StackSimilarity::Loose,
+        "the rest of the section is kept"
+    );
+    assert!(!s.scanning.scan_new_sources, "every other setting is kept");
+}
+
+// ---- best-of-stacks: `stacks` and `export run --best-of` ---------------------------------------------------------
+
+#[test]
+fn scenario_cli_list_stacks_as_json() {
+    let data = scanned();
+    let v = json(&ok(data.path(), &["--json", "stacks", "list"]));
+    assert_eq!(v["command"], "stacks list");
+    let d = &v["data"];
+    assert_eq!(d["window_s"], 5);
+    assert_eq!(d["similarity"], "balanced");
+    let list = d["list"].as_array().unwrap();
+    assert!(!list.is_empty(), "the corpus has stacks");
+    for s in list {
+        let shots = s["shots"].as_array().unwrap();
+        assert!(shots.len() >= 2);
+        assert_eq!(
+            shots.iter().filter(|x| x["pick"] == true).count(),
+            1,
+            "exactly one pick"
+        );
+        assert!(!s["reason_text"].as_str().unwrap().is_empty());
+        let times: Vec<&str> = shots
+            .iter()
+            .map(|x| x["captured"].as_str().unwrap())
+            .collect();
+        let mut sorted = times.clone();
+        sorted.sort();
+        assert_eq!(times, sorted, "shots in time order");
+    }
+}
+
+#[test]
+fn scenario_cli_thresholds_from_the_command_line() {
+    let data = scanned();
+    let config = data.path().join("config").join("settings.toml");
+    let before = std::fs::read(&config).ok();
+    let v = json(&ok(
+        data.path(),
+        &[
+            "--json",
+            "stacks",
+            "list",
+            "--similarity",
+            "loose",
+            "--window",
+            "10",
+        ],
+    ));
+    assert_eq!(v["data"]["window_s"], 10);
+    assert_eq!(v["data"]["similarity"], "loose");
+    let default = json(&ok(data.path(), &["--json", "stacks", "list"]));
+    assert!(v["data"]["stacked_shots"].as_u64() >= default["data"]["stacked_shots"].as_u64());
+    assert_eq!(
+        std::fs::read(&config).ok(),
+        before,
+        "the settings file is unchanged"
+    );
+}
+
+#[test]
+fn scenario_cli_pick_from_the_cli() {
+    let data = scanned();
+    let v = json(&ok(data.path(), &["--json", "stacks", "list"]));
+    let s = &v["data"]["list"][0];
+    let other = s["shots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["pick"] == false)
+        .unwrap()["file"]
+        .as_i64()
+        .unwrap();
+    ok(data.path(), &["stacks", "pick", &other.to_string()]);
+    let after = json(&ok(data.path(), &["--json", "stacks", "list"]));
+    let s = after["data"]["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| {
+            s["shots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["file"] == other)
+        })
+        .unwrap();
+    assert_eq!(s["pick"], other);
+    assert_eq!(s["reason_text"], "Picked by you");
+}
+
+#[test]
+fn scenario_cli_best_of_export_from_the_cli() {
+    let data = scanned();
+    let library = data.path().join("library");
+    ok(
+        data.path(),
+        &[
+            "export",
+            "run",
+            "--library",
+            library.to_str().unwrap(),
+            "--profile",
+            "google",
+            "--best-of",
+            "only",
+            "--yes",
+        ],
+    );
+    let r = json(&ok(data.path(), &["--json", "report"]));
+    let not_picked: u64 = r["data"]["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["counts"]["files"]["not_picked"].as_u64().unwrap())
+        .sum();
+    assert!(not_picked > 0, "the report counts the shots left out");
+    let pending: u64 = r["data"]["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["counts"]["files"]["pending"].as_u64().unwrap())
+        .sum();
+    assert_eq!(pending, 0);
+    let text = String::from_utf8(ok(data.path(), &["report"]).stdout).unwrap();
+    assert!(text.contains("not picked"), "{text}");
+}

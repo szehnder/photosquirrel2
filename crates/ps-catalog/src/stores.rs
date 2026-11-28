@@ -660,6 +660,15 @@ impl Writer {
         })
     }
 
+    /// Record the best-of choice of the export just made to library `id` (ADR-0135; `None`: everything).
+    pub fn set_export_library_best_of(&self, id: i64, best_of: Option<String>) -> Result<()> {
+        self.exec_constraints(move |c| {
+            c.prepare_cached("UPDATE export_library SET best_of = ?2 WHERE id = ?1")?
+                .execute(params![id, best_of])?;
+            Ok(())
+        })
+    }
+
     /// Record that every copy of library `id` was re-hashed at `at_ms`.
     pub fn export_library_verified(&self, id: i64, at_ms: i64) -> Result<()> {
         self.exec(move |c| {
@@ -704,6 +713,18 @@ impl Writer {
 
 impl Readers {
     /// Every registered library.
+    /// The best-of choice recorded for library `id` by its last export (`None`: everything).
+    pub fn export_library_best_of(&self, id: i64) -> Result<Option<String>> {
+        self.with(|c| {
+            Ok(
+                c.prepare_cached("SELECT best_of FROM export_library WHERE id = ?1")?
+                    .query_row([id], |r| r.get::<_, Option<String>>(0))
+                    .optional()?
+                    .flatten(),
+            )
+        })
+    }
+
     pub fn export_libraries(&self) -> Result<Vec<LibraryRecord>> {
         self.with(|c| {
             let mut stmt = c.prepare_cached(

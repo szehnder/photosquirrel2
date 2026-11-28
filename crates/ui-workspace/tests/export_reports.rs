@@ -573,3 +573,29 @@ fn reports_view_lists_better_copies_not_in_the_library(cx: &mut TestAppContext) 
     assert!(exists("report-total-superseded", &mut cx));
     assert!(exists("report-superseded-note", &mut cx));
 }
+
+/// best-of-stacks task 5.5: the Export view's plan for each "What to export" choice, through the backend the view
+/// calls: best of only copies fewer files, and both adds a Best of/ part with its own counts and bytes.
+#[gpui_kit::test]
+fn export_plan_shows_each_best_of_part(_cx: &mut TestAppContext) {
+    let e = exported_corpus();
+    let backend = CatalogBackend::open(&e.data).unwrap();
+    let fresh = e.data.parent().unwrap().join("fresh-library");
+    let base = ps_service::export_progress::ProfileSettings::defaults(
+        ps_model::ExportProfile::GooglePhotos,
+    );
+    let t = ps_model::StackThresholds::default();
+    let all = backend.export_plan(&fresh, base).unwrap();
+    assert!(all.best_of_part.is_none());
+    let only = backend
+        .export_plan(&fresh, base.with_best_of(ps_model::BestOf::PicksOnly, t))
+        .unwrap();
+    assert!(only.files < all.files, "{} < {}", only.files, all.files);
+    let both = backend
+        .export_plan(&fresh, base.with_best_of(ps_model::BestOf::Both, t))
+        .unwrap();
+    assert_eq!(both.files, all.files, "everything first");
+    let (files, bytes) = both.best_of_part.expect("a Best of/ part");
+    assert_eq!(files, only.files, "then the best of each stack");
+    assert!(bytes > 0);
+}

@@ -126,6 +126,9 @@ pub struct Scanner {
     /// One decode budget for every run of this scanner (ADR-0100): an abandoned AVIF decode of a cancelled run
     /// keeps its bytes counted in the next run until its thread ends.
     decode_budget: Arc<crate::memory::DecodeBudget>,
+    /// The background shot-quality fill (ADR-0135) and the flag that ends it.
+    shot_fill: Mutex<Option<std::thread::JoinHandle<()>>>,
+    shot_fill_stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for Scanner {
@@ -229,7 +232,19 @@ impl Scanner {
             log::warn!("video placeholder reasons: {e}");
         }
         let decode_budget = crate::memory::DecodeBudget::new(opts.decode_memory_cap);
+        let shot_fill_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shot_fill = match opts.shot_quality_delay {
+            Some(delay) if !catalog.is_observer() => crate::shot_quality::spawn_background(
+                catalog.clone(),
+                thumbs.clone(),
+                delay,
+                shot_fill_stop.clone(),
+            ),
+            _ => None,
+        };
         Ok(Scanner {
+            shot_fill: Mutex::new(shot_fill),
+            shot_fill_stop,
             catalog,
             thumbs,
             opts: Mutex::new(opts),
@@ -989,6 +1004,11 @@ impl Scanner {
 
 impl Drop for Scanner {
     fn drop(&mut self) {
+        self.shot_fill_stop
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(t) = self.shot_fill.get_mut().take() {
+            let _ = t.join();
+        }
         if let Some(a) = self.active.get_mut().take() {
             a.ctx.ctl.cancel();
             a.join();

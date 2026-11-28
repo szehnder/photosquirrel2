@@ -31,6 +31,8 @@ anyhow.workspace = true
 blake3.workspace = true
 
 [dev-dependencies]
+# `PERCEPTUAL_HASH_VERSION` for synthetic stack inputs (budgets).
+ps-hash.workspace = true
 # `frame::set_frame_identity_enabled`, the frame-identity test hook (ADR-0105).
 ps-model = { workspace = true, features = ["test-hooks"] }
 tempfile.workspace = true

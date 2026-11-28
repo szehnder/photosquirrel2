@@ -244,6 +244,9 @@ pub fn unsafe_now(
         }
         Disposition::Pending => return no("no equal or better copy of it is in the library now"),
         Disposition::Excluded => return no("it is excluded now"),
+        Disposition::NotPicked => {
+            return no("it is not the pick of its stack, and the library has none of its copies");
+        }
         Disposition::Missing => return Some(SkipReason::SourceMissing),
         Disposition::Unreadable => return no("it could not be read at the last scan"),
         Disposition::Quarantined => return no("it is in a quarantine folder already"),

@@ -70,6 +70,8 @@ pub struct PlanPreview {
     pub required_bytes: u64,
     /// Why the export cannot start (insufficient space), if it cannot.
     pub blocker: Option<String>,
+    /// "Both" (ADR-0135): the second part, the best of each stack again under `Best of/`: its files and bytes.
+    pub best_of_part: Option<(u64, u64)>,
     /// Planned copies (source, file name, library path) to show where things go, at most
     /// [`PLAN_ROWS_LIMIT`]; `files` + `adopted` says how many there are in all.
     pub examples: Vec<PlanRow>,
@@ -729,6 +731,14 @@ impl ScanBackend for CatalogBackend {
     ) -> anyhow::Result<PlanPreview> {
         let scan = self.scan()?;
         let profile = settings.profile;
+        let best_of_part = if settings.best_of == ps_model::BestOf::Both {
+            scan.exports()
+                .plan_parts(library, settings)?
+                .get(1)
+                .map(|(_, p)| (p.totals.files, p.totals.bytes))
+        } else {
+            None
+        };
         let (plan, input) = scan.exports().plan(library, settings)?;
         let mut offline: HashMap<String, u64> = HashMap::new();
         for u in &plan.unavailable {
@@ -753,6 +763,7 @@ impl ScanBackend for CatalogBackend {
             })
             .collect();
         Ok(PlanPreview {
+            best_of_part,
             library: plan.library_root.clone(),
             profile,
             sidecars: settings.sidecars,
@@ -766,7 +777,8 @@ impl ScanBackend for CatalogBackend {
             already_exported: plan.totals.already_exported,
             modified: plan.totals.modified,
             free_bytes: plan.free_bytes,
-            required_bytes: plan.required_bytes,
+            // "Both" copies the Best of/ part to the same volume after the first.
+            required_bytes: plan.required_bytes + best_of_part.map_or(0, |b| b.1),
             blocker: plan.blocker().map(|b| b.to_string()),
             examples,
             date_note: plan.totals.dates.note(),
@@ -1734,6 +1746,7 @@ impl ScanBackend for DemoBackend {
         let bytes = 41_872_000_000;
         let required = bytes + (1 << 20);
         Ok(PlanPreview {
+            best_of_part: None,
             library: library.to_path_buf(),
             profile,
             sidecars: settings.sidecars,

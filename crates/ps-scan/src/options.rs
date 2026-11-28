@@ -73,6 +73,9 @@ pub struct ScanOptions {
     /// The decoder generations placeholders are stamped with and compared against (ADR-0109): the build's
     /// [`ps_media::decoders::GENERATIONS`]; tests simulate an update by raising one.
     pub generations: ps_model::Generations,
+    /// How long after the catalog opens the background shot-quality fill starts (ADR-0135); `None` never starts
+    /// it (the end of every scan still scores what it thumbed).
+    pub shot_quality_delay: Option<std::time::Duration>,
 }
 
 impl Default for ScanOptions {
@@ -98,6 +101,7 @@ impl Default for ScanOptions {
             refresh_analysis: false,
             decoders: Arc::new(ps_media::Decoders::none()),
             generations: ps_media::decoders::GENERATIONS,
+            shot_quality_delay: Some(std::time::Duration::from_secs(10)),
         }
     }
 }

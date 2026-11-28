@@ -15,6 +15,7 @@ pub mod group;
 pub mod input;
 pub mod keeper_set;
 pub mod rank;
+pub mod stacks;
 pub mod unionfind;
 
 pub use edges::{
@@ -26,3 +27,7 @@ pub use group::{
 };
 pub use input::{DedupInput, DedupMeta};
 pub use rank::{FormatTier, KeeperReason, Ranking, rank};
+pub use stacks::{
+    GroupMembership, PickReason, ShotQuality, Stack, StackDecisions, StackSimilarity,
+    StackThresholds, Stacks, stacks, stacks_of,
+};

@@ -25,10 +25,14 @@ pub enum Disposition {
     /// group the library holds only through a lesser member's earlier copy (ADR-0092): its quality is not in the
     /// library yet. Not accounted for and never cleanup-eligible; `export run --upgrade` copies it (ADR-0093).
     Superseded,
+    /// A shot of a stack that is not its pick, left out by the library's last export of the best of each stack
+    /// only (ADR-0135), with no copy of its group in the library. A choice, like excluded: accounted for, never
+    /// cleanup-eligible, and pending again once an export of everything is planned.
+    NotPicked,
 }
 
 impl Disposition {
-    pub const ALL: [Disposition; 8] = [
+    pub const ALL: [Disposition; 9] = [
         Disposition::Exported,
         Disposition::Covered,
         Disposition::Excluded,
@@ -37,6 +41,7 @@ impl Disposition {
         Disposition::Missing,
         Disposition::Quarantined,
         Disposition::Superseded,
+        Disposition::NotPicked,
     ];
 
     /// Safe to quarantine during cleanup (ADR-0024).
@@ -54,6 +59,7 @@ impl Disposition {
             Disposition::Missing => "missing",
             Disposition::Quarantined => "quarantined",
             Disposition::Superseded => "superseded",
+            Disposition::NotPicked => "not_picked",
         }
     }
 }
@@ -123,7 +129,7 @@ impl CompletionCounts {
         self.files.iter().sum()
     }
 
-    /// Nothing pending, superseded or unreadable: every file is exported, covered, excluded, missing or
+    /// Nothing pending, superseded or unreadable: every file is exported, covered, excluded, not picked, missing or
     /// quarantined (with a valid library copy; a quarantined file without one is pending). A superseded file's
     /// quality is not in the library yet (ADR-0093).
     pub fn fully_accounted(&self) -> bool {

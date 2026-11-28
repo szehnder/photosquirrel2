@@ -236,7 +236,8 @@ pub fn disposition_color(d: Disposition, colors: &Colors) -> Hsla {
     match d {
         Disposition::Exported => colors.success,
         Disposition::Covered => colors.info,
-        Disposition::Excluded => colors.text_faint,
+        // A choice, like excluded (ADR-0135).
+        Disposition::Excluded | Disposition::NotPicked => colors.text_faint,
         Disposition::Pending => colors.warning,
         Disposition::Unreadable => colors.danger,
         Disposition::Missing => colors.border_strong,
@@ -256,6 +257,7 @@ pub fn disposition_label(d: Disposition) -> &'static str {
         Disposition::Missing => "Missing",
         Disposition::Quarantined => "Quarantined",
         Disposition::Superseded => "Better copy not in library",
+        Disposition::NotPicked => "Not picked",
     }
 }
 

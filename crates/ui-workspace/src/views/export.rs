@@ -163,6 +163,17 @@ impl ExportView {
             plan_task: None,
             run_task: None,
         };
+        if let Some(b) = std::env::var("PHOTOSQUIRREL_EXPORT_BEST_OF")
+            .ok()
+            .and_then(|v| ps_model::BestOf::from_key(&v))
+        {
+            // Dev-only: scripted screenshots of an export choice (agents' windows get one frame).
+            let t = app
+                .as_ref()
+                .map(|s| s.review.thresholds())
+                .unwrap_or_default();
+            this.settings = this.settings.with_best_of(b, t);
+        }
         if let Some(b) = this.backend.clone() {
             // The startup grace lets a scripted screenshot see the plan in frame one. The library: the one in
             // settings (the last exported to), else the catalog's last, else the suggested folder.
@@ -242,6 +253,21 @@ impl ExportView {
         }
     }
 
+    /// What this export copies (ADR-0135): everything, the best of each stack only, or both; per export only,
+    /// with the stack thresholds of the settings.
+    pub fn set_best_of(&mut self, best_of: ps_model::BestOf, cx: &mut Context<'_, Self>) {
+        if matches!(self.phase, ExportPhase::Running { .. }) {
+            return;
+        }
+        if self.settings.best_of != best_of {
+            let t = crate::settings::AppSettings::try_get(cx)
+                .map(|s| s.review.thresholds())
+                .unwrap_or_default();
+            self.settings = self.settings.with_best_of(best_of, t);
+            self.replan(cx);
+        }
+    }
+
     pub fn set_library(&mut self, lib: PathBuf, cx: &mut Context<'_, Self>) {
         self.library = Some(lib);
         self.replan(cx);
@@ -300,7 +326,7 @@ impl ExportView {
     fn can_export(&self) -> bool {
         matches!(
             self.plan.as_ref().and_then(Loadable::ready),
-            Some(p) if p.blocker.is_none() && p.files + p.adopted > 0
+            Some(p) if p.blocker.is_none() && p.files + p.adopted + p.best_of_part.map_or(0, |b| b.0) > 0
         )
     }
 
@@ -458,6 +484,14 @@ impl ExportView {
                         kit::format_bytes(plan.bytes),
                         Some(format!("{} sidecars", format_count(plan.sidecar_files))),
                     ))
+                    .when_some(plan.best_of_part, |e, (files, bytes)| {
+                        e.child(tile(
+                            "plan-best-of",
+                            "under Best of/ too",
+                            format_count(files),
+                            Some(format!("{} again", kit::format_bytes(bytes))),
+                        ))
+                    })
                     .child(tile(
                         "plan-already",
                         "already exported",
@@ -598,7 +632,7 @@ impl ExportView {
                 )
             })
             .when(!plan.examples.is_empty(), |d| {
-                let total = (plan.files + plan.adopted) as usize;
+                let total = (plan.files + plan.adopted + plan.best_of_part.map_or(0, |b| b.0)) as usize;
                 let shown = if self.show_all_rows {
                     plan.examples.len()
                 } else {
@@ -1070,6 +1104,52 @@ impl Render for ExportView {
                             .child(profile_blurb(self.settings.profile)),
                     ),
             )
+            .child({
+                let weak = cx.entity().downgrade();
+                let choices = [
+                    ps_model::BestOf::Everything,
+                    ps_model::BestOf::PicksOnly,
+                    ps_model::BestOf::Both,
+                ];
+                h_flex()
+                    .w_full()
+                    .gap(Tokens::space(3.0))
+                    .items_center()
+                    .child(segmented(
+                        "export-best-of",
+                        &["Everything", "Best of each stack", "Both"],
+                        choices
+                            .iter()
+                            .position(|b| *b == self.settings.best_of)
+                            .unwrap_or(0),
+                        move |ix, _, cx| {
+                            if let Some(v) = weak.upgrade() {
+                                v.update(cx, |v, cx| v.set_best_of(choices[ix.min(2)], cx));
+                            }
+                        },
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(Tokens::text_xs())
+                            .text_color(colors.text_muted)
+                            .child(match self.settings.best_of {
+                                ps_model::BestOf::Everything => {
+                                    "Every best copy, as always."
+                                }
+                                ps_model::BestOf::PicksOnly => {
+                                    "Only the pick of each stack of similar shots (Duplicates > Stacks), and every \
+                                     photo in no stack. The rest is reported as not picked; nothing is deleted."
+                                }
+                                ps_model::BestOf::Both => {
+                                    "Everything, then a second copy of your Best of set (each stack's pick plus every photo in no stack) \
+                                     under Best of/ in the library."
+                                }
+                            }),
+                    )
+            })
             .child(
                 h_flex()
                     .w_full()
@@ -1139,7 +1219,7 @@ impl Render for ExportView {
         let action: AnyElement = match self.phase.clone() {
             ExportPhase::Review => {
                 let label = match &plan {
-                    Some(p) => export_label(p.files, p.adopted),
+                    Some(p) => export_label(p.files + p.best_of_part.map_or(0, |b| b.0), p.adopted),
                     None => "Export".into(),
                 };
                 h_flex()
@@ -1495,6 +1575,7 @@ mod tests {
     #[test]
     fn plan_note_relates_copies_to_pending_files() {
         let mut plan = crate::scan_backend::PlanPreview {
+            best_of_part: None,
             library: "/lib".into(),
             profile: ps_model::ExportProfile::ApplePhotos,
             sidecars: true,

@@ -21,6 +21,7 @@ pub mod preview_cache;
 pub mod probe;
 pub mod quality;
 pub mod raw_check;
+pub mod shot_quality;
 pub mod thumb;
 pub mod tiff;
 pub mod tiff_decode;

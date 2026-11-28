@@ -30,6 +30,7 @@ pub struct Settings {
     pub ai: Ai,
     pub export: Export,
     pub updates: Updates,
+    pub review: Review,
 }
 
 impl Default for Settings {
@@ -42,6 +43,7 @@ impl Default for Settings {
             ai: Ai::default(),
             export: Export::default(),
             updates: Updates::default(),
+            review: Review::default(),
         }
     }
 }
@@ -533,6 +535,84 @@ impl<'de> Deserialize<'de> for Updates {
     }
 }
 
+/// `[review]`: how aggressively similar shots are stacked (best-of-stacks, ADR-0135). Read leniently, like
+/// `[updates]`: a window out of range or an unknown similarity fails validation for that key alone and behaves as
+/// its default, so one bad value does not send the whole file to corrupt-file recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Review {
+    /// Largest capture-time difference of two stacked shots, whole seconds (1-60).
+    pub stack_window_s: u32,
+    pub stack_similarity: crate::StackSimilarity,
+    /// The out-of-range window the file named, if any (never written back).
+    #[serde(skip)]
+    pub invalid_window: Option<i64>,
+    /// The unknown similarity the file named, if any (never written back).
+    #[serde(skip)]
+    pub invalid_similarity: Option<String>,
+}
+
+impl Default for Review {
+    fn default() -> Self {
+        let t = crate::StackThresholds::default();
+        Review {
+            stack_window_s: t.window_s,
+            stack_similarity: t.similarity,
+            invalid_window: None,
+            invalid_similarity: None,
+        }
+    }
+}
+
+impl Review {
+    /// The thresholds stacks use: the window clamped to its bounds.
+    pub fn thresholds(&self) -> crate::StackThresholds {
+        crate::StackThresholds {
+            window_s: self
+                .stack_window_s
+                .clamp(crate::MIN_WINDOW_S, crate::MAX_WINDOW_S),
+            similarity: self.stack_similarity,
+        }
+    }
+
+    /// Choose the thresholds; values read from the file that were invalid are forgotten.
+    pub fn set_thresholds(&mut self, t: crate::StackThresholds) {
+        self.stack_window_s = t.window_s.clamp(crate::MIN_WINDOW_S, crate::MAX_WINDOW_S);
+        self.stack_similarity = t.similarity;
+        self.invalid_window = None;
+        self.invalid_similarity = None;
+    }
+}
+
+impl<'de> Deserialize<'de> for Review {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Raw {
+            stack_window_s: Option<i64>,
+            stack_similarity: Option<String>,
+        }
+        let raw = Raw::deserialize(d)?;
+        let mut out = Review::default();
+        match raw.stack_window_s {
+            Some(w)
+                if (i64::from(crate::MIN_WINDOW_S)..=i64::from(crate::MAX_WINDOW_S))
+                    .contains(&w) =>
+            {
+                out.stack_window_s = w as u32;
+            }
+            Some(w) => out.invalid_window = Some(w),
+            None => {}
+        }
+        if let Some(k) = raw.stack_similarity.as_deref() {
+            match crate::StackSimilarity::from_key(k) {
+                Some(x) => out.stack_similarity = x,
+                None => out.invalid_similarity = Some(k.to_owned()),
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// One invalid value: the setting's key (dotted path, e.g. `scanning.preview_cache_gb`) and a message for the
 /// user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -615,6 +695,32 @@ impl Settings {
             err(
                 "ai.request_timeout_s",
                 "The request timeout must be between 10 and 3600 seconds.".into(),
+            );
+        }
+        if let Some(w) = self.review.invalid_window {
+            err(
+                "review.stack_window_s",
+                format!(
+                    "The stack window must be between {} and {} s, not {w}.",
+                    crate::MIN_WINDOW_S,
+                    crate::MAX_WINDOW_S
+                ),
+            );
+        } else if !(crate::MIN_WINDOW_S..=crate::MAX_WINDOW_S).contains(&self.review.stack_window_s)
+        {
+            err(
+                "review.stack_window_s",
+                format!(
+                    "The stack window must be between {} and {} s.",
+                    crate::MIN_WINDOW_S,
+                    crate::MAX_WINDOW_S
+                ),
+            );
+        }
+        if let Some(k) = &self.review.invalid_similarity {
+            err(
+                "review.stack_similarity",
+                format!("Similarity must be strict, balanced or loose, not \"{k}\"."),
             );
         }
         if let Some(mode) = &self.updates.invalid_mode {

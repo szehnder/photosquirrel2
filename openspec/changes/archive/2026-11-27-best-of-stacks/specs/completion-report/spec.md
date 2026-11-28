@@ -22,8 +22,8 @@ Every catalogued file SHALL have exactly one disposition derived from the catalo
 ## ADDED Requirements
 
 ### Requirement: Not picked disposition
-A member of a stacked group that is not its stack's pick SHALL be not picked when the last export was best of only and no member of its group is in the library; it SHALL turn back to pending when an export of everything is planned, and to covered or exported once its group is in the library.
+A member of a stacked group that is not its stack's pick SHALL be not picked when the library's last export was of the best of each stack only, under the thresholds that export used, and no member of its group is in the library. Once an export of everything has copied its group, it SHALL be exported or covered.
 
-#### Scenario: Not picked turns pending for a full export
-- **WHEN** the small corpus was exported with best of only and an export of everything is then planned
-- **THEN** the shots that were not picked are pending in that plan's report
+#### Scenario: Not picked shots are exported by a full export
+- **WHEN** the small corpus was exported with best of only and then with everything
+- **THEN** no file is not picked, and every shot that was not picked is exported or covered

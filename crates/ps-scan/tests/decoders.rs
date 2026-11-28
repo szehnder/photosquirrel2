@@ -357,6 +357,13 @@ fn scenario_incremental_rescan_old_catalog_marks_undecoded_heic_and_avif() {
              ALTER TABLE scan_run DROP COLUMN kind;
              ALTER TABLE scan_run DROP COLUMN fill_scope;
              DROP TABLE catalog_task;
+             ALTER TABLE file DROP COLUMN shot_quality_version;
+             ALTER TABLE file DROP COLUMN sharpness;
+             ALTER TABLE file DROP COLUMN clipped_high;
+             ALTER TABLE file DROP COLUMN clipped_low;
+             DROP TABLE stack_separation;
+             DROP TABLE stack_pick;
+             ALTER TABLE export_library DROP COLUMN best_of;
              ALTER TABLE file DROP COLUMN colour;
              PRAGMA user_version = 18;",
         )

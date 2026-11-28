@@ -38,6 +38,8 @@ struct Surface {
     args: &'static [&'static str],
     /// A `ui-state.json` written into the data directory before the launch (a remembered view mode).
     ui_state: Option<&'static str>,
+    /// Environment variables of the launch (the app's dev-only screenshot switches).
+    env: &'static [(&'static str, &'static str)],
 }
 
 const SURFACES: &[Surface] = &[
@@ -47,6 +49,7 @@ const SURFACES: &[Surface] = &[
         seeded: false,
         args: &[],
         ui_state: None,
+        env: &[],
     },
     Surface {
         name: "library",
@@ -54,6 +57,7 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &[],
         ui_state: None,
+        env: &[],
     },
     Surface {
         name: "duplicates",
@@ -61,6 +65,7 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &["--command", "shell::ShowDuplicates"],
         ui_state: None,
+        env: &[],
     },
     Surface {
         name: "duplicates-ai-filter",
@@ -75,6 +80,7 @@ const SURFACES: &[Surface] = &[
         ui_state: Some(
             r#"{"version": 1, "active_view": "duplicates", "duplicates": {"filter": {"insight": {"people": true}}}}"#,
         ),
+        env: &[],
     },
     Surface {
         name: "duplicates-similar",
@@ -87,6 +93,7 @@ const SURFACES: &[Surface] = &[
             "duplicates::ToggleSuggestions",
         ],
         ui_state: None,
+        env: &[],
     },
     Surface {
         name: "duplicates-excluded",
@@ -95,6 +102,31 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &["--command", "shell::ShowDuplicates"],
         ui_state: None,
+        env: &[],
+    },
+    Surface {
+        name: "duplicates-stacks",
+        caption: "Stacks of similar shots: the thresholds, the stack list, and a stack's shots with its Best of pick",
+        seeded: true,
+        args: &["--command", "shell::ShowDuplicates"],
+        ui_state: None,
+        env: &[("PHOTOSQUIRREL_REVIEW_TAB", "stacks")],
+    },
+    Surface {
+        name: "gallery-best-of",
+        caption: "The Library's Best of filter: each stack's pick and every photo in no stack",
+        seeded: true,
+        args: &["--gallery-filter", "best-of"],
+        ui_state: None,
+        env: &[],
+    },
+    Surface {
+        name: "export-best-of",
+        caption: "Export with Both: everything, then the best of each stack under Best of/",
+        seeded: true,
+        args: &["--command", "shell::ShowExport"],
+        ui_state: None,
+        env: &[("PHOTOSQUIRREL_EXPORT_BEST_OF", "both")],
     },
     Surface {
         name: "loupe-video",
@@ -103,6 +135,7 @@ const SURFACES: &[Surface] = &[
         seeded: false,
         args: &[],
         ui_state: Some(r#"{"version": 1, "active_view": "library", "library_mode": "loupe"}"#),
+        env: &[],
     },
     Surface {
         name: "ai-review",
@@ -115,6 +148,7 @@ const SURFACES: &[Surface] = &[
             "shell::ShowAiReview",
         ],
         ui_state: None,
+        env: &[],
     },
     Surface {
         name: "sources",
@@ -122,6 +156,7 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &["--demo-scan", "running", "--command", "shell::ShowSources"],
         ui_state: None,
+        env: &[],
     },
     Surface {
         name: "export",
@@ -129,6 +164,7 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &["--command", "shell::ShowExport"],
         ui_state: None,
+        env: &[],
     },
     Surface {
         name: "excluded",
@@ -136,6 +172,7 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &["--command", "shell::ShowExcluded"],
         ui_state: None,
+        env: &[],
     },
     Surface {
         name: "excluded-grid",
@@ -143,6 +180,7 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &["--command", "shell::ShowExcluded"],
         ui_state: Some(r#"{"version": 1, "excluded": {"mode": "grid"}}"#),
+        env: &[],
     },
     Surface {
         name: "reports",
@@ -150,6 +188,7 @@ const SURFACES: &[Surface] = &[
         seeded: true,
         args: &["--command", "shell::ShowReports"],
         ui_state: None,
+        env: &[],
     },
 ];
 
@@ -178,7 +217,7 @@ pub fn run(root: &Path, opts: Options) -> Result<()> {
     let data_dir = shots.join(format!("data-{stamp}"));
     let data = (!opts.keep_data && !opts.app_args.iter().any(|a| a == "--data-dir"))
         .then_some(data_dir.as_path());
-    let result = shoot(&bin, &opts.app_args, data, opts.delay, &out);
+    let result = shoot(&bin, &opts.app_args, data, opts.delay, &out, &[]);
     let _ = std::fs::remove_dir_all(&data_dir);
     result?;
     println!("{}", out.display());
@@ -200,8 +239,10 @@ fn shoot(
     data_dir: Option<&Path>,
     delay: f32,
     out: &Path,
+    env: &[(&str, &str)],
 ) -> Result<()> {
     let mut app = Command::new(bin);
+    app.envs(env.iter().copied());
     // Keep the app alive comfortably past the capture.
     let exit_after = delay + 4.0;
     app.args(["--exit-after", &format!("{exit_after}")]);
@@ -334,7 +375,14 @@ fn gallery(root: &Path, bin: &Path, shots: &Path, delay: f32) -> Result<()> {
             let mut args: Vec<String> = vec!["--theme".into(), theme.into()];
             args.extend(surface.args.iter().map(|a| (*a).to_owned()));
             let file = format!("{}-{theme}.png", surface.name);
-            let result = shoot(bin, &args, Some(&data), delay, &dir.join(&file));
+            let result = shoot(
+                bin,
+                &args,
+                Some(&data),
+                delay,
+                &dir.join(&file),
+                surface.env,
+            );
             let _ = std::fs::remove_dir_all(&data);
             match result {
                 Ok(()) => shots_for.push(file),

@@ -36,4 +36,5 @@ pub mod scan;
 pub mod scans;
 pub mod secrets;
 pub mod settings;
+pub mod stacks;
 pub mod updates;

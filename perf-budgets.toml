@@ -200,3 +200,34 @@ max = 4.0
 unit = "MB"
 change = "tiff-support"
 source = { kind = "test", package = "ps-media", test = "tiff", name = "scenario_performance_budgets_streamed_tiff_decode_memory_within_budget" }
+
+# best-of-stacks (ADR-0135): every stack and pick of 1M photos (bursts between single shots) at the widest thresholds
+# (60 s, loose), from inputs in memory; median of 3. Runs off the interface thread.
+[[budget]]
+name = "stacks-compute"
+metric = "median"
+max = 1.0
+unit = "s"
+change = "best-of-stacks"
+source = { kind = "test", package = "ps-service", test = "budgets", name = "scenario_performance_budgets_stacks_computed_within_budget" }
+
+# best-of-stacks (ADR-0135): the stacks of 100,000 photos after a threshold change, so the count in the Stacks header
+# follows its controls; median of 3.
+[[budget]]
+name = "stacks-retune"
+metric = "median"
+max = 300.0
+unit = "ms"
+change = "best-of-stacks"
+source = { kind = "test", package = "ps-service", test = "budgets", name = "scenario_performance_budgets_retune_within_budget" }
+
+# best-of-stacks (ADR-0135): the shot-quality scores of 100,000 thumbed photos from the thumbnail store (the
+# background fill of an older catalog), never reading a source.
+[[budget]]
+name = "shot-quality-fill"
+metric = "max"
+max = 60.0
+unit = "s"
+change = "best-of-stacks"
+source = { kind = "test", package = "ps-service", test = "budgets", name = "scenario_performance_budgets_shot_quality_filled_within_budget" }
+

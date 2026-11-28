@@ -4,7 +4,7 @@ Groups shots of one moment (bursts and near-identical frames taken seconds apart
 ## ADDED Requirements
 
 ### Requirement: Stacks of similar shots
-Duplicate groups of photos SHALL be stacked when their keepers were taken at most the stack window apart and look alike within the stack similarity limits, with matching orientation and aspect ratios within 2%. A stack SHALL span at most 120 s from its first shot to its last. Videos, groups without a capture time and excluded groups SHALL NOT be stacked.
+Photos SHALL be stacked, a duplicate group counting as one photo through its keeper, when they were taken at most the stack window apart and look alike within the stack similarity limits, with matching orientation and aspect ratios within 2%. A stack SHALL span at most 120 s from its first shot to its last. Videos, groups without a capture time and excluded groups SHALL NOT be stacked.
 
 #### Scenario: Corpus bursts form stacks
 - **WHEN** the small corpus is scanned and stacks are computed with the default thresholds

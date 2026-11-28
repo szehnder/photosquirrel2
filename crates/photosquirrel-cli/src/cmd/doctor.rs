@@ -77,6 +77,9 @@ struct DoctorOut {
     power: Power,
     /// `scanning.scan_new_sources`: the app starts a source's scan as soon as it is added (`sources add` never does).
     scan_new_sources: bool,
+    /// `[review]`: the stack thresholds (ADR-0135).
+    stack_window_s: u32,
+    stack_similarity: &'static str,
     /// The update mode, this installation and the last check (spec `cli` "Doctor report"; no network).
     updates: Option<super::update::StatusOut>,
     network_used: bool,
@@ -157,6 +160,8 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             }
         },
         scan_new_sources: settings.scanning.scan_new_sources,
+        stack_window_s: settings.review.thresholds().window_s,
+        stack_similarity: settings.review.thresholds().similarity.key(),
         updates: super::update::status_out(ctx)
             .map_err(|e| log::warn!("update state: {e:#}"))
             .ok(),
@@ -256,6 +261,10 @@ pub fn run(ctx: &Ctx) -> Result<()> {
                 "on mains"
             },
             if p.pause_on_battery { "on" } else { "off" }
+        );
+        println!(
+            "stacks:      shots within {} s, {} similarity",
+            o.stack_window_s, o.stack_similarity
         );
         println!(
             "new sources: {} (the app's \"Scan new sources right away\"; `sources add` never scans)",

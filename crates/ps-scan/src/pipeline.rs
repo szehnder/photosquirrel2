@@ -373,6 +373,13 @@ fn finish(ctx: &Arc<RunCtx>, started: Instant) -> RunSummary {
     } else {
         None
     };
+    // Shot-quality scores of the files this run thumbed, from their stored thumbnails (ADR-0135).
+    if status == RunStatus::Completed
+        && let Err(e) =
+            crate::shot_quality::fill(&ctx.catalog, &ctx.thumbs, &|| ctx.ctl.is_cancelled())
+    {
+        log::error!("scan run {}: shot quality: {e}", ctx.run);
+    }
     if status == RunStatus::Completed && ctx.fill.is_none() {
         record_measures(ctx);
     }

@@ -1166,6 +1166,35 @@ pub fn set_reviewed(
     Ok(reviewed)
 }
 
+// ---- stacks (best-of-stacks) ----------------------------------------------------------------------------------
+
+fn stack_key(anchor: &ps_model::ContentId) -> String {
+    let hex: String = anchor.digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("stack:{hex}")
+}
+
+/// A stack is reviewed: kept under its anchor (the content of its first shot), so it reads unreviewed again when
+/// thresholds or a scan give it another first shot.
+pub fn stack_reviewed(store: &ReviewStore, anchor: &ps_model::ContentId) -> bool {
+    store.is_reviewed(&stack_key(anchor))
+}
+
+/// Mark a stack reviewed (or not).
+pub fn set_stack_reviewed(
+    store: &ReviewStore,
+    anchor: &ps_model::ContentId,
+    reviewed: bool,
+) -> Result<()> {
+    let key = stack_key(anchor);
+    store.update(|s| {
+        if reviewed {
+            s.reviewed.insert(key, now_ms());
+        } else {
+            s.reviewed.remove(&key);
+        }
+    })
+}
+
 // ---- excluding a group (exclude-group-in-review) --------------------------------------------------------------
 
 /// The files a user decision (or an accepted AI suggestion) excludes.
