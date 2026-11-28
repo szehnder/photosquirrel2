@@ -1,6 +1,6 @@
 # 0135. Similar shots are stacked by time and a looser look; the sharpest shot of a stack is picked
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-27
 - Deciders: maintainers
 

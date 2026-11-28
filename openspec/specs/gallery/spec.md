@@ -257,3 +257,14 @@ A video in the loupe SHALL be shown from its large preview with a play mark and 
 #### Scenario: Video without a poster tool in the loupe
 - **WHEN** the user opens a MOV in the loupe with no poster-frame tool
 - **THEN** the loupe shows the video's placeholder saying a poster-frame tool is needed, and Open in player is still offered
+
+### Requirement: Best of filter
+The Library SHALL offer a "Best of" filter that shows each stack's pick and every photo that is in no stack, and hides the other shots of every stack. The filter SHALL follow pick changes and threshold changes without a reload of the whole gallery.
+
+#### Scenario: Best of shows one shot per stack
+- **WHEN** the user turns on Best of on the small corpus
+- **THEN** each stack contributes exactly its pick, every unstacked photo is shown, and the count shown equals unstacked photos plus stacks
+
+#### Scenario: Best of follows a new pick
+- **WHEN** Best of is on and the user picks another shot in a stack
+- **THEN** the gallery shows the new pick instead of the old one

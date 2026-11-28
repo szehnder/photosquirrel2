@@ -8,7 +8,7 @@ deleting anything.
 ## Requirements
 
 ### Requirement: Only safe files eligible
-Only exported or covered files SHALL be eligible for cleanup; pending, superseded, excluded, unreadable and missing files MUST NOT be moved. A group member better than every copy of its group in the library (superseded, ADR-0093) is never eligible until exported itself, nor is a member whose automatic rank is above a keeper the user chose (ADR-0096); plans list the latter as kept.
+Only exported or covered files SHALL be eligible for cleanup; pending, superseded, excluded, not picked, unreadable and missing files MUST NOT be moved. A group member better than every copy of its group in the library (superseded, ADR-0093) is never eligible until exported itself, nor is a member whose automatic rank is above a keeper the user chose (ADR-0096); plans list the latter as kept.
 
 #### Scenario: Pending files never eligible
 - **WHEN** a cleanup plan is made for a corpus drive with one unexported keeper
@@ -17,6 +17,10 @@ Only exported or covered files SHALL be eligible for cleanup; pending, supersede
 #### Scenario: Excluded files not eligible
 - **WHEN** a cleanup plan is made for a drive containing junk and graphics
 - **THEN** none of the excluded files are in the plan
+
+#### Scenario: Shots not picked are not eligible
+- **WHEN** the small corpus is exported with best of only and a cleanup plan is made for a corpus drive
+- **THEN** no file that is not picked is in the plan
 
 #### Scenario: Cleanup never moves a better copy that is not in the library
 - **WHEN** a resized JPEG from one source was exported, the 3000x2000 HEIC original on a second source is then scanned with a HEIC decoder and becomes the group's keeper, and a cleanup plan is made for the second source
