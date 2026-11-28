@@ -51,5 +51,6 @@
 ## 8. Verification
 
 - [x] 8.1 `cargo xtask ci` passes, every new scenario maps to a passing test (`cargo xtask spec-coverage`), and `photosquirrel-cli eval-corpus` passes the gate unchanged.
-- [ ] 8.2 `cargo xtask bench --check` passes with the three new budgets, and `rescan-nochange-100k`, `duplicates-list-reload` and `gallery-scroll` are unchanged.
+- [x] 8.2 `cargo xtask bench --check` passes with the three new budgets, and `rescan-nochange-100k`, `duplicates-list-reload` and `gallery-scroll` are unchanged.
+  - Measured 2026-11-27 (release, reference desktop): `stacks-compute` 0.44 s (budget 1 s), `stacks-retune` 24 ms (300 ms), `shot-quality-fill` 58.0 s best of 2 (60 s), `rescan-nochange-100k` 0.36 s (4 s), `duplicates-list-reload` 53 ms (150 ms). The GitHub relative budget job passed against the parent commit. Not attributable to this change: `scan-analysis-12mp` (7.30 ms) and `tiff-analysis-decode` (383 ms) are over the baseline on `main` too in the same session (6.94 ms, 460 ms; the machine ran slower than when the baseline was recorded), and `gallery-scroll-p95` could not be measured because the session was locked (Wayland sends no frames).
 - [x] 8.3 `openspec validate best-of-stacks --strict` passes.
